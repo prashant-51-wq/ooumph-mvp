@@ -1,4 +1,4 @@
-﻿'use client'
+'use client'
 
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
@@ -6,22 +6,29 @@ import type { Strategy } from '@/types'
 
 export default function StrategyPage() {
   const router = useRouter()
+  const [fetching, setFetching] = useState(true)
   const [loading, setLoading] = useState(false)
   const [strategy, setStrategy] = useState<Strategy | null>(null)
+  const [approvalStatus, setApprovalStatus] = useState<string | null>(null)
   const [error, setError] = useState('')
 
   useEffect(() => {
     const wid = localStorage.getItem('workspaceId')
-    if (wid) {
-      fetch(`/api/agents/strategy?workspaceId=${wid}`)
-        .then((r) => r.json())
-        .then((d) => { if (d?.content_json) setStrategy(d.content_json) })
-    }
-  }, [])
+    if (!wid) { router.push('/dashboard/onboarding'); return }
+    fetch(`/api/agents/strategy?workspaceId=${wid}`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (d?.content_json) {
+          setStrategy(d.content_json)
+          setApprovalStatus(d.approval_status || null)
+        }
+      })
+      .finally(() => setFetching(false))
+  }, [router])
 
   const generate = async () => {
     const workspaceId = localStorage.getItem('workspaceId')
-    if (!workspaceId) { setError('Complete onboarding first'); return }
+    if (!workspaceId) return
     setLoading(true); setError('')
     try {
       const res = await fetch('/api/agents/strategy', {
@@ -30,7 +37,7 @@ export default function StrategyPage() {
         body: JSON.stringify({ workspaceId }),
       })
       const data = await res.json()
-      if (data.strategy) setStrategy(data.strategy)
+      if (data.strategy) { setStrategy(data.strategy); setApprovalStatus('pending') }
       else setError(data.error || 'Generation failed')
     } catch { setError('Network error') } finally { setLoading(false) }
   }
@@ -39,18 +46,21 @@ export default function StrategyPage() {
     <div className="p-8">
       <div className="flex items-center justify-between mb-8">
         <div>
-          <h1 className="text-2xl font-bold text-white">ðŸ§  Marketing Strategy</h1>
-          <p className="text-gray-400 text-sm mt-1">AI-generated positioning, ICP, content pillars, and KPIs</p>
+          <div className="flex items-center gap-3 mb-1">
+            <h1 className="text-2xl font-bold text-white">🧠 Marketing Strategy</h1>
+            {approvalStatus && <ApprovalBadge status={approvalStatus} />}
+          </div>
+          <p className="text-gray-400 text-sm">AI-generated positioning, ICP, content pillars, and KPIs</p>
         </div>
         <div className="flex gap-3">
           {strategy && (
             <button onClick={() => router.push('/dashboard/content')} className="px-4 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm transition-colors">
-              Next: Content Calendar â†’
+              Next: Content Calendar →
             </button>
           )}
           <button onClick={generate} disabled={loading}
             className="px-5 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-medium transition-colors flex items-center gap-2">
-            {loading ? <><Spinner /> Generating...</> : strategy ? 'â†» Regenerate' : 'âš¡ Generate Strategy'}
+            {loading ? <><Spinner /> Generating...</> : strategy ? '↻ Regenerate' : '⚡ Generate Strategy'}
           </button>
         </div>
       </div>
@@ -61,36 +71,36 @@ export default function StrategyPage() {
 
       {strategy && !loading && (
         <div className="space-y-6">
-          <Card title="ðŸŽ¯ Positioning" color="indigo">
+          <Card title="🎯 Positioning" color="indigo">
             <p className="text-gray-200">{strategy.positioning}</p>
           </Card>
 
-          <Card title="ðŸ’¡ Unique Value Proposition" color="purple">
+          <Card title="💡 Unique Value Proposition" color="purple">
             <p className="text-gray-200 text-lg font-medium">{strategy.uniqueValueProposition}</p>
           </Card>
 
-          <Card title="ðŸ“ˆ 30-Day Objective" color="blue">
+          <Card title="📈 30-Day Objective" color="blue">
             <p className="text-gray-200">{strategy.thirtyDayObjective}</p>
           </Card>
 
           <div className="grid grid-cols-2 gap-6">
-            <Card title="ðŸ‘¤ Ideal Customer Profile" color="green">
+            <Card title="👤 Ideal Customer Profile" color="green">
               <div className="space-y-3 text-sm">
                 <Section label="Demographics">{strategy.icp?.demographics}</Section>
                 <Section label="Psychographics">{strategy.icp?.psychographics}</Section>
                 <Section label="Pain Points">
-                  <ul className="space-y-1">{strategy.icp?.painPoints?.map((p, i) => <li key={i} className="text-gray-300">â€¢ {p}</li>)}</ul>
+                  <ul className="space-y-1">{strategy.icp?.painPoints?.map((p, i) => <li key={i} className="text-gray-300">• {p}</li>)}</ul>
                 </Section>
                 <Section label="Buying Triggers">
-                  <ul className="space-y-1">{strategy.icp?.buyingTriggers?.map((t, i) => <li key={i} className="text-gray-300">â€¢ {t}</li>)}</ul>
+                  <ul className="space-y-1">{strategy.icp?.buyingTriggers?.map((t, i) => <li key={i} className="text-gray-300">• {t}</li>)}</ul>
                 </Section>
                 <Section label="Objections">
-                  <ul className="space-y-1">{strategy.icp?.objections?.map((o, i) => <li key={i} className="text-gray-300">â€¢ {o}</li>)}</ul>
+                  <ul className="space-y-1">{strategy.icp?.objections?.map((o, i) => <li key={i} className="text-gray-300">• {o}</li>)}</ul>
                 </Section>
               </div>
             </Card>
 
-            <Card title="ðŸ“Š KPIs" color="yellow">
+            <Card title="📊 KPIs" color="yellow">
               <div className="space-y-3">
                 {strategy.kpis?.map((kpi, i) => (
                   <div key={i} className="p-3 rounded-lg bg-gray-800">
@@ -105,21 +115,21 @@ export default function StrategyPage() {
             </Card>
           </div>
 
-          <Card title="ðŸ›ï¸ Content Pillars" color="pink">
+          <Card title="🏛️ Content Pillars" color="pink">
             <div className="grid grid-cols-3 gap-4">
               {strategy.contentPillars?.map((p, i) => (
                 <div key={i} className="p-4 rounded-lg bg-gray-800">
                   <p className="text-white font-medium text-sm mb-1">{p.name}</p>
                   <p className="text-gray-400 text-xs mb-3">{p.description}</p>
                   <ul className="space-y-1">
-                    {p.topics?.map((t, j) => <li key={j} className="text-gray-500 text-xs">â€¢ {t}</li>)}
+                    {p.topics?.map((t, j) => <li key={j} className="text-gray-500 text-xs">• {t}</li>)}
                   </ul>
                 </div>
               ))}
             </div>
           </Card>
 
-          <Card title="ðŸ“¡ Channel Strategy" color="indigo">
+          <Card title="📡 Channel Strategy" color="indigo">
             <div className="divide-y divide-gray-800">
               {strategy.channelStrategy?.map((ch, i) => (
                 <div key={i} className="py-3 flex items-center justify-between">
@@ -133,14 +143,29 @@ export default function StrategyPage() {
         </div>
       )}
 
-      {!strategy && !loading && (
+      {fetching && !loading && <LoadingCard label="Loading strategy..." />}
+
+      {!strategy && !loading && !fetching && (
         <EmptyState
-          icon="ðŸ§ "
+          icon="🧠"
           title="Strategy not generated yet"
           desc="Click 'Generate Strategy' to have your AI Strategy Agent create a complete marketing plan."
         />
       )}
     </div>
+  )
+}
+
+function ApprovalBadge({ status }: { status: string }) {
+  const map: Record<string, string> = {
+    pending: 'bg-yellow-900 text-yellow-300 border-yellow-800',
+    approved: 'bg-green-900 text-green-300 border-green-800',
+    rejected: 'bg-red-900 text-red-300 border-red-800',
+  }
+  return (
+    <span className={`px-2.5 py-1 rounded-full text-xs font-medium border capitalize ${map[status] || 'bg-gray-800 text-gray-400 border-gray-700'}`}>
+      {status}
+    </span>
   )
 }
 
@@ -185,4 +210,3 @@ function EmptyState({ icon, title, desc }: { icon: string; title: string; desc: 
 function Spinner() {
   return <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
 }
-

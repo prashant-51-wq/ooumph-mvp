@@ -10,25 +10,39 @@ export async function GET(req: NextRequest) {
 
     const [brandResult, artifactsResult] = await Promise.all([
       sql`SELECT * FROM brand_profiles WHERE workspace_id = ${workspaceId} LIMIT 1`,
-      sql`SELECT type, content_json FROM artifacts WHERE workspace_id = ${workspaceId} ORDER BY created_at ASC`,
+      sql`SELECT type, content_json, status FROM artifacts WHERE workspace_id = ${workspaceId} ORDER BY created_at DESC`,
     ])
 
     const brand = brandResult.rows[0]
     const artifacts = artifactsResult.rows
 
+    // Prefer approved artifacts; fall back to latest for each type
+    const byType: Record<string, unknown> = {}
+    const byTypeApproved: Record<string, unknown> = {}
+    for (const a of artifacts) {
+      const t = a.type as string
+      if (!byType[t]) byType[t] = a.content_json
+      if (!byTypeApproved[t] && a.status === 'approved') byTypeApproved[t] = a.content_json
+    }
+    const pick = (type: string) => byTypeApproved[type] ?? byType[type]
+
     const data = {
       brand,
-      strategy: artifacts.find((a) => a.type === 'strategy')?.content_json,
-      calendar: artifacts.find((a) => a.type === 'content_calendar')?.content_json,
+      strategy: pick('strategy'),
+      calendar: pick('content_calendar'),
       assets: {
-        carousel: artifacts.find((a) => a.type === 'carousel')?.content_json,
-        reelScript: artifacts.find((a) => a.type === 'reelScript')?.content_json,
-        adCopy: artifacts.find((a) => a.type === 'adCopy')?.content_json,
-        emailDraft: artifacts.find((a) => a.type === 'emailDraft')?.content_json,
-        linkedInPost: artifacts.find((a) => a.type === 'linkedInPost')?.content_json,
+        carousel: pick('carousel'),
+        reelScript: pick('reelScript'),
+        adCopy: pick('adCopy'),
+        emailDraft: pick('emailDraft'),
+        linkedInPost: pick('linkedInPost'),
       },
-      funnel: artifacts.find((a) => a.type === 'funnel_plan')?.content_json,
-      leads: artifacts.find((a) => a.type === 'lead_gen_plan')?.content_json,
+      funnel: pick('funnel_plan'),
+      leads: pick('lead_gen_plan'),
+      analyticsReport: pick('analytics_report'),
+      emailSequence: pick('email_sequence'),
+      landingPage: pick('landing_page'),
+      leadScoringModel: pick('lead_scoring_model'),
     }
 
     if (format === 'docx') {

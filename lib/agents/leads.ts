@@ -1,9 +1,9 @@
-﻿import { runAgent } from '@/lib/claude'
+import { runAgent } from '@/lib/claude'
 import type { BrandProfile, Strategy, LeadGenPlan } from '@/types'
 
 const SYSTEM_PROMPT = `You are the Lead Generation Planner Agent for Ooumph, an AI Marketing Agency OS.
 You create actionable inbound and outbound lead generation plans.
-Be specific â€” write actual email copy, LinkedIn messages, and qualification scripts.
+Be specific — write actual email copy, LinkedIn messages, and qualification scripts.
 Always respond with valid JSON.`
 
 export async function generateLeadGenPlan(
@@ -24,7 +24,7 @@ Tone: ${brand.tone}
 Create:
 1. ICP Filters (industries, company size, job titles, buying signals)
 2. Inbound Strategy (channels, CTAs, lead magnets)
-3. Outbound Strategy (cold email + LinkedIn sequence â€” write ACTUAL copy)
+3. Outbound Strategy (cold email + LinkedIn sequence — write ACTUAL copy)
 4. Qualification Rules (5 questions to qualify a lead)
 
 Return JSON:
@@ -53,5 +53,3 @@ Return JSON:
 
   return runAgent<LeadGenPlan>(SYSTEM_PROMPT, userPrompt)
 }
-
-

@@ -1,0 +1,16 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/publish-scheduled",
+      "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/cron/campaign-sync",
+      "schedule": "0 6 * * *"
+    },
+    {
+      "path": "/api/cron/kpi-alert",
+      "schedule": "0 8 * * 1"
+    }
+  ]
+}

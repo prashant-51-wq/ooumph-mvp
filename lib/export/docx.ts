@@ -1,6 +1,6 @@
 import {
   Document, Packer, Paragraph, TextRun, HeadingLevel,
-  AlignmentType, Table, TableRow, TableCell, BorderStyle, WidthType,
+  AlignmentType,
 } from 'docx'
 
 interface ExportData {
@@ -10,6 +10,10 @@ interface ExportData {
   assets?: Record<string, unknown>
   funnel?: Record<string, unknown>
   leads?: Record<string, unknown>
+  analyticsReport?: Record<string, unknown>
+  emailSequence?: Record<string, unknown>
+  landingPage?: Record<string, unknown>
+  leadScoringModel?: Record<string, unknown>
 }
 
 function heading(text: string, level: typeof HeadingLevel[keyof typeof HeadingLevel] = HeadingLevel.HEADING_1) {
@@ -30,6 +34,16 @@ function bullet(text: string) {
 
 function divider() {
   return new Paragraph({ text: '─'.repeat(60), spacing: { before: 200, after: 200 } })
+}
+
+function label(l: string, val: string) {
+  return new Paragraph({
+    children: [
+      new TextRun({ text: `${l}: `, bold: true, size: 24 }),
+      new TextRun({ text: val, size: 24 }),
+    ],
+    spacing: { after: 100 },
+  })
 }
 
 export async function generateDocx(data: ExportData): Promise<Buffer> {
@@ -73,55 +87,155 @@ export async function generateDocx(data: ExportData): Promise<Buffer> {
         )
       }
     }
+
+    if (s.channelStrategy) {
+      children.push(heading('Channel Strategy', HeadingLevel.HEADING_2))
+      for (const ch of s.channelStrategy as Array<{ channel: string; frequency: string; contentType: string }>) {
+        children.push(label(ch.channel, `${ch.frequency} — ${ch.contentType}`))
+      }
+    }
+    children.push(divider())
+  }
+
+  // Content Calendar
+  if (data.calendar && Array.isArray(data.calendar) && data.calendar.length > 0) {
+    children.push(heading('2. 30-Day Content Calendar'))
+    const weeks: Record<number, typeof data.calendar> = {}
+    for (const item of data.calendar) {
+      const d = (item as Record<string, unknown>).day as number
+      const week = Math.ceil(d / 7)
+      if (!weeks[week]) weeks[week] = []
+      weeks[week].push(item)
+    }
+    for (const [w, items] of Object.entries(weeks)) {
+      children.push(heading(`Week ${w} (Days ${(parseInt(w) - 1) * 7 + 1}–${Math.min(parseInt(w) * 7, 30)})`, HeadingLevel.HEADING_2))
+      for (const item of items) {
+        const i = item as Record<string, unknown>
+        children.push(
+          new Paragraph({
+            children: [
+              new TextRun({ text: `Day ${i.day} `, bold: true, size: 22 }),
+              new TextRun({ text: `[${i.platform}] ${i.postType} — `, size: 22, color: '6b7280' }),
+              new TextRun({ text: (i.hook as string) || '', size: 22 }),
+            ],
+            spacing: { after: 80 },
+          }),
+        )
+      }
+    }
     children.push(divider())
   }
 
   // Assets
   if (data.assets) {
     const a = data.assets as Record<string, Record<string, unknown>>
-    children.push(heading('2. Marketing Assets'))
+    children.push(heading('3. Marketing Assets'))
 
     if (a.linkedInPost) {
       children.push(
         heading('LinkedIn Post', HeadingLevel.HEADING_2),
         body(a.linkedInPost.hook as string || ''),
         body(a.linkedInPost.body as string || ''),
-        body(`CTA: ${a.linkedInPost.cta as string || ''}`),
+        label('CTA', a.linkedInPost.cta as string || ''),
       )
     }
 
     if (a.emailDraft) {
       children.push(
         heading('Email Draft', HeadingLevel.HEADING_2),
-        body(`Subject: ${a.emailDraft.subject as string || ''}`),
+        label('Subject', a.emailDraft.subject as string || ''),
+        label('Preview', a.emailDraft.previewText as string || ''),
         body(a.emailDraft.body as string || ''),
+        label('CTA', a.emailDraft.cta as string || ''),
       )
     }
 
     if (a.adCopy) {
       children.push(
         heading('Ad Copy', HeadingLevel.HEADING_2),
-        body(`Headline: ${a.adCopy.headline as string || ''}`),
+        label('Headline', a.adCopy.headline as string || ''),
         body(a.adCopy.primaryText as string || ''),
-        body(`CTA: ${a.adCopy.cta as string || ''}`),
+        label('CTA', a.adCopy.cta as string || ''),
       )
+      const variations = a.adCopy.variations as Array<{ headline: string; hook: string }> | undefined
+      if (variations?.length) {
+        children.push(new Paragraph({ children: [new TextRun({ text: 'Variations:', bold: true, size: 24 })], spacing: { after: 80 } }))
+        for (const v of variations) children.push(bullet(`${v.headline} — ${v.hook}`))
+      }
     }
+
+    if (a.carousel) {
+      children.push(
+        heading('Carousel Post', HeadingLevel.HEADING_2),
+        label('Cover', a.carousel.coverText as string || ''),
+      )
+      const slides = a.carousel.slides as Array<{ headline: string; body: string }> | undefined
+      if (slides) {
+        for (let i = 0; i < slides.length; i++) {
+          children.push(
+            new Paragraph({ children: [new TextRun({ text: `Slide ${i + 1}: ${slides[i].headline}`, bold: true, size: 22 })], spacing: { after: 60 } }),
+            body(slides[i].body),
+          )
+        }
+      }
+      children.push(label('CTA', a.carousel.cta as string || ''))
+    }
+
+    if (a.reelScript) {
+      children.push(
+        heading('Reel Script', HeadingLevel.HEADING_2),
+        label('Hook', a.reelScript.hook as string || ''),
+      )
+      const scenes = a.reelScript.scenes as Array<{ timecode: string; action: string; voiceover: string; broll: string }> | undefined
+      if (scenes) {
+        for (const scene of scenes) {
+          children.push(
+            new Paragraph({
+              children: [
+                new TextRun({ text: `[${scene.timecode}] `, bold: true, size: 22 }),
+                new TextRun({ text: scene.voiceover, size: 22 }),
+              ],
+              spacing: { after: 80 },
+            }),
+          )
+        }
+      }
+      children.push(label('End Screen', a.reelScript.endScreen as string || ''))
+    }
+
     children.push(divider())
   }
 
   // Funnel
   if (data.funnel) {
     const f = data.funnel as Record<string, unknown>
-    children.push(heading('3. Funnel Blueprint'))
+    children.push(heading('4. Funnel Blueprint'))
 
     if (f.leadMagnet) {
       const lm = f.leadMagnet as Record<string, string>
       children.push(
         heading('Lead Magnet', HeadingLevel.HEADING_2),
-        body(`Title: ${lm.title}`),
-        body(`Format: ${lm.format}`),
+        label('Title', lm.title),
+        label('Format', lm.format),
         body(lm.deliverable),
       )
+    }
+
+    if (f.landingPage) {
+      const lp = f.landingPage as Record<string, unknown>
+      children.push(
+        heading('Landing Page', HeadingLevel.HEADING_2),
+        label('Headline', lp.headline as string || ''),
+        label('Subheadline', lp.subheadline as string || ''),
+        label('CTA', lp.cta as string || ''),
+      )
+    }
+
+    if (f.emailNurture) {
+      children.push(heading('Email Nurture Sequence', HeadingLevel.HEADING_2))
+      for (const email of f.emailNurture as Array<{ day: number; subject: string; goal: string }>) {
+        children.push(label(`Day ${email.day}`, `${email.subject} — ${email.goal}`))
+      }
     }
 
     if (f.crmStages) {
@@ -134,13 +248,25 @@ export async function generateDocx(data: ExportData): Promise<Buffer> {
   // Leads
   if (data.leads) {
     const l = data.leads as Record<string, unknown>
-    children.push(heading('4. Lead Generation Plan'))
+    children.push(heading('5. Lead Generation Plan'))
+
+    if (l.inboundStrategy) {
+      const ib = l.inboundStrategy as Record<string, unknown>
+      children.push(
+        heading('Inbound Strategy', HeadingLevel.HEADING_2),
+        label('Content CTA', ib.contentCTA as string || ''),
+      )
+      if (ib.leadMagnets) {
+        children.push(new Paragraph({ children: [new TextRun({ text: 'Lead Magnets:', bold: true, size: 24 })], spacing: { after: 80 } }))
+        for (const m of ib.leadMagnets as string[]) children.push(bullet(m))
+      }
+    }
 
     if ((l.outboundStrategy as Record<string, unknown>)?.coldEmailSubject) {
       const ob = l.outboundStrategy as Record<string, string>
       children.push(
         heading('Cold Email', HeadingLevel.HEADING_2),
-        body(`Subject: ${ob.coldEmailSubject}`),
+        label('Subject', ob.coldEmailSubject),
         body(ob.coldEmailPreview || ''),
       )
     }
@@ -148,6 +274,139 @@ export async function generateDocx(data: ExportData): Promise<Buffer> {
     if (l.qualificationRules) {
       children.push(heading('Qualification Rules', HeadingLevel.HEADING_2))
       for (const rule of l.qualificationRules as string[]) children.push(bullet(rule))
+    }
+    children.push(divider())
+  }
+
+  // Email Sequence
+  if (data.emailSequence) {
+    const es = data.emailSequence as Record<string, unknown>
+    children.push(heading('6. Email Nurture Sequence'))
+    children.push(
+      label('Sequence', es.sequenceName as string || ''),
+      label('Type', es.sequenceType as string || ''),
+      label('Duration', es.durationDays as string || ''),
+      body(es.overview as string || ''),
+    )
+    if (es.emails) {
+      children.push(heading('Emails', HeadingLevel.HEADING_2))
+      for (const email of es.emails as Array<{ day: number; subject: string; goal: string; framework: string; cta: string }>) {
+        children.push(
+          new Paragraph({
+            children: [
+              new TextRun({ text: `Day ${email.day}: `, bold: true, size: 24 }),
+              new TextRun({ text: email.subject, size: 24 }),
+            ],
+            spacing: { after: 60 },
+          }),
+          new Paragraph({
+            children: [
+              new TextRun({ text: `[${email.framework}] `, size: 22, color: '6366f1' }),
+              new TextRun({ text: email.goal, size: 22, color: '6b7280' }),
+              new TextRun({ text: `  CTA: ${email.cta}`, size: 22, color: '6b7280' }),
+            ],
+            spacing: { after: 100 },
+          }),
+        )
+      }
+    }
+    if (es.successMetrics) {
+      children.push(heading('Success Metrics', HeadingLevel.HEADING_2))
+      for (const m of es.successMetrics as string[]) children.push(bullet(m))
+    }
+    children.push(divider())
+  }
+
+  // Landing Page
+  if (data.landingPage) {
+    const lp = data.landingPage as Record<string, unknown>
+    children.push(heading('7. Landing Page'))
+    children.push(
+      label('Headline', lp.headline as string || ''),
+      label('Subheadline', lp.subheadline as string || ''),
+      label('Target Keyword', lp.targetKeyword as string || ''),
+      label('Meta Title', lp.metaTitle as string || ''),
+      body(lp.metaDescription as string || ''),
+    )
+    if (lp.sections) {
+      children.push(heading('Page Sections', HeadingLevel.HEADING_2))
+      for (const sec of lp.sections as Array<{ sectionType: string; headline: string; subtext: string; cta?: string }>) {
+        children.push(
+          new Paragraph({ children: [new TextRun({ text: sec.sectionType.replace('_', ' ').toUpperCase(), bold: true, size: 22, color: '6366f1' })], spacing: { after: 60 } }),
+          body(sec.headline),
+          body(sec.subtext),
+          sec.cta ? label('CTA', sec.cta) : new Paragraph({}),
+        )
+      }
+    }
+    if (lp.formFields) {
+      children.push(heading('Lead Capture Form', HeadingLevel.HEADING_2))
+      for (const f of lp.formFields as string[]) children.push(bullet(f))
+    }
+    children.push(divider())
+  }
+
+  // Lead Scoring Model
+  if (data.leadScoringModel) {
+    const lsm = data.leadScoringModel as Record<string, unknown>
+    const thresholds = lsm.thresholds as Record<string, number> | undefined
+    children.push(heading('8. Lead Scoring Model'))
+    children.push(label('Model', lsm.modelName as string || ''))
+    if (thresholds) {
+      children.push(
+        heading('Score Thresholds', HeadingLevel.HEADING_2),
+        label('Hot (call now)', `${thresholds.hot}+ points`),
+        label('Warm (nurture)', `${thresholds.warm}–${thresholds.hot - 1} points`),
+        label('Cold', `Below ${thresholds.warm} points`),
+      )
+    }
+    if (lsm.scoringCriteria) {
+      children.push(heading('Scoring Criteria', HeadingLevel.HEADING_2))
+      for (const sc of lsm.scoringCriteria as Array<{ criterion: string; weight: number }>) {
+        children.push(label(sc.criterion, `Weight: ${sc.weight}/10`))
+      }
+    }
+    if (lsm.disqualificationRules) {
+      children.push(heading('Disqualification Rules', HeadingLevel.HEADING_2))
+      for (const r of lsm.disqualificationRules as string[]) children.push(bullet(r))
+    }
+    children.push(divider())
+  }
+
+  // Analytics Report
+  if (data.analyticsReport) {
+    const ar = data.analyticsReport as Record<string, unknown>
+    children.push(heading('9. Analytics & Performance Report'))
+    children.push(
+      label('Period', ar.period as string || ''),
+      label('Health Score', `${ar.overallHealthScore}/100 (${ar.overallHealth})`),
+      heading('Executive Summary', HeadingLevel.HEADING_2),
+      body(ar.executiveSummary as string || ''),
+    )
+    if (ar.kpis) {
+      children.push(heading('KPI Status', HeadingLevel.HEADING_2))
+      for (const k of ar.kpis as Array<{ metric: string; current: string | number; target: string; status: string; delta: string }>) {
+        children.push(
+          new Paragraph({
+            children: [
+              new TextRun({ text: `${k.metric}: `, bold: true, size: 24 }),
+              new TextRun({ text: `${k.current} / target ${k.target} — ${k.status.replace('_', ' ')} (${k.delta})`, size: 24 }),
+            ],
+            spacing: { after: 100 },
+          }),
+        )
+      }
+    }
+    if (ar.topInsights) {
+      children.push(heading('Top Insights', HeadingLevel.HEADING_2))
+      for (const insight of ar.topInsights as string[]) children.push(bullet(insight))
+    }
+    if (ar.recommendations) {
+      children.push(heading('Recommendations', HeadingLevel.HEADING_2))
+      for (const rec of ar.recommendations as string[]) children.push(bullet(rec))
+    }
+    if (ar.forecastedImpact) {
+      children.push(heading('Forecasted Impact', HeadingLevel.HEADING_2), body(ar.forecastedImpact as string))
     }
   }
 

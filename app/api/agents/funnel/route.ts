@@ -1,9 +1,12 @@
-﻿import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { generateFunnelPlan } from '@/lib/agents/funnel'
+import { sendApprovalRequestEmail } from '@/lib/email'
+import { generateLandingVisual } from '@/lib/creative-workers'
 import type { BrandProfile } from '@/types'
 
 export async function POST(req: NextRequest) {
+  let runId: string | null = null
   try {
     const { workspaceId } = await req.json()
     const [brandResult, strategyResult] = await Promise.all([
@@ -14,14 +17,43 @@ export async function POST(req: NextRequest) {
     const strategy = strategyResult.rows[0]?.content_json as unknown as import('@/types').Strategy
     if (!brand || !strategy) return NextResponse.json({ error: 'Complete strategy first' }, { status: 400 })
 
-    const runId = newId()
+    runId = newId()
     await sql`INSERT INTO agent_runs (id, workspace_id, agent_name, status) VALUES (${runId}, ${workspaceId}, 'funnel_planner', 'running')`
-    const funnel = await generateFunnelPlan(brand, strategy)
-    await sql`UPDATE agent_runs SET status = 'completed', output_json = ${JSON.stringify(funnel)}, completed_at = datetime('now') WHERE id = ${runId}`
+
+    let funnel
+    try {
+      funnel = await generateFunnelPlan(brand, strategy)
+    } catch (agentError) {
+      await sql`UPDATE agent_runs SET status = 'failed', completed_at = CURRENT_TIMESTAMP WHERE id = ${runId}`
+      throw agentError
+    }
+
+    await sql`UPDATE agent_runs SET status = 'completed', output_json = ${JSON.stringify(funnel)}, completed_at = CURRENT_TIMESTAMP WHERE id = ${runId}`
 
     const artifactId = newId()
     await sql`INSERT INTO artifacts (id, workspace_id, agent_run_id, type, title, content_json) VALUES (${artifactId}, ${workspaceId}, ${runId}, 'funnel_plan', 'Funnel Blueprint', ${JSON.stringify(funnel)})`
     await sql`INSERT INTO approvals (id, workspace_id, artifact_id) VALUES (${newId()}, ${workspaceId}, ${artifactId})`
+
+    if (brand.approval_email) {
+      await sendApprovalRequestEmail({
+        to: brand.approval_email,
+        businessName: brand.business_name,
+        artifactType: 'funnel_plan',
+        artifactTitle: 'Funnel Blueprint',
+      })
+    }
+
+    // ── Creative Supervisor request ───────────────────────────────────────────
+    // Lead Funnel Agent → requests landing page visual to match the funnel
+    Promise.resolve().then(async () => {
+      try {
+        const landingResult = await generateLandingVisual(workspaceId, 'lead_capture')
+        await sql`INSERT INTO creative_requests (id, workspace_id, requesting_agent, creative_type, context_json, status, artifact_id)
+                  VALUES (${newId()}, ${workspaceId}, 'lead_funnel', 'landing_visual_pack',
+                          ${JSON.stringify({ funnelId: artifactId })}, 'completed', ${landingResult.artifactId})`
+      } catch (e) { console.error('Funnel landing page creative failed:', e) }
+    })
+
     return NextResponse.json({ funnel, artifactId })
   } catch (error) {
     console.error('Funnel error:', error)
@@ -33,11 +65,11 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
   const workspaceId = searchParams.get('workspaceId')
   const result = await sql`
-    SELECT * FROM artifacts WHERE workspace_id = ${workspaceId} AND type = 'funnel_plan'
-    ORDER BY created_at DESC LIMIT 1
+    SELECT a.*, ap.status as approval_status, ap.id as approval_id
+    FROM artifacts a
+    LEFT JOIN approvals ap ON ap.artifact_id = a.id
+    WHERE a.workspace_id = ${workspaceId} AND a.type = 'funnel_plan'
+    ORDER BY a.created_at DESC LIMIT 1
   `
   return NextResponse.json(result.rows[0] || null)
 }
-
-
-

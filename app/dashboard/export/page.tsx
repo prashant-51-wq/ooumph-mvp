@@ -1,13 +1,22 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import { useRouter } from 'next/navigation'
 
 export default function ExportPage() {
+  const router = useRouter()
   const [loading, setLoading] = useState(false)
+  const [ready, setReady] = useState(false)
+
+  useEffect(() => {
+    const wid = localStorage.getItem('workspaceId')
+    if (!wid) { router.push('/dashboard/onboarding'); return }
+    setReady(true)
+  }, [router])
 
   const exportPlan = async (format: string) => {
     const workspaceId = localStorage.getItem('workspaceId')
-    if (!workspaceId) { alert('Complete onboarding first'); return }
+    if (!workspaceId) return
     setLoading(true)
     try {
       const res = await fetch(`/api/export?workspaceId=${workspaceId}&format=${format}`)
@@ -31,11 +40,13 @@ export default function ExportPage() {
     } finally { setLoading(false) }
   }
 
+  if (!ready) return null
+
   return (
     <div className="p-8">
       <div className="mb-8">
         <h1 className="text-2xl font-bold text-white">📄 Export Marketing Plan</h1>
-        <p className="text-gray-400 text-sm mt-1">Download your complete AI-generated marketing plan as a client-ready document.</p>
+        <p className="text-gray-400 text-sm mt-1">Download your complete AI-generated marketing plan as a client-ready document. Only approved artifacts are included.</p>
       </div>
 
       <div className="grid grid-cols-2 gap-6 max-w-2xl">
@@ -43,7 +54,7 @@ export default function ExportPage() {
           icon="📝"
           format="DOCX"
           label="Word Document"
-          desc="Full marketing plan with strategy, assets, funnel, and lead gen plan. Ready for client presentation."
+          desc="Full marketing plan with strategy, calendar, assets, funnel, and lead gen. Ready for client presentation."
           onClick={() => exportPlan('docx')}
           loading={loading}
           color="indigo"
@@ -64,7 +75,7 @@ export default function ExportPage() {
         <ul className="space-y-2 text-sm text-gray-400">
           {[
             'Marketing Strategy (positioning, ICP, content pillars, KPIs)',
-            '30-Day Content Calendar',
+            '30-Day Content Calendar (week-by-week breakdown)',
             '5 Marketing Assets (carousel, reel script, ad copy, email, LinkedIn)',
             'Funnel Blueprint (lead magnet, landing page, nurture sequence)',
             'Lead Generation Plan (inbound + outbound playbook)',
@@ -75,6 +86,7 @@ export default function ExportPage() {
             </li>
           ))}
         </ul>
+        <p className="text-xs text-gray-600 mt-3">Approved versions are used when available; latest draft is used as fallback.</p>
       </div>
     </div>
   )

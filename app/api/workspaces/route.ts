@@ -7,7 +7,7 @@ export async function POST(req: NextRequest) {
     const {
       businessName, industry, website, tagline, offer, uniqueValue,
       targetAudience, tone, competitors, channels, goals,
-      monthlyBudget, prohibitedClaims, approvalEmail,
+      monthlyBudget, prohibitedClaims, approvalEmail, userId,
     } = body
 
     const workspaceId = newId()
@@ -15,8 +15,8 @@ export async function POST(req: NextRequest) {
     const ownerEmail = approvalEmail || 'owner@ooumph.com'
 
     await sql`
-      INSERT INTO workspaces (id, name, industry, website, owner_email)
-      VALUES (${workspaceId}, ${businessName}, ${industry}, ${website}, ${ownerEmail})
+      INSERT INTO workspaces (id, name, industry, website, owner_email, user_id)
+      VALUES (${workspaceId}, ${businessName}, ${industry}, ${website}, ${ownerEmail}, ${userId || null})
     `
 
     await sql`
@@ -38,6 +38,35 @@ export async function POST(req: NextRequest) {
   }
 }
 
+export async function PATCH(req: NextRequest) {
+  try {
+    const {
+      workspaceId, businessName, industry, website, tagline, offer, uniqueValue,
+      targetAudience, tone, competitors, channels, goals,
+      monthlyBudget, prohibitedClaims, approvalEmail, modelSettings,
+    } = await req.json()
+
+    await sql`
+      UPDATE brand_profiles SET
+        business_name = ${businessName}, tagline = ${tagline}, offer = ${offer},
+        unique_value = ${uniqueValue}, target_audience = ${targetAudience},
+        tone = ${tone}, competitors = ${competitors}, channels = ${channels},
+        goals = ${goals}, monthly_budget = ${monthlyBudget},
+        prohibited_claims = ${prohibitedClaims}, approval_email = ${approvalEmail},
+        updated_at = CURRENT_TIMESTAMP
+      WHERE workspace_id = ${workspaceId}
+    `
+    await sql`
+      UPDATE workspaces SET name = ${businessName}, industry = ${industry}, website = ${website},
+        model_settings = ${modelSettings ? JSON.stringify(modelSettings) : '{}'}
+      WHERE id = ${workspaceId}
+    `
+    return NextResponse.json({ ok: true })
+  } catch (error) {
+    return NextResponse.json({ error: String(error) }, { status: 500 })
+  }
+}
+
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url)
@@ -45,7 +74,7 @@ export async function GET(req: NextRequest) {
 
     if (workspaceId) {
       const result = await sql`
-        SELECT w.id, w.name, w.industry, w.website, w.owner_email, w.status, w.created_at,
+        SELECT w.id, w.name, w.industry, w.website, w.owner_email, w.status, w.created_at, w.model_settings,
                bp.business_name, bp.tagline, bp.offer, bp.unique_value, bp.target_audience,
                bp.tone, bp.competitors, bp.channels, bp.goals, bp.monthly_budget,
                bp.prohibited_claims, bp.approval_email

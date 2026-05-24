@@ -1,9 +1,11 @@
-﻿import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { generateStrategy } from '@/lib/agents/strategy'
+import { sendApprovalRequestEmail } from '@/lib/email'
 import type { BrandProfile } from '@/types'
 
 export async function POST(req: NextRequest) {
+  let runId: string | null = null
   try {
     const { workspaceId } = await req.json()
 
@@ -11,18 +13,33 @@ export async function POST(req: NextRequest) {
     const brand = brandResult.rows[0] as unknown as BrandProfile
     if (!brand) return NextResponse.json({ error: 'Complete onboarding first' }, { status: 404 })
 
-    const runId = newId()
+    runId = newId()
     await sql`INSERT INTO agent_runs (id, workspace_id, agent_name, status) VALUES (${runId}, ${workspaceId}, 'strategy', 'running')`
 
-    const strategy = await generateStrategy(brand)
+    let strategy
+    try {
+      strategy = await generateStrategy(brand)
+    } catch (agentError) {
+      await sql`UPDATE agent_runs SET status = 'failed', completed_at = CURRENT_TIMESTAMP WHERE id = ${runId}`
+      throw agentError
+    }
 
-    await sql`UPDATE agent_runs SET status = 'completed', output_json = ${JSON.stringify(strategy)}, completed_at = datetime('now') WHERE id = ${runId}`
+    await sql`UPDATE agent_runs SET status = 'completed', output_json = ${JSON.stringify(strategy)}, completed_at = CURRENT_TIMESTAMP WHERE id = ${runId}`
 
     const artifactId = newId()
     await sql`INSERT INTO artifacts (id, workspace_id, agent_run_id, type, title, content_json) VALUES (${artifactId}, ${workspaceId}, ${runId}, 'strategy', 'Marketing Strategy', ${JSON.stringify(strategy)})`
 
     const approvalId = newId()
     await sql`INSERT INTO approvals (id, workspace_id, artifact_id, status) VALUES (${approvalId}, ${workspaceId}, ${artifactId}, 'pending')`
+
+    if (brand.approval_email) {
+      await sendApprovalRequestEmail({
+        to: brand.approval_email,
+        businessName: brand.business_name,
+        artifactType: 'strategy',
+        artifactTitle: 'Marketing Strategy',
+      })
+    }
 
     return NextResponse.json({ strategy, artifactId, runId })
   } catch (error) {
@@ -43,5 +60,3 @@ export async function GET(req: NextRequest) {
   `
   return NextResponse.json(result.rows[0] || null)
 }
-
-

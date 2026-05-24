@@ -15,6 +15,7 @@ export interface BrandProfile {
   tagline: string
   offer: string
   unique_value: string
+  unique_value_prop?: string
   target_audience: string
   tone: string
   competitors: string
@@ -23,6 +24,9 @@ export interface BrandProfile {
   monthly_budget: string
   prohibited_claims: string
   approval_email: string
+  industry?: string
+  products_services?: string
+  mission?: string
 }
 
 export interface OnboardingData {

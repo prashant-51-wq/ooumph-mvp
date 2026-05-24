@@ -72,9 +72,39 @@ async function sqliteQuery(strings: TemplateStringsArray, ...values: unknown[]) 
 
 // ─── Neon/Postgres adapter ────────────────────────────────────────────────────
 
+let _pgInitialized = false
+// Reset on module reload in development so schema changes apply immediately
+if (process.env.NODE_ENV === 'development') _pgInitialized = false
+
 async function postgresQuery(strings: TemplateStringsArray, ...values: unknown[]) {
   const { neon } = await import('@neondatabase/serverless')
   const pgSql = neon(process.env.POSTGRES_URL!)
+
+  if (!_pgInitialized) {
+    _pgInitialized = true
+    await pgSql`CREATE TABLE IF NOT EXISTS workspaces (id TEXT PRIMARY KEY, name VARCHAR(255) NOT NULL, industry VARCHAR(255), website VARCHAR(500), owner_email VARCHAR(255) NOT NULL, status VARCHAR(50) DEFAULT 'active', created_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE TABLE IF NOT EXISTS brand_profiles (id TEXT PRIMARY KEY, workspace_id TEXT REFERENCES workspaces(id), business_name VARCHAR(255), tagline TEXT, offer TEXT, unique_value TEXT, target_audience TEXT, tone VARCHAR(255), competitors TEXT, channels TEXT, goals TEXT, monthly_budget VARCHAR(100), prohibited_claims TEXT, approval_email VARCHAR(255), created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE TABLE IF NOT EXISTS agent_runs (id TEXT PRIMARY KEY, workspace_id TEXT REFERENCES workspaces(id), agent_name VARCHAR(100) NOT NULL, status VARCHAR(50) DEFAULT 'pending', input_json TEXT, output_json TEXT, cost_estimate DECIMAL(10,4), error_message TEXT, created_at TIMESTAMPTZ DEFAULT NOW(), completed_at TIMESTAMPTZ)`
+    await pgSql`CREATE TABLE IF NOT EXISTS artifacts (id TEXT PRIMARY KEY, workspace_id TEXT REFERENCES workspaces(id), agent_run_id TEXT REFERENCES agent_runs(id), type VARCHAR(100) NOT NULL, title VARCHAR(500) NOT NULL, content_json TEXT NOT NULL, status VARCHAR(50) DEFAULT 'draft', created_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE TABLE IF NOT EXISTS approvals (id TEXT PRIMARY KEY, workspace_id TEXT REFERENCES workspaces(id), artifact_id TEXT REFERENCES artifacts(id), status VARCHAR(50) DEFAULT 'pending', approver_email VARCHAR(255), notes TEXT, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE TABLE IF NOT EXISTS learning_notes (id TEXT PRIMARY KEY, workspace_id TEXT REFERENCES workspaces(id), source_type VARCHAR(100), source_id TEXT, note TEXT NOT NULL, confidence DECIMAL(3,2) DEFAULT 0.8, created_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE TABLE IF NOT EXISTS integrations (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, platform VARCHAR(50) NOT NULL, access_token TEXT, account_id TEXT, status VARCHAR(50) DEFAULT 'active', connected_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE TABLE IF NOT EXISTS publish_log (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, artifact_id TEXT, platform VARCHAR(50) NOT NULL, post_id TEXT, post_url TEXT, status VARCHAR(50) DEFAULT 'published', published_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE TABLE IF NOT EXISTS creative_requests (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, requesting_agent VARCHAR(100) NOT NULL, creative_type VARCHAR(100) NOT NULL, context_json TEXT, priority VARCHAR(20) DEFAULT 'normal', status VARCHAR(50) DEFAULT 'pending', artifact_id TEXT, publish_platforms TEXT, error_message TEXT, created_at TIMESTAMPTZ DEFAULT NOW(), completed_at TIMESTAMPTZ)`
+    await pgSql`CREATE TABLE IF NOT EXISTS campaign_platform_links (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, campaign_artifact_id TEXT NOT NULL, platform VARCHAR(50) NOT NULL, platform_campaign_id TEXT NOT NULL, platform_adset_ids TEXT DEFAULT '[]', platform_ad_ids TEXT DEFAULT '[]', status VARCHAR(50) DEFAULT 'active', error_message TEXT, last_synced_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE TABLE IF NOT EXISTS campaign_performance (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, campaign_artifact_id TEXT NOT NULL, platform VARCHAR(50) NOT NULL, platform_campaign_id TEXT, date TEXT NOT NULL, impressions INTEGER DEFAULT 0, clicks INTEGER DEFAULT 0, spend DECIMAL(12,4) DEFAULT 0, conversions INTEGER DEFAULT 0, revenue DECIMAL(12,4) DEFAULT 0, ctr DECIMAL(8,6) DEFAULT 0, cpc DECIMAL(10,4) DEFAULT 0, cpa DECIMAL(10,4) DEFAULT 0, roas DECIMAL(8,4) DEFAULT 0, additional_metrics TEXT DEFAULT '{}', created_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE TABLE IF NOT EXISTS campaign_optimizations (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, campaign_artifact_id TEXT NOT NULL, report_json TEXT NOT NULL, health_score INTEGER DEFAULT 0, overall_health VARCHAR(30), created_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE TABLE IF NOT EXISTS scheduled_posts (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, platform VARCHAR(50) NOT NULL, content_json TEXT NOT NULL, artifact_id TEXT, scheduled_time TIMESTAMPTZ NOT NULL, status VARCHAR(50) DEFAULT 'queued', error TEXT, published_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE TABLE IF NOT EXISTS kpi_targets (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL UNIQUE, targets_json TEXT NOT NULL, updated_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email VARCHAR(255) NOT NULL UNIQUE, name VARCHAR(255) NOT NULL, password_hash TEXT NOT NULL, salt TEXT NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE TABLE IF NOT EXISTS leads_captured (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, name TEXT, email VARCHAR(255), phone VARCHAR(50), source VARCHAR(100) DEFAULT 'manual', campaign TEXT, status VARCHAR(50) DEFAULT 'new', score INTEGER DEFAULT 0, notes TEXT, custom_fields TEXT DEFAULT '{}', created_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE TABLE IF NOT EXISTS email_campaigns (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, name VARCHAR(255) NOT NULL, subject TEXT, status VARCHAR(50) DEFAULT 'draft', recipient_count INTEGER DEFAULT 0, sent_count INTEGER DEFAULT 0, open_count INTEGER DEFAULT 0, click_count INTEGER DEFAULT 0, content_json TEXT DEFAULT '{}', sent_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE TABLE IF NOT EXISTS email_subscribers (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, email VARCHAR(255) NOT NULL, name TEXT, status VARCHAR(50) DEFAULT 'subscribed', tags TEXT DEFAULT '[]', subscribed_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`ALTER TABLE integrations ADD COLUMN IF NOT EXISTS metadata TEXT`
+    await pgSql`ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS user_id TEXT`
+    await pgSql`ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS model_settings TEXT DEFAULT '{}'`
+  }
+
   const rows = await pgSql(strings, ...values) as Record<string, unknown>[]
   return { rows: rows.map(parseJsonFields) }
 }
@@ -136,7 +166,150 @@ function initSQLiteSync(db: import('better-sqlite3').Database) {
       source_type TEXT, source_id TEXT, note TEXT NOT NULL,
       confidence REAL DEFAULT 0.8, created_at TEXT DEFAULT (datetime('now'))
     );
+    CREATE TABLE IF NOT EXISTS integrations (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      platform TEXT NOT NULL,
+      access_token TEXT, account_id TEXT,
+      status TEXT DEFAULT 'active',
+      connected_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS publish_log (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      artifact_id TEXT, platform TEXT NOT NULL,
+      post_id TEXT, post_url TEXT,
+      status TEXT DEFAULT 'published',
+      published_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS creative_requests (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      requesting_agent TEXT NOT NULL,
+      creative_type TEXT NOT NULL,
+      context_json TEXT,
+      priority TEXT DEFAULT 'normal',
+      status TEXT DEFAULT 'pending',
+      artifact_id TEXT,
+      publish_platforms TEXT,
+      error_message TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      completed_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS campaign_platform_links (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      campaign_artifact_id TEXT NOT NULL,
+      platform TEXT NOT NULL,
+      platform_campaign_id TEXT NOT NULL,
+      platform_adset_ids TEXT DEFAULT '[]',
+      platform_ad_ids TEXT DEFAULT '[]',
+      status TEXT DEFAULT 'active',
+      error_message TEXT,
+      last_synced_at TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS campaign_performance (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      campaign_artifact_id TEXT NOT NULL,
+      platform TEXT NOT NULL,
+      platform_campaign_id TEXT,
+      date TEXT NOT NULL,
+      impressions INTEGER DEFAULT 0,
+      clicks INTEGER DEFAULT 0,
+      spend REAL DEFAULT 0,
+      conversions INTEGER DEFAULT 0,
+      revenue REAL DEFAULT 0,
+      ctr REAL DEFAULT 0,
+      cpc REAL DEFAULT 0,
+      cpa REAL DEFAULT 0,
+      roas REAL DEFAULT 0,
+      additional_metrics TEXT DEFAULT '{}',
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS campaign_optimizations (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      campaign_artifact_id TEXT NOT NULL,
+      report_json TEXT NOT NULL,
+      health_score INTEGER DEFAULT 0,
+      overall_health TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS scheduled_posts (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      platform TEXT NOT NULL,
+      content_json TEXT NOT NULL,
+      artifact_id TEXT,
+      scheduled_time TEXT NOT NULL,
+      status TEXT DEFAULT 'queued',
+      error TEXT,
+      published_at TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS kpi_targets (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL UNIQUE,
+      targets_json TEXT NOT NULL,
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      email TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      password_hash TEXT NOT NULL,
+      salt TEXT NOT NULL,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS leads_captured (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      name TEXT,
+      email TEXT,
+      phone TEXT,
+      source TEXT DEFAULT 'manual',
+      campaign TEXT,
+      status TEXT DEFAULT 'new',
+      score INTEGER DEFAULT 0,
+      notes TEXT,
+      custom_fields TEXT DEFAULT '{}',
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS email_campaigns (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      subject TEXT,
+      status TEXT DEFAULT 'draft',
+      recipient_count INTEGER DEFAULT 0,
+      sent_count INTEGER DEFAULT 0,
+      open_count INTEGER DEFAULT 0,
+      click_count INTEGER DEFAULT 0,
+      content_json TEXT DEFAULT '{}',
+      sent_at TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS email_subscribers (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      email TEXT NOT NULL,
+      name TEXT,
+      status TEXT DEFAULT 'subscribed',
+      tags TEXT DEFAULT '[]',
+      subscribed_at TEXT DEFAULT (datetime('now'))
+    );
   `)
+  // Safely add columns to existing tables (ignore "already exists" errors)
+  const migrations = [
+    'ALTER TABLE workspaces ADD COLUMN user_id TEXT',
+    'ALTER TABLE workspaces ADD COLUMN model_settings TEXT DEFAULT \'{}\'',
+    'ALTER TABLE integrations ADD COLUMN metadata TEXT',
+  ]
+  for (const m of migrations) {
+    try { db.exec(m) } catch { /* column already exists */ }
+  }
 }
 
 export async function initializeDatabase() {
@@ -154,5 +327,20 @@ export async function initializeDatabase() {
   await pgSql`CREATE TABLE IF NOT EXISTS artifacts (id TEXT PRIMARY KEY, workspace_id TEXT REFERENCES workspaces(id), agent_run_id TEXT REFERENCES agent_runs(id), type VARCHAR(100) NOT NULL, title VARCHAR(500) NOT NULL, content_json TEXT NOT NULL, status VARCHAR(50) DEFAULT 'draft', created_at TIMESTAMPTZ DEFAULT NOW())`
   await pgSql`CREATE TABLE IF NOT EXISTS approvals (id TEXT PRIMARY KEY, workspace_id TEXT REFERENCES workspaces(id), artifact_id TEXT REFERENCES artifacts(id), status VARCHAR(50) DEFAULT 'pending', approver_email VARCHAR(255), notes TEXT, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
   await pgSql`CREATE TABLE IF NOT EXISTS learning_notes (id TEXT PRIMARY KEY, workspace_id TEXT REFERENCES workspaces(id), source_type VARCHAR(100), source_id TEXT, note TEXT NOT NULL, confidence DECIMAL(3,2) DEFAULT 0.8, created_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE TABLE IF NOT EXISTS integrations (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, platform VARCHAR(50) NOT NULL, access_token TEXT, account_id TEXT, status VARCHAR(50) DEFAULT 'active', connected_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE TABLE IF NOT EXISTS publish_log (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, artifact_id TEXT, platform VARCHAR(50) NOT NULL, post_id TEXT, post_url TEXT, status VARCHAR(50) DEFAULT 'published', published_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE TABLE IF NOT EXISTS creative_requests (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, requesting_agent VARCHAR(100) NOT NULL, creative_type VARCHAR(100) NOT NULL, context_json TEXT, priority VARCHAR(20) DEFAULT 'normal', status VARCHAR(50) DEFAULT 'pending', artifact_id TEXT, publish_platforms TEXT, error_message TEXT, created_at TIMESTAMPTZ DEFAULT NOW(), completed_at TIMESTAMPTZ)`
+  await pgSql`CREATE TABLE IF NOT EXISTS campaign_platform_links (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, campaign_artifact_id TEXT NOT NULL, platform VARCHAR(50) NOT NULL, platform_campaign_id TEXT NOT NULL, platform_adset_ids TEXT DEFAULT '[]', platform_ad_ids TEXT DEFAULT '[]', status VARCHAR(50) DEFAULT 'active', error_message TEXT, last_synced_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE TABLE IF NOT EXISTS campaign_performance (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, campaign_artifact_id TEXT NOT NULL, platform VARCHAR(50) NOT NULL, platform_campaign_id TEXT, date TEXT NOT NULL, impressions INTEGER DEFAULT 0, clicks INTEGER DEFAULT 0, spend DECIMAL(12,4) DEFAULT 0, conversions INTEGER DEFAULT 0, revenue DECIMAL(12,4) DEFAULT 0, ctr DECIMAL(8,6) DEFAULT 0, cpc DECIMAL(10,4) DEFAULT 0, cpa DECIMAL(10,4) DEFAULT 0, roas DECIMAL(8,4) DEFAULT 0, additional_metrics TEXT DEFAULT '{}', created_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE TABLE IF NOT EXISTS campaign_optimizations (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, campaign_artifact_id TEXT NOT NULL, report_json TEXT NOT NULL, health_score INTEGER DEFAULT 0, overall_health VARCHAR(30), created_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE TABLE IF NOT EXISTS scheduled_posts (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, platform VARCHAR(50) NOT NULL, content_json TEXT NOT NULL, artifact_id TEXT, scheduled_time TIMESTAMPTZ NOT NULL, status VARCHAR(50) DEFAULT 'queued', error TEXT, published_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE TABLE IF NOT EXISTS kpi_targets (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL UNIQUE, targets_json TEXT NOT NULL, updated_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email VARCHAR(255) NOT NULL UNIQUE, name VARCHAR(255) NOT NULL, password_hash TEXT NOT NULL, salt TEXT NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE TABLE IF NOT EXISTS leads_captured (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, name TEXT, email VARCHAR(255), phone VARCHAR(50), source VARCHAR(100) DEFAULT 'manual', campaign TEXT, status VARCHAR(50) DEFAULT 'new', score INTEGER DEFAULT 0, notes TEXT, custom_fields TEXT DEFAULT '{}', created_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE TABLE IF NOT EXISTS email_campaigns (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, name VARCHAR(255) NOT NULL, subject TEXT, status VARCHAR(50) DEFAULT 'draft', recipient_count INTEGER DEFAULT 0, sent_count INTEGER DEFAULT 0, open_count INTEGER DEFAULT 0, click_count INTEGER DEFAULT 0, content_json TEXT DEFAULT '{}', sent_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE TABLE IF NOT EXISTS email_subscribers (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, email VARCHAR(255) NOT NULL, name TEXT, status VARCHAR(50) DEFAULT 'subscribed', tags TEXT DEFAULT '[]', subscribed_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`ALTER TABLE integrations ADD COLUMN IF NOT EXISTS metadata TEXT`
+  await pgSql`ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS user_id TEXT`
+  await pgSql`ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS model_settings TEXT DEFAULT '{}'`
   console.log('✅ Neon Postgres DB initialized')
 }
