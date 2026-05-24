@@ -1,4 +1,4 @@
-'use client'
+﻿'use client'
 
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
@@ -37,13 +37,13 @@ export default function FunnelPage() {
     <div className="p-8">
       <div className="flex items-center justify-between mb-8">
         <div>
-          <h1 className="text-2xl font-bold text-white">🔮 Funnel Blueprint</h1>
+          <h1 className="text-2xl font-bold text-white">ðŸ”® Funnel Blueprint</h1>
           <p className="text-gray-400 text-sm mt-1">Lead magnet, landing page, email nurture, and CRM stages</p>
         </div>
         <div className="flex gap-3">
-          {funnel && <button onClick={() => router.push('/leads')} className="px-4 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm">Next: Lead Gen Plan →</button>}
+          {funnel && <button onClick={() => router.push('/dashboard/leads')} className="px-4 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm">Next: Lead Gen Plan â†’</button>}
           <button onClick={generate} disabled={loading} className="px-5 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-medium">
-            {loading ? 'Generating...' : funnel ? '↻ Regenerate' : '⚡ Generate Funnel Plan'}
+            {loading ? 'Generating...' : funnel ? 'â†» Regenerate' : 'âš¡ Generate Funnel Plan'}
           </button>
         </div>
       </div>
@@ -59,7 +59,7 @@ export default function FunnelPage() {
         <div className="space-y-6">
           <div className="grid grid-cols-2 gap-6">
             <div className="bg-gray-900 border border-purple-800 rounded-xl p-6">
-              <h3 className="text-white font-semibold mb-4">🎁 Lead Magnet</h3>
+              <h3 className="text-white font-semibold mb-4">ðŸŽ Lead Magnet</h3>
               <p className="text-purple-300 text-lg font-bold mb-2">{funnel.leadMagnet?.title}</p>
               <div className="space-y-2 text-sm">
                 <div className="flex gap-2"><span className="text-gray-500">Format:</span><span className="text-gray-300">{funnel.leadMagnet?.format}</span></div>
@@ -72,12 +72,12 @@ export default function FunnelPage() {
             </div>
 
             <div className="bg-gray-900 border border-blue-800 rounded-xl p-6">
-              <h3 className="text-white font-semibold mb-4">🌐 Landing Page</h3>
+              <h3 className="text-white font-semibold mb-4">ðŸŒ Landing Page</h3>
               <p className="text-white font-bold text-lg mb-1">{funnel.landingPage?.headline}</p>
               <p className="text-gray-400 text-sm mb-4">{funnel.landingPage?.subheadline}</p>
               <ul className="space-y-1 mb-4">
                 {funnel.landingPage?.bulletPoints?.map((bp, i) => (
-                  <li key={i} className="text-gray-300 text-sm flex gap-2"><span className="text-green-500">✓</span>{bp}</li>
+                  <li key={i} className="text-gray-300 text-sm flex gap-2"><span className="text-green-500">âœ“</span>{bp}</li>
                 ))}
               </ul>
               <div className="flex gap-2 items-center">
@@ -88,7 +88,7 @@ export default function FunnelPage() {
           </div>
 
           <div className="bg-gray-900 border border-indigo-800 rounded-xl p-6">
-            <h3 className="text-white font-semibold mb-4">📧 Email Nurture Sequence</h3>
+            <h3 className="text-white font-semibold mb-4">ðŸ“§ Email Nurture Sequence</h3>
             <div className="space-y-2">
               {funnel.emailNurture?.map((email, i) => (
                 <div key={i} className="flex items-start gap-4 p-3 rounded-lg bg-gray-800">
@@ -107,18 +107,18 @@ export default function FunnelPage() {
 
           <div className="grid grid-cols-2 gap-6">
             <div className="bg-gray-900 border border-green-800 rounded-xl p-6">
-              <h3 className="text-white font-semibold mb-4">🏷️ CRM Pipeline Stages</h3>
+              <h3 className="text-white font-semibold mb-4">ðŸ·ï¸ CRM Pipeline Stages</h3>
               <div className="flex flex-wrap gap-2">
                 {funnel.crmStages?.map((stage, i) => (
                   <div key={i} className="flex items-center gap-2">
                     <span className="px-3 py-1.5 rounded-lg bg-gray-800 text-gray-300 text-sm">{stage}</span>
-                    {i < (funnel.crmStages?.length || 0) - 1 && <span className="text-gray-600">→</span>}
+                    {i < (funnel.crmStages?.length || 0) - 1 && <span className="text-gray-600">â†’</span>}
                   </div>
                 ))}
               </div>
             </div>
             <div className="bg-gray-900 border border-yellow-800 rounded-xl p-6">
-              <h3 className="text-white font-semibold mb-4">⭐ Lead Scoring Model</h3>
+              <h3 className="text-white font-semibold mb-4">â­ Lead Scoring Model</h3>
               <div className="space-y-2">
                 {funnel.leadScoring?.map((item, i) => (
                   <div key={i} className="flex items-center justify-between text-sm">
@@ -134,7 +134,7 @@ export default function FunnelPage() {
 
       {!funnel && !loading && (
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-12 text-center">
-          <div className="text-5xl mb-4">🔮</div>
+          <div className="text-5xl mb-4">ðŸ”®</div>
           <p className="text-white font-medium mb-2">No funnel plan yet</p>
           <p className="text-gray-500 text-sm">Generate your strategy first, then design your complete funnel.</p>
         </div>
@@ -142,3 +142,4 @@ export default function FunnelPage() {
     </div>
   )
 }
+

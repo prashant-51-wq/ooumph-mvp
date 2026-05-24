@@ -9,7 +9,7 @@ export default function Home() {
           <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white font-bold text-sm">O</div>
           <span className="font-semibold text-white text-lg">Ooumph</span>
         </div>
-        <Link href="/onboarding" className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium transition-colors">
+        <Link href="/dashboard/onboarding" className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium transition-colors">
           Start Free Demo
         </Link>
       </nav>
@@ -31,7 +31,7 @@ export default function Home() {
         </p>
 
         <div className="flex flex-col sm:flex-row gap-4 mb-16">
-          <Link href="/onboarding" className="px-8 py-4 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-lg transition-all hover:scale-105">
+          <Link href="/dashboard/onboarding" className="px-8 py-4 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-lg transition-all hover:scale-105">
             Build My Marketing Plan →
           </Link>
           <Link href="/dashboard" className="px-8 py-4 rounded-xl border border-gray-700 hover:border-gray-500 text-gray-300 font-semibold text-lg transition-colors">

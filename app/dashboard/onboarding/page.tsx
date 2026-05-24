@@ -1,4 +1,4 @@
-'use client'
+﻿'use client'
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
@@ -37,7 +37,7 @@ export default function OnboardingPage() {
       const data = await res.json()
       if (data.workspaceId) {
         localStorage.setItem('workspaceId', data.workspaceId)
-        router.push('/strategy')
+        router.push('/dashboard/strategy')
       }
     } catch (err) {
       console.error(err)
@@ -96,13 +96,13 @@ export default function OnboardingPage() {
       {step === 2 && (
         <div className="space-y-5">
           <Field label="What do you sell / offer? *" hint="Be specific. Include the result/transformation.">
-            <textarea className={textarea} value={form.offer} onChange={(e) => update('offer', e.target.value)} placeholder="e.g. AI-powered marketing automation for SMBs in India — we replace a full marketing team with autonomous AI agents that generate, publish, and optimize content." rows={3} />
+            <textarea className={textarea} value={form.offer} onChange={(e) => update('offer', e.target.value)} placeholder="e.g. AI-powered marketing automation for SMBs in India â€” we replace a full marketing team with autonomous AI agents that generate, publish, and optimize content." rows={3} />
           </Field>
           <Field label="What makes you unique? *" hint="Your unfair advantage vs competitors.">
             <textarea className={textarea} value={form.uniqueValue} onChange={(e) => update('uniqueValue', e.target.value)} placeholder="e.g. India-first, Hinglish support, 10x cheaper than an agency, human approval on every output" rows={3} />
           </Field>
           <Field label="Who is your ideal customer? *" hint="Be specific: their role, company size, pain, situation.">
-            <textarea className={textarea} value={form.targetAudience} onChange={(e) => update('targetAudience', e.target.value)} placeholder="e.g. Founders of B2B SaaS companies in India with 10-100 employees, spending ₹50k-5L/month on marketing, frustrated with inconsistent agency results" rows={3} />
+            <textarea className={textarea} value={form.targetAudience} onChange={(e) => update('targetAudience', e.target.value)} placeholder="e.g. Founders of B2B SaaS companies in India with 10-100 employees, spending â‚¹50k-5L/month on marketing, frustrated with inconsistent agency results" rows={3} />
           </Field>
           <Field label="Top 3 competitors">
             <input className={input} value={form.competitors} onChange={(e) => update('competitors', e.target.value)} placeholder="e.g. Hubspot, Jasper, Copy.ai" />
@@ -131,10 +131,10 @@ export default function OnboardingPage() {
             </select>
           </Field>
           <Field label="30-Day Marketing Goal *" hint="What does success look like in 30 days?">
-            <textarea className={textarea} value={form.goals} onChange={(e) => update('goals', e.target.value)} placeholder="e.g. Get 50 qualified leads, close 5 clients, grow LinkedIn from 200 to 500 followers, get first ₹5L in MRR" rows={2} />
+            <textarea className={textarea} value={form.goals} onChange={(e) => update('goals', e.target.value)} placeholder="e.g. Get 50 qualified leads, close 5 clients, grow LinkedIn from 200 to 500 followers, get first â‚¹5L in MRR" rows={2} />
           </Field>
           <Field label="Monthly Marketing Budget" hint="Approximate spend on ads, tools, content.">
-            <input className={input} value={form.monthlyBudget} onChange={(e) => update('monthlyBudget', e.target.value)} placeholder="e.g. ₹50,000/month" />
+            <input className={input} value={form.monthlyBudget} onChange={(e) => update('monthlyBudget', e.target.value)} placeholder="e.g. â‚¹50,000/month" />
           </Field>
           <Field label="Prohibited Claims or Topics" hint="Anything we should NEVER say.">
             <input className={input} value={form.prohibitedClaims} onChange={(e) => update('prohibitedClaims', e.target.value)} placeholder="e.g. No guarantees, no ROI promises, no competitor bashing" />
@@ -142,7 +142,7 @@ export default function OnboardingPage() {
           <NavButtons
             prev={() => setStep(2)}
             next={handleSubmit}
-            nextLabel={loading ? 'Creating workspace...' : 'Launch AI Agents →'}
+            nextLabel={loading ? 'Creating workspace...' : 'Launch AI Agents â†’'}
             canNext={form.channels.length > 0 && !!form.tone && !!form.goals && !loading}
           />
         </div>
@@ -171,15 +171,16 @@ function NavButtons({ prev, next, nextLabel, canNext }: { prev?: () => void; nex
     <div className="flex justify-between pt-4">
       {prev ? (
         <button onClick={prev} className="px-5 py-2.5 rounded-lg border border-gray-700 text-gray-300 hover:bg-gray-800 text-sm transition-colors">
-          ← Back
+          â† Back
         </button>
       ) : <div />}
       {next && (
         <button onClick={next} disabled={!canNext}
           className="px-6 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-medium transition-colors">
-          {nextLabel || 'Continue →'}
+          {nextLabel || 'Continue â†’'}
         </button>
       )}
     </div>
   )
 }
+

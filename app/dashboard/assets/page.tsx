@@ -1,4 +1,4 @@
-'use client'
+﻿'use client'
 
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
@@ -43,29 +43,29 @@ export default function AssetsPage() {
   }
 
   const TABS: Array<{ key: keyof AssetPackage; label: string; icon: string }> = [
-    { key: 'linkedInPost', label: 'LinkedIn Post', icon: '💼' },
-    { key: 'carousel', label: 'Carousel', icon: '🖼️' },
-    { key: 'reelScript', label: 'Reel Script', icon: '🎬' },
-    { key: 'adCopy', label: 'Ad Copy', icon: '📢' },
-    { key: 'emailDraft', label: 'Email', icon: '📧' },
+    { key: 'linkedInPost', label: 'LinkedIn Post', icon: 'ðŸ’¼' },
+    { key: 'carousel', label: 'Carousel', icon: 'ðŸ–¼ï¸' },
+    { key: 'reelScript', label: 'Reel Script', icon: 'ðŸŽ¬' },
+    { key: 'adCopy', label: 'Ad Copy', icon: 'ðŸ“¢' },
+    { key: 'emailDraft', label: 'Email', icon: 'ðŸ“§' },
   ]
 
   return (
     <div className="p-8">
       <div className="flex items-center justify-between mb-8">
         <div>
-          <h1 className="text-2xl font-bold text-white">✍️ Marketing Assets</h1>
+          <h1 className="text-2xl font-bold text-white">âœï¸ Marketing Assets</h1>
           <p className="text-gray-400 text-sm mt-1">5 ready-to-use content pieces, all waiting for your approval</p>
         </div>
         <div className="flex gap-3">
           {assets && (
-            <button onClick={() => router.push('/approvals')} className="px-4 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm">
-              Review in Approvals →
+            <button onClick={() => router.push('/dashboard/approvals')} className="px-4 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm">
+              Review in Approvals â†’
             </button>
           )}
           <button onClick={generate} disabled={loading}
             className="px-5 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-medium">
-            {loading ? 'Generating...' : assets ? '↻ Regenerate All' : '⚡ Generate Assets'}
+            {loading ? 'Generating...' : assets ? 'â†» Regenerate All' : 'âš¡ Generate Assets'}
           </button>
         </div>
       </div>
@@ -73,7 +73,7 @@ export default function AssetsPage() {
       {loading && (
         <div className="bg-gray-900 border border-indigo-800 rounded-xl p-8 flex items-center gap-4 mb-6">
           <div className="w-8 h-8 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
-          <p className="text-gray-300">Copy Agent is creating 5 marketing assets — carousel, reel, ad copy, email, LinkedIn...</p>
+          <p className="text-gray-300">Copy Agent is creating 5 marketing assets â€” carousel, reel, ad copy, email, LinkedIn...</p>
         </div>
       )}
 
@@ -94,7 +94,7 @@ export default function AssetsPage() {
             {active === 'linkedInPost' && assets.linkedInPost && (
               <div className="space-y-4">
                 <div className="p-4 rounded-lg bg-gray-800">
-                  <p className="text-xs text-gray-500 mb-2">HOOK (First line — stops the scroll)</p>
+                  <p className="text-xs text-gray-500 mb-2">HOOK (First line â€” stops the scroll)</p>
                   <p className="text-white font-semibold">{assets.linkedInPost.hook}</p>
                 </div>
                 <div className="p-4 rounded-lg bg-gray-800">
@@ -220,7 +220,7 @@ export default function AssetsPage() {
 
       {!assets && !loading && (
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-12 text-center">
-          <div className="text-5xl mb-4">✍️</div>
+          <div className="text-5xl mb-4">âœï¸</div>
           <p className="text-white font-medium mb-2">No assets yet</p>
           <p className="text-gray-500 text-sm">Generate your strategy first, then create 5 ready-to-use marketing assets.</p>
         </div>
@@ -228,3 +228,4 @@ export default function AssetsPage() {
     </div>
   )
 }
+

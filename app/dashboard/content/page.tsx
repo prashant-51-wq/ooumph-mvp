@@ -1,4 +1,4 @@
-'use client'
+﻿'use client'
 
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
@@ -46,18 +46,18 @@ export default function ContentPage() {
     <div className="p-8">
       <div className="flex items-center justify-between mb-8">
         <div>
-          <h1 className="text-2xl font-bold text-white">📅 30-Day Content Calendar</h1>
+          <h1 className="text-2xl font-bold text-white">ðŸ“… 30-Day Content Calendar</h1>
           <p className="text-gray-400 text-sm mt-1">AI-generated posts for every channel, every day</p>
         </div>
         <div className="flex gap-3">
           {calendar.length > 0 && (
-            <button onClick={() => router.push('/assets')} className="px-4 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm">
-              Next: Generate Assets →
+            <button onClick={() => router.push('/dashboard/assets')} className="px-4 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm">
+              Next: Generate Assets â†’
             </button>
           )}
           <button onClick={generate} disabled={loading}
             className="px-5 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-medium">
-            {loading ? 'Generating...' : calendar.length ? '↻ Regenerate' : '⚡ Generate Calendar'}
+            {loading ? 'Generating...' : calendar.length ? 'â†» Regenerate' : 'âš¡ Generate Calendar'}
           </button>
         </div>
       </div>
@@ -102,7 +102,7 @@ export default function ContentPage() {
 
       {!calendar.length && !loading && (
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-12 text-center">
-          <div className="text-5xl mb-4">📅</div>
+          <div className="text-5xl mb-4">ðŸ“…</div>
           <p className="text-white font-medium mb-2">No calendar yet</p>
           <p className="text-gray-500 text-sm">Generate your strategy first, then come back to build the calendar.</p>
         </div>
@@ -110,3 +110,4 @@ export default function ContentPage() {
     </div>
   )
 }
+

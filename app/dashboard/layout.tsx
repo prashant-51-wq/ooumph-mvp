@@ -5,14 +5,14 @@ import { usePathname } from 'next/navigation'
 
 const navItems = [
   { href: '/dashboard', label: 'Command Center', icon: '⚡' },
-  { href: '/onboarding', label: 'Onboarding', icon: '🚀' },
-  { href: '/strategy', label: 'Strategy', icon: '🧠' },
-  { href: '/content', label: 'Content Calendar', icon: '📅' },
-  { href: '/assets', label: 'Assets', icon: '✍️' },
-  { href: '/approvals', label: 'Approvals', icon: '✅' },
-  { href: '/funnel', label: 'Funnel Plan', icon: '🔮' },
-  { href: '/leads', label: 'Lead Gen Plan', icon: '🎯' },
-  { href: '/export', label: 'Export', icon: '📄' },
+  { href: '/dashboard/onboarding', label: 'Onboarding', icon: '🚀' },
+  { href: '/dashboard/strategy', label: 'Strategy', icon: '🧠' },
+  { href: '/dashboard/content', label: 'Content Calendar', icon: '📅' },
+  { href: '/dashboard/assets', label: 'Assets', icon: '✍️' },
+  { href: '/dashboard/approvals', label: 'Approvals', icon: '✅' },
+  { href: '/dashboard/funnel', label: 'Funnel Plan', icon: '🔮' },
+  { href: '/dashboard/leads', label: 'Lead Gen Plan', icon: '🎯' },
+  { href: '/dashboard/export', label: 'Export', icon: '📄' },
 ]
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {

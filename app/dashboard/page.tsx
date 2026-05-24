@@ -2,14 +2,14 @@ import Link from 'next/link'
 
 export default function DashboardPage() {
   const steps = [
-    { step: 1, href: '/onboarding', label: 'Complete Onboarding', desc: 'Set up your workspace (10 min)', icon: '🚀', color: 'indigo' },
-    { step: 2, href: '/strategy', label: 'Generate Strategy', desc: 'AI creates your marketing plan', icon: '🧠', color: 'purple' },
-    { step: 3, href: '/content', label: 'Build Content Calendar', desc: '30-day plan across all channels', icon: '📅', color: 'blue' },
-    { step: 4, href: '/assets', label: 'Create Marketing Assets', desc: '5 ready-to-use content pieces', icon: '✍️', color: 'green' },
-    { step: 5, href: '/approvals', label: 'Review & Approve', desc: 'You control what goes out', icon: '✅', color: 'yellow' },
-    { step: 6, href: '/funnel', label: 'Design Your Funnel', desc: 'Lead magnet, landing page, nurture', icon: '🔮', color: 'pink' },
-    { step: 7, href: '/leads', label: 'Lead Gen Plan', desc: 'Inbound + outbound playbook', icon: '🎯', color: 'orange' },
-    { step: 8, href: '/export', label: 'Export & Share', desc: 'Download full marketing plan', icon: '📄', color: 'gray' },
+    { step: 1, href: '/dashboard/onboarding', label: 'Complete Onboarding', desc: 'Set up your workspace (10 min)', icon: '🚀', color: 'indigo' },
+    { step: 2, href: '/dashboard/strategy', label: 'Generate Strategy', desc: 'AI creates your marketing plan', icon: '🧠', color: 'purple' },
+    { step: 3, href: '/dashboard/content', label: 'Build Content Calendar', desc: '30-day plan across all channels', icon: '📅', color: 'blue' },
+    { step: 4, href: '/dashboard/assets', label: 'Create Marketing Assets', desc: '5 ready-to-use content pieces', icon: '✍️', color: 'green' },
+    { step: 5, href: '/dashboard/approvals', label: 'Review & Approve', desc: 'You control what goes out', icon: '✅', color: 'yellow' },
+    { step: 6, href: '/dashboard/funnel', label: 'Design Your Funnel', desc: 'Lead magnet, landing page, nurture', icon: '🔮', color: 'pink' },
+    { step: 7, href: '/dashboard/leads', label: 'Lead Gen Plan', desc: 'Inbound + outbound playbook', icon: '🎯', color: 'orange' },
+    { step: 8, href: '/dashboard/export', label: 'Export & Share', desc: 'Download full marketing plan', icon: '📄', color: 'gray' },
   ]
 
   return (
