@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server'
+﻿import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { generateAssets } from '@/lib/agents/assets'
 import type { BrandProfile } from '@/types'
@@ -11,8 +11,8 @@ export async function POST(req: NextRequest) {
       sql`SELECT content_json FROM artifacts WHERE workspace_id = ${workspaceId} AND type = 'strategy' ORDER BY created_at DESC LIMIT 1`,
       sql`SELECT note FROM learning_notes WHERE workspace_id = ${workspaceId} ORDER BY created_at DESC LIMIT 10`,
     ])
-    const brand = brandResult.rows[0] as BrandProfile
-    const strategy = strategyResult.rows[0]?.content_json
+    const brand = brandResult.rows[0] as unknown as BrandProfile
+    const strategy = strategyResult.rows[0]?.content_json as unknown as import('@/types').Strategy
     const learningNotes = notesResult.rows.map((r) => r.note as string)
     if (!brand || !strategy) return NextResponse.json({ error: 'Generate strategy first' }, { status: 400 })
 
@@ -51,3 +51,6 @@ export async function GET(req: NextRequest) {
   `
   return NextResponse.json(result.rows)
 }
+
+
+

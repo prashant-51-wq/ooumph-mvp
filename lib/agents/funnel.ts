@@ -1,4 +1,4 @@
-import { runAgent } from '@/lib/claude'
+﻿import { runAgent } from '@/lib/claude'
 import type { BrandProfile, Strategy, FunnelPlan } from '@/types'
 
 const SYSTEM_PROMPT = `You are the Funnel Planner Agent for Ooumph, an AI Marketing Agency OS.
@@ -52,3 +52,5 @@ Return JSON:
 
   return runAgent<FunnelPlan>(SYSTEM_PROMPT, userPrompt)
 }
+
+

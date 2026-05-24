@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server'
+﻿import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { generateContentCalendar } from '@/lib/agents/content'
 import type { BrandProfile } from '@/types'
@@ -10,8 +10,8 @@ export async function POST(req: NextRequest) {
       sql`SELECT * FROM brand_profiles WHERE workspace_id = ${workspaceId} LIMIT 1`,
       sql`SELECT content_json FROM artifacts WHERE workspace_id = ${workspaceId} AND type = 'strategy' ORDER BY created_at DESC LIMIT 1`,
     ])
-    const brand = brandResult.rows[0] as BrandProfile
-    const strategy = strategyResult.rows[0]?.content_json
+    const brand = brandResult.rows[0] as unknown as BrandProfile
+    const strategy = strategyResult.rows[0]?.content_json as unknown as import('@/types').Strategy
     if (!brand || !strategy) return NextResponse.json({ error: 'Generate strategy first' }, { status: 400 })
 
     const runId = newId()
@@ -36,3 +36,6 @@ export async function GET(req: NextRequest) {
   const result = await sql`SELECT * FROM artifacts WHERE workspace_id = ${workspaceId} AND type = 'content_calendar' ORDER BY created_at DESC LIMIT 1`
   return NextResponse.json(result.rows[0] || null)
 }
+
+
+

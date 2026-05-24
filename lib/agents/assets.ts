@@ -1,9 +1,9 @@
-import { runAgent } from '@/lib/claude'
+﻿import { runAgent } from '@/lib/claude'
 import type { BrandProfile, Strategy } from '@/types'
 
 const SYSTEM_PROMPT = `You are the Content Copy Agent for Ooumph, an AI Marketing Agency OS.
 You write high-converting, brand-aligned marketing copy.
-Be specific to the business — no generic templates.
+Be specific to the business â€” no generic templates.
 Always respond with valid JSON.`
 
 export interface AssetPackage {
@@ -63,11 +63,11 @@ ICP Pain Points: ${strategy.icp?.painPoints?.join(', ')}${notesContext}
 
 Create ALL 5 assets:
 
-1. CAROUSEL POST (8 slides) — Educational/value-driven
-2. REEL SCRIPT (30-60 seconds) — Punchy, hook-first
-3. AD COPY SET — Direct response, benefit-led
-4. EMAIL DRAFT — Nurture/intro email, 200-300 words
-5. LINKEDIN POST — Thought leadership, story-led
+1. CAROUSEL POST (8 slides) â€” Educational/value-driven
+2. REEL SCRIPT (30-60 seconds) â€” Punchy, hook-first
+3. AD COPY SET â€” Direct response, benefit-led
+4. EMAIL DRAFT â€” Nurture/intro email, 200-300 words
+5. LINKEDIN POST â€” Thought leadership, story-led
 
 Return as JSON:
 {
@@ -108,3 +108,5 @@ Return as JSON:
 
   return runAgent<AssetPackage>(SYSTEM_PROMPT, userPrompt)
 }
+
+

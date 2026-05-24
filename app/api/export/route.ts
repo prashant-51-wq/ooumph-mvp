@@ -32,7 +32,7 @@ export async function GET(req: NextRequest) {
     }
 
     if (format === 'docx') {
-      const buffer = await generateDocx(data)
+      const buffer = await generateDocx(data as Parameters<typeof generateDocx>[0])
       return new NextResponse(new Uint8Array(buffer), {
         headers: {
           'Content-Type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',

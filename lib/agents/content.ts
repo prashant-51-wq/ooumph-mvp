@@ -1,4 +1,4 @@
-import { runAgent } from '@/lib/claude'
+﻿import { runAgent } from '@/lib/claude'
 import type { BrandProfile, Strategy, ContentCalendarItem } from '@/types'
 
 const SYSTEM_PROMPT = `You are the Content Calendar Agent for Ooumph, an AI Marketing Agency OS.
@@ -43,3 +43,5 @@ Return a JSON array of exactly 30 items:
 
   return runAgent<ContentCalendarItem[]>(SYSTEM_PROMPT, userPrompt)
 }
+
+

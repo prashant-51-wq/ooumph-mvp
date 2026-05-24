@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server'
+﻿import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { generateStrategy } from '@/lib/agents/strategy'
 import type { BrandProfile } from '@/types'
@@ -8,7 +8,7 @@ export async function POST(req: NextRequest) {
     const { workspaceId } = await req.json()
 
     const brandResult = await sql`SELECT * FROM brand_profiles WHERE workspace_id = ${workspaceId} LIMIT 1`
-    const brand = brandResult.rows[0] as BrandProfile
+    const brand = brandResult.rows[0] as unknown as BrandProfile
     if (!brand) return NextResponse.json({ error: 'Complete onboarding first' }, { status: 404 })
 
     const runId = newId()
@@ -43,3 +43,5 @@ export async function GET(req: NextRequest) {
   `
   return NextResponse.json(result.rows[0] || null)
 }
+
+
