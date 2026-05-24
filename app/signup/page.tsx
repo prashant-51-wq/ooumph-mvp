@@ -1,11 +1,9 @@
 'use client'
 
 import { useState } from 'react'
-import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 
 export default function SignupPage() {
-  const router = useRouter()
   const [form, setForm] = useState({ name: '', email: '', password: '', confirm: '' })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -26,8 +24,7 @@ export default function SignupPage() {
 
       localStorage.setItem('userEmail', data.email)
       localStorage.setItem('userName', data.name)
-      // No workspace yet — redirect to onboarding
-      router.push('/dashboard/onboarding')
+      window.location.href = '/dashboard/onboarding'
     } catch { setError('Network error') } finally { setLoading(false) }
   }
 

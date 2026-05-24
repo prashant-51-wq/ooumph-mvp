@@ -34,13 +34,29 @@ export default function DashboardPage() {
   const [businessName, setBusinessName] = useState('')
 
   useEffect(() => {
-    const wid = localStorage.getItem('workspaceId')
-    if (!wid) { router.push('/dashboard/onboarding'); return }
-    setBusinessName(localStorage.getItem('businessName') || '')
-    fetch(`/api/stats?workspaceId=${wid}`)
-      .then((r) => r.json())
-      .then((s: Stats) => setStats(s))
-      .catch(() => {})
+    async function init() {
+      let wid = localStorage.getItem('workspaceId')
+      if (!wid) {
+        // Try to recover from session cookie
+        try {
+          const res = await fetch('/api/auth/me')
+          const data = await res.json()
+          if (data.user?.workspaceId) {
+            wid = data.user.workspaceId
+            localStorage.setItem('workspaceId', wid!)
+            if (data.user.workspaceName) localStorage.setItem('businessName', data.user.workspaceName)
+            if (data.user.name) localStorage.setItem('userName', data.user.name)
+          }
+        } catch { /* ignore */ }
+      }
+      if (!wid) { router.push('/dashboard/onboarding'); return }
+      setBusinessName(localStorage.getItem('businessName') || '')
+      fetch(`/api/stats?workspaceId=${wid}`)
+        .then((r) => r.json())
+        .then((s: Stats) => setStats(s))
+        .catch(() => {})
+    }
+    init()
   }, [router])
 
   const steps = [

@@ -1,12 +1,11 @@
 'use client'
 
-import { useState, useEffect } from 'react'
-import { useRouter, useSearchParams } from 'next/navigation'
+import { useState } from 'react'
+import { useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { Suspense } from 'react'
 
 function LoginForm() {
-  const router = useRouter()
   const searchParams = useSearchParams()
   const [form, setForm] = useState({ email: '', password: '' })
   const [loading, setLoading] = useState(false)
@@ -31,7 +30,8 @@ function LoginForm() {
       localStorage.setItem('userName', data.name)
 
       const from = searchParams.get('from') || '/dashboard'
-      router.push(data.workspaceId ? from : '/dashboard/onboarding')
+      const dest = data.workspaceId ? from : '/dashboard/onboarding'
+      window.location.href = dest
     } catch { setError('Network error') } finally { setLoading(false) }
   }
 
