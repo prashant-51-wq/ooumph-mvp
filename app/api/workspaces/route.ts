@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { sql } from '@/lib/db'
+import { sql, newId } from '@/lib/db'
 
 export async function POST(req: NextRequest) {
   try {
@@ -10,22 +10,22 @@ export async function POST(req: NextRequest) {
       monthlyBudget, prohibitedClaims, approvalEmail,
     } = body
 
-    const ownerEmail = approvalEmail || 'owner@example.com'
+    const workspaceId = newId()
+    const brandId = newId()
+    const ownerEmail = approvalEmail || 'owner@ooumph.com'
 
-    const workspaceResult = await sql`
-      INSERT INTO workspaces (name, industry, website, owner_email)
-      VALUES (${businessName}, ${industry}, ${website}, ${ownerEmail})
-      RETURNING id
+    await sql`
+      INSERT INTO workspaces (id, name, industry, website, owner_email)
+      VALUES (${workspaceId}, ${businessName}, ${industry}, ${website}, ${ownerEmail})
     `
-    const workspaceId = workspaceResult.rows[0].id
 
     await sql`
       INSERT INTO brand_profiles (
-        workspace_id, business_name, tagline, offer, unique_value,
+        id, workspace_id, business_name, tagline, offer, unique_value,
         target_audience, tone, competitors, channels, goals,
         monthly_budget, prohibited_claims, approval_email
       ) VALUES (
-        ${workspaceId}, ${businessName}, ${tagline}, ${offer}, ${uniqueValue},
+        ${brandId}, ${workspaceId}, ${businessName}, ${tagline}, ${offer}, ${uniqueValue},
         ${targetAudience}, ${tone}, ${competitors}, ${channels},
         ${goals}, ${monthlyBudget}, ${prohibitedClaims}, ${approvalEmail}
       )
@@ -34,7 +34,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ workspaceId, success: true })
   } catch (error) {
     console.error('Workspace creation error:', error)
-    return NextResponse.json({ error: 'Failed to create workspace' }, { status: 500 })
+    return NextResponse.json({ error: String(error) }, { status: 500 })
   }
 }
 
@@ -45,7 +45,10 @@ export async function GET(req: NextRequest) {
 
     if (workspaceId) {
       const result = await sql`
-        SELECT w.*, bp.*
+        SELECT w.id, w.name, w.industry, w.website, w.owner_email, w.status, w.created_at,
+               bp.business_name, bp.tagline, bp.offer, bp.unique_value, bp.target_audience,
+               bp.tone, bp.competitors, bp.channels, bp.goals, bp.monthly_budget,
+               bp.prohibited_claims, bp.approval_email
         FROM workspaces w
         LEFT JOIN brand_profiles bp ON bp.workspace_id = w.id
         WHERE w.id = ${workspaceId}
@@ -53,12 +56,10 @@ export async function GET(req: NextRequest) {
       return NextResponse.json(result.rows[0] || null)
     }
 
-    const result = await sql`
-      SELECT * FROM workspaces ORDER BY created_at DESC LIMIT 20
-    `
+    const result = await sql`SELECT * FROM workspaces ORDER BY created_at DESC LIMIT 20`
     return NextResponse.json(result.rows)
   } catch (error) {
     console.error('Workspace fetch error:', error)
-    return NextResponse.json({ error: 'Failed to fetch workspaces' }, { status: 500 })
+    return NextResponse.json({ error: String(error) }, { status: 500 })
   }
 }

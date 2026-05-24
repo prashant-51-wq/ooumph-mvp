@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { sql } from '@/lib/db'
+import { sql, newId } from '@/lib/db'
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
@@ -29,32 +29,29 @@ export async function PATCH(req: NextRequest) {
 
     await sql`
       UPDATE approvals
-      SET status = ${status}, notes = ${notes || null}, updated_at = NOW()
+      SET status = ${status}, notes = ${notes || null}, updated_at = datetime('now')
       WHERE id = ${approvalId}
     `
 
     await sql`
-      UPDATE artifacts a
+      UPDATE artifacts
       SET status = ${status}
-      FROM approvals ap
-      WHERE ap.id = ${approvalId} AND a.id = ap.artifact_id
+      WHERE id = (SELECT artifact_id FROM approvals WHERE id = ${approvalId})
     `
 
     if (action === 'reject' && notes) {
-      const artifactResult = await sql`
-        SELECT artifact_id FROM approvals WHERE id = ${approvalId}
-      `
+      const artifactResult = await sql`SELECT artifact_id FROM approvals WHERE id = ${approvalId}`
       const artifactId = artifactResult.rows[0]?.artifact_id
 
       await sql`
-        INSERT INTO learning_notes (workspace_id, source_type, source_id, note)
-        VALUES (${workspaceId}, 'approval_rejection', ${artifactId}, ${notes})
+        INSERT INTO learning_notes (id, workspace_id, source_type, source_id, note)
+        VALUES (${newId()}, ${workspaceId}, 'approval_rejection', ${artifactId}, ${notes})
       `
     }
 
     return NextResponse.json({ success: true, status })
   } catch (error) {
     console.error('Approval error:', error)
-    return NextResponse.json({ error: 'Approval action failed' }, { status: 500 })
+    return NextResponse.json({ error: String(error) }, { status: 500 })
   }
 }
