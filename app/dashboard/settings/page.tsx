@@ -19,6 +19,9 @@ interface ModelSettings {
   ga4AccessToken: string
   metaWebhookVerifyToken: string
   resendApiKey: string
+  firecrawlApiKey: string
+  unsplashAccessKey: string
+  pexelsApiKey: string
 }
 
 export default function SettingsPage() {
@@ -42,6 +45,9 @@ export default function SettingsPage() {
     ga4AccessToken: '',
     metaWebhookVerifyToken: '',
     resendApiKey: '',
+    firecrawlApiKey: '',
+    unsplashAccessKey: '',
+    pexelsApiKey: '',
   })
 
   // Account state
@@ -296,6 +302,24 @@ export default function SettingsPage() {
               <input className={input} value={modelSettings.metaWebhookVerifyToken}
                 onChange={e => updateModel('metaWebhookVerifyToken', e.target.value)}
                 placeholder="Your chosen verify token" />
+            </Field>
+          </Section>
+
+          <Section title="Content & Media">
+            <Field label="Firecrawl API Key" hint="Enables website scraping for content research and competitor analysis">
+              <input type="password" className={input} value={modelSettings.firecrawlApiKey}
+                onChange={e => updateModel('firecrawlApiKey', e.target.value)}
+                placeholder="fc-..." />
+            </Field>
+            <Field label="Unsplash Access Key" hint="Free stock images for content and creative assets">
+              <input type="password" className={input} value={modelSettings.unsplashAccessKey}
+                onChange={e => updateModel('unsplashAccessKey', e.target.value)}
+                placeholder="Unsplash access key" />
+            </Field>
+            <Field label="Pexels API Key" hint="Free stock images and videos for content creation">
+              <input type="password" className={input} value={modelSettings.pexelsApiKey}
+                onChange={e => updateModel('pexelsApiKey', e.target.value)}
+                placeholder="Pexels API key" />
             </Field>
           </Section>
 

@@ -43,7 +43,7 @@ export async function PATCH(req: NextRequest) {
     const {
       workspaceId, businessName, industry, website, tagline, offer, uniqueValue,
       targetAudience, tone, competitors, channels, goals,
-      monthlyBudget, prohibitedClaims, approvalEmail, modelSettings,
+      monthlyBudget, prohibitedClaims, approvalEmail, modelSettings, extraSettings,
     } = await req.json()
 
     await sql`
@@ -58,7 +58,8 @@ export async function PATCH(req: NextRequest) {
     `
     await sql`
       UPDATE workspaces SET name = ${businessName}, industry = ${industry}, website = ${website},
-        model_settings = ${modelSettings ? JSON.stringify(modelSettings) : '{}'}
+        model_settings = ${modelSettings ? JSON.stringify(modelSettings) : '{}'},
+        extra_settings = ${extraSettings ? JSON.stringify(extraSettings) : '{}'}
       WHERE id = ${workspaceId}
     `
     return NextResponse.json({ ok: true })
@@ -74,7 +75,8 @@ export async function GET(req: NextRequest) {
 
     if (workspaceId) {
       const result = await sql`
-        SELECT w.id, w.name, w.industry, w.website, w.owner_email, w.status, w.created_at, w.model_settings,
+        SELECT w.id, w.name, w.industry, w.website, w.owner_email, w.status, w.created_at,
+               w.model_settings, w.extra_settings,
                bp.business_name, bp.tagline, bp.offer, bp.unique_value, bp.target_audience,
                bp.tone, bp.competitors, bp.channels, bp.goals, bp.monthly_budget,
                bp.prohibited_claims, bp.approval_email

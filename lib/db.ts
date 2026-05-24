@@ -103,6 +103,7 @@ async function postgresQuery(strings: TemplateStringsArray, ...values: unknown[]
     await pgSql`ALTER TABLE integrations ADD COLUMN IF NOT EXISTS metadata TEXT`
     await pgSql`ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS user_id TEXT`
     await pgSql`ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS model_settings TEXT DEFAULT '{}'`
+    await pgSql`ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS extra_settings TEXT DEFAULT '{}'`
   }
 
   const rows = await pgSql(strings, ...values) as Record<string, unknown>[]
@@ -306,6 +307,7 @@ function initSQLiteSync(db: import('better-sqlite3').Database) {
     'ALTER TABLE workspaces ADD COLUMN user_id TEXT',
     'ALTER TABLE workspaces ADD COLUMN model_settings TEXT DEFAULT \'{}\'',
     'ALTER TABLE integrations ADD COLUMN metadata TEXT',
+    'ALTER TABLE workspaces ADD COLUMN extra_settings TEXT DEFAULT \'{}\'',
   ]
   for (const m of migrations) {
     try { db.exec(m) } catch { /* column already exists */ }
@@ -342,5 +344,6 @@ export async function initializeDatabase() {
   await pgSql`ALTER TABLE integrations ADD COLUMN IF NOT EXISTS metadata TEXT`
   await pgSql`ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS user_id TEXT`
   await pgSql`ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS model_settings TEXT DEFAULT '{}'`
+  await pgSql`ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS extra_settings TEXT DEFAULT '{}'`
   console.log('✅ Neon Postgres DB initialized')
 }

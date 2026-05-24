@@ -4,6 +4,18 @@ import { useState, useEffect, useCallback } from 'react'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
+interface StockImage {
+  id: string
+  url: string
+  thumb: string
+  small: string
+  photographer: string
+  photographer_url: string
+  description: string
+  source: 'unsplash' | 'pexels' | 'pixabay'
+  download_url?: string
+}
+
 interface VisualSlide {
   type: 'cover' | 'slide' | 'cta'
   title?: string
@@ -141,6 +153,7 @@ const TABS = [
   { id: 'ad', label: 'Ad Creative', icon: '📢' },
   { id: 'video', label: 'Video Generator', icon: '🎬' },
   { id: 'landing', label: 'Landing Page', icon: '🏠' },
+  { id: 'stock', label: 'Stock Images', icon: '🏞️' },
   { id: 'requests', label: 'Agent Requests', icon: '🔗' },
 ]
 
@@ -293,6 +306,13 @@ export default function CreativePage() {
   const [agentRequests, setAgentRequests] = useState<Record<string, unknown>[]>([])
   const [fetchingRequests, setFetchingRequests] = useState(true)
 
+  // Stock Images
+  const [stockQuery, setStockQuery] = useState('')
+  const [stockSource, setStockSource] = useState<'any' | 'unsplash' | 'pexels'>('any')
+  const [stockImages, setStockImages] = useState<StockImage[]>([])
+  const [searchingStock, setSearchingStock] = useState(false)
+  const [stockMsg, setStockMsg] = useState('')
+
   const [error, setError] = useState('')
 
   const fetchAll = useCallback(async (wid: string) => {
@@ -327,6 +347,31 @@ export default function CreativePage() {
     setWorkspaceId(wid)
     if (wid) fetchAll(wid)
   }, [fetchAll])
+
+  async function searchStock() {
+    if (!stockQuery.trim() || !workspaceId) return
+    setSearchingStock(true)
+    setStockMsg('')
+    try {
+      const res = await fetch('/api/agents/creative/stock-search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspaceId, query: stockQuery.trim(), source: stockSource, count: 12 }),
+      })
+      const data = await res.json()
+      if (data.error) { setError(data.error); return }
+      setStockImages(data.images || [])
+      if ((data.images || []).length === 0) setStockMsg('No images found. Try a different query or add API keys.')
+    } catch (e) { setError(String(e)) }
+    finally { setSearchingStock(false) }
+  }
+
+  function copyStockUrl(url: string) {
+    navigator.clipboard.writeText(url).then(() => {
+      setStockMsg('URL copied to clipboard!')
+      setTimeout(() => setStockMsg(''), 2000)
+    })
+  }
 
   async function generate(endpoint: string, body: object, onDone: () => void, setGenerating: (v: boolean) => void) {
     setGenerating(true); setError('')
@@ -853,6 +898,113 @@ export default function CreativePage() {
                   <div><p className="text-gray-500 text-xs mb-1">OG Card Headline</p><p className="text-gray-300 text-xs">{landing.content_json.ogHeadline as string}</p></div>
                 </div>
               )}
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* ── TAB: Stock Images ───────────────────────────────────────────────── */}
+      {activeTab === 'stock' && (
+        <section>
+          <div className="mb-5">
+            <h2 className="text-white font-semibold text-lg">Stock Images</h2>
+            <p className="text-gray-500 text-xs mt-0.5">Search Unsplash &amp; Pexels — add API keys in Settings for live results</p>
+          </div>
+
+          {/* Search bar */}
+          <div className="flex gap-3 mb-6">
+            <input
+              type="text"
+              value={stockQuery}
+              onChange={e => setStockQuery(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && searchStock()}
+              placeholder="Find stock images for your campaign, e.g. 'team collaboration office'"
+              className="flex-1 px-4 py-2.5 rounded-xl bg-gray-900 border border-gray-700 text-white placeholder-gray-500 text-sm focus:outline-none focus:border-indigo-500"
+            />
+            <select
+              value={stockSource}
+              onChange={e => setStockSource(e.target.value as 'any' | 'unsplash' | 'pexels')}
+              className="px-3 py-2.5 rounded-xl bg-gray-900 border border-gray-700 text-white text-sm focus:outline-none focus:border-indigo-500"
+            >
+              <option value="any">Any Source</option>
+              <option value="unsplash">Unsplash</option>
+              <option value="pexels">Pexels</option>
+            </select>
+            <button
+              onClick={searchStock}
+              disabled={searchingStock || !workspaceId || !stockQuery.trim()}
+              className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white px-5 py-2.5 rounded-xl font-semibold text-sm transition-colors flex items-center gap-2 whitespace-nowrap"
+            >
+              {searchingStock ? <Spinner /> : '🔍 Search'}
+            </button>
+          </div>
+
+          {/* API key notice */}
+          {stockImages.length === 0 && !searchingStock && !stockMsg && (
+            <div className="bg-amber-900/20 border border-amber-800/40 rounded-xl p-4 mb-5 flex gap-3">
+              <span className="text-amber-400 text-sm">💡</span>
+              <p className="text-amber-300 text-xs">Add <strong>UNSPLASH_ACCESS_KEY</strong> and/or <strong>PEXELS_API_KEY</strong> to your environment to enable live stock image search. Both are free to sign up.</p>
+            </div>
+          )}
+
+          {/* Status / feedback */}
+          {stockMsg && (
+            <div className="mb-4 bg-gray-800 rounded-xl p-3 text-gray-300 text-sm text-center">{stockMsg}</div>
+          )}
+
+          {/* Results grid */}
+          {stockImages.length > 0 && (
+            <div className="grid grid-cols-3 gap-4">
+              {stockImages.map(img => (
+                <div key={img.id} className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden group">
+                  <div className="aspect-video overflow-hidden bg-gray-800">
+                    {img.small ? (
+                      <img
+                        src={img.small}
+                        alt={img.description || 'Stock image'}
+                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                        loading="lazy"
+                      />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center text-gray-600 text-xs">No preview</div>
+                    )}
+                  </div>
+                  <div className="p-3 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <p className="text-gray-400 text-xs truncate flex-1 mr-2">
+                        📷 {img.photographer || 'Unknown'}
+                      </p>
+                      <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                        img.source === 'unsplash'
+                          ? 'bg-gray-800 text-gray-300'
+                          : img.source === 'pexels'
+                          ? 'bg-green-900/40 text-green-400'
+                          : 'bg-blue-900/40 text-blue-400'
+                      }`}>
+                        {img.source === 'unsplash' ? 'Unsplash' : img.source === 'pexels' ? 'Pexels' : 'Pixabay'}
+                      </span>
+                    </div>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => copyStockUrl(img.url)}
+                        className="flex-1 text-xs py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 hover:text-white transition-colors"
+                      >
+                        Copy URL
+                      </button>
+                      <button
+                        onClick={() => {
+                          navigator.clipboard.writeText(img.url)
+                          setStockMsg(`Image URL copied — paste it into your post or ad creative.`)
+                          setTimeout(() => setStockMsg(''), 3000)
+                        }}
+                        className="flex-1 text-xs py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white transition-colors"
+                      >
+                        Use in Post
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))}
             </div>
           )}
         </section>

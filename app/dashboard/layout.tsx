@@ -25,6 +25,7 @@ const NAV_SECTIONS = [
       { href: '/dashboard/strategy', label: 'Strategy', icon: '🧠' },
       { href: '/dashboard/content', label: 'Content Calendar', icon: '📅' },
       { href: '/dashboard/creative', label: 'Creative Studio', icon: '🎨' },
+      { href: '/dashboard/research', label: 'Research Hub', icon: '🔍' },
     ],
   },
   {
@@ -34,6 +35,8 @@ const NAV_SECTIONS = [
       { href: '/dashboard/campaign', label: 'Campaign Manager', icon: '📣' },
       { href: '/dashboard/growth', label: 'Growth Engine', icon: '📈' },
       { href: '/dashboard/email-marketing', label: 'Email Marketing', icon: '📧' },
+      { href: '/dashboard/repurpose', label: 'Content Repurpose', icon: '♻️' },
+      { href: '/dashboard/pr', label: 'PR Studio', icon: '📰' },
     ],
   },
   {
@@ -47,7 +50,9 @@ const NAV_SECTIONS = [
   {
     label: 'REPORTS & SYSTEM',
     items: [
+      { href: '/dashboard/ab-test', label: 'A/B Testing', icon: '🧪' },
       { href: '/dashboard/analytics', label: 'Analytics', icon: '📊' },
+      { href: '/dashboard/brand-monitor', label: 'Brand Monitor', icon: '👁️' },
       { href: '/dashboard/assets', label: 'Assets', icon: '✍️' },
       { href: '/dashboard/integrations', label: 'Integrations', icon: '🔗' },
       { href: '/dashboard/learning', label: 'AI Learning', icon: '🧬' },

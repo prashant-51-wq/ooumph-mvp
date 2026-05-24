@@ -7,6 +7,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { runAgent } from '@/lib/claude'
 import { sendApprovalRequestEmail } from '@/lib/email'
+import { braveSearch, formatSearchResults } from '@/lib/tools/brave-search'
 import type { BrandProfile } from '@/types'
 
 const SYSTEM = `You are the Trend Scout Agent for Ooumph AI Marketing OS.
@@ -63,26 +64,29 @@ export async function POST(req: NextRequest) {
     const strategy = strategyResult.rows[0]?.content_json as Record<string, unknown> | undefined
     const calendar = calendarResult.rows[0]?.content_json as Record<string, unknown> | undefined
 
-    // Fetch live search signals via Brave Search (graceful fallback if key not set)
-    let liveSignals = ''
-    const braveKey = process.env.BRAVE_SEARCH_API_KEY
-    if (braveKey) {
-      try {
-        const queries = [
-          `${brand.industry || ''} trends ${new Date().getFullYear()}`,
-          `${brand.industry || ''} viral content`,
-        ]
-        const results = await Promise.all(queries.map(q =>
-          fetch(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(q)}&count=5&freshness=pw`, {
-            headers: { 'Accept': 'application/json', 'X-Subscription-Token': braveKey },
-          }).then(r => r.json()).catch(() => null)
-        ))
-        const titles = results.flatMap(r =>
-          (r?.web?.results || []).map((item: { title: string; description?: string }) => `• ${item.title}: ${item.description || ''}`)
-        ).slice(0, 10)
-        if (titles.length) liveSignals = `\n\nLIVE WEB SIGNALS (from Brave Search, fetched right now):\n${titles.join('\n')}`
-      } catch (e) { console.error('Brave Search failed (non-fatal):', e) }
-    }
+    // Fetch live search signals via shared Brave Search wrapper (graceful fallback if key not set)
+    const industry = brand.industry || ''
+    const audience = brand.target_audience || ''
+    const channel = (Array.isArray(brand.channels) ? brand.channels[0] : brand.channels) || 'social media'
+    const year = new Date().getFullYear()
+
+    const [industryTrends, audiencePains, viralContent] = await Promise.all([
+      braveSearch(`${industry} trends ${year}`, 8),
+      braveSearch(`${audience} pain points ${year}`, 8),
+      braveSearch(`viral ${channel} content ${industry}`, 8),
+    ])
+
+    const liveSignals = [
+      industryTrends.length
+        ? `INDUSTRY TRENDS (${industry} ${year}):\n${formatSearchResults(industryTrends)}`
+        : '',
+      audiencePains.length
+        ? `AUDIENCE PAIN POINTS (${audience}):\n${formatSearchResults(audiencePains)}`
+        : '',
+      viralContent.length
+        ? `VIRAL CONTENT SIGNALS (${channel} + ${industry}):\n${formatSearchResults(viralContent)}`
+        : '',
+    ].filter(Boolean).join('\n\n---\n\n')
 
     const prompt = `Identify trending content opportunities for:
 
@@ -97,7 +101,8 @@ ${focusPlatform ? `Focus Platform: ${focusPlatform}` : ''}
 ${strategy ? `Content Pillars: ${JSON.stringify((strategy as Record<string, unknown>).contentPillars || [])}` : ''}
 ${calendar ? `Current calendar themes: ${JSON.stringify((calendar as Record<string, unknown>).weeklyThemes || [])}` : ''}
 
-Today's date: ${new Date().toISOString().split('T')[0]}${liveSignals}
+Today's date: ${new Date().toISOString().split('T')[0]}
+${liveSignals ? `\n--- LIVE WEB SIGNALS (from Brave Search) ---\n\n${liveSignals}` : ''}
 
 Identify 6-8 trending topics with specific content angles for this brand.
 Focus on: what's going viral in their industry, platform algorithm trends,

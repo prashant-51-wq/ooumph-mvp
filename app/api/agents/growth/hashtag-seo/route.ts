@@ -6,6 +6,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { runAgent } from '@/lib/claude'
+import { braveSearch, formatSearchResults } from '@/lib/tools/brave-search'
 import type { BrandProfile } from '@/types'
 
 const SYSTEM = `You are the Hashtag & SEO Specialist Agent for Ooumph AI Marketing OS.
@@ -68,6 +69,30 @@ export async function POST(req: NextRequest) {
     const strategy = strategyResult.rows[0]?.content_json as Record<string, unknown> | undefined
     const pillars = (strategy as { contentPillars?: Array<{ name: string }> })?.contentPillars?.map(p => p.name).join(', ') || 'Not defined'
 
+    // Fetch live hashtag and SEO data from Brave Search (graceful fallback if key not set)
+    const industry = brand.industry || ''
+    const audience = brand.target_audience || ''
+    const channel = (Array.isArray(brand.channels) ? brand.channels[0] : brand.channels) || 'social media'
+    const year = new Date().getFullYear()
+
+    const [hashtagResults, seoResults, trendingResults] = await Promise.all([
+      braveSearch(`${industry} hashtags ${channel}`, 8),
+      braveSearch(`${audience} SEO keywords ${year}`, 8),
+      braveSearch(`trending ${channel} ${industry} topics`, 8),
+    ])
+
+    const liveData = [
+      hashtagResults.length
+        ? `HASHTAG LANDSCAPE (${industry} on ${channel}):\n${formatSearchResults(hashtagResults)}`
+        : '',
+      seoResults.length
+        ? `SEO KEYWORD SIGNALS (${audience}, ${year}):\n${formatSearchResults(seoResults)}`
+        : '',
+      trendingResults.length
+        ? `TRENDING TOPICS (${channel} + ${industry}):\n${formatSearchResults(trendingResults)}`
+        : '',
+    ].filter(Boolean).join('\n\n---\n\n')
+
     const prompt = `Create a comprehensive Hashtag & SEO strategy for:
 
 Business: ${brand.business_name}
@@ -78,6 +103,7 @@ Active Channels: ${Array.isArray(brand.channels) ? brand.channels.join(', ') : b
 Competitors: ${brand.competitors || 'Not specified'}
 Content Pillars: ${pillars}
 ${contentTopic ? `Specific Content Topic: ${contentTopic}` : ''}
+${liveData ? `\n--- LIVE WEB DATA (from Brave Search) ---\n\n${liveData}\n\nUse the above real search results to inform which hashtags are trending and which SEO keywords have real search demand right now.` : ''}
 
 Rules:
 - Niche hashtags: under 100K posts (highest engagement per impression)

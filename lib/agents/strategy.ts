@@ -1,4 +1,6 @@
 import { runAgent } from '@/lib/claude'
+import { braveSearch, formatSearchResults } from '@/lib/tools/brave-search'
+import { scrapeMultiple } from '@/lib/tools/firecrawl'
 import type { BrandProfile, Strategy } from '@/types'
 
 const SYSTEM_PROMPT = `You are the AI Strategy Agent for Ooumph, an AI Marketing Agency OS.
@@ -7,6 +9,52 @@ Be specific, data-driven, and India-market aware where relevant.
 Always respond with valid JSON.`
 
 export async function generateStrategy(brand: BrandProfile): Promise<Strategy> {
+  const industry = brand.industry || brand.offer || ''
+  const audience = brand.target_audience || ''
+  const competitors = brand.competitors || ''
+  const year = new Date().getFullYear()
+
+  // Fetch real market data from Brave Search (graceful fallback if key not set)
+  const [marketTrends, competitorInsights, buyerBehavior] = await Promise.all([
+    braveSearch(`${industry} market trends ${year}`, 8),
+    competitors ? braveSearch(`${competitors} marketing strategy`, 8) : Promise.resolve([]),
+    braveSearch(`${audience} buying behavior ${industry}`, 8),
+  ])
+
+  // Optionally scrape competitor websites via Firecrawl (graceful fallback if key not set)
+  let competitorContent = ''
+  const firecrawlKey = process.env.FIRECRAWL_API_KEY
+  if (firecrawlKey && competitors) {
+    // Extract URLs from the competitor search results
+    const competitorUrls = competitorInsights
+      .filter(r => r.url && !r.url.includes('google.com') && !r.url.includes('bing.com'))
+      .slice(0, 2)
+      .map(r => r.url)
+    if (competitorUrls.length) {
+      const scraped = await scrapeMultiple(competitorUrls)
+      if (scraped.length) {
+        competitorContent = scraped
+          .map(s => `### ${s.title} (${s.url})\n${s.markdown.slice(0, 800)}`)
+          .join('\n\n')
+      }
+    }
+  }
+
+  const liveMarketData = [
+    marketTrends.length
+      ? `MARKET TRENDS (${industry}, ${year}):\n${formatSearchResults(marketTrends)}`
+      : '',
+    competitorInsights.length
+      ? `COMPETITOR SIGNALS (${competitors}):\n${formatSearchResults(competitorInsights)}`
+      : '',
+    buyerBehavior.length
+      ? `BUYER BEHAVIOR (${audience}):\n${formatSearchResults(buyerBehavior)}`
+      : '',
+    competitorContent
+      ? `COMPETITOR WEBSITE CONTENT (scraped via Firecrawl):\n${competitorContent}`
+      : '',
+  ].filter(Boolean).join('\n\n---\n\n')
+
   const userPrompt = `Create a complete marketing strategy for this business:
 
 Business: ${brand.business_name}
@@ -18,6 +66,7 @@ Goals: ${brand.goals}
 Competitors: ${brand.competitors}
 Tone: ${brand.tone}
 Monthly Budget: ${brand.monthly_budget}
+${liveMarketData ? `\n--- LIVE MARKET INTELLIGENCE (from Brave Search${firecrawlKey ? ' + Firecrawl' : ''}) ---\n\n${liveMarketData}\n\nUse the real market data above to ground the strategy in current trends, actual competitor positioning, and real buyer signals.` : ''}
 
 Generate a strategy with:
 1. Sharp market positioning statement
