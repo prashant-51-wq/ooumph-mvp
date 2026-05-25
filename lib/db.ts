@@ -115,6 +115,11 @@ async function postgresQuery(strings: TemplateStringsArray, ...values: unknown[]
     await pgSql`CREATE TABLE IF NOT EXISTS calendar_availability (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL UNIQUE, days_of_week TEXT DEFAULT '[1,2,3,4,5]', start_hour INTEGER DEFAULT 9, end_hour INTEGER DEFAULT 17, slot_minutes INTEGER DEFAULT 30, timezone TEXT DEFAULT 'UTC', buffer_minutes INTEGER DEFAULT 10, advance_days INTEGER DEFAULT 14, updated_at TIMESTAMPTZ DEFAULT NOW())`
     await pgSql`CREATE TABLE IF NOT EXISTS lead_activities (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, lead_id TEXT NOT NULL, type TEXT NOT NULL, title TEXT NOT NULL, description TEXT, metadata_json TEXT DEFAULT '{}', created_at TIMESTAMPTZ DEFAULT NOW())`
     await pgSql`CREATE INDEX IF NOT EXISTS idx_lead_activities_lead ON lead_activities(lead_id, created_at DESC)`
+    await pgSql`CREATE TABLE IF NOT EXISTS workflows (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT, trigger_type TEXT NOT NULL, trigger_config TEXT DEFAULT '{}', nodes TEXT NOT NULL DEFAULT '[]', status TEXT DEFAULT 'draft', run_count INTEGER DEFAULT 0, last_run_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE TABLE IF NOT EXISTS workflow_runs (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, workspace_id TEXT NOT NULL, lead_id TEXT, contact_email TEXT, trigger_data TEXT DEFAULT '{}', status TEXT DEFAULT 'running', current_node INTEGER DEFAULT 0, nodes_completed TEXT DEFAULT '[]', error_message TEXT, started_at TIMESTAMPTZ DEFAULT NOW(), completed_at TIMESTAMPTZ)`
+    await pgSql`CREATE TABLE IF NOT EXISTS workflow_pending_steps (id TEXT PRIMARY KEY, workflow_run_id TEXT NOT NULL, workflow_id TEXT NOT NULL, workspace_id TEXT NOT NULL, node_index INTEGER NOT NULL, node_data TEXT NOT NULL, lead_id TEXT, contact_email TEXT, scheduled_for TIMESTAMPTZ NOT NULL, status TEXT DEFAULT 'pending', error_message TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_workflow_runs_workflow ON workflow_runs(workflow_id)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_pending_steps_scheduled ON workflow_pending_steps(scheduled_for, status)`
   }
 
   const rows = await pgSql(strings, ...values) as Record<string, unknown>[]
@@ -423,6 +428,50 @@ function initSQLiteSync(db: import('better-sqlite3').Database) {
       created_at TEXT DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_lead_activities_lead ON lead_activities(lead_id, created_at DESC);
+    CREATE TABLE IF NOT EXISTS workflows (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT,
+      trigger_type TEXT NOT NULL,
+      trigger_config TEXT DEFAULT '{}',
+      nodes TEXT NOT NULL DEFAULT '[]',
+      status TEXT DEFAULT 'draft',
+      run_count INTEGER DEFAULT 0,
+      last_run_at TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS workflow_runs (
+      id TEXT PRIMARY KEY,
+      workflow_id TEXT NOT NULL,
+      workspace_id TEXT NOT NULL,
+      lead_id TEXT,
+      contact_email TEXT,
+      trigger_data TEXT DEFAULT '{}',
+      status TEXT DEFAULT 'running',
+      current_node INTEGER DEFAULT 0,
+      nodes_completed TEXT DEFAULT '[]',
+      error_message TEXT,
+      started_at TEXT DEFAULT (datetime('now')),
+      completed_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS workflow_pending_steps (
+      id TEXT PRIMARY KEY,
+      workflow_run_id TEXT NOT NULL,
+      workflow_id TEXT NOT NULL,
+      workspace_id TEXT NOT NULL,
+      node_index INTEGER NOT NULL,
+      node_data TEXT NOT NULL,
+      lead_id TEXT,
+      contact_email TEXT,
+      scheduled_for TEXT NOT NULL,
+      status TEXT DEFAULT 'pending',
+      error_message TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_workflow_runs_workflow ON workflow_runs(workflow_id);
+    CREATE INDEX IF NOT EXISTS idx_pending_steps_scheduled ON workflow_pending_steps(scheduled_for, status);
   `)
   // Safely add columns to existing tables (ignore "already exists" errors)
   const migrations = [
@@ -437,6 +486,11 @@ function initSQLiteSync(db: import('better-sqlite3').Database) {
     'CREATE TABLE IF NOT EXISTS calendar_availability (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL UNIQUE, days_of_week TEXT DEFAULT \'[1,2,3,4,5]\', start_hour INTEGER DEFAULT 9, end_hour INTEGER DEFAULT 17, slot_minutes INTEGER DEFAULT 30, timezone TEXT DEFAULT \'UTC\', buffer_minutes INTEGER DEFAULT 10, advance_days INTEGER DEFAULT 14, updated_at TEXT DEFAULT (datetime(\'now\')))',
     'CREATE TABLE IF NOT EXISTS lead_activities (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, lead_id TEXT NOT NULL, type TEXT NOT NULL, title TEXT NOT NULL, description TEXT, metadata_json TEXT DEFAULT \'{}\', created_at TEXT DEFAULT (datetime(\'now\')))',
     'CREATE INDEX IF NOT EXISTS idx_lead_activities_lead ON lead_activities(lead_id, created_at DESC)',
+    'CREATE TABLE IF NOT EXISTS workflows (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT, trigger_type TEXT NOT NULL, trigger_config TEXT DEFAULT \'{}\', nodes TEXT NOT NULL DEFAULT \'[]\', status TEXT DEFAULT \'draft\', run_count INTEGER DEFAULT 0, last_run_at TEXT, created_at TEXT DEFAULT (datetime(\'now\')), updated_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE TABLE IF NOT EXISTS workflow_runs (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, workspace_id TEXT NOT NULL, lead_id TEXT, contact_email TEXT, trigger_data TEXT DEFAULT \'{}\', status TEXT DEFAULT \'running\', current_node INTEGER DEFAULT 0, nodes_completed TEXT DEFAULT \'[]\', error_message TEXT, started_at TEXT DEFAULT (datetime(\'now\')), completed_at TEXT)',
+    'CREATE TABLE IF NOT EXISTS workflow_pending_steps (id TEXT PRIMARY KEY, workflow_run_id TEXT NOT NULL, workflow_id TEXT NOT NULL, workspace_id TEXT NOT NULL, node_index INTEGER NOT NULL, node_data TEXT NOT NULL, lead_id TEXT, contact_email TEXT, scheduled_for TEXT NOT NULL, status TEXT DEFAULT \'pending\', error_message TEXT, created_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE INDEX IF NOT EXISTS idx_workflow_runs_workflow ON workflow_runs(workflow_id)',
+    'CREATE INDEX IF NOT EXISTS idx_pending_steps_scheduled ON workflow_pending_steps(scheduled_for, status)',
   ]
   for (const m of migrations) {
     try { db.exec(m) } catch { /* column already exists */ }
@@ -485,5 +539,10 @@ export async function initializeDatabase() {
   await pgSql`CREATE TABLE IF NOT EXISTS calendar_availability (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL UNIQUE, days_of_week TEXT DEFAULT '[1,2,3,4,5]', start_hour INTEGER DEFAULT 9, end_hour INTEGER DEFAULT 17, slot_minutes INTEGER DEFAULT 30, timezone TEXT DEFAULT 'UTC', buffer_minutes INTEGER DEFAULT 10, advance_days INTEGER DEFAULT 14, updated_at TIMESTAMPTZ DEFAULT NOW())`
   await pgSql`CREATE TABLE IF NOT EXISTS lead_activities (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, lead_id TEXT NOT NULL, type TEXT NOT NULL, title TEXT NOT NULL, description TEXT, metadata_json TEXT DEFAULT '{}', created_at TIMESTAMPTZ DEFAULT NOW())`
   await pgSql`CREATE INDEX IF NOT EXISTS idx_lead_activities_lead ON lead_activities(lead_id, created_at DESC)`
+  await pgSql`CREATE TABLE IF NOT EXISTS workflows (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT, trigger_type TEXT NOT NULL, trigger_config TEXT DEFAULT '{}', nodes TEXT NOT NULL DEFAULT '[]', status TEXT DEFAULT 'draft', run_count INTEGER DEFAULT 0, last_run_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE TABLE IF NOT EXISTS workflow_runs (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, workspace_id TEXT NOT NULL, lead_id TEXT, contact_email TEXT, trigger_data TEXT DEFAULT '{}', status TEXT DEFAULT 'running', current_node INTEGER DEFAULT 0, nodes_completed TEXT DEFAULT '[]', error_message TEXT, started_at TIMESTAMPTZ DEFAULT NOW(), completed_at TIMESTAMPTZ)`
+  await pgSql`CREATE TABLE IF NOT EXISTS workflow_pending_steps (id TEXT PRIMARY KEY, workflow_run_id TEXT NOT NULL, workflow_id TEXT NOT NULL, workspace_id TEXT NOT NULL, node_index INTEGER NOT NULL, node_data TEXT NOT NULL, lead_id TEXT, contact_email TEXT, scheduled_for TIMESTAMPTZ NOT NULL, status TEXT DEFAULT 'pending', error_message TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_workflow_runs_workflow ON workflow_runs(workflow_id)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_pending_steps_scheduled ON workflow_pending_steps(scheduled_for, status)`
   console.log('✅ Neon Postgres DB initialized')
 }

@@ -67,6 +67,21 @@ export async function POST(req: NextRequest) {
       }).catch(e => console.error('Auto-score failed (non-fatal):', e))
     }
 
+    // Fire lead_captured workflow trigger (fire-and-forget)
+    const appUrl = process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000'
+    fetch(`${appUrl}/api/workflows/trigger`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workspaceId, triggerType: 'lead_captured', leadId: id, data: { source, campaign } }),
+    }).catch(e => console.error('Workflow trigger failed (non-fatal):', e))
+
+    // Log lead_created activity
+    fetch(`${appUrl}/api/leads-captured/${id}/activity`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workspaceId, type: 'lead_created', title: `Lead captured from ${source || 'manual'}`, description: campaign ? `Campaign: ${campaign}` : null }),
+    }).catch(() => {})
+
     return NextResponse.json({ ok: true, id })
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 })

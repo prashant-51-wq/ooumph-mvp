@@ -19,6 +19,7 @@ const PRIMARY_NAV = [
   { href: '/dashboard/activity', label: 'Workspace', icon: '💡' },
   { href: '/dashboard/inbox', label: 'Inbox', icon: '📬' },
   { href: '/dashboard/calendar', label: 'Calendar', icon: '📅' },
+  { href: '/dashboard/workflows', label: 'Workflows', icon: '⚡' },
   { href: '/dashboard/strategy', label: 'Strategy', icon: '🧠' },
   { href: '/dashboard/content', label: 'Content Calendar', icon: '📅' },
   { href: '/dashboard/approvals', label: 'Approvals', icon: '✅' },
@@ -45,6 +46,7 @@ const ADVANCED_NAV = [
     label: 'GROWTH',
     items: [
       { href: '/dashboard/inbox', label: 'Unified Inbox', icon: '📬' },
+      { href: '/dashboard/workflows', label: 'Workflows', icon: '⚡' },
       { href: '/dashboard/leads', label: 'Lead Gen', icon: '🎯' },
       { href: '/dashboard/leads-crm', label: 'CRM', icon: '👥' },
       { href: '/dashboard/funnel', label: 'Funnel Plan', icon: '🔮' },
@@ -99,6 +101,7 @@ function getPageTitle(pathname: string): string {
     '/dashboard/settings': 'Settings',
     '/dashboard/inbox': 'Unified Inbox',
     '/dashboard/calendar': 'Calendar',
+    '/dashboard/workflows': 'Workflow Engine',
     '/dashboard/leads-crm': 'CRM',
     '/dashboard/campaign': 'Campaigns',
     '/dashboard/email-marketing': 'Email',

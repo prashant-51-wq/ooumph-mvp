@@ -166,6 +166,23 @@ export async function POST(req: NextRequest) {
       }
     } catch { /* non-fatal */ }
 
+    // Fire meeting_booked workflow trigger
+    const appUrlWf = process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000'
+    fetch(`${appUrlWf}/api/workflows/trigger`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workspaceId, triggerType: 'meeting_booked', leadId: contactId, contactEmail, data: { bookingId, title: meetingTitle } }),
+    }).catch(e => console.error('Workflow trigger (booking) failed:', e))
+
+    // Log booking activity
+    if (contactId) {
+      fetch(`${appUrlWf}/api/leads-captured/${contactId}/activity`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspaceId, type: 'meeting_booked', title: `Meeting booked: ${meetingTitle}`, description: `${new Date(startTime).toLocaleDateString()}` }),
+      }).catch(() => {})
+    }
+
     return NextResponse.json({
       ok: true,
       bookingId,

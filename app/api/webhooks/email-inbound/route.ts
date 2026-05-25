@@ -103,6 +103,14 @@ export async function POST(req: NextRequest) {
       VALUES (${msgId}, ${convId}, ${wId}, 'inbound', ${contactEmail}, ${toRaw}, ${subject}, ${body.slice(0, 10000)}, 'email', 'read', ${externalId}, ${now}, ${now})
     `
 
+    // Fire email_received workflow trigger
+    const appUrl = process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000'
+    fetch(`${appUrl}/api/workflows/trigger`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workspaceId: wId, triggerType: 'email_received', leadId: contactId, contactEmail, data: { subject, conversationId: convId } }),
+    }).catch(e => console.error('Workflow trigger (email) failed:', e))
+
     return NextResponse.json({ ok: true, conversationId: convId, messageId: msgId })
   } catch (error) {
     console.error('Inbound email webhook error:', error)
