@@ -139,6 +139,10 @@ export async function POST(req: NextRequest) {
         growth: '/api/agents/growth',
         pr: '/api/agents/pr',
         analytics: '/api/agents/analytics',
+        sales: '/api/agents/sales',
+        retargeting: '/api/agents/retargeting',
+        scheduling: '/api/agents/scheduling',
+        branding: '/api/agents/branding',
       }
 
       const route = agentRouteMap[agentToRun] || '/api/agents/strategy'
