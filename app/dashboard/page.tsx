@@ -518,6 +518,10 @@ export default function DashboardPage() {
     setExecuting(true)
     setExecutingMsgId(msgId)
 
+    // Grab proposal data from the message so we can seed the Activity Window
+    const approvedMsg = messages.find((m) => m.id === msgId)
+    const proposal = approvedMsg?.proposal
+
     try {
       const res = await fetch('/api/agents/cmo', {
         method: 'POST',
@@ -527,18 +531,45 @@ export default function DashboardPage() {
 
       const data = await res.json() as { ok: boolean; response?: string; projectId?: string; error?: string }
 
-      const confirmMsg: Message = {
-        id: uid(),
-        role: 'cmo',
-        text: data.ok
-          ? `Team approved! Your ${agentLabel(firstAction)} agent is now running. Watch the activity feed on the right for live updates — I'll let you know when the first deliverable is ready for your review.`
-          : `I had trouble starting the team: ${data.error ?? 'Unknown error'}. You can try again or start from the ${agentLabel(firstAction)} page directly.`,
-        timestamp: new Date(),
-      }
-      setMessages((prev) => [...prev, confirmMsg])
+      if (data.ok) {
+        // ── Seed the Activity Window with a localStorage project record ──────────
+        if (proposal) {
+          try {
+            const projectId = uid()
+            const newProject = {
+              id: projectId,
+              name: proposal.project.name,
+              goal: proposal.project.goal,
+              team: proposal.team,
+              status: 'active',
+              createdAt: new Date().toISOString(),
+              firstAction: proposal.firstAction,
+            }
+            const existing = JSON.parse(localStorage.getItem('ooumph_projects_v1') || '[]') as unknown[]
+            localStorage.setItem('ooumph_projects_v1', JSON.stringify([newProject, ...existing]))
+          } catch { /* storage errors are non-fatal */ }
+        }
 
-      // Start polling more aggressively after execution
-      if (data.ok) loadRuns()
+        const confirmMsg: Message = {
+          id: uid(),
+          role: 'cmo',
+          text: `Team approved! 🚀 Your ${agentLabel(firstAction)} agent is now running. Opening the Workspace in a moment...`,
+          timestamp: new Date(),
+        }
+        setMessages((prev) => [...prev, confirmMsg])
+        loadRuns()
+
+        // Navigate to the Activity Window after a brief moment so the user sees the confirmation
+        setTimeout(() => router.push('/dashboard/activity'), 1400)
+      } else {
+        const errMsg: Message = {
+          id: uid(),
+          role: 'cmo',
+          text: `I had trouble starting the team: ${data.error ?? 'Unknown error'}. You can try again or start from the ${agentLabel(firstAction)} page directly.`,
+          timestamp: new Date(),
+        }
+        setMessages((prev) => [...prev, errMsg])
+      }
     } catch {
       const errMsg: Message = {
         id: uid(),
@@ -713,10 +744,10 @@ export default function DashboardPage() {
             <ActivityFeed runs={runs} loading={runsLoading} />
             {runs.length > 0 && (
               <Link
-                href="/dashboard/strategy"
+                href="/dashboard/activity"
                 className="mt-4 flex items-center justify-center gap-1 text-xs text-gray-600 hover:text-gray-400 transition-colors"
               >
-                View all agent outputs →
+                Open Workspace →
               </Link>
             )}
           </div>
