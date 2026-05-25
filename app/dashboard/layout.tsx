@@ -16,6 +16,7 @@ interface AgentRun {
 // ── Primary nav (always visible) ─────────────────────────────────────────────
 const PRIMARY_NAV = [
   { href: '/dashboard', label: 'CMO Dashboard', icon: '⚡' },
+  { href: '/dashboard/activity', label: 'Workspace', icon: '💡' },
   { href: '/dashboard/strategy', label: 'Strategy', icon: '🧠' },
   { href: '/dashboard/content', label: 'Content Calendar', icon: '📅' },
   { href: '/dashboard/approvals', label: 'Approvals', icon: '✅' },
@@ -86,6 +87,7 @@ const ADVANCED_NAV = [
 function getPageTitle(pathname: string): string {
   const map: Record<string, string> = {
     '/dashboard': 'CMO Dashboard',
+    '/dashboard/activity': 'Workspace',
     '/dashboard/strategy': 'Strategy',
     '/dashboard/content': 'Content Calendar',
     '/dashboard/approvals': 'Approvals',
