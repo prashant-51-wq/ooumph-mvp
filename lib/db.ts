@@ -113,6 +113,8 @@ async function postgresQuery(strings: TemplateStringsArray, ...values: unknown[]
     await pgSql`CREATE TABLE IF NOT EXISTS inbox_messages (id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, workspace_id TEXT NOT NULL, direction TEXT NOT NULL, from_address TEXT, to_address TEXT, subject TEXT, body TEXT NOT NULL, html_body TEXT, channel TEXT DEFAULT 'email', status TEXT DEFAULT 'sent', external_id TEXT, ai_generated INTEGER DEFAULT 0, sent_at TIMESTAMPTZ DEFAULT NOW(), created_at TIMESTAMPTZ DEFAULT NOW())`
     await pgSql`CREATE TABLE IF NOT EXISTS bookings (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, contact_id TEXT, contact_name TEXT, contact_email TEXT, contact_phone TEXT, title TEXT NOT NULL, description TEXT, start_time TIMESTAMPTZ NOT NULL, end_time TIMESTAMPTZ NOT NULL, timezone TEXT DEFAULT 'UTC', status TEXT DEFAULT 'confirmed', meeting_url TEXT, calendar_event_id TEXT, reminder_sent INTEGER DEFAULT 0, notes TEXT, source TEXT DEFAULT 'manual', created_at TIMESTAMPTZ DEFAULT NOW())`
     await pgSql`CREATE TABLE IF NOT EXISTS calendar_availability (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL UNIQUE, days_of_week TEXT DEFAULT '[1,2,3,4,5]', start_hour INTEGER DEFAULT 9, end_hour INTEGER DEFAULT 17, slot_minutes INTEGER DEFAULT 30, timezone TEXT DEFAULT 'UTC', buffer_minutes INTEGER DEFAULT 10, advance_days INTEGER DEFAULT 14, updated_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE TABLE IF NOT EXISTS lead_activities (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, lead_id TEXT NOT NULL, type TEXT NOT NULL, title TEXT NOT NULL, description TEXT, metadata_json TEXT DEFAULT '{}', created_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_lead_activities_lead ON lead_activities(lead_id, created_at DESC)`
   }
 
   const rows = await pgSql(strings, ...values) as Record<string, unknown>[]
@@ -410,6 +412,17 @@ function initSQLiteSync(db: import('better-sqlite3').Database) {
       advance_days INTEGER DEFAULT 14,
       updated_at TEXT DEFAULT (datetime('now'))
     );
+    CREATE TABLE IF NOT EXISTS lead_activities (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      lead_id TEXT NOT NULL,
+      type TEXT NOT NULL,
+      title TEXT NOT NULL,
+      description TEXT,
+      metadata_json TEXT DEFAULT '{}',
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_lead_activities_lead ON lead_activities(lead_id, created_at DESC);
   `)
   // Safely add columns to existing tables (ignore "already exists" errors)
   const migrations = [
@@ -422,6 +435,8 @@ function initSQLiteSync(db: import('better-sqlite3').Database) {
     'CREATE TABLE IF NOT EXISTS inbox_messages (id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, workspace_id TEXT NOT NULL, direction TEXT NOT NULL, from_address TEXT, to_address TEXT, subject TEXT, body TEXT NOT NULL, html_body TEXT, channel TEXT DEFAULT \'email\', status TEXT DEFAULT \'sent\', external_id TEXT, ai_generated INTEGER DEFAULT 0, sent_at TEXT DEFAULT (datetime(\'now\')), created_at TEXT DEFAULT (datetime(\'now\')))',
     'CREATE TABLE IF NOT EXISTS bookings (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, contact_id TEXT, contact_name TEXT, contact_email TEXT, contact_phone TEXT, title TEXT NOT NULL, description TEXT, start_time TEXT NOT NULL, end_time TEXT NOT NULL, timezone TEXT DEFAULT \'UTC\', status TEXT DEFAULT \'confirmed\', meeting_url TEXT, calendar_event_id TEXT, reminder_sent INTEGER DEFAULT 0, notes TEXT, source TEXT DEFAULT \'manual\', created_at TEXT DEFAULT (datetime(\'now\')))',
     'CREATE TABLE IF NOT EXISTS calendar_availability (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL UNIQUE, days_of_week TEXT DEFAULT \'[1,2,3,4,5]\', start_hour INTEGER DEFAULT 9, end_hour INTEGER DEFAULT 17, slot_minutes INTEGER DEFAULT 30, timezone TEXT DEFAULT \'UTC\', buffer_minutes INTEGER DEFAULT 10, advance_days INTEGER DEFAULT 14, updated_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE TABLE IF NOT EXISTS lead_activities (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, lead_id TEXT NOT NULL, type TEXT NOT NULL, title TEXT NOT NULL, description TEXT, metadata_json TEXT DEFAULT \'{}\', created_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE INDEX IF NOT EXISTS idx_lead_activities_lead ON lead_activities(lead_id, created_at DESC)',
   ]
   for (const m of migrations) {
     try { db.exec(m) } catch { /* column already exists */ }
@@ -468,5 +483,7 @@ export async function initializeDatabase() {
   await pgSql`CREATE TABLE IF NOT EXISTS inbox_messages (id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, workspace_id TEXT NOT NULL, direction TEXT NOT NULL, from_address TEXT, to_address TEXT, subject TEXT, body TEXT NOT NULL, html_body TEXT, channel TEXT DEFAULT 'email', status TEXT DEFAULT 'sent', external_id TEXT, ai_generated INTEGER DEFAULT 0, sent_at TIMESTAMPTZ DEFAULT NOW(), created_at TIMESTAMPTZ DEFAULT NOW())`
   await pgSql`CREATE TABLE IF NOT EXISTS bookings (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, contact_id TEXT, contact_name TEXT, contact_email TEXT, contact_phone TEXT, title TEXT NOT NULL, description TEXT, start_time TIMESTAMPTZ NOT NULL, end_time TIMESTAMPTZ NOT NULL, timezone TEXT DEFAULT 'UTC', status TEXT DEFAULT 'confirmed', meeting_url TEXT, calendar_event_id TEXT, reminder_sent INTEGER DEFAULT 0, notes TEXT, source TEXT DEFAULT 'manual', created_at TIMESTAMPTZ DEFAULT NOW())`
   await pgSql`CREATE TABLE IF NOT EXISTS calendar_availability (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL UNIQUE, days_of_week TEXT DEFAULT '[1,2,3,4,5]', start_hour INTEGER DEFAULT 9, end_hour INTEGER DEFAULT 17, slot_minutes INTEGER DEFAULT 30, timezone TEXT DEFAULT 'UTC', buffer_minutes INTEGER DEFAULT 10, advance_days INTEGER DEFAULT 14, updated_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE TABLE IF NOT EXISTS lead_activities (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, lead_id TEXT NOT NULL, type TEXT NOT NULL, title TEXT NOT NULL, description TEXT, metadata_json TEXT DEFAULT '{}', created_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_lead_activities_lead ON lead_activities(lead_id, created_at DESC)`
   console.log('✅ Neon Postgres DB initialized')
 }
