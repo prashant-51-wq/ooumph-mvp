@@ -11,6 +11,7 @@ export default function OnboardingPage() {
   const router = useRouter()
   const [step, setStep] = useState(1)
   const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
   const [form, setForm] = useState({
     businessName: '', industry: '', website: '', tagline: '',
     offer: '', uniqueValue: '', targetAudience: '', tone: '',
@@ -48,6 +49,7 @@ export default function OnboardingPage() {
 
   const handleSubmit = async () => {
     setLoading(true)
+    setError('')
     try {
       // Get userId from auth/me so workspace is linked to the logged-in user
       let userId: string | null = null
@@ -67,9 +69,12 @@ export default function OnboardingPage() {
         localStorage.setItem('workspaceId', data.workspaceId)
         localStorage.setItem('businessName', form.businessName)
         router.push('/dashboard/strategy')
+      } else {
+        setError(data.error || 'Workspace creation failed. Please try again.')
       }
     } catch (err) {
       console.error(err)
+      setError('Network error. Please check your connection and try again.')
     } finally {
       setLoading(false)
     }
@@ -176,6 +181,9 @@ export default function OnboardingPage() {
           <Field label="Prohibited Claims or Topics" hint="Anything we should NEVER say.">
             <input className={input} value={form.prohibitedClaims} onChange={(e) => update('prohibitedClaims', e.target.value)} placeholder="e.g. No guarantees, no ROI promises, no competitor bashing" />
           </Field>
+          {error && (
+            <div className="p-3 rounded-lg bg-red-950 border border-red-800 text-red-300 text-sm">{error}</div>
+          )}
           <NavButtons
             prev={() => setStep(2)}
             next={handleSubmit}

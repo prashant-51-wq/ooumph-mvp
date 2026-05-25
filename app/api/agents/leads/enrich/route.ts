@@ -80,7 +80,8 @@ export async function POST(req: NextRequest) {
         } catch { /* fall through */ }
       }
 
-      if (apolloData && hunterData) source = 'combined'
+      // Note: source is either 'apollo' | 'hunter' | '' — both cannot be set simultaneously
+      // because Hunter is only queried when Apollo returns nothing.
 
       return NextResponse.json({
         ok: true,

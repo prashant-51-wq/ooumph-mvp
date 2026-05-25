@@ -85,7 +85,7 @@ async function publishBlog(
   // Log the publish event
   const logId = newId()
   await sql`
-    INSERT INTO publish_log (id, workspace_id, platform, artifact_id, published_url, published_at)
+    INSERT INTO publish_log (id, workspace_id, platform, artifact_id, post_url, published_at)
     VALUES (${logId}, ${workspaceId}, ${platform}, ${artifactId}, ${publishedUrl}, CURRENT_TIMESTAMP)
   `.catch(() => { /* table may not exist yet */ })
 
