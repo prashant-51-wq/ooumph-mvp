@@ -70,6 +70,24 @@ interface ModelSettings {
   // Phase 2 — ElevenLabs (voice)
   elevenLabsApiKey?: string
   elevenLabsVoiceId?: string
+  // Phase 3 — Ads
+  metaAccessToken?: string
+  metaAdAccountId?: string
+  googleAdsDeveloperToken?: string
+  googleAdsCustomerId?: string
+  googleAdsAccessToken?: string
+  linkedinAdsAccessToken?: string
+  linkedinAdsAccountId?: string
+  // Phase 3 — Video AI
+  runwayApiKey?: string
+  heygenApiKey?: string
+  // Phase 3 — Voice AI
+  vapiApiKey?: string
+  // Phase 3 — Payments
+  stripeSecretKey?: string
+  stripePublishableKey?: string
+  razorpayKeyId?: string
+  razorpayKeySecret?: string
 }
 
 export default function SettingsPage() {
@@ -138,6 +156,24 @@ export default function SettingsPage() {
     // Phase 2 — ElevenLabs
     elevenLabsApiKey: '',
     elevenLabsVoiceId: '',
+    // Phase 3 — Ads
+    metaAccessToken: '',
+    metaAdAccountId: '',
+    googleAdsDeveloperToken: '',
+    googleAdsCustomerId: '',
+    googleAdsAccessToken: '',
+    linkedinAdsAccessToken: '',
+    linkedinAdsAccountId: '',
+    // Phase 3 — Video AI
+    runwayApiKey: '',
+    heygenApiKey: '',
+    // Phase 3 — Voice AI
+    vapiApiKey: '',
+    // Phase 3 — Payments
+    stripeSecretKey: '',
+    stripePublishableKey: '',
+    razorpayKeyId: '',
+    razorpayKeySecret: '',
   })
   const [notifyTestResult, setNotifyTestResult] = useState<Record<string, string>>({})
 
@@ -669,6 +705,85 @@ export default function SettingsPage() {
               <input type="password" className={input} value={modelSettings.youtubeAccessToken || ''}
                 onChange={e => setModelSettings(s => ({ ...s, youtubeAccessToken: e.target.value }))}
                 placeholder="YouTube Access Token" />
+            </Field>
+          </Section>
+
+          <Section title="Phase 3 — Paid Advertising">
+            <Field label="Meta Access Token" hint="Long-lived page or business token from Meta Business Manager">
+              <input type="password" className={input} value={modelSettings.metaAccessToken || ''}
+                onChange={e => setModelSettings(s => ({ ...s, metaAccessToken: e.target.value }))}
+                placeholder="EAAxxxxx..." />
+            </Field>
+            <Field label="Meta Ad Account ID" hint="Your Meta ad account ID">
+              <input className={input} value={modelSettings.metaAdAccountId || ''}
+                onChange={e => setModelSettings(s => ({ ...s, metaAdAccountId: e.target.value }))}
+                placeholder="act_123456789" />
+            </Field>
+            <Field label="Google Ads Developer Token" hint="NEVER log or display this value — from Google Ads API Center">
+              <input type="password" className={input} value={modelSettings.googleAdsDeveloperToken || ''}
+                onChange={e => setModelSettings(s => ({ ...s, googleAdsDeveloperToken: e.target.value }))}
+                placeholder="Google Ads Developer Token" />
+            </Field>
+            <Field label="Google Ads Customer ID" hint="Your Google Ads account ID (without dashes)">
+              <input className={input} value={modelSettings.googleAdsCustomerId || ''}
+                onChange={e => setModelSettings(s => ({ ...s, googleAdsCustomerId: e.target.value }))}
+                placeholder="123-456-7890" />
+            </Field>
+            <Field label="Google Ads Access Token" hint="OAuth access token for your Google Ads account">
+              <input type="password" className={input} value={modelSettings.googleAdsAccessToken || ''}
+                onChange={e => setModelSettings(s => ({ ...s, googleAdsAccessToken: e.target.value }))}
+                placeholder="ya29...." />
+            </Field>
+            <Field label="LinkedIn Ads Access Token" hint="OAuth access token from LinkedIn Campaign Manager">
+              <input type="password" className={input} value={modelSettings.linkedinAdsAccessToken || ''}
+                onChange={e => setModelSettings(s => ({ ...s, linkedinAdsAccessToken: e.target.value }))}
+                placeholder="LinkedIn Ads Access Token" />
+            </Field>
+            <Field label="LinkedIn Ads Account ID" hint="Your LinkedIn sponsored account URN">
+              <input className={input} value={modelSettings.linkedinAdsAccountId || ''}
+                onChange={e => setModelSettings(s => ({ ...s, linkedinAdsAccountId: e.target.value }))}
+                placeholder="urn:li:sponsoredAccount:123456789" />
+            </Field>
+          </Section>
+
+          <Section title="Phase 3 — Video & Voice AI">
+            <Field label="Runway API Key" hint="For AI video generation — get at runwayml.com">
+              <input type="password" className={input} value={modelSettings.runwayApiKey || ''}
+                onChange={e => setModelSettings(s => ({ ...s, runwayApiKey: e.target.value }))}
+                placeholder="Runway API Key" />
+            </Field>
+            <Field label="HeyGen API Key" hint="For avatar video creation — get at heygen.com">
+              <input type="password" className={input} value={modelSettings.heygenApiKey || ''}
+                onChange={e => setModelSettings(s => ({ ...s, heygenApiKey: e.target.value }))}
+                placeholder="HeyGen API Key" />
+            </Field>
+            <Field label="Vapi API Key" hint="For voice AI agents — get at vapi.ai">
+              <input type="password" className={input} value={modelSettings.vapiApiKey || ''}
+                onChange={e => setModelSettings(s => ({ ...s, vapiApiKey: e.target.value }))}
+                placeholder="Vapi API Key" />
+            </Field>
+          </Section>
+
+          <Section title="Phase 3 — Payments">
+            <Field label="Stripe Secret Key" hint="Keep this secret — never expose on frontend">
+              <input type="password" className={input} value={modelSettings.stripeSecretKey || ''}
+                onChange={e => setModelSettings(s => ({ ...s, stripeSecretKey: e.target.value }))}
+                placeholder="sk_live_... or sk_test_..." />
+            </Field>
+            <Field label="Stripe Publishable Key" hint="Used on frontend (not secret)">
+              <input className={input} value={modelSettings.stripePublishableKey || ''}
+                onChange={e => setModelSettings(s => ({ ...s, stripePublishableKey: e.target.value }))}
+                placeholder="pk_live_... or pk_test_..." />
+            </Field>
+            <Field label="Razorpay Key ID" hint="Safe to expose on frontend — from razorpay.com/app/keys">
+              <input className={input} value={modelSettings.razorpayKeyId || ''}
+                onChange={e => setModelSettings(s => ({ ...s, razorpayKeyId: e.target.value }))}
+                placeholder="rzp_live_..." />
+            </Field>
+            <Field label="Razorpay Key Secret" hint="Keep this secret — never expose on frontend">
+              <input type="password" className={input} value={modelSettings.razorpayKeySecret || ''}
+                onChange={e => setModelSettings(s => ({ ...s, razorpayKeySecret: e.target.value }))}
+                placeholder="Razorpay Key Secret" />
             </Field>
           </Section>
 

@@ -35,6 +35,15 @@ const NAV_SECTIONS = [
       { href: '/dashboard/image-gen', label: 'AI Image Studio', icon: '🎨' },
       { href: '/dashboard/voiceover', label: 'Voiceover & Audio', icon: '🎙️' },
       { href: '/dashboard/media', label: 'Media Library', icon: '🖼️' },
+      { href: '/dashboard/video-gen', label: 'AI Video Studio', icon: '🎬' },
+      { href: '/dashboard/voice-ai', label: 'Voice AI', icon: '📞' },
+    ],
+  },
+  {
+    label: 'PAID GROWTH',
+    items: [
+      { href: '/dashboard/ads', label: 'Paid Ads Manager', icon: '🎯' },
+      { href: '/dashboard/payments', label: 'Payments & Revenue', icon: '💳' },
     ],
   },
   {
