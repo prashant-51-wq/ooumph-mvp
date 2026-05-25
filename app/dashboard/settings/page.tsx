@@ -46,6 +46,30 @@ interface ModelSettings {
   // Search Console & Analytics
   searchConsoleSiteUrl: string
   searchConsoleAccessToken: string
+  // Phase 2 — Media
+  cloudinaryCloudName?: string
+  cloudinaryApiKey?: string
+  cloudinaryApiSecret?: string
+  // Phase 2 — Lead Enrichment
+  apolloApiKey?: string
+  hunterApiKey?: string
+  // Phase 2 — Email Marketing
+  mailchimpApiKey?: string
+  mailchimpServer?: string
+  brevoApiKey?: string
+  brevoFromEmail?: string
+  // Phase 2 — Transcription
+  deepgramApiKey?: string
+  // Phase 2 — Social Publishing
+  twitterAccessToken?: string
+  twitterBearerToken?: string
+  linkedinAccessToken?: string
+  linkedinAuthorUrn?: string
+  youtubeApiKey?: string
+  youtubeAccessToken?: string
+  // Phase 2 — ElevenLabs (voice)
+  elevenLabsApiKey?: string
+  elevenLabsVoiceId?: string
 }
 
 export default function SettingsPage() {
@@ -90,6 +114,30 @@ export default function SettingsPage() {
     n8nApiKey: '',
     searchConsoleSiteUrl: '',
     searchConsoleAccessToken: '',
+    // Phase 2 — Media
+    cloudinaryCloudName: '',
+    cloudinaryApiKey: '',
+    cloudinaryApiSecret: '',
+    // Phase 2 — Lead Enrichment
+    apolloApiKey: '',
+    hunterApiKey: '',
+    // Phase 2 — Email Marketing
+    mailchimpApiKey: '',
+    mailchimpServer: '',
+    brevoApiKey: '',
+    brevoFromEmail: '',
+    // Phase 2 — Transcription
+    deepgramApiKey: '',
+    // Phase 2 — Social Publishing
+    twitterAccessToken: '',
+    twitterBearerToken: '',
+    linkedinAccessToken: '',
+    linkedinAuthorUrn: '',
+    youtubeApiKey: '',
+    youtubeAccessToken: '',
+    // Phase 2 — ElevenLabs
+    elevenLabsApiKey: '',
+    elevenLabsVoiceId: '',
   })
   const [notifyTestResult, setNotifyTestResult] = useState<Record<string, string>>({})
 
@@ -513,6 +561,114 @@ export default function SettingsPage() {
               <input type="password" className={input} value={modelSettings.searchConsoleAccessToken}
                 onChange={e => updateModel('searchConsoleAccessToken', e.target.value)}
                 placeholder="ya29...." />
+            </Field>
+          </Section>
+
+          <Section title="Phase 2 — Creative AI">
+            <Field label="ElevenLabs API Key" hint="For voiceover and audio generation — get at elevenlabs.io">
+              <input type="password" className={input} value={modelSettings.elevenLabsApiKey || ''}
+                onChange={e => setModelSettings(s => ({ ...s, elevenLabsApiKey: e.target.value }))}
+                placeholder="el_..." />
+            </Field>
+            <Field label="ElevenLabs Voice ID" hint="Default voice ID — optional, e.g. 21m00Tcm4TlvDq8ikWAM">
+              <input className={input} value={modelSettings.elevenLabsVoiceId || ''}
+                onChange={e => setModelSettings(s => ({ ...s, elevenLabsVoiceId: e.target.value }))}
+                placeholder="21m00Tcm4TlvDq8ikWAM" />
+            </Field>
+          </Section>
+
+          <Section title="Phase 2 — Media Library">
+            <Field label="Cloudinary Cloud Name" hint="Found in your Cloudinary dashboard — e.g. mycloud">
+              <input className={input} value={modelSettings.cloudinaryCloudName || ''}
+                onChange={e => setModelSettings(s => ({ ...s, cloudinaryCloudName: e.target.value }))}
+                placeholder="mycloud" />
+            </Field>
+            <Field label="Cloudinary API Key" hint="From cloudinary.com → Settings → API Keys">
+              <input className={input} value={modelSettings.cloudinaryApiKey || ''}
+                onChange={e => setModelSettings(s => ({ ...s, cloudinaryApiKey: e.target.value }))}
+                placeholder="Cloudinary API Key" />
+            </Field>
+            <Field label="Cloudinary API Secret" hint="Keep this secret — never share it publicly">
+              <input type="password" className={input} value={modelSettings.cloudinaryApiSecret || ''}
+                onChange={e => setModelSettings(s => ({ ...s, cloudinaryApiSecret: e.target.value }))}
+                placeholder="Cloudinary API Secret" />
+            </Field>
+          </Section>
+
+          <Section title="Phase 2 — Lead Enrichment">
+            <Field label="Apollo.io API Key" hint="For lead enrichment — get at apollo.io/settings/integrations/api">
+              <input type="password" className={input} value={modelSettings.apolloApiKey || ''}
+                onChange={e => setModelSettings(s => ({ ...s, apolloApiKey: e.target.value }))}
+                placeholder="Apollo.io API key" />
+            </Field>
+            <Field label="Hunter.io API Key" hint="For email finding and verification — get at hunter.io/api-keys">
+              <input type="password" className={input} value={modelSettings.hunterApiKey || ''}
+                onChange={e => setModelSettings(s => ({ ...s, hunterApiKey: e.target.value }))}
+                placeholder="Hunter.io API key" />
+            </Field>
+          </Section>
+
+          <Section title="Phase 2 — Email Marketing">
+            <Field label="Mailchimp API Key" hint="From Mailchimp → Account → Extras → API keys">
+              <input type="password" className={input} value={modelSettings.mailchimpApiKey || ''}
+                onChange={e => setModelSettings(s => ({ ...s, mailchimpApiKey: e.target.value }))}
+                placeholder="Mailchimp API key" />
+            </Field>
+            <Field label="Mailchimp Server Prefix" hint="The server prefix in your Mailchimp API key, e.g. us18">
+              <input className={input} value={modelSettings.mailchimpServer || ''}
+                onChange={e => setModelSettings(s => ({ ...s, mailchimpServer: e.target.value }))}
+                placeholder="us18" />
+            </Field>
+            <Field label="Brevo API Key" hint="From app.brevo.com → SMTP & API → API Keys">
+              <input type="password" className={input} value={modelSettings.brevoApiKey || ''}
+                onChange={e => setModelSettings(s => ({ ...s, brevoApiKey: e.target.value }))}
+                placeholder="Brevo API key" />
+            </Field>
+            <Field label="Brevo From Email" hint="Verified sender email address in your Brevo account">
+              <input type="email" className={input} value={modelSettings.brevoFromEmail || ''}
+                onChange={e => setModelSettings(s => ({ ...s, brevoFromEmail: e.target.value }))}
+                placeholder="hello@yourcompany.com" />
+            </Field>
+          </Section>
+
+          <Section title="Phase 2 — Audio Transcription">
+            <Field label="Deepgram API Key" hint="For audio transcription — get at console.deepgram.com">
+              <input type="password" className={input} value={modelSettings.deepgramApiKey || ''}
+                onChange={e => setModelSettings(s => ({ ...s, deepgramApiKey: e.target.value }))}
+                placeholder="Deepgram API key" />
+            </Field>
+          </Section>
+
+          <Section title="Phase 2 — Social Publishing">
+            <Field label="Twitter Bearer Token" hint="App-level token for search — from developer.twitter.com">
+              <input type="password" className={input} value={modelSettings.twitterBearerToken || ''}
+                onChange={e => setModelSettings(s => ({ ...s, twitterBearerToken: e.target.value }))}
+                placeholder="Twitter Bearer Token" />
+            </Field>
+            <Field label="Twitter Access Token" hint="User-level OAuth token for posting tweets — from developer.twitter.com">
+              <input type="password" className={input} value={modelSettings.twitterAccessToken || ''}
+                onChange={e => setModelSettings(s => ({ ...s, twitterAccessToken: e.target.value }))}
+                placeholder="Twitter Access Token" />
+            </Field>
+            <Field label="LinkedIn Access Token" hint="OAuth access token for posting — from LinkedIn developer portal">
+              <input type="password" className={input} value={modelSettings.linkedinAccessToken || ''}
+                onChange={e => setModelSettings(s => ({ ...s, linkedinAccessToken: e.target.value }))}
+                placeholder="LinkedIn Access Token" />
+            </Field>
+            <Field label="LinkedIn Author URN" hint="Your person or org URN — e.g. urn:li:person:ABC123 or urn:li:organization:123">
+              <input className={input} value={modelSettings.linkedinAuthorUrn || ''}
+                onChange={e => setModelSettings(s => ({ ...s, linkedinAuthorUrn: e.target.value }))}
+                placeholder="urn:li:person:... or urn:li:organization:..." />
+            </Field>
+            <Field label="YouTube API Key" hint="For public video search — from console.cloud.google.com">
+              <input className={input} value={modelSettings.youtubeApiKey || ''}
+                onChange={e => setModelSettings(s => ({ ...s, youtubeApiKey: e.target.value }))}
+                placeholder="YouTube API Key" />
+            </Field>
+            <Field label="YouTube Access Token" hint="OAuth token for channel info — from Google OAuth consent flow">
+              <input type="password" className={input} value={modelSettings.youtubeAccessToken || ''}
+                onChange={e => setModelSettings(s => ({ ...s, youtubeAccessToken: e.target.value }))}
+                placeholder="YouTube Access Token" />
             </Field>
           </Section>
 

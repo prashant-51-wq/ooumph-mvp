@@ -30,12 +30,21 @@ const NAV_SECTIONS = [
     ],
   },
   {
+    label: 'CREATIVE STUDIO',
+    items: [
+      { href: '/dashboard/image-gen', label: 'AI Image Studio', icon: '🎨' },
+      { href: '/dashboard/voiceover', label: 'Voiceover & Audio', icon: '🎙️' },
+      { href: '/dashboard/media', label: 'Media Library', icon: '🖼️' },
+    ],
+  },
+  {
     label: 'EXECUTION',
     items: [
       { href: '/dashboard/approvals', label: 'Approvals', icon: '✅' },
       { href: '/dashboard/campaign', label: 'Campaign Manager', icon: '📣' },
       { href: '/dashboard/growth', label: 'Growth Engine', icon: '📈' },
       { href: '/dashboard/email-marketing', label: 'Email Marketing', icon: '📧' },
+      { href: '/dashboard/email-campaigns', label: 'Email Campaigns', icon: '📧' },
       { href: '/dashboard/repurpose', label: 'Content Repurpose', icon: '♻️' },
       { href: '/dashboard/publishing', label: 'Publishing Hub', icon: '🚀' },
       { href: '/dashboard/pr', label: 'PR Studio', icon: '📰' },
@@ -47,6 +56,8 @@ const NAV_SECTIONS = [
       { href: '/dashboard/funnel', label: 'Funnel Plan', icon: '🔮' },
       { href: '/dashboard/leads', label: 'Lead Gen Plan', icon: '🎯' },
       { href: '/dashboard/leads-crm', label: 'Leads CRM', icon: '👥' },
+      // Lead Enrichment — Apollo.io + Hunter.io powered enrichment for captured leads
+      { href: '/dashboard/lead-enrichment', label: 'Lead Enrichment', icon: '🔍' },
     ],
   },
   {
