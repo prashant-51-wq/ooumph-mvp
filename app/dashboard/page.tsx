@@ -1,8 +1,44 @@
 'use client'
 
 import Link from 'next/link'
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+interface TeamMember {
+  role: string
+  agent: string
+  description: string
+}
+
+interface ProjectProposal {
+  name: string
+  goal: string
+  estimatedMinutes: number
+  estimatedCostUsd: number
+}
+
+interface Message {
+  id: string
+  role: 'cmo' | 'user'
+  text: string
+  proposal?: {
+    project: ProjectProposal
+    team: TeamMember[]
+    firstAction: string
+  }
+  timestamp: Date
+}
+
+interface AgentRun {
+  id: string
+  agent_name: string
+  status: 'pending' | 'running' | 'completed' | 'failed'
+  created_at: string
+  completed_at?: string
+  error_message?: string
+}
 
 interface Stats {
   artifacts: number
@@ -11,36 +47,320 @@ interface Stats {
   completedTypes: string[]
 }
 
-const STEP_COMPLETION: Record<number, string[]> = {
-  1: [],
-  2: ['strategy'],
-  3: ['content_calendar'],
-  4: ['carousel', 'reelScript', 'adCopy', 'emailDraft', 'linkedInPost'],
-  5: [],
-  6: ['funnel_plan'],
-  7: ['lead_gen_plan'],
-  8: [],
+// ─── Templates ────────────────────────────────────────────────────────────────
+
+const TEMPLATES = [
+  {
+    id: 'launch',
+    icon: '🚀',
+    label: 'Product Launch',
+    description: 'Strategy, content, email, ads, PR — full launch plan in one sprint',
+    prompt: 'I want to run a full product launch campaign. I need strategy, content calendar, email sequences, ad campaigns, and PR outreach all working together.',
+  },
+  {
+    id: 'leadgen',
+    icon: '🎯',
+    label: 'Lead Gen Sprint',
+    description: 'Funnel, lead magnet, landing page, email nurture, qualification',
+    prompt: 'I need to generate more leads. Help me build a complete lead generation system with a funnel, lead magnet, landing page copy, and email nurture sequence.',
+  },
+  {
+    id: 'b2b',
+    icon: '💼',
+    label: 'B2B Outbound',
+    description: 'Prospect research, outreach sequences, LinkedIn, call scripts',
+    prompt: 'I want to build a B2B outbound system. I need prospect research, personalized email outreach sequences, LinkedIn messaging, and call scripts.',
+  },
+] as const
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function uid(): string {
+  return Math.random().toString(36).slice(2)
 }
 
-function isStepDone(step: number, completedTypes: string[]): boolean {
-  const required = STEP_COMPLETION[step]
-  if (!required || required.length === 0) return false
-  return required.some((t) => completedTypes.includes(t))
+function timeAgo(dateStr: string): string {
+  const diff = Date.now() - new Date(dateStr).getTime()
+  const s = Math.floor(diff / 1000)
+  if (s < 60) return `${s}s ago`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}m ago`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `${h}h ago`
+  return `${Math.floor(h / 24)}d ago`
+}
+
+function agentLabel(name: string): string {
+  return name.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+}
+
+const STATUS_DOT: Record<string, string> = {
+  running: 'bg-indigo-400 animate-pulse',
+  completed: 'bg-green-500',
+  failed: 'bg-red-500',
+  pending: 'bg-gray-600',
+}
+
+const STATUS_TEXT: Record<string, string> = {
+  running: 'text-indigo-400',
+  completed: 'text-green-400',
+  failed: 'text-red-400',
+  pending: 'text-gray-500',
+}
+
+// ─── Sub-components ───────────────────────────────────────────────────────────
+
+function CMOAvatar() {
+  return (
+    <div className="w-8 h-8 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
+      AI
+    </div>
+  )
+}
+
+function UserAvatar({ letter }: { letter: string }) {
+  return (
+    <div className="w-8 h-8 rounded-full bg-gray-700 flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
+      {letter}
+    </div>
+  )
+}
+
+function ProposalCard({
+  proposal,
+  onApprove,
+  onRephrase,
+  executing,
+}: {
+  proposal: { project: ProjectProposal; team: TeamMember[]; firstAction: string }
+  onApprove: (firstAction: string) => void
+  onRephrase: () => void
+  executing: boolean
+}) {
+  const { project, team, firstAction } = proposal
+  return (
+    <div className="mt-3 bg-gray-900 border border-indigo-800 rounded-xl overflow-hidden">
+      {/* Project header */}
+      <div className="px-4 py-3 border-b border-gray-800">
+        <p className="text-white font-semibold text-sm">{project.name}</p>
+        <p className="text-gray-400 text-xs mt-0.5">{project.goal}</p>
+        <div className="flex items-center gap-3 mt-2">
+          <span className="text-xs text-gray-500">
+            <span className="text-gray-300">~{project.estimatedMinutes} min</span> to complete
+          </span>
+          <span className="text-xs text-gray-600">·</span>
+          <span className="text-xs text-gray-500">
+            est. <span className="text-gray-300">${project.estimatedCostUsd.toFixed(2)}</span> cost
+          </span>
+        </div>
+      </div>
+
+      {/* Team */}
+      <div className="px-4 py-3 border-b border-gray-800 space-y-2">
+        <p className="text-xs text-gray-500 uppercase tracking-wider font-medium mb-2">Team assembled</p>
+        {team.map((member) => (
+          <div key={member.agent} className="flex items-start gap-2.5">
+            <div className="w-1.5 h-1.5 rounded-full bg-indigo-500 mt-1.5 flex-shrink-0" />
+            <div>
+              <span className="text-gray-200 text-sm font-medium">{member.role}</span>
+              <span className="text-gray-600 text-xs"> · {member.agent}</span>
+              <p className="text-gray-500 text-xs">{member.description}</p>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Actions */}
+      <div className="px-4 py-3 flex gap-2">
+        <button
+          onClick={() => onApprove(firstAction)}
+          disabled={executing}
+          className="flex-1 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors"
+        >
+          {executing ? (
+            <span className="flex items-center justify-center gap-2">
+              <span className="inline-block w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+              Starting...
+            </span>
+          ) : (
+            'Approve team & start'
+          )}
+        </button>
+        <button
+          onClick={onRephrase}
+          disabled={executing}
+          className="px-4 py-2 text-sm text-gray-400 hover:text-white border border-gray-700 hover:border-gray-600 rounded-lg transition-colors disabled:opacity-50"
+        >
+          Different approach
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function MessageBubble({
+  msg,
+  userLetter,
+  onApprove,
+  onRephrase,
+  executing,
+  executingMsgId,
+}: {
+  msg: Message
+  userLetter: string
+  onApprove: (firstAction: string, msgId: string) => void
+  onRephrase: () => void
+  executing: boolean
+  executingMsgId: string | null
+}) {
+  const isCmo = msg.role === 'cmo'
+
+  return (
+    <div
+      className={`flex gap-3 msg-fade-in ${isCmo ? 'justify-start' : 'justify-end flex-row-reverse'}`}
+      style={{ animation: 'msgFadeIn 0.25s ease-out both' }}
+    >
+      {isCmo ? <CMOAvatar /> : <UserAvatar letter={userLetter} />}
+      <div className={`max-w-[75%] ${isCmo ? '' : ''}`}>
+        <div
+          className={`rounded-2xl px-4 py-2.5 text-sm leading-relaxed ${
+            isCmo
+              ? 'bg-gray-800 text-gray-100 rounded-tl-sm'
+              : 'bg-indigo-600 text-white rounded-tr-sm'
+          }`}
+        >
+          {msg.text}
+        </div>
+        {msg.proposal && (
+          <ProposalCard
+            proposal={msg.proposal}
+            onApprove={(firstAction) => onApprove(firstAction, msg.id)}
+            onRephrase={onRephrase}
+            executing={executing && executingMsgId === msg.id}
+          />
+        )}
+        <p className="text-gray-700 text-xs mt-1 px-1">
+          {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+        </p>
+      </div>
+    </div>
+  )
+}
+
+function TypingIndicator() {
+  return (
+    <div className="flex gap-3 justify-start" style={{ animation: 'msgFadeIn 0.2s ease-out both' }}>
+      <CMOAvatar />
+      <div className="bg-gray-800 rounded-2xl rounded-tl-sm px-4 py-3 flex items-center gap-1">
+        <span className="w-1.5 h-1.5 bg-gray-500 rounded-full" style={{ animation: 'typingDot 1.2s ease-in-out infinite 0ms' }} />
+        <span className="w-1.5 h-1.5 bg-gray-500 rounded-full" style={{ animation: 'typingDot 1.2s ease-in-out infinite 200ms' }} />
+        <span className="w-1.5 h-1.5 bg-gray-500 rounded-full" style={{ animation: 'typingDot 1.2s ease-in-out infinite 400ms' }} />
+      </div>
+    </div>
+  )
+}
+
+function TemplatePicker({ onSelect }: { onSelect: (prompt: string) => void }) {
+  return (
+    <div className="px-4 pb-4">
+      <p className="text-xs text-gray-600 uppercase tracking-wider font-medium mb-3 text-center">Quick start templates</p>
+      <div className="grid grid-cols-3 gap-2">
+        {TEMPLATES.map((t) => (
+          <button
+            key={t.id}
+            onClick={() => onSelect(t.prompt)}
+            className="bg-gray-900 hover:bg-gray-800 border border-gray-800 hover:border-indigo-700 rounded-xl p-3 text-left transition-all group"
+          >
+            <span className="text-xl block mb-1.5">{t.icon}</span>
+            <p className="text-white text-xs font-medium group-hover:text-indigo-300 transition-colors">{t.label}</p>
+            <p className="text-gray-600 text-xs mt-0.5 leading-snug">{t.description}</p>
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function ActivityFeed({ runs, loading }: { runs: AgentRun[]; loading: boolean }) {
+  if (loading && runs.length === 0) {
+    return (
+      <div className="space-y-2">
+        {[1, 2, 3].map((i) => (
+          <div key={i} className="flex items-center gap-3 py-2">
+            <div className="w-2 h-2 rounded-full bg-gray-800 flex-shrink-0" />
+            <div className="flex-1 h-3 bg-gray-800 rounded animate-pulse" />
+            <div className="w-12 h-3 bg-gray-800 rounded animate-pulse" />
+          </div>
+        ))}
+      </div>
+    )
+  }
+
+  if (runs.length === 0) {
+    return (
+      <p className="text-gray-600 text-xs py-4 text-center">
+        No agent runs yet — start a project above
+      </p>
+    )
+  }
+
+  return (
+    <div className="space-y-1">
+      {runs.map((run) => (
+        <div key={run.id} className="flex items-center gap-2.5 py-1.5 group">
+          <span className={`w-2 h-2 rounded-full flex-shrink-0 ${STATUS_DOT[run.status] || 'bg-gray-600'}`} />
+          <span className="flex-1 text-gray-300 text-xs truncate">{agentLabel(run.agent_name)}</span>
+          <span className={`text-xs capitalize flex-shrink-0 ${STATUS_TEXT[run.status] || 'text-gray-500'}`}>
+            {run.status}
+          </span>
+          <span className="text-gray-700 text-xs flex-shrink-0">{timeAgo(run.created_at)}</span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// ─── Main page ────────────────────────────────────────────────────────────────
+
+const GREETING: Message = {
+  id: 'greeting',
+  role: 'cmo',
+  text: "Hi! I'm your AI CMO. Tell me what you want to achieve — I'll assemble the right team and get to work. You can also pick a template below to get started fast.",
+  timestamp: new Date(),
 }
 
 export default function DashboardPage() {
   const router = useRouter()
-  const [stats, setStats] = useState<Stats>({ artifacts: 0, pendingApprovals: 0, learningNotes: 0, completedTypes: [] })
+
+  // Workspace state
+  const [workspaceId, setWorkspaceId] = useState<string | null>(null)
   const [businessName, setBusinessName] = useState('')
+
+  // Chat state
+  const [messages, setMessages] = useState<Message[]>([GREETING])
+  const [input, setInput] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [executing, setExecuting] = useState(false)
+  const [executingMsgId, setExecutingMsgId] = useState<string | null>(null)
+
+  // Right panel state
+  const [runs, setRuns] = useState<AgentRun[]>([])
+  const [runsLoading, setRunsLoading] = useState(true)
+  const [stats, setStats] = useState<Stats>({ artifacts: 0, pendingApprovals: 0, learningNotes: 0, completedTypes: [] })
+
+  // Scroll ref
+  const bottomRef = useRef<HTMLDivElement>(null)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+
+  // ── Init ────────────────────────────────────────────────────────────────────
 
   useEffect(() => {
     async function init() {
       let wid = localStorage.getItem('workspaceId')
       if (!wid) {
-        // Try to recover from session cookie
         try {
           const res = await fetch('/api/auth/me')
-          const data = await res.json()
+          const data = await res.json() as { user?: { workspaceId?: string; workspaceName?: string; name?: string } }
           if (data.user?.workspaceId) {
             wid = data.user.workspaceId
             localStorage.setItem('workspaceId', wid!)
@@ -49,93 +369,367 @@ export default function DashboardPage() {
           }
         } catch { /* ignore */ }
       }
-      if (!wid) { router.push('/dashboard/onboarding'); return }
+      if (!wid) {
+        router.push('/dashboard/onboarding')
+        return
+      }
+      setWorkspaceId(wid)
       setBusinessName(localStorage.getItem('businessName') || '')
-      fetch(`/api/stats?workspaceId=${wid}`)
-        .then((r) => r.json())
-        .then((s: Stats) => setStats(s))
-        .catch(() => {})
     }
     init()
   }, [router])
 
-  const steps = [
-    { step: 1, href: '/dashboard/onboarding', label: 'Complete Onboarding', desc: 'Set up your workspace (10 min)', icon: '🚀' },
-    { step: 2, href: '/dashboard/strategy', label: 'Generate Strategy', desc: 'AI creates your marketing plan', icon: '🧠' },
-    { step: 3, href: '/dashboard/content', label: 'Build Content Calendar', desc: '30-day plan across all channels', icon: '📅' },
-    { step: 4, href: '/dashboard/assets', label: 'Create Marketing Assets', desc: '5 ready-to-use content pieces', icon: '✍️' },
-    { step: 5, href: '/dashboard/approvals', label: 'Review & Approve', desc: 'You control what goes out', icon: '✅' },
-    { step: 6, href: '/dashboard/funnel', label: 'Design Your Funnel', desc: 'Lead magnet, landing page, nurture', icon: '🔮' },
-    { step: 7, href: '/dashboard/leads', label: 'Lead Gen Plan', desc: 'Inbound + outbound playbook', icon: '🎯' },
-    { step: 8, href: '/dashboard/export', label: 'Export & Share', desc: 'Download full marketing plan', icon: '📄' },
-  ]
+  // ── Stats ────────────────────────────────────────────────────────────────────
 
-  const doneCount = steps.filter((s) => isStepDone(s.step, stats.completedTypes)).length
-  const hasOnboarding = !!businessName
+  useEffect(() => {
+    if (!workspaceId) return
+    fetch(`/api/stats?workspaceId=${workspaceId}`)
+      .then((r) => r.json())
+      .then((s: Stats) => setStats(s))
+      .catch(() => {})
+  }, [workspaceId])
+
+  // ── Activity feed polling ─────────────────────────────────────────────────────
+
+  const loadRuns = useCallback(async () => {
+    if (!workspaceId) return
+    try {
+      const res = await fetch(`/api/agent-runs?workspaceId=${workspaceId}&limit=10`)
+      const data: AgentRun[] = await res.json()
+      setRuns(data)
+      setRunsLoading(false)
+      // Refresh stats when run state changes
+      if (data.some((r) => r.status === 'completed')) {
+        fetch(`/api/stats?workspaceId=${workspaceId}`)
+          .then((r) => r.json())
+          .then((s: Stats) => setStats(s))
+          .catch(() => {})
+      }
+    } catch {
+      setRunsLoading(false)
+    }
+  }, [workspaceId])
+
+  useEffect(() => {
+    if (!workspaceId) return
+    loadRuns()
+    const interval = setInterval(loadRuns, 5000)
+    return () => clearInterval(interval)
+  }, [workspaceId, loadRuns])
+
+  // ── Auto-scroll ───────────────────────────────────────────────────────────────
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages, loading])
+
+  // ── Textarea auto-grow ────────────────────────────────────────────────────────
+
+  function handleInputChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
+    setInput(e.target.value)
+    const el = e.target
+    el.style.height = 'auto'
+    el.style.height = `${Math.min(el.scrollHeight, 112)}px` // max ~4 rows
+  }
+
+  // ── Send message ──────────────────────────────────────────────────────────────
+
+  async function sendMessage(text?: string) {
+    const messageText = (text ?? input).trim()
+    if (!messageText || loading || !workspaceId) return
+
+    const userMsg: Message = {
+      id: uid(),
+      role: 'user',
+      text: messageText,
+      timestamp: new Date(),
+    }
+
+    setMessages((prev) => [...prev, userMsg])
+    setInput('')
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto'
+    }
+    setLoading(true)
+
+    try {
+      const res = await fetch('/api/agents/cmo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspaceId, message: messageText, action: 'chat' }),
+      })
+
+      const data = await res.json() as {
+        ok: boolean
+        response?: string
+        project?: ProjectProposal
+        team?: TeamMember[]
+        firstAction?: string
+        error?: string
+      }
+
+      if (!data.ok || !data.response) {
+        const errMsg: Message = {
+          id: uid(),
+          role: 'cmo',
+          text: data.error
+            ? `Something went wrong: ${data.error}`
+            : "I couldn't process that request. Could you try rephrasing?",
+          timestamp: new Date(),
+        }
+        setMessages((prev) => [...prev, errMsg])
+        return
+      }
+
+      const cmoMsg: Message = {
+        id: uid(),
+        role: 'cmo',
+        text: data.response,
+        timestamp: new Date(),
+        ...(data.team && data.project
+          ? {
+              proposal: {
+                project: data.project,
+                team: data.team,
+                firstAction: data.firstAction ?? 'strategy',
+              },
+            }
+          : {}),
+      }
+
+      setMessages((prev) => [...prev, cmoMsg])
+    } catch {
+      const errMsg: Message = {
+        id: uid(),
+        role: 'cmo',
+        text: "I'm having trouble connecting right now. Please try again in a moment.",
+        timestamp: new Date(),
+      }
+      setMessages((prev) => [...prev, errMsg])
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // ── Approve team ──────────────────────────────────────────────────────────────
+
+  async function approveTeam(firstAction: string, msgId: string) {
+    if (!workspaceId || executing) return
+    setExecuting(true)
+    setExecutingMsgId(msgId)
+
+    try {
+      const res = await fetch('/api/agents/cmo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspaceId, message: '', action: 'execute', firstAction }),
+      })
+
+      const data = await res.json() as { ok: boolean; response?: string; projectId?: string; error?: string }
+
+      const confirmMsg: Message = {
+        id: uid(),
+        role: 'cmo',
+        text: data.ok
+          ? `Team approved! Your ${agentLabel(firstAction)} agent is now running. Watch the activity feed on the right for live updates — I'll let you know when the first deliverable is ready for your review.`
+          : `I had trouble starting the team: ${data.error ?? 'Unknown error'}. You can try again or start from the ${agentLabel(firstAction)} page directly.`,
+        timestamp: new Date(),
+      }
+      setMessages((prev) => [...prev, confirmMsg])
+
+      // Start polling more aggressively after execution
+      if (data.ok) loadRuns()
+    } catch {
+      const errMsg: Message = {
+        id: uid(),
+        role: 'cmo',
+        text: "I couldn't kick off the agents right now. Try visiting the Strategy page to start manually.",
+        timestamp: new Date(),
+      }
+      setMessages((prev) => [...prev, errMsg])
+    } finally {
+      setExecuting(false)
+      setExecutingMsgId(null)
+    }
+  }
+
+  // ── Rephrase ──────────────────────────────────────────────────────────────────
+
+  function handleRephrase() {
+    setMessages([GREETING])
+    setInput('')
+    textareaRef.current?.focus()
+  }
+
+  // ── Key handler ───────────────────────────────────────────────────────────────
+
+  function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      void sendMessage()
+    }
+  }
+
+  // ── Template pick ─────────────────────────────────────────────────────────────
+
+  function handleTemplateSelect(prompt: string) {
+    void sendMessage(prompt)
+  }
+
+  const showTemplates = messages.length === 1 && !loading
+  const userLetter = (businessName || 'U')[0].toUpperCase()
 
   return (
-    <div className="p-8">
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold text-white mb-2">Command Center</h1>
-        <p className="text-gray-400">
-          {businessName ? `${businessName} — ` : ''}Your AI marketing workforce is ready. {doneCount > 0 ? `${doneCount} of 6 content steps complete.` : 'Complete each step to build your full marketing plan.'}
-        </p>
-      </div>
+    <>
+      {/* Inject keyframe animations globally for this page */}
+      <style>{`
+        @keyframes msgFadeIn {
+          from { opacity: 0; transform: translateY(6px); }
+          to   { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes typingDot {
+          0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+          30%            { transform: translateY(-4px); opacity: 1; }
+        }
+      `}</style>
 
-      {/* Quick Stats */}
-      <div className="grid grid-cols-4 gap-4 mb-8">
-        {[
-          { label: 'Agents Ready', value: '10', sub: 'AI workers' },
-          { label: 'Artifacts', value: String(stats.artifacts), sub: 'generated' },
-          { label: 'Pending Approvals', value: String(stats.pendingApprovals), sub: 'awaiting review', alert: stats.pendingApprovals > 0 },
-          { label: 'Learning Notes', value: String(stats.learningNotes), sub: 'from feedback' },
-        ].map((stat) => (
-          <div key={stat.label} className={`bg-gray-900 border rounded-xl p-4 ${stat.alert ? 'border-yellow-700' : 'border-gray-800'}`}>
-            <p className="text-gray-400 text-xs mb-1">{stat.label}</p>
-            <p className={`text-2xl font-bold ${stat.alert ? 'text-yellow-400' : 'text-white'}`}>{stat.value}</p>
-            <p className="text-gray-600 text-xs">{stat.sub}</p>
+      <div className="flex h-full overflow-hidden">
+        {/* ── Left: Chat panel ────────────────────────────────────────────────── */}
+        <div className="flex-1 flex flex-col min-w-0 border-r border-gray-800">
+          {/* Chat header */}
+          <div className="px-5 py-3 border-b border-gray-800 flex items-center gap-3 flex-shrink-0">
+            <CMOAvatar />
+            <div>
+              <p className="text-white text-sm font-semibold">AI CMO</p>
+              <p className="text-gray-500 text-xs">Chief Marketing Officer · Always available</p>
+            </div>
+            <div className="ml-auto flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
+              <span className="text-green-500 text-xs">Online</span>
+            </div>
           </div>
-        ))}
-      </div>
 
-      {/* Workflow Steps */}
-      <div className="grid grid-cols-2 gap-4">
-        {steps.map((s) => {
-          const done = s.step === 1 ? hasOnboarding : isStepDone(s.step, stats.completedTypes)
-          const approvalAlert = s.step === 5 && stats.pendingApprovals > 0
-          return (
-            <Link key={s.href} href={s.href}>
-              <div className={`bg-gray-900 border rounded-xl p-5 transition-all hover:bg-gray-800 cursor-pointer group ${
-                done ? 'border-green-900 hover:border-green-700' : approvalAlert ? 'border-yellow-800 hover:border-yellow-700' : 'border-gray-800 hover:border-indigo-700'
-              }`}>
-                <div className="flex items-start gap-4">
-                  <div className={`w-10 h-10 rounded-lg flex items-center justify-center text-xl transition-colors ${
-                    done ? 'bg-green-950' : 'bg-gray-800 group-hover:bg-indigo-900'
-                  }`}>
-                    {s.icon}
-                  </div>
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="text-xs text-gray-600 font-mono">Step {s.step}</span>
-                      {done && <span className="text-xs text-green-500 font-medium">✓ Done</span>}
-                      {approvalAlert && !done && <span className="text-xs text-yellow-400 font-medium">{stats.pendingApprovals} pending</span>}
-                    </div>
-                    <p className="text-white font-medium text-sm">{s.label}</p>
-                    <p className="text-gray-500 text-xs mt-1">{s.desc}</p>
-                  </div>
-                  <span className={`transition-colors ${done ? 'text-green-700' : 'text-gray-700 group-hover:text-indigo-400'}`}>→</span>
-                </div>
+          {/* Messages */}
+          <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
+            {messages.map((msg) => (
+              <MessageBubble
+                key={msg.id}
+                msg={msg}
+                userLetter={userLetter}
+                onApprove={approveTeam}
+                onRephrase={handleRephrase}
+                executing={executing}
+                executingMsgId={executingMsgId}
+              />
+            ))}
+            {loading && <TypingIndicator />}
+            <div ref={bottomRef} />
+          </div>
+
+          {/* Templates */}
+          {showTemplates && <TemplatePicker onSelect={handleTemplateSelect} />}
+
+          {/* Input bar */}
+          <div className="px-4 pb-4 flex-shrink-0 border-t border-gray-800 pt-3">
+            <div className="flex items-end gap-2 bg-gray-900 border border-gray-700 focus-within:border-indigo-600 rounded-xl px-3 py-2 transition-colors">
+              <textarea
+                ref={textareaRef}
+                value={input}
+                onChange={handleInputChange}
+                onKeyDown={handleKeyDown}
+                disabled={loading || executing}
+                placeholder="Tell me what you need..."
+                rows={1}
+                className="flex-1 bg-transparent text-white placeholder-gray-600 text-sm resize-none outline-none leading-relaxed disabled:opacity-50"
+                style={{ maxHeight: '112px' }}
+              />
+              <button
+                onClick={() => void sendMessage()}
+                disabled={!input.trim() || loading || executing}
+                className="flex-shrink-0 w-8 h-8 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-lg flex items-center justify-center transition-colors mb-0.5"
+                aria-label="Send"
+              >
+                {loading ? (
+                  <span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                ) : (
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="22" y1="2" x2="11" y2="13" />
+                    <polygon points="22 2 15 22 11 13 2 9 22 2" />
+                  </svg>
+                )}
+              </button>
+            </div>
+            <p className="text-gray-700 text-xs mt-1.5 text-center">
+              Enter to send · Shift+Enter for new line · All actions require your approval
+            </p>
+          </div>
+        </div>
+
+        {/* ── Right: Stats + Activity ──────────────────────────────────────────── */}
+        <div className="hidden lg:flex w-72 flex-col flex-shrink-0 overflow-y-auto">
+          {/* Quick stats */}
+          <div className="p-4 border-b border-gray-800 space-y-3">
+            <p className="text-xs text-gray-500 uppercase tracking-wider font-medium">Quick stats</p>
+            <div className="grid grid-cols-2 gap-2">
+              <div className="bg-gray-900 border border-gray-800 rounded-xl p-3">
+                <p className="text-gray-500 text-xs mb-1">Artifacts</p>
+                <p className="text-white text-xl font-bold">{stats.artifacts}</p>
+                <p className="text-gray-700 text-xs">generated</p>
               </div>
-            </Link>
-          )
-        })}
-      </div>
+              <div
+                className={`bg-gray-900 border rounded-xl p-3 ${
+                  stats.pendingApprovals > 0 ? 'border-yellow-800' : 'border-gray-800'
+                }`}
+              >
+                <p className="text-gray-500 text-xs mb-1">Pending</p>
+                <p className={`text-xl font-bold ${stats.pendingApprovals > 0 ? 'text-yellow-400' : 'text-white'}`}>
+                  {stats.pendingApprovals}
+                </p>
+                <p className="text-gray-700 text-xs">approvals</p>
+              </div>
+            </div>
+            {stats.pendingApprovals > 0 && (
+              <Link
+                href="/dashboard/approvals"
+                className="flex items-center justify-between w-full text-xs text-yellow-400 hover:text-yellow-300 bg-yellow-950/50 hover:bg-yellow-950 border border-yellow-900 rounded-lg px-3 py-2 transition-colors"
+              >
+                <span>{stats.pendingApprovals} item{stats.pendingApprovals !== 1 ? 's' : ''} awaiting review</span>
+                <span>→</span>
+              </Link>
+            )}
+          </div>
 
-      {/* Human Governance Note */}
-      <div className="mt-8 p-5 rounded-xl border border-indigo-800 bg-indigo-950/50">
-        <p className="text-indigo-300 text-sm font-medium mb-1">🔒 Human Governance Active</p>
-        <p className="text-indigo-400 text-xs">All content is drafted by AI and requires your approval before any external action. No autonomous publishing, spending, or outreach will happen without your explicit sign-off.</p>
+          {/* Activity feed */}
+          <div className="flex-1 p-4">
+            <div className="flex items-center justify-between mb-3">
+              <p className="text-xs text-gray-500 uppercase tracking-wider font-medium">Agent activity</p>
+              {runs.some((r) => r.status === 'running') && (
+                <span className="text-xs text-indigo-400 flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse" />
+                  Live
+                </span>
+              )}
+            </div>
+            <ActivityFeed runs={runs} loading={runsLoading} />
+            {runs.length > 0 && (
+              <Link
+                href="/dashboard/strategy"
+                className="mt-4 flex items-center justify-center gap-1 text-xs text-gray-600 hover:text-gray-400 transition-colors"
+              >
+                View all agent outputs →
+              </Link>
+            )}
+          </div>
+
+          {/* Governance notice */}
+          <div className="p-4 border-t border-gray-800">
+            <div className="flex items-start gap-2 text-xs text-indigo-400">
+              <span className="text-base flex-shrink-0 leading-none">🔒</span>
+              <p className="text-indigo-500">Human governance active — no content goes out without your sign-off.</p>
+            </div>
+          </div>
+        </div>
       </div>
-    </div>
+    </>
   )
 }

@@ -15,11 +15,12 @@ interface AgentRun {
 
 // ── Primary nav (always visible) ─────────────────────────────────────────────
 const PRIMARY_NAV = [
-  { href: '/dashboard', label: 'Command Center', icon: '⚡' },
+  { href: '/dashboard', label: 'CMO Dashboard', icon: '⚡' },
   { href: '/dashboard/strategy', label: 'Strategy', icon: '🧠' },
   { href: '/dashboard/content', label: 'Content Calendar', icon: '📅' },
   { href: '/dashboard/approvals', label: 'Approvals', icon: '✅' },
   { href: '/dashboard/agents', label: 'Agents', icon: '🤖' },
+  { href: '/dashboard/connections', label: 'Connections', icon: '🔗' },
   { href: '/dashboard/settings', label: 'Settings', icon: '⚙️' },
 ]
 
