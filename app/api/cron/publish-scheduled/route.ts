@@ -5,6 +5,7 @@
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
+import { Resend } from 'resend'
 
 export const runtime = 'nodejs'
 
@@ -46,6 +47,39 @@ export async function GET(req: NextRequest) {
             results.push({ id: postId, platform, status: 'skipped', error: 'Pending approval' })
             continue
           }
+        }
+
+        // ── Email platform handler ─────────────────────────────────────────────
+        if (platform === 'email') {
+          const resendKey = process.env.RESEND_API_KEY
+          if (!resendKey) {
+            await sql`UPDATE scheduled_posts SET status = 'failed', error = 'RESEND_API_KEY not configured' WHERE id = ${postId}`
+            results.push({ id: postId, platform, status: 'failed', error: 'RESEND_API_KEY not configured' })
+            continue
+          }
+          const resend = new Resend(resendKey)
+          const c = contentJson
+          try {
+            await resend.emails.send({
+              from: String(c.from || 'noreply@resend.dev'),
+              to: String(c.to),
+              subject: String(c.subject || ''),
+              html: `<div style="font-family:sans-serif;max-width:600px;margin:0 auto;color:#111827;line-height:1.6;">
+                <p style="color:#6b7280;font-size:12px;">${String(c.previewText || '')}</p>
+                ${String(c.body || '').replace(/\n/g, '<br>')}
+                <br><br>
+                <a href="${String(c.ctaUrl || '#')}" style="display:inline-block;background:#4f46e5;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">${String(c.cta || 'Learn More')}</a>
+                <p style="color:#9ca3af;font-size:11px;margin-top:32px;"><a href="#" style="color:#9ca3af;">Unsubscribe</a></p>
+              </div>`,
+            })
+            await sql`UPDATE scheduled_posts SET status = 'published', published_at = CURRENT_TIMESTAMP WHERE id = ${postId}`
+            results.push({ id: postId, platform, status: 'published' })
+          } catch (e) {
+            const errMsg = String(e)
+            await sql`UPDATE scheduled_posts SET status = 'failed', error = ${errMsg} WHERE id = ${postId}`
+            results.push({ id: postId, platform, status: 'failed', error: errMsg })
+          }
+          continue // skip social publish logic below
         }
 
         // Call the Social Publisher API

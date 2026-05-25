@@ -252,17 +252,47 @@ export async function PUT(req: NextRequest) {
       sent.push({ recipient: recipient.email, emailsScheduled: emails.length, day0Id })
     }
 
+    // Schedule remaining emails (day > 0) into scheduled_posts
+    const remainingEmails = emails.filter(e => e.day > 0)
+    let scheduledCount = 0
+    for (const recipient of recipients.slice(0, 50)) {
+      for (const email of remainingEmails) {
+        const scheduledTime = new Date(Date.now() + email.day * 24 * 60 * 60 * 1000).toISOString()
+        const personalised = (text: string) => text.replace(/\{\{FIRST_NAME\}\}/g, recipient.firstName || 'there')
+        await sql`
+          INSERT INTO scheduled_posts (id, workspace_id, platform, content_json, artifact_id, scheduled_time, status)
+          VALUES (
+            ${newId()}, ${workspaceId}, 'email',
+            ${JSON.stringify({
+              to: recipient.email,
+              from: from,
+              subject: personalised(email.subject),
+              previewText: email.previewText ? personalised(email.previewText) : '',
+              body: personalised(email.body),
+              cta: email.cta,
+              ctaUrl: email.ctaUrl,
+              businessName: brand.business_name,
+              day: email.day,
+            })},
+            ${artifactId}, ${scheduledTime}, 'queued'
+          )
+        `
+        scheduledCount++
+      }
+    }
+
     // Log to learning_notes
     await sql`INSERT INTO learning_notes (id, workspace_id, source_type, source_id, note, confidence)
               VALUES (${newId()}, ${workspaceId}, 'email_sequence_send', ${artifactId},
-                      ${`Sent day-0 email to ${sent.length} recipients from sequence "${sequence.sequenceName}"`}, 0.9)`
+                      ${`Sent day-0 email to ${sent.length} recipients from sequence "${sequence.sequenceName}". Scheduled ${scheduledCount} follow-up emails.`}, 0.9)`
 
     return NextResponse.json({
       ok: true,
       sentCount: sent.length,
       totalEmailsInSequence: emails.length,
+      scheduledFollowUps: scheduledCount,
       recipients: sent,
-      message: `Day-0 email sent to ${sent.length} recipients. Remaining ${emails.length - 1} emails should be scheduled in your email platform (days ${emails.slice(1).map(e => e.day).join(', ')}).`,
+      message: `Day-0 email sent to ${sent.length} recipients. ${scheduledCount} follow-up emails scheduled (days ${remainingEmails.map(e => e.day).join(', ')}) via the publish cron.`,
     })
   } catch (error) {
     console.error('Email sequence send error:', error)

@@ -49,6 +49,7 @@ export default function FunnelPage() {
     'email-sequence': 'welcome',
   })
   const [landingPageHtml, setLandingPageHtml] = useState<string | null>(null)
+  const [landingPagePublicUrl, setLandingPagePublicUrl] = useState<string | null>(null)
   const [showLandingPreview, setShowLandingPreview] = useState(false)
   const [sendEmailModal, setSendEmailModal] = useState<{ artifactId: string; sequenceName: string } | null>(null)
   const [sendRecipients, setSendRecipients] = useState('')
@@ -108,6 +109,7 @@ export default function FunnelPage() {
       }))
       if (worker.id === 'landing-page' && data.page?.htmlTemplate) {
         setLandingPageHtml(data.page.htmlTemplate)
+        if (data.publicUrl) setLandingPagePublicUrl(data.publicUrl)
       }
       if (worker.id === 'email-sequence' && data.artifactId) {
         setSendEmailModal({ artifactId: data.artifactId, sequenceName: data.sequence?.sequenceName || 'Email Sequence' })
@@ -322,6 +324,30 @@ export default function FunnelPage() {
               </button>
             </div>
           </div>
+
+          {/* Live URL row */}
+          {landingPagePublicUrl && (
+            <div className="flex items-center gap-2 mb-3 p-2.5 bg-gray-800 border border-blue-900 rounded-lg">
+              <span className="text-blue-400 text-xs font-medium flex-shrink-0">Live URL:</span>
+              <span className="text-blue-300 text-xs truncate flex-1">{landingPagePublicUrl}</span>
+              <a
+                href={landingPagePublicUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex-shrink-0 px-2.5 py-1 bg-blue-700 hover:bg-blue-600 text-white text-xs rounded-md transition-colors font-medium"
+              >
+                🌐 View Live Page →
+              </a>
+              <button
+                onClick={() => navigator.clipboard.writeText(landingPagePublicUrl)}
+                className="flex-shrink-0 px-2.5 py-1 bg-gray-700 hover:bg-gray-600 text-gray-300 text-xs rounded-md transition-colors"
+                title="Copy URL"
+              >
+                Copy URL
+              </button>
+            </div>
+          )}
+
           {showLandingPreview && (
             <iframe
               srcDoc={landingPageHtml}

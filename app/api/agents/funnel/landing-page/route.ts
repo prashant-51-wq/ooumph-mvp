@@ -151,9 +151,13 @@ Return JSON:
       })
     }
 
+    const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || 'https://ooumph-mvp.vercel.app'
+    const publicUrl = `${baseUrl}/lp/${artifactId}`
+
     return NextResponse.json({
       artifactId,
       page: contentJson,
+      publicUrl,
       sectionCount: page.sections?.length || 0,
       message: `Landing page built: ${page.sections?.length || 0} sections, A/B headline variant included, HTML ready to deploy.`,
     })

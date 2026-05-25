@@ -75,12 +75,19 @@ function SkeletonKanbanCards() {
   )
 }
 
-// ─── Lead score bar ───────────────────────────────────────────────────────────
+// ─── Lead score helpers ───────────────────────────────────────────────────────
+
+function scoreBadge(score: number): string {
+  if (score >= 80) return '🔥'
+  if (score >= 50) return '🟡'
+  return '🔵'
+}
 
 function ScoreBar({ score }: { score: number }) {
   const barColor = score >= 70 ? 'bg-green-500' : score >= 40 ? 'bg-yellow-500' : 'bg-gray-600'
   return (
     <div className="flex items-center gap-2">
+      <span className="text-sm leading-none" title={`Score: ${score}`}>{scoreBadge(score)}</span>
       <div className="h-1.5 flex-1 rounded-full bg-gray-700">
         <div className={`h-1.5 rounded-full ${barColor}`} style={{ width: `${score}%` }} />
       </div>
@@ -360,6 +367,7 @@ export default function LeadsCRMPage() {
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2">
+                        <span className="text-sm leading-none" title={`Score: ${lead.score}`}>{scoreBadge(lead.score)}</span>
                         <div className="h-1.5 w-16 rounded-full bg-gray-700">
                           <div className={`h-1.5 rounded-full ${lead.score >= 70 ? 'bg-green-500' : lead.score >= 40 ? 'bg-yellow-500' : 'bg-gray-600'}`}
                             style={{ width: `${lead.score}%` }} />
