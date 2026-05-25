@@ -48,6 +48,11 @@ const PROTECTED_API_PREFIXES = [
   '/api/analytics/',
   '/api/media/',
   '/api/assets/',
+  '/api/leads-captured/',
+  '/api/schedule/',
+  '/api/crm/',
+  '/api/team/',
+  '/api/bookings/',
 ]
 
 // ── Token verification (Edge-compatible HMAC) ─────────────────────────────────

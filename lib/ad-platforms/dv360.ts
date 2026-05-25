@@ -8,6 +8,8 @@
  * Per-workspace: access_token + advertiser_id stored in integrations table.
  */
 
+import { fetchWithTimeout } from '@/lib/fetch-with-timeout'
+
 const DV360_BASE = 'https://displayvideo.googleapis.com/v3'
 
 export interface DV360Credentials {
@@ -36,7 +38,7 @@ function getInsertionOrderConfig(objective: string) {
 // ─── HTTP helpers ─────────────────────────────────────────────────────────────
 
 async function dv360Fetch(method: string, path: string, token: string, body?: unknown) {
-  const res = await fetch(`${DV360_BASE}${path}`, {
+  const res = await fetchWithTimeout(`${DV360_BASE}${path}`, {
     method,
     headers: {
       'Authorization': `Bearer ${token}`,
@@ -212,7 +214,7 @@ export async function getDV360InsertionOrderMetrics(
   }
 
   // Create the report (async in DV360 — returns a query ID)
-  const queryRes = await fetch(`https://doubleclickbidmanager.googleapis.com/v2/queries`, {
+  const queryRes = await fetchWithTimeout(`https://doubleclickbidmanager.googleapis.com/v2/queries`, {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${creds.accessToken}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(queryBody),

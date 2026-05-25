@@ -135,6 +135,12 @@ async function postgresQuery(strings: TemplateStringsArray, ...values: unknown[]
     await pgSql`CREATE INDEX IF NOT EXISTS idx_subscriptions_workspace ON subscriptions(workspace_id)`
     await pgSql`CREATE INDEX IF NOT EXISTS idx_commission_ledger_vendor ON commission_ledger(vendor_workspace_id, created_at DESC)`
     await pgSql`CREATE INDEX IF NOT EXISTS idx_client_accounts_vendor ON client_accounts(vendor_workspace_id)`
+    await pgSql`CREATE TABLE IF NOT EXISTS workspace_members (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, user_id TEXT NOT NULL, role VARCHAR(50) DEFAULT 'member', invited_by TEXT, joined_at TIMESTAMPTZ DEFAULT NOW(), status VARCHAR(50) DEFAULT 'active')`
+    await pgSql`CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_members_unique ON workspace_members(workspace_id, user_id)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_workspace_members_workspace ON workspace_members(workspace_id)`
+    await pgSql`CREATE TABLE IF NOT EXISTS workspace_invites (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, email VARCHAR(255) NOT NULL, role VARCHAR(50) DEFAULT 'member', token TEXT NOT NULL UNIQUE, status VARCHAR(50) DEFAULT 'pending', invited_by TEXT, expires_at TIMESTAMPTZ NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_workspace_invites_token ON workspace_invites(token)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_workspace_invites_workspace ON workspace_invites(workspace_id)`
   }
 
   const rows = await pgSql(strings, ...values) as Record<string, unknown>[]
@@ -601,6 +607,30 @@ function initSQLiteSync(db: import('better-sqlite3').Database) {
     CREATE INDEX IF NOT EXISTS idx_subscriptions_workspace ON subscriptions(workspace_id);
     CREATE INDEX IF NOT EXISTS idx_commission_ledger_vendor ON commission_ledger(vendor_workspace_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_client_accounts_vendor ON client_accounts(vendor_workspace_id);
+    CREATE TABLE IF NOT EXISTS workspace_members (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      role TEXT DEFAULT 'member',
+      invited_by TEXT,
+      joined_at TEXT DEFAULT (datetime('now')),
+      status TEXT DEFAULT 'active'
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_members_unique ON workspace_members(workspace_id, user_id);
+    CREATE INDEX IF NOT EXISTS idx_workspace_members_workspace ON workspace_members(workspace_id);
+    CREATE TABLE IF NOT EXISTS workspace_invites (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      email TEXT NOT NULL,
+      role TEXT DEFAULT 'member',
+      token TEXT NOT NULL UNIQUE,
+      status TEXT DEFAULT 'pending',
+      invited_by TEXT,
+      expires_at TEXT NOT NULL,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_workspace_invites_token ON workspace_invites(token);
+    CREATE INDEX IF NOT EXISTS idx_workspace_invites_workspace ON workspace_invites(workspace_id);
   `)
   // Safely add columns to existing tables (ignore "already exists" errors)
   const migrations = [
@@ -635,6 +665,12 @@ function initSQLiteSync(db: import('better-sqlite3').Database) {
     'CREATE INDEX IF NOT EXISTS idx_subscriptions_workspace ON subscriptions(workspace_id)',
     'CREATE INDEX IF NOT EXISTS idx_commission_ledger_vendor ON commission_ledger(vendor_workspace_id, created_at DESC)',
     'CREATE INDEX IF NOT EXISTS idx_client_accounts_vendor ON client_accounts(vendor_workspace_id)',
+    'CREATE TABLE IF NOT EXISTS workspace_members (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, user_id TEXT NOT NULL, role TEXT DEFAULT \'member\', invited_by TEXT, joined_at TEXT DEFAULT (datetime(\'now\')), status TEXT DEFAULT \'active\')',
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_members_unique ON workspace_members(workspace_id, user_id)',
+    'CREATE INDEX IF NOT EXISTS idx_workspace_members_workspace ON workspace_members(workspace_id)',
+    'CREATE TABLE IF NOT EXISTS workspace_invites (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, email TEXT NOT NULL, role TEXT DEFAULT \'member\', token TEXT NOT NULL UNIQUE, status TEXT DEFAULT \'pending\', invited_by TEXT, expires_at TEXT NOT NULL, created_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE INDEX IF NOT EXISTS idx_workspace_invites_token ON workspace_invites(token)',
+    'CREATE INDEX IF NOT EXISTS idx_workspace_invites_workspace ON workspace_invites(workspace_id)',
   ]
   for (const m of migrations) {
     try { db.exec(m) } catch { /* column already exists */ }
@@ -703,5 +739,11 @@ export async function initializeDatabase() {
   await pgSql`CREATE INDEX IF NOT EXISTS idx_subscriptions_workspace ON subscriptions(workspace_id)`
   await pgSql`CREATE INDEX IF NOT EXISTS idx_commission_ledger_vendor ON commission_ledger(vendor_workspace_id, created_at DESC)`
   await pgSql`CREATE INDEX IF NOT EXISTS idx_client_accounts_vendor ON client_accounts(vendor_workspace_id)`
+  await pgSql`CREATE TABLE IF NOT EXISTS workspace_members (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, user_id TEXT NOT NULL, role VARCHAR(50) DEFAULT 'member', invited_by TEXT, joined_at TIMESTAMPTZ DEFAULT NOW(), status VARCHAR(50) DEFAULT 'active')`
+  await pgSql`CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_members_unique ON workspace_members(workspace_id, user_id)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_workspace_members_workspace ON workspace_members(workspace_id)`
+  await pgSql`CREATE TABLE IF NOT EXISTS workspace_invites (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, email VARCHAR(255) NOT NULL, role VARCHAR(50) DEFAULT 'member', token TEXT NOT NULL UNIQUE, status VARCHAR(50) DEFAULT 'pending', invited_by TEXT, expires_at TIMESTAMPTZ NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_workspace_invites_token ON workspace_invites(token)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_workspace_invites_workspace ON workspace_invites(workspace_id)`
   console.log('✅ Neon Postgres DB initialized')
 }

@@ -15,6 +15,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { publishTweet } from '@/lib/twitter-oauth'
+import { fetchWithTimeout } from '@/lib/fetch-with-timeout'
 
 interface DirectPublishBody {
   workspaceId: string
@@ -59,7 +60,7 @@ async function publishToTwitter(
 async function publishToLinkedIn(text: string, accessToken: string, personUrn: string): Promise<PlatformResult> {
   try {
     const authorUrn = personUrn.startsWith('urn:li:') ? personUrn : `urn:li:person:${personUrn}`
-    const res = await fetch('https://api.linkedin.com/v2/ugcPosts', {
+    const res = await fetchWithTimeout('https://api.linkedin.com/v2/ugcPosts', {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -97,7 +98,8 @@ async function publishToLinkedIn(text: string, accessToken: string, personUrn: s
 // ── Facebook Graph API ────────────────────────────────────────────────────────
 async function publishToFacebook(text: string, accessToken: string, pageId: string): Promise<PlatformResult> {
   try {
-    const res = await fetch(`https://graph.facebook.com/v18.0/${pageId}/feed`, {
+    const res = await fetchWithTimeout(`https://graph.facebook.com/v18.0/${pageId}/feed`, {
+      timeoutMs: 10000,
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message: text, access_token: accessToken }),

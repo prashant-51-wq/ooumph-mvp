@@ -7,6 +7,8 @@
  *   Per-workspace: access_token (OAuth), customer_id stored in integrations table
  */
 
+import { fetchWithTimeout } from '@/lib/fetch-with-timeout'
+
 const GADS_BASE = 'https://googleads.googleapis.com/v17'
 
 export interface GoogleAdsCredentials {
@@ -48,7 +50,7 @@ function buildHeaders(creds: GoogleAdsCredentials) {
 
 async function gadsPost(creds: GoogleAdsCredentials, endpoint: string, body: unknown) {
   const url = `${GADS_BASE}/customers/${creds.customerId}${endpoint}`
-  const res = await fetch(url, {
+  const res = await fetchWithTimeout(url, {
     method: 'POST',
     headers: buildHeaders(creds),
     body: JSON.stringify(body),
@@ -60,7 +62,7 @@ async function gadsPost(creds: GoogleAdsCredentials, endpoint: string, body: unk
 
 async function gadsGet(creds: GoogleAdsCredentials, endpoint: string) {
   const url = `${GADS_BASE}/customers/${creds.customerId}${endpoint}`
-  const res = await fetch(url, { headers: buildHeaders(creds) })
+  const res = await fetchWithTimeout(url, { headers: buildHeaders(creds) })
   const data = await res.json() as Record<string, unknown>
   if (!res.ok) throw new Error(`Google Ads API error: ${JSON.stringify(data)}`)
   return data

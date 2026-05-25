@@ -15,6 +15,7 @@
  */
 
 import crypto from 'crypto'
+import { fetchWithTimeout } from '@/lib/fetch-with-timeout'
 
 export interface OAuth1Credentials {
   consumerKey: string        // Twitter API Key
@@ -102,7 +103,7 @@ export async function postTweetOAuth1(text: string, creds: OAuth1Credentials): P
   const endpoint = 'https://api.twitter.com/2/tweets'
   const authHeader = buildOAuth1Header('POST', endpoint, {}, creds)
 
-  const res = await fetch(endpoint, {
+  const res = await fetchWithTimeout(endpoint, {
     method: 'POST',
     headers: {
       'Authorization': authHeader,
@@ -134,7 +135,7 @@ export async function postTweetOAuth1(text: string, creds: OAuth1Credentials): P
  * Does NOT work with App-Only Bearer tokens.
  */
 export async function postTweetOAuth2(text: string, userAccessToken: string): Promise<{ tweetId: string; url: string }> {
-  const res = await fetch('https://api.twitter.com/2/tweets', {
+  const res = await fetchWithTimeout('https://api.twitter.com/2/tweets', {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${userAccessToken}`,

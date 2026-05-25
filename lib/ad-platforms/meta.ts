@@ -3,6 +3,8 @@
  * Handles campaigns, ad sets, ads, and insights for Facebook + Instagram.
  */
 
+import { fetchWithTimeout } from '@/lib/fetch-with-timeout'
+
 const GRAPH = 'https://graph.facebook.com/v20.0'
 
 export interface MetaCredentials {
@@ -39,7 +41,7 @@ const BILLING_EVENT_MAP: Record<string, string> = {
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 async function graphPost(path: string, token: string, body: Record<string, unknown>) {
-  const res = await fetch(`${GRAPH}${path}?access_token=${token}`, {
+  const res = await fetchWithTimeout(`${GRAPH}${path}?access_token=${token}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -51,14 +53,14 @@ async function graphPost(path: string, token: string, body: Record<string, unkno
 
 async function graphGet(path: string, token: string, params: Record<string, string> = {}) {
   const qs = new URLSearchParams({ access_token: token, ...params })
-  const res = await fetch(`${GRAPH}${path}?${qs}`)
+  const res = await fetchWithTimeout(`${GRAPH}${path}?${qs}`)
   const data = await res.json() as Record<string, unknown>
   if (data.error) throw new Error(`Meta API error: ${JSON.stringify(data.error)}`)
   return data
 }
 
 async function graphPatch(path: string, token: string, body: Record<string, unknown>) {
-  const res = await fetch(`${GRAPH}${path}?access_token=${token}`, {
+  const res = await fetchWithTimeout(`${GRAPH}${path}?access_token=${token}`, {
     method: 'POST',  // Meta uses POST for updates on most resources
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),

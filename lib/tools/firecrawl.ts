@@ -1,4 +1,6 @@
 // Firecrawl website scraper wrapper
+import { fetchWithTimeout } from '@/lib/fetch-with-timeout'
+
 export interface ScrapeResult {
   markdown: string
   title: string
@@ -9,7 +11,8 @@ export async function scrapeUrl(url: string): Promise<ScrapeResult | null> {
   const apiKey = process.env.FIRECRAWL_API_KEY
   if (!apiKey) return null
   try {
-    const res = await fetch('https://api.firecrawl.dev/v1/scrape', {
+    const res = await fetchWithTimeout('https://api.firecrawl.dev/v1/scrape', {
+      timeoutMs: 15000,
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
       body: JSON.stringify({ url, formats: ['markdown'], onlyMainContent: true }),

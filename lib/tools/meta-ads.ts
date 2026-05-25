@@ -1,5 +1,7 @@
 // Meta Ads (Facebook Graph API)
 
+import { fetchWithTimeout } from '@/lib/fetch-with-timeout'
+
 const META_BASE = 'https://graph.facebook.com/v21.0'
 
 export interface MetaCampaign {
@@ -32,7 +34,7 @@ export async function getMetaCampaigns(
   if (!token || !accountId) return []
   try {
     const fields = 'id,name,status,objective,daily_budget,lifetime_budget,created_time'
-    const res = await fetch(
+    const res = await fetchWithTimeout(
       `${META_BASE}/${accountId}/campaigns?fields=${fields}&access_token=${token}`
     )
     if (!res.ok) return []
@@ -54,7 +56,7 @@ export async function createMetaCampaign(
   const accountId = adAccountId || process.env.META_AD_ACCOUNT_ID
   if (!token || !accountId) return null
   try {
-    const res = await fetch(`${META_BASE}/${accountId}/campaigns`, {
+    const res = await fetchWithTimeout(`${META_BASE}/${accountId}/campaigns`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -83,7 +85,7 @@ export async function getMetaCampaignInsights(
   if (!token) return null
   try {
     const fields = 'impressions,clicks,spend,ctr,cpc,reach'
-    const res = await fetch(
+    const res = await fetchWithTimeout(
       `${META_BASE}/${campaignId}/insights?fields=${fields}&date_preset=${preset}&access_token=${token}`
     )
     if (!res.ok) return null
@@ -103,7 +105,7 @@ export async function pauseMetaCampaign(
   const token = accessToken || process.env.META_ACCESS_TOKEN
   if (!token) return false
   try {
-    const res = await fetch(`${META_BASE}/${campaignId}`, {
+    const res = await fetchWithTimeout(`${META_BASE}/${campaignId}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ status: 'PAUSED', access_token: token }),
@@ -123,7 +125,7 @@ export async function activateMetaCampaign(
   const token = accessToken || process.env.META_ACCESS_TOKEN
   if (!token) return false
   try {
-    const res = await fetch(`${META_BASE}/${campaignId}`, {
+    const res = await fetchWithTimeout(`${META_BASE}/${campaignId}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ status: 'ACTIVE', access_token: token }),
@@ -145,7 +147,7 @@ export async function getMetaAccountInfo(
   if (!token || !accountId) return null
   try {
     const fields = 'name,currency,account_status,balance,spend_cap'
-    const res = await fetch(
+    const res = await fetchWithTimeout(
       `${META_BASE}/${accountId}?fields=${fields}&access_token=${token}`
     )
     if (!res.ok) return null
