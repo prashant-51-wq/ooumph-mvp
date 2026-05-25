@@ -31,10 +31,13 @@ export default function EmailMarketingPage() {
   const [error, setError] = useState('')
 
   // Subscriber state
-  const [subscribers, setSubscribers] = useState<Array<{ id: string; email: string; name: string; status: string; subscribed_at: string }>>([])
+  const [subscribers, setSubscribers] = useState<Array<{ id: string; email: string; name: string; status: string; subscribed_at: string; source?: string; tags?: string }>>([])
   const [newSubEmail, setNewSubEmail] = useState('')
   const [newSubName, setNewSubName] = useState('')
+  const [newSubSource, setNewSubSource] = useState('manual')
   const [addingSub, setAddingSub] = useState(false)
+  const [subFilter, setSubFilter] = useState<'all' | 'subscribed' | 'unsubscribed'>('all')
+  const [subSearch, setSubSearch] = useState('')
 
   const workspaceId = typeof window !== 'undefined' ? localStorage.getItem('workspaceId') : null
 
@@ -93,9 +96,9 @@ export default function EmailMarketingPage() {
     setAddingSub(true)
     await fetch('/api/email-subscribers', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workspaceId, email: newSubEmail, name: newSubName }),
+      body: JSON.stringify({ workspaceId, email: newSubEmail, name: newSubName, source: newSubSource }),
     })
-    setNewSubEmail(''); setNewSubName('')
+    setNewSubEmail(''); setNewSubName(''); setNewSubSource('manual')
     setAddingSub(false)
     loadSubs()
   }
@@ -137,7 +140,19 @@ export default function EmailMarketingPage() {
       {/* Campaigns Tab */}
       {tab === 'campaigns' && (
         <div className="space-y-4">
-          {loading && <p className="text-gray-400 text-sm">Loading campaigns...</p>}
+          {loading && (
+            <div className="space-y-3 animate-pulse">
+              {[1, 2, 3].map(i => (
+                <div key={i} className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="h-4 bg-gray-800 rounded w-40" />
+                    <div className="h-5 bg-gray-800 rounded-full w-16" />
+                  </div>
+                  <div className="h-3 bg-gray-800 rounded w-56 mt-2" />
+                </div>
+              ))}
+            </div>
+          )}
           {!loading && campaigns.length === 0 && (
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-12 text-center">
               <div className="text-5xl mb-4">📧</div>
@@ -257,34 +272,74 @@ export default function EmailMarketingPage() {
       {/* Subscribers Tab */}
       {tab === 'subscribers' && (
         <div>
-          <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 mb-5">
-            <h3 className="text-white font-medium mb-3">Add Subscriber</h3>
-            <div className="flex gap-3">
+          {/* Add subscriber */}
+          <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 mb-4">
+            <h3 className="text-white font-medium mb-3 text-sm">Add Subscriber</h3>
+            <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
               <input value={newSubEmail} onChange={e => setNewSubEmail(e.target.value)}
                 placeholder="email@company.com" className={inputCls} />
               <input value={newSubName} onChange={e => setNewSubName(e.target.value)}
                 placeholder="Name (optional)" className={inputCls} />
+              <select value={newSubSource} onChange={e => setNewSubSource(e.target.value)} className={inputCls}>
+                <option value="manual">Manual</option>
+                <option value="landing_page">Landing Page</option>
+                <option value="campaign">Email Campaign</option>
+                <option value="form">Form</option>
+                <option value="organic">Organic</option>
+                <option value="referral">Referral</option>
+                <option value="import">Import</option>
+              </select>
               <button onClick={addSubscriber} disabled={addingSub || !newSubEmail}
-                className="px-5 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-medium whitespace-nowrap transition-colors">
-                {addingSub ? 'Adding...' : 'Add'}
+                className="px-5 py-3 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-medium whitespace-nowrap transition-colors">
+                {addingSub ? 'Adding...' : '+ Add'}
               </button>
             </div>
           </div>
 
+          {/* Filter + Search bar */}
+          <div className="flex items-center gap-3 mb-4 flex-wrap">
+            <div className="flex bg-gray-800 rounded-lg p-0.5">
+              {(['all', 'subscribed', 'unsubscribed'] as const).map(f => (
+                <button key={f} onClick={() => setSubFilter(f)}
+                  className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors capitalize ${subFilter === f ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-white'}`}>
+                  {f} ({f === 'all' ? subscribers.length : subscribers.filter(s => s.status === f).length})
+                </button>
+              ))}
+            </div>
+            <input value={subSearch} onChange={e => setSubSearch(e.target.value)}
+              placeholder="Search by email or name..."
+              className="flex-1 min-w-48 px-3 py-2 rounded-lg bg-gray-900 border border-gray-800 text-white placeholder-gray-600 text-sm focus:outline-none focus:border-indigo-500" />
+          </div>
+
+          {/* Subscriber table */}
           <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
             <table className="w-full">
               <thead><tr className="border-b border-gray-800">
-                {['Email', 'Name', 'Status', 'Subscribed'].map(h => (
+                {['Email', 'Name', 'Source', 'Status', 'Subscribed'].map(h => (
                   <th key={h} className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">{h}</th>
                 ))}
               </tr></thead>
               <tbody>
-                {subscribers.length === 0 ? (
-                  <tr><td colSpan={4} className="text-center py-12 text-gray-500">No subscribers yet</td></tr>
-                ) : subscribers.map(sub => (
-                  <tr key={sub.id} className="border-b border-gray-800">
-                    <td className="px-4 py-3 text-white text-sm">{sub.email}</td>
+                {subscribers
+                  .filter(s => subFilter === 'all' || s.status === subFilter)
+                  .filter(s => !subSearch || s.email.includes(subSearch) || (s.name || '').toLowerCase().includes(subSearch.toLowerCase()))
+                  .length === 0 ? (
+                  <tr><td colSpan={5} className="text-center py-12">
+                    <p className="text-gray-500 text-sm">{subscribers.length === 0 ? 'No subscribers yet' : `No subscribers match "${subSearch || subFilter}"`}</p>
+                    {subscribers.length === 0 && <p className="text-gray-600 text-xs mt-1">Add subscribers manually or capture them via forms and landing pages</p>}
+                  </td></tr>
+                ) : subscribers
+                  .filter(s => subFilter === 'all' || s.status === subFilter)
+                  .filter(s => !subSearch || s.email.includes(subSearch) || (s.name || '').toLowerCase().includes(subSearch.toLowerCase()))
+                  .map(sub => (
+                  <tr key={sub.id} className="border-b border-gray-800 hover:bg-gray-800/30 transition-colors">
+                    <td className="px-4 py-3 text-white text-sm font-medium">{sub.email}</td>
                     <td className="px-4 py-3 text-gray-300 text-sm">{sub.name || '—'}</td>
+                    <td className="px-4 py-3">
+                      <span className="px-2 py-0.5 rounded text-xs bg-gray-800 border border-gray-700 text-gray-400 capitalize">
+                        {(sub.source || 'manual').replace(/_/g, ' ')}
+                      </span>
+                    </td>
                     <td className="px-4 py-3">
                       <span className={`px-2 py-0.5 rounded-full text-xs border ${sub.status === 'subscribed' ? 'bg-green-900 text-green-300 border-green-800' : 'bg-gray-800 text-gray-400 border-gray-700'}`}>{sub.status}</span>
                     </td>
@@ -294,6 +349,7 @@ export default function EmailMarketingPage() {
               </tbody>
             </table>
           </div>
+          <p className="text-gray-700 text-xs mt-2 text-right">{subscribers.length} total · {subscribers.filter(s => s.status === 'subscribed').length} active</p>
         </div>
       )}
     </div>
