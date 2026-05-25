@@ -10,6 +10,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { Resend } from 'resend'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 
 // ── Node types ─────────────────────────────────────────────────────────────────
 interface WorkflowNode {
@@ -170,6 +171,8 @@ export async function POST(req: NextRequest) {
     if (!workspaceId || !triggerType) {
       return NextResponse.json({ error: 'workspaceId, triggerType required' }, { status: 400 })
     }
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     // Find all active workflows that match this trigger
     const workflowsResult = await sql`

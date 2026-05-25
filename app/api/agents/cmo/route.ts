@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
 import { runAgent } from '@/lib/claude'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -69,6 +70,8 @@ export async function POST(req: NextRequest) {
     if (!workspaceId) {
       return NextResponse.json({ ok: false, error: 'workspaceId is required' }, { status: 400 })
     }
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     // ── CHAT action: parse intent, propose team ─────────────────────────────
     if (action === 'chat') {

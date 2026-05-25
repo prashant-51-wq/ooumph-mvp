@@ -346,11 +346,16 @@ const PLATFORMS = [
     color: 'from-gray-700 to-gray-500',
     badge: 'Social',
     fields: [
-      { key: 'accountId', label: 'Twitter Username', placeholder: '@yourbrand', hint: 'Your Twitter/X handle (used for display only — posting uses the Bearer Token)' },
-      { key: 'accessToken', label: 'Bearer Token', placeholder: 'AAAAAAAAAA...', hint: 'Twitter Developer Portal → Your App → Keys and Tokens → Bearer Token' },
+      { key: 'accountId', label: 'Twitter Username', placeholder: '@yourbrand', hint: 'Your Twitter/X handle (for display only)' },
+      { key: 'accessToken', label: 'Access Token (OAuth 1.0a)', placeholder: '1234567890-xxxxxx...', hint: 'Twitter Developer Portal → Your App → Keys and Tokens → "Access Token and Secret" (NOT Bearer Token). Requires Read & Write app permissions.' },
     ],
-    publishSupports: 'Tweets from any text artifact (280 char limit auto-applied)',
+    publishSupports: 'Tweets from any text artifact (280 char limit auto-applied). Requires OAuth 1.0a credentials below.',
     docsUrl: 'https://developer.twitter.com/en/portal',
+    extraFields: [
+      { key: 'access_token_secret', label: 'Access Token Secret (OAuth 1.0a)', placeholder: 'xxxxxxxxxxxxxxxx...', hint: 'Same section as Access Token — the "Access Token Secret" value.' },
+      { key: 'consumer_key', label: 'API Key (Consumer Key)', placeholder: 'xxxxxxxxxxxxxx...', hint: 'Twitter Developer Portal → Your App → Keys and Tokens → API Key.' },
+      { key: 'consumer_secret', label: 'API Key Secret (Consumer Secret)', placeholder: 'xxxxxxxxxxxxxxxx...', hint: 'Twitter Developer Portal → Your App → Keys and Tokens → API Key Secret.' },
+    ],
   },
   {
     id: 'whatsapp',

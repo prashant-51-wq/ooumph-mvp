@@ -49,7 +49,10 @@ export async function POST(req: NextRequest) {
         const sub = await stripe.subscriptions.retrieve(String(session.subscription)) as import('stripe').Stripe.Subscription
         await fetch(`${appUrl}/api/billing/subscribe`, {
           method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            ...(internalSecret ? { 'x-internal-secret': internalSecret } : {}),
+          },
           body: JSON.stringify({
             workspaceId,
             planId,
@@ -73,7 +76,10 @@ export async function POST(req: NextRequest) {
       if (workspaceId && planId) {
         await fetch(`${appUrl}/api/billing/subscribe`, {
           method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            ...(internalSecret ? { 'x-internal-secret': internalSecret } : {}),
+          },
           body: JSON.stringify({
             workspaceId,
             planId,
@@ -126,15 +132,19 @@ export async function POST(req: NextRequest) {
         const vendorWorkspaceId = vendorResult.rows[0]?.workspace_id ? String(vendorResult.rows[0].workspace_id) : null
 
         if (vendorWorkspaceId) {
-          const grossAmount = pi.amount
-          const commissionAmount = pi.application_fee_amount
-          const netAmount = grossAmount - commissionAmount
-          const commissionRate = commissionAmount / grossAmount
+          // Idempotency: skip if this payment_intent was already recorded
+          const existing = await sql`SELECT id FROM commission_ledger WHERE stripe_payment_intent_id = ${pi.id} LIMIT 1`
+          if (!existing.rows[0]) {
+            const grossAmount = pi.amount
+            const commissionAmount = pi.application_fee_amount
+            const netAmount = grossAmount - commissionAmount
+            const commissionRate = commissionAmount / grossAmount
 
-          await sql`
-            INSERT INTO commission_ledger (id, vendor_workspace_id, gross_amount, commission_rate, commission_amount, net_amount, stripe_payment_intent_id, description, created_at)
-            VALUES (${newId()}, ${vendorWorkspaceId}, ${grossAmount}, ${commissionRate}, ${commissionAmount}, ${netAmount}, ${pi.id}, ${pi.description || 'Client payment'}, ${new Date().toISOString()})
-          `
+            await sql`
+              INSERT INTO commission_ledger (id, vendor_workspace_id, gross_amount, commission_rate, commission_amount, net_amount, stripe_payment_intent_id, description, created_at)
+              VALUES (${newId()}, ${vendorWorkspaceId}, ${grossAmount}, ${commissionRate}, ${commissionAmount}, ${netAmount}, ${pi.id}, ${pi.description || 'Client payment'}, ${new Date().toISOString()})
+            `
+          }
         }
       }
     }

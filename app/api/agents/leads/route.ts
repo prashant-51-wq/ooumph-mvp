@@ -3,12 +3,15 @@ import { sql, newId } from '@/lib/db'
 import { generateLeadGenPlan } from '@/lib/agents/leads'
 import { sendApprovalRequestEmail } from '@/lib/email'
 import { generateAdCreative, generateLandingVisual } from '@/lib/creative-workers'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 import type { BrandProfile } from '@/types'
 
 export async function POST(req: NextRequest) {
   let runId: string | null = null
   try {
     const { workspaceId } = await req.json()
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
     const [brandResult, strategyResult] = await Promise.all([
       sql`SELECT * FROM brand_profiles WHERE workspace_id = ${workspaceId} LIMIT 1`,
       sql`SELECT content_json FROM artifacts WHERE workspace_id = ${workspaceId} AND type = 'strategy' ORDER BY created_at DESC LIMIT 1`,

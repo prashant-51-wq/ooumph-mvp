@@ -62,7 +62,10 @@ export async function GET(req: NextRequest) {
 
         await fetch(`${appUrl}/api/agents/reputation`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'x-internal-secret': process.env.CRON_SECRET || process.env.ADMIN_SECRET || '',
+          },
           body: JSON.stringify({
             workspaceId: String(booking.workspace_id),
             mode: 'request_review',

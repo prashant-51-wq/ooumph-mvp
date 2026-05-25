@@ -85,7 +85,10 @@ export async function GET(req: NextRequest) {
         // Call the Social Publisher API
         const publishRes = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000'}/api/publish`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'x-internal-secret': process.env.CRON_SECRET || process.env.ADMIN_SECRET || '',
+          },
           body: JSON.stringify({
             workspaceId,
             platform,

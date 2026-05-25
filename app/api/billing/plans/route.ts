@@ -60,6 +60,16 @@ const DEFAULT_PLANS = [
 ]
 
 export async function GET() {
+  // Auto-seed plans on first request if table is empty (zero-config setup)
+  const count = await sql`SELECT COUNT(*) as c FROM plans`
+  if (Number(count.rows[0]?.c || 0) === 0) {
+    for (const plan of DEFAULT_PLANS) {
+      await sql`
+        INSERT INTO plans (id, name, slug, price_monthly, commission_rate, max_sub_accounts, max_ai_runs_monthly, features, sort_order)
+        VALUES (${newId()}, ${plan.name}, ${plan.slug}, ${plan.price_monthly}, ${plan.commission_rate}, ${plan.max_sub_accounts}, ${plan.max_ai_runs_monthly}, ${plan.features}, ${plan.sort_order})
+      `.catch(() => { /* ignore if already exists */ })
+    }
+  }
   const result = await sql`SELECT * FROM plans WHERE is_active = 1 ORDER BY sort_order ASC`
   return NextResponse.json(result.rows)
 }

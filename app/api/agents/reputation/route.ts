@@ -9,6 +9,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { Resend } from 'resend'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 
 interface AgentBody {
   workspaceId: string
@@ -47,6 +48,8 @@ export async function POST(req: NextRequest) {
     if (!workspaceId || !mode) {
       return NextResponse.json({ error: 'workspaceId and mode required' }, { status: 400 })
     }
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     // Load brand context
     const [brandResult, wsResult] = await Promise.all([

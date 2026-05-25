@@ -62,9 +62,13 @@ export async function POST(req: NextRequest) {
     `
     if (modelResult.rows[0]) {
       const appUrl = process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000'
+      const internalSecretScore = process.env.CRON_SECRET || process.env.ADMIN_SECRET || ''
       fetch(`${appUrl}/api/agents/funnel/qualify`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(internalSecretScore ? { 'x-internal-secret': internalSecretScore } : {}),
+        },
         body: JSON.stringify({
           workspaceId,
           mode: 'score_lead',
@@ -84,6 +88,28 @@ export async function POST(req: NextRequest) {
         }
       }).catch(e => console.error('Auto-score failed (non-fatal):', e))
     }
+
+    // ── Auto-fire lead_captured workflows ──────────────────────────────────────
+    // Find any active workflows with trigger_type = 'lead_captured' for this workspace
+    const appUrl = process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000'
+    const internalSecret = process.env.CRON_SECRET || process.env.ADMIN_SECRET || ''
+    sql`
+      SELECT id FROM workflows
+      WHERE workspace_id = ${workspaceId}
+        AND trigger_type = 'lead_captured'
+        AND status = 'active'
+    `.then(async wfResult => {
+      for (const wf of wfResult.rows) {
+        fetch(`${appUrl}/api/workflows/trigger`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(internalSecret ? { 'x-internal-secret': internalSecret } : {}),
+          },
+          body: JSON.stringify({ workspaceId, workflowId: String(wf.id), leadId: id, contactEmail: email }),
+        }).catch(() => {}) // fire-and-forget
+      }
+    }).catch(() => {})
 
     // Redirect to thank-you page
     const displayName = encodeURIComponent(name || email || 'there')

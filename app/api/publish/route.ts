@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
+import { publishTweet } from '@/lib/twitter-oauth'
 
 const BASE_URL = process.env.NEXT_PUBLIC_BASE_URL || 'https://ooumph-mvp.vercel.app'
 
@@ -7,6 +8,7 @@ interface Integration {
   access_token: string
   account_id: string
   platform: string
+  metadata?: Record<string, unknown>
 }
 
 // ─── Build image URL from artifact content ─────────────────────────────────
@@ -282,24 +284,13 @@ async function publishToFacebook(token: string, pageId: string, imageUrl: string
 
 // ─── Twitter/X v2 API ─────────────────────────────────────────────────────
 
-async function publishToTwitter(token: string, text: string) {
-  const res = await fetch('https://api.twitter.com/2/tweets', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ text: text.slice(0, 280) }),
-  })
-
-  if (!res.ok) {
-    const err = await res.text()
-    throw new Error(`Twitter error ${res.status}: ${err.slice(0, 200)}`)
-  }
-
-  const data = await res.json() as { data?: { id: string } }
-  const tweetId = data.data?.id || ''
-  return { postId: tweetId, postUrl: tweetId ? `https://twitter.com/i/web/status/${tweetId}` : 'https://twitter.com' }
+async function publishToTwitter(
+  token: string,
+  text: string,
+  metadata?: Record<string, unknown> | null,
+) {
+  const { tweetId, url } = await publishTweet(text, token, metadata)
+  return { postId: tweetId, postUrl: url }
 }
 
 // ─── POST /api/publish ────────────────────────────────────────────────────
@@ -312,11 +303,20 @@ export async function POST(req: NextRequest) {
     }
 
     const intResult = await sql`
-      SELECT access_token, account_id, platform FROM integrations
+      SELECT access_token, account_id, platform, metadata FROM integrations
       WHERE workspace_id = ${workspaceId} AND platform = ${platform} AND status = 'active'
       LIMIT 1
     `
-    const integration = intResult.rows[0] as unknown as Integration
+    const _rawInteg = intResult.rows[0]
+    let _meta: Record<string, unknown> | null = null
+    if (_rawInteg?.metadata) {
+      try {
+        _meta = typeof _rawInteg.metadata === 'object'
+          ? (_rawInteg.metadata as Record<string, unknown>)
+          : JSON.parse(String(_rawInteg.metadata)) as Record<string, unknown>
+      } catch { /* ignore */ }
+    }
+    const integration = { ..._rawInteg, metadata: _meta } as unknown as Integration
     if (!integration) {
       return NextResponse.json({ error: `No active ${platform} integration. Connect it in Integrations.` }, { status: 400 })
     }
@@ -378,7 +378,7 @@ export async function POST(req: NextRequest) {
       postUrl = result.postUrl
 
     } else if (platform === 'twitter') {
-      const result = await publishToTwitter(integration.access_token, caption)
+      const result = await publishToTwitter(integration.access_token, caption, integration.metadata)
       postId = result.postId
       postUrl = result.postUrl
 

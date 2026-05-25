@@ -5,6 +5,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
 import { generateAnalyticsReport, aggregateAnalyticsData, trackKPIs } from '@/lib/agents/analytics'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
@@ -44,6 +45,8 @@ export async function POST(req: NextRequest) {
   try {
     const { workspaceId, days } = await req.json() as { workspaceId: string; days?: number }
     if (!workspaceId) return NextResponse.json({ error: 'Missing workspaceId' }, { status: 400 })
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     const report = await generateAnalyticsReport(workspaceId, days || 30)
 

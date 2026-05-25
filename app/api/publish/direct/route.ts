@@ -14,6 +14,7 @@
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
+import { publishTweet } from '@/lib/twitter-oauth'
 
 interface DirectPublishBody {
   workspaceId: string
@@ -33,26 +34,21 @@ interface PlatformResult {
 }
 
 // ── Twitter/X v2 ─────────────────────────────────────────────────────────────
-async function publishToTwitter(text: string, accessToken: string): Promise<PlatformResult> {
+// Supports both OAuth 1.0a (if metadata contains consumer_key/secret + access_token_secret)
+// and OAuth 2.0 User Access Token (Bearer, PKCE flow).
+// Note: App-only Bearer tokens are READ-ONLY and cannot create tweets.
+async function publishToTwitter(
+  text: string,
+  accessToken: string,
+  metadata?: Record<string, unknown> | null,
+): Promise<PlatformResult> {
   try {
-    const res = await fetch('https://api.twitter.com/2/tweets', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ text: text.slice(0, 280) }),
-    })
-    const data = await res.json() as { data?: { id?: string }; errors?: Array<{ message?: string }> }
-    if (!res.ok || data.errors) {
-      return { platform: 'twitter', ok: false, error: data.errors?.[0]?.message || `HTTP ${res.status}` }
-    }
-    const tweetId = data.data?.id
+    const { tweetId, url } = await publishTweet(text, accessToken, metadata)
     return {
       platform: 'twitter',
       ok: true,
       postId: tweetId,
-      postUrl: tweetId ? `https://twitter.com/i/web/status/${tweetId}` : undefined,
+      postUrl: url,
     }
   } catch (e) {
     return { platform: 'twitter', ok: false, error: String(e) }
@@ -159,7 +155,12 @@ export async function POST(req: NextRequest) {
       let result: PlatformResult
 
       if (platform === 'twitter') {
-        result = await publishToTwitter(text, integ.access_token)
+        const twitterMeta = integ.metadata && typeof integ.metadata === 'object'
+          ? integ.metadata as Record<string, unknown>
+          : integ.metadata
+            ? (() => { try { return JSON.parse(String(integ.metadata)) as Record<string, unknown> } catch { return null } })()
+            : null
+        result = await publishToTwitter(text, integ.access_token, twitterMeta)
       } else if (platform === 'linkedin') {
         if (!integ.account_id) {
           result = { platform, ok: false, error: 'LinkedIn Person URN not set in account_id field' }

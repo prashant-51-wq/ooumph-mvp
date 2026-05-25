@@ -168,9 +168,13 @@ export async function POST(req: NextRequest) {
 
     // Fire meeting_booked workflow trigger
     const appUrlWf = process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000'
+    const wfInternalSecret = process.env.CRON_SECRET || process.env.ADMIN_SECRET || ''
     fetch(`${appUrlWf}/api/workflows/trigger`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(wfInternalSecret ? { 'x-internal-secret': wfInternalSecret } : {}),
+      },
       body: JSON.stringify({ workspaceId, triggerType: 'meeting_booked', leadId: contactId, contactEmail, data: { bookingId, title: meetingTitle } }),
     }).catch(e => console.error('Workflow trigger (booking) failed:', e))
 

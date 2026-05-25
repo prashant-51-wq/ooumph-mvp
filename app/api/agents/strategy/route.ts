@@ -2,12 +2,15 @@ import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { generateStrategy } from '@/lib/agents/strategy'
 import { sendApprovalRequestEmail } from '@/lib/email'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 import type { BrandProfile } from '@/types'
 
 export async function POST(req: NextRequest) {
   let runId: string | null = null
   try {
     const { workspaceId } = await req.json()
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     const brandResult = await sql`SELECT * FROM brand_profiles WHERE workspace_id = ${workspaceId} LIMIT 1`
     const brand = brandResult.rows[0] as unknown as BrandProfile
