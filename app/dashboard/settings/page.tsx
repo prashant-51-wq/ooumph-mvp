@@ -192,6 +192,19 @@ export default function SettingsPage() {
       .then(r => r.json())
       .then(d => {
         if (d) {
+          // Safely parse channels — may be an array, a JSON string, or a CSV string
+          let parsedChannels: string[] = []
+          if (Array.isArray(d.channels)) {
+            parsedChannels = d.channels
+          } else if (typeof d.channels === 'string' && d.channels) {
+            try {
+              const c = JSON.parse(d.channels)
+              parsedChannels = Array.isArray(c) ? c : []
+            } catch {
+              parsedChannels = d.channels.split(',').map((s: string) => s.trim()).filter(Boolean)
+            }
+          }
+
           setForm({
             businessName: d.business_name || d.name || '',
             industry: d.industry || '',
@@ -202,15 +215,21 @@ export default function SettingsPage() {
             targetAudience: d.target_audience || '',
             tone: d.tone || '',
             competitors: d.competitors || '',
-            channels: Array.isArray(d.channels) ? d.channels : (typeof d.channels === 'string' ? JSON.parse(d.channels || '[]') : []),
+            channels: parsedChannels,
             goals: d.goals || '',
             monthlyBudget: d.monthly_budget || '',
             prohibitedClaims: d.prohibited_claims || '',
             approvalEmail: d.approval_email || '',
           })
+
+          // Safely parse model_settings — guard against malformed JSON
           if (d.model_settings) {
-            const ms = typeof d.model_settings === 'string' ? JSON.parse(d.model_settings) : d.model_settings
-            setModelSettings(prev => ({ ...prev, ...ms }))
+            try {
+              const ms = typeof d.model_settings === 'string' ? JSON.parse(d.model_settings) : d.model_settings
+              if (ms && typeof ms === 'object') {
+                setModelSettings(prev => ({ ...prev, ...ms }))
+              }
+            } catch { /* leave model settings at defaults if JSON is malformed */ }
           }
         }
       })

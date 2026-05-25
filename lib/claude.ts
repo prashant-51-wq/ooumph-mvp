@@ -3,6 +3,12 @@ import { DEFAULT_MODEL as _DEFAULT_MODEL, SUPPORTED_MODELS as _SUPPORTED_MODELS 
 
 export { SUPPORTED_MODELS, DEFAULT_MODEL } from './models'
 
+// Strip BOM (U+FEFF) that can appear when env vars are copy-pasted from some editors.
+// Without this, the Anthropic SDK throws "Cannot convert argument to a ByteString".
+function sanitizeApiKey(key: string | undefined): string | undefined {
+  return key?.replace(/^﻿/, '').trim() || undefined
+}
+
 export function getModel(modelSettings?: Record<string, unknown> | null): string {
   if (modelSettings?.defaultModel && typeof modelSettings.defaultModel === 'string') {
     return modelSettings.defaultModel
@@ -10,7 +16,7 @@ export function getModel(modelSettings?: Record<string, unknown> | null): string
   return process.env.OOUMPH_AI_MODEL || _DEFAULT_MODEL
 }
 
-export const claude = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+export const claude = new Anthropic({ apiKey: sanitizeApiKey(process.env.ANTHROPIC_API_KEY) })
 
 export const MODEL = _DEFAULT_MODEL
 

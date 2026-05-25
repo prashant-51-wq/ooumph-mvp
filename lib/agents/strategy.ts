@@ -8,11 +8,25 @@ Your job is to create a comprehensive, actionable one-page marketing strategy fo
 Be specific, data-driven, and India-market aware where relevant.
 Always respond with valid JSON.`
 
+function normalizeChannels(channels: unknown): string[] {
+  if (Array.isArray(channels)) return channels.map(String)
+  if (typeof channels === 'string') {
+    // Could be a JSON array string or comma-separated
+    try {
+      const parsed = JSON.parse(channels)
+      if (Array.isArray(parsed)) return parsed.map(String)
+    } catch { /* not JSON */ }
+    return channels.split(',').map(s => s.trim()).filter(Boolean)
+  }
+  return []
+}
+
 export async function generateStrategy(brand: BrandProfile): Promise<Strategy> {
   const industry = brand.industry || brand.offer || ''
   const audience = brand.target_audience || ''
   const competitors = brand.competitors || ''
   const year = new Date().getFullYear()
+  const channelsList = normalizeChannels(brand.channels)
 
   // Fetch real market data from Brave Search (graceful fallback if key not set)
   const [marketTrends, competitorInsights, buyerBehavior] = await Promise.all([
@@ -61,7 +75,7 @@ Business: ${brand.business_name}
 Industry: ${brand.offer}
 Unique Value: ${brand.unique_value}
 Target Audience: ${brand.target_audience}
-Channels: ${brand.channels?.join(', ')}
+Channels: ${channelsList.join(', ')}
 Goals: ${brand.goals}
 Competitors: ${brand.competitors}
 Tone: ${brand.tone}
