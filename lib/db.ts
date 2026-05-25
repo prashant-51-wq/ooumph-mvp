@@ -120,6 +120,10 @@ async function postgresQuery(strings: TemplateStringsArray, ...values: unknown[]
     await pgSql`CREATE TABLE IF NOT EXISTS workflow_pending_steps (id TEXT PRIMARY KEY, workflow_run_id TEXT NOT NULL, workflow_id TEXT NOT NULL, workspace_id TEXT NOT NULL, node_index INTEGER NOT NULL, node_data TEXT NOT NULL, lead_id TEXT, contact_email TEXT, scheduled_for TIMESTAMPTZ NOT NULL, status TEXT DEFAULT 'pending', error_message TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`
     await pgSql`CREATE INDEX IF NOT EXISTS idx_workflow_runs_workflow ON workflow_runs(workflow_id)`
     await pgSql`CREATE INDEX IF NOT EXISTS idx_pending_steps_scheduled ON workflow_pending_steps(scheduled_for, status)`
+    await pgSql`CREATE TABLE IF NOT EXISTS reputation_reviews (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, contact_id TEXT, contact_name TEXT, contact_email TEXT, source TEXT NOT NULL DEFAULT 'manual', rating INTEGER, title TEXT, body TEXT, sentiment TEXT DEFAULT 'neutral', status TEXT DEFAULT 'new', response_text TEXT, response_sent_at TIMESTAMPTZ, external_id TEXT, external_url TEXT, booking_id TEXT, reviewed_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE TABLE IF NOT EXISTS reputation_requests (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, contact_id TEXT, contact_name TEXT, contact_email TEXT NOT NULL, booking_id TEXT, status TEXT DEFAULT 'pending', sent_at TIMESTAMPTZ, clicked_at TIMESTAMPTZ, review_platform TEXT DEFAULT 'google', review_link TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_reputation_reviews_workspace ON reputation_reviews(workspace_id, created_at DESC)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_reputation_requests_workspace ON reputation_requests(workspace_id, created_at DESC)`
   }
 
   const rows = await pgSql(strings, ...values) as Record<string, unknown>[]
@@ -472,6 +476,42 @@ function initSQLiteSync(db: import('better-sqlite3').Database) {
     );
     CREATE INDEX IF NOT EXISTS idx_workflow_runs_workflow ON workflow_runs(workflow_id);
     CREATE INDEX IF NOT EXISTS idx_pending_steps_scheduled ON workflow_pending_steps(scheduled_for, status);
+    CREATE TABLE IF NOT EXISTS reputation_reviews (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      contact_id TEXT,
+      contact_name TEXT,
+      contact_email TEXT,
+      source TEXT NOT NULL DEFAULT 'manual',
+      rating INTEGER,
+      title TEXT,
+      body TEXT,
+      sentiment TEXT DEFAULT 'neutral',
+      status TEXT DEFAULT 'new',
+      response_text TEXT,
+      response_sent_at TEXT,
+      external_id TEXT,
+      external_url TEXT,
+      booking_id TEXT,
+      reviewed_at TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS reputation_requests (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      contact_id TEXT,
+      contact_name TEXT,
+      contact_email TEXT NOT NULL,
+      booking_id TEXT,
+      status TEXT DEFAULT 'pending',
+      sent_at TEXT,
+      clicked_at TEXT,
+      review_platform TEXT DEFAULT 'google',
+      review_link TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_reputation_reviews_workspace ON reputation_reviews(workspace_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_reputation_requests_workspace ON reputation_requests(workspace_id, created_at DESC);
   `)
   // Safely add columns to existing tables (ignore "already exists" errors)
   const migrations = [
@@ -491,6 +531,10 @@ function initSQLiteSync(db: import('better-sqlite3').Database) {
     'CREATE TABLE IF NOT EXISTS workflow_pending_steps (id TEXT PRIMARY KEY, workflow_run_id TEXT NOT NULL, workflow_id TEXT NOT NULL, workspace_id TEXT NOT NULL, node_index INTEGER NOT NULL, node_data TEXT NOT NULL, lead_id TEXT, contact_email TEXT, scheduled_for TEXT NOT NULL, status TEXT DEFAULT \'pending\', error_message TEXT, created_at TEXT DEFAULT (datetime(\'now\')))',
     'CREATE INDEX IF NOT EXISTS idx_workflow_runs_workflow ON workflow_runs(workflow_id)',
     'CREATE INDEX IF NOT EXISTS idx_pending_steps_scheduled ON workflow_pending_steps(scheduled_for, status)',
+    'CREATE TABLE IF NOT EXISTS reputation_reviews (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, contact_id TEXT, contact_name TEXT, contact_email TEXT, source TEXT NOT NULL DEFAULT \'manual\', rating INTEGER, title TEXT, body TEXT, sentiment TEXT DEFAULT \'neutral\', status TEXT DEFAULT \'new\', response_text TEXT, response_sent_at TEXT, external_id TEXT, external_url TEXT, booking_id TEXT, reviewed_at TEXT, created_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE TABLE IF NOT EXISTS reputation_requests (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, contact_id TEXT, contact_name TEXT, contact_email TEXT NOT NULL, booking_id TEXT, status TEXT DEFAULT \'pending\', sent_at TEXT, clicked_at TEXT, review_platform TEXT DEFAULT \'google\', review_link TEXT, created_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE INDEX IF NOT EXISTS idx_reputation_reviews_workspace ON reputation_reviews(workspace_id, created_at DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_reputation_requests_workspace ON reputation_requests(workspace_id, created_at DESC)',
   ]
   for (const m of migrations) {
     try { db.exec(m) } catch { /* column already exists */ }
@@ -544,5 +588,9 @@ export async function initializeDatabase() {
   await pgSql`CREATE TABLE IF NOT EXISTS workflow_pending_steps (id TEXT PRIMARY KEY, workflow_run_id TEXT NOT NULL, workflow_id TEXT NOT NULL, workspace_id TEXT NOT NULL, node_index INTEGER NOT NULL, node_data TEXT NOT NULL, lead_id TEXT, contact_email TEXT, scheduled_for TIMESTAMPTZ NOT NULL, status TEXT DEFAULT 'pending', error_message TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`
   await pgSql`CREATE INDEX IF NOT EXISTS idx_workflow_runs_workflow ON workflow_runs(workflow_id)`
   await pgSql`CREATE INDEX IF NOT EXISTS idx_pending_steps_scheduled ON workflow_pending_steps(scheduled_for, status)`
+  await pgSql`CREATE TABLE IF NOT EXISTS reputation_reviews (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, contact_id TEXT, contact_name TEXT, contact_email TEXT, source TEXT NOT NULL DEFAULT 'manual', rating INTEGER, title TEXT, body TEXT, sentiment TEXT DEFAULT 'neutral', status TEXT DEFAULT 'new', response_text TEXT, response_sent_at TIMESTAMPTZ, external_id TEXT, external_url TEXT, booking_id TEXT, reviewed_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE TABLE IF NOT EXISTS reputation_requests (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, contact_id TEXT, contact_name TEXT, contact_email TEXT NOT NULL, booking_id TEXT, status TEXT DEFAULT 'pending', sent_at TIMESTAMPTZ, clicked_at TIMESTAMPTZ, review_platform TEXT DEFAULT 'google', review_link TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_reputation_reviews_workspace ON reputation_reviews(workspace_id, created_at DESC)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_reputation_requests_workspace ON reputation_requests(workspace_id, created_at DESC)`
   console.log('✅ Neon Postgres DB initialized')
 }
