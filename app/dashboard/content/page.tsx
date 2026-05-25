@@ -125,7 +125,7 @@ export default function ContentPage() {
     } catch { setError('Network error') } finally { setLoading(false) }
   }
 
-  // Group by day for calendar grid
+  // Group AI calendar plan by day number
   const byDay = useMemo(() => {
     const map: Record<number, ContentCalendarItem[]> = {}
     for (const item of calendar) {
@@ -134,6 +134,23 @@ export default function ContentPage() {
     }
     return map
   }, [calendar])
+
+  // Map real scheduled_posts to day numbers relative to today (day 1 = today)
+  const scheduledByDay = useMemo(() => {
+    const map: Record<number, ScheduledPost[]> = {}
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+    for (const post of scheduledPosts) {
+      const postDate = new Date(post.scheduled_time)
+      postDate.setHours(0, 0, 0, 0)
+      const diffDays = Math.round((postDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24)) + 1
+      if (diffDays >= 1 && diffDays <= 35) {
+        if (!map[diffDays]) map[diffDays] = []
+        map[diffDays].push(post)
+      }
+    }
+    return map
+  }, [scheduledPosts])
 
   // Group by week for list view
   const weeks = useMemo(() => {
@@ -228,6 +245,8 @@ export default function ContentPage() {
                     {Array.from({ length: 35 }, (_, i) => {
                       const day = i + 1
                       const posts = byDay[day] || []
+                      const scheduled = scheduledByDay[day] || []
+                      const hasAnything = posts.length > 0 || scheduled.length > 0
                       const isHovered = hoveredDay === day
                       return (
                         <div
@@ -235,7 +254,7 @@ export default function ContentPage() {
                           onMouseEnter={() => setHoveredDay(day)}
                           onMouseLeave={() => setHoveredDay(null)}
                           className={`relative min-h-20 rounded-lg border p-1.5 transition-colors cursor-default ${
-                            posts.length > 0
+                            hasAnything
                               ? isHovered
                                 ? 'border-indigo-600 bg-indigo-950/40'
                                 : 'border-gray-700 bg-gray-900 hover:border-gray-600'
@@ -243,13 +262,13 @@ export default function ContentPage() {
                           }`}
                         >
                           {/* Day number */}
-                          <div className={`text-xs font-medium mb-1 ${posts.length > 0 ? 'text-gray-300' : 'text-gray-700'}`}>
+                          <div className={`text-xs font-medium mb-1 ${hasAnything ? 'text-gray-300' : 'text-gray-700'}`}>
                             {day}
                           </div>
 
-                          {/* Post dots */}
+                          {/* AI plan dots */}
                           <div className="space-y-0.5">
-                            {posts.slice(0, 3).map((post, pi) => (
+                            {posts.slice(0, 2).map((post, pi) => (
                               <div
                                 key={pi}
                                 onClick={() => { setScheduleModal({ item: post }); setScheduleResult(''); setScheduleTime('') }}
@@ -258,34 +277,75 @@ export default function ContentPage() {
                               >
                                 <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${PLATFORM_DOT[post.platform] || 'bg-gray-600'}`} />
                                 <span className="text-gray-400 text-xs truncate group-hover:text-white transition-colors leading-tight">
-                                  {post.hook.slice(0, 18)}{post.hook.length > 18 ? '…' : ''}
+                                  {post.hook.slice(0, 16)}{post.hook.length > 16 ? '…' : ''}
                                 </span>
                               </div>
                             ))}
-                            {posts.length > 3 && (
-                              <div className="text-gray-600 text-xs">+{posts.length - 3} more</div>
+                            {posts.length > 2 && (
+                              <div className="text-gray-600 text-xs">+{posts.length - 2} planned</div>
                             )}
                           </div>
 
-                          {/* Hover tooltip with schedule button */}
-                          {isHovered && posts.length > 0 && (
-                            <div className="absolute z-20 top-full left-0 mt-1 w-52 bg-gray-800 border border-gray-700 rounded-xl p-3 shadow-xl">
-                              <p className="text-xs text-gray-500 mb-2">Day {day} — {posts.length} post{posts.length > 1 ? 's' : ''}</p>
-                              {posts.map((post, pi) => (
-                                <div key={pi} className="mb-2 last:mb-0">
-                                  <div className="flex items-center gap-1 mb-1">
-                                    <span className={`w-1.5 h-1.5 rounded-full ${PLATFORM_DOT[post.platform] || 'bg-gray-600'}`} />
-                                    <span className="text-xs text-gray-400">{post.platform}</span>
-                                  </div>
-                                  <p className="text-white text-xs leading-snug">{post.hook}</p>
-                                  <button
-                                    onClick={(e) => { e.stopPropagation(); setScheduleModal({ item: post }); setScheduleResult(''); setScheduleTime('') }}
-                                    className="mt-1 text-xs text-indigo-400 hover:text-indigo-300"
-                                  >
-                                    🗓 Schedule →
-                                  </button>
+                          {/* Real scheduled posts from DB — green indicators */}
+                          {scheduled.length > 0 && (
+                            <div className="mt-1 space-y-0.5">
+                              {scheduled.slice(0, 2).map((sp, si) => (
+                                <div key={si} className="flex items-center gap-1" title={`Scheduled: ${sp.platform} at ${new Date(sp.scheduled_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`}>
+                                  <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${sp.status === 'published' ? 'bg-green-500' : sp.status === 'failed' ? 'bg-red-500' : 'bg-emerald-400'}`} />
+                                  <span className="text-emerald-400 text-xs truncate leading-tight">
+                                    {sp.status === 'published' ? '✓' : '📅'} {sp.platform}
+                                  </span>
                                 </div>
                               ))}
+                              {scheduled.length > 2 && (
+                                <div className="text-emerald-600 text-xs">+{scheduled.length - 2} scheduled</div>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Hover tooltip */}
+                          {isHovered && hasAnything && (
+                            <div className="absolute z-20 top-full left-0 mt-1 w-56 bg-gray-800 border border-gray-700 rounded-xl p-3 shadow-xl">
+                              {/* AI plan items */}
+                              {posts.length > 0 && (
+                                <>
+                                  <p className="text-xs text-gray-500 mb-2">📋 Plan — {posts.length} post{posts.length > 1 ? 's' : ''}</p>
+                                  {posts.map((post, pi) => (
+                                    <div key={pi} className="mb-2 last:mb-0">
+                                      <div className="flex items-center gap-1 mb-0.5">
+                                        <span className={`w-1.5 h-1.5 rounded-full ${PLATFORM_DOT[post.platform] || 'bg-gray-600'}`} />
+                                        <span className="text-xs text-gray-400">{post.platform}</span>
+                                      </div>
+                                      <p className="text-white text-xs leading-snug">{post.hook}</p>
+                                      <button
+                                        onClick={(e) => { e.stopPropagation(); setScheduleModal({ item: post }); setScheduleResult(''); setScheduleTime('') }}
+                                        className="mt-1 text-xs text-indigo-400 hover:text-indigo-300"
+                                      >
+                                        🗓 Schedule →
+                                      </button>
+                                    </div>
+                                  ))}
+                                </>
+                              )}
+                              {/* Real scheduled posts */}
+                              {scheduled.length > 0 && (
+                                <>
+                                  {posts.length > 0 && <div className="border-t border-gray-700 my-2" />}
+                                  <p className="text-xs text-emerald-500 mb-2">📅 Scheduled — {scheduled.length}</p>
+                                  {scheduled.map((sp, si) => (
+                                    <div key={si} className="mb-1.5 last:mb-0 flex items-start gap-1.5">
+                                      <span className={`w-1.5 h-1.5 rounded-full mt-1 flex-shrink-0 ${sp.status === 'published' ? 'bg-green-500' : sp.status === 'failed' ? 'bg-red-500' : 'bg-emerald-400'}`} />
+                                      <div>
+                                        <span className="text-xs text-gray-300">{sp.platform}</span>
+                                        <span className="text-xs text-gray-600 ml-1">{new Date(sp.scheduled_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                                        <p className={`text-xs mt-0.5 ${sp.status === 'published' ? 'text-green-400' : sp.status === 'failed' ? 'text-red-400' : 'text-emerald-400'}`}>
+                                          {sp.status}
+                                        </p>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </>
+                              )}
                             </div>
                           )}
                         </div>
