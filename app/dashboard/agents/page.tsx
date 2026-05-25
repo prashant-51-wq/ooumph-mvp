@@ -145,6 +145,67 @@ const AGENT_TREE = [
     tools: ['Slack', 'Telegram'],
     workers: [],
   },
+  // ── Week 4: Missing departments ───────────────────────────────────────────
+  {
+    id: 'sales',
+    name: 'Sales Supervisor',
+    icon: '💼',
+    description: 'Owns pipeline, quota, forecast, and deal review. Coordinates the full sales org.',
+    endpoint: '/api/agents/sales',
+    status: 'coming_soon',
+    tools: ['Apollo.io', 'Hunter.io', 'HubSpot', 'Cal.com', 'Claude Sonnet'],
+    workers: [
+      { id: 'sdr', name: 'SDR Agent', icon: '📣', description: 'Outbound prospecting and cold email sequences targeting ICPs.', endpoint: '/api/agents/sales/sdr', tools: ['Apollo.io', 'Hunter.io'] },
+      { id: 'bdr', name: 'BDR Agent', icon: '📥', description: 'Handles inbound leads, qualifies MQLs to SQLs.', endpoint: '/api/agents/sales/bdr', tools: ['HubSpot'] },
+      { id: 'ae', name: 'AE / Closer Agent', icon: '🤝', description: 'Drafts proposals, handles objections, and prepares closing materials.', endpoint: '/api/agents/sales/ae', tools: ['Claude Sonnet'] },
+      { id: 'account-mgr', name: 'Account Manager', icon: '🔄', description: 'Manages upsell, expansion, and renewal workflows for existing accounts.', endpoint: '/api/agents/sales/account-manager', tools: ['HubSpot'] },
+      { id: 'cs', name: 'Customer Success Agent', icon: '🌟', description: 'Onboarding, health scoring, and churn risk alerts.', endpoint: '/api/agents/sales/cs', tools: ['HubSpot'] },
+    ],
+  },
+  {
+    id: 'retargeting',
+    name: 'Retargeting Supervisor',
+    icon: '🎯',
+    description: 'Designs and runs funnel-stage-aware retargeting campaigns across Meta and Google.',
+    endpoint: '/api/agents/retargeting',
+    status: 'coming_soon',
+    tools: ['Meta Ads API', 'Google Ads API', 'Segment'],
+    workers: [
+      { id: 'audience-builder', name: 'Audience Builder', icon: '👥', description: 'Creates custom audiences from website visitors, video viewers, and CRM lists.', endpoint: '/api/agents/retargeting/audience', tools: ['Meta Ads API', 'Google Ads API'] },
+      { id: 'lookalike', name: 'Lookalike Generator', icon: '🪞', description: 'Builds lookalike audiences from your top converters.', endpoint: '/api/agents/retargeting/lookalike', tools: ['Meta Ads API'] },
+      { id: 'ad-fatigue', name: 'Ad Fatigue Detector', icon: '😴', description: 'Monitors CTR decay and flags creatives that need refreshing.', endpoint: '/api/agents/retargeting/fatigue', tools: ['Meta Ads API', 'Google Ads API'] },
+    ],
+  },
+  {
+    id: 'scheduling',
+    name: 'Scheduling Supervisor',
+    icon: '📅',
+    description: 'Manages meeting scheduling, reminders, no-show recovery, and post-call summaries via Cal.com and Vapi.',
+    endpoint: '/api/agents/scheduling',
+    status: 'coming_soon',
+    tools: ['Cal.com', 'Vapi', 'Claude Sonnet'],
+    workers: [
+      { id: 'scheduler', name: 'Scheduling Agent', icon: '🗓', description: 'Proposes meeting times based on prospect + AE calendars and sends invites.', endpoint: '/api/agents/scheduling/schedule', tools: ['Cal.com'] },
+      { id: 'pre-brief', name: 'Pre-meeting Brief Agent', icon: '📋', description: 'Produces a 1-pager on the prospect 30 min before the call.', endpoint: '/api/agents/scheduling/brief', tools: ['Brave Search', 'Firecrawl', 'Claude Sonnet'] },
+      { id: 'post-summary', name: 'Post-meeting Summary Agent', icon: '📝', description: 'Listens to call recordings (Vapi), summarizes, and drafts follow-up.', endpoint: '/api/agents/scheduling/summary', tools: ['Vapi', 'Claude Sonnet'] },
+      { id: 'no-show', name: 'No-show Recovery Agent', icon: '🔄', description: 'Auto-follows up if prospect misses the meeting and attempts to rebook.', endpoint: '/api/agents/scheduling/noshow', tools: ['Cal.com', 'Resend'] },
+    ],
+  },
+  {
+    id: 'branding',
+    name: 'Branding Supervisor',
+    icon: '🎨',
+    description: 'Guards brand consistency across voice, visual identity, and all published content.',
+    endpoint: '/api/agents/branding',
+    status: 'coming_soon',
+    tools: ['Claude Sonnet', 'Cloudinary'],
+    workers: [
+      { id: 'voice-keeper', name: 'Brand Voice Keeper', icon: '🗣️', description: 'Reviews every output for tone and messaging consistency.', endpoint: '/api/agents/branding/voice', tools: ['Claude Sonnet'] },
+      { id: 'visual-guardian', name: 'Visual Identity Guardian', icon: '👁️', description: 'Checks colors, logo usage, and typography across all generated visuals.', endpoint: '/api/agents/branding/visual', tools: ['Claude Vision', 'Cloudinary'] },
+      { id: 'naming', name: 'Naming Agent', icon: '✏️', description: 'Generates on-brand names for products, features, and campaigns.', endpoint: '/api/agents/branding/naming', tools: ['Claude Sonnet'] },
+      { id: 'style-guide', name: 'Style Guide Maintainer', icon: '📖', description: 'Keeps the brand book current and updates after major brand decisions.', endpoint: '/api/agents/branding/style', tools: ['Claude Sonnet'] },
+    ],
+  },
 ]
 
 type TestState = 'idle' | 'running' | 'ok' | 'fail'
@@ -226,7 +287,11 @@ function AgentCard({
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <h3 className="text-white font-medium text-sm">{agent.name}</h3>
-            <span className="px-1.5 py-0.5 rounded text-xs bg-green-950 border border-green-800 text-green-400">Active</span>
+            {agent.status === 'coming_soon' ? (
+              <span className="px-1.5 py-0.5 rounded text-xs bg-yellow-950 border border-yellow-800 text-yellow-400">Coming Soon</span>
+            ) : (
+              <span className="px-1.5 py-0.5 rounded text-xs bg-green-950 border border-green-800 text-green-400">Active</span>
+            )}
             {lastRun && (
               <span className={`text-xs ${statusColor}`}>
                 Last: {lastRun.status}
@@ -356,8 +421,8 @@ export default function AgentsPage() {
       {/* Stats */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
         {[
-          { label: 'Supervisors', value: AGENT_TREE.length, color: 'text-indigo-400' },
-          { label: 'Workers', value: totalWorkers, color: 'text-purple-400' },
+          { label: 'Active Supervisors', value: AGENT_TREE.filter(a => a.status !== 'coming_soon').length, color: 'text-indigo-400' },
+          { label: 'Total Workers', value: totalWorkers, color: 'text-purple-400' },
           { label: 'Running Now', value: runningCount, color: runningCount > 0 ? 'text-yellow-400' : 'text-gray-500' },
           { label: 'Done Today', value: completedToday, color: 'text-green-400' },
         ].map(s => (
