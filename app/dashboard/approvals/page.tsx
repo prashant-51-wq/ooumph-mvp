@@ -185,7 +185,25 @@ export default function ApprovalsPage() {
         ))}
       </div>
 
-      {loading && <div className="text-gray-400 text-sm">Loading approvals...</div>}
+      {loading && (
+        <div className="grid grid-cols-1 gap-4">
+          {[1, 2, 3].map(i => (
+            <div key={i} className="bg-gray-900 border border-gray-800 rounded-xl p-5 animate-pulse">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="h-4 bg-gray-800 rounded w-24" />
+                  <div className="h-4 bg-gray-800 rounded w-40" />
+                </div>
+                <div className="h-6 bg-gray-800 rounded-full w-16" />
+              </div>
+              <div className="mt-3 space-y-2">
+                <div className="h-3 bg-gray-800 rounded w-3/4" />
+                <div className="h-3 bg-gray-800 rounded w-1/2" />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {!loading && filtered.length === 0 && (
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-12 text-center">

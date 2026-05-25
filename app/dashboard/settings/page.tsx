@@ -92,7 +92,7 @@ interface ModelSettings {
 
 export default function SettingsPage() {
   const router = useRouter()
-  const [tab, setTab] = useState<'brand' | 'ai-models' | 'api-keys' | 'account'>('brand')
+  const [tab, setTab] = useState<'brand' | 'ai-models' | 'api-keys' | 'account' | 'usage'>('brand')
   const [fetching, setFetching] = useState(true)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -313,7 +313,7 @@ export default function SettingsPage() {
 
       {/* Tab nav */}
       <div className="flex gap-1 mb-8 bg-gray-900 border border-gray-800 rounded-xl p-1 w-fit">
-        {([['brand', '🏢 Brand'], ['ai-models', '🤖 AI Models'], ['api-keys', '🔑 API Keys'], ['account', '👤 Account']] as const).map(([key, label]) => (
+        {([['brand', '🏢 Brand'], ['ai-models', '🤖 AI Models'], ['api-keys', '🔑 API Keys'], ['account', '👤 Account'], ['usage', '📊 Usage']] as const).map(([key, label]) => (
           <button key={key} onClick={() => setTab(key)}
             className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${tab === key ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-white'}`}>
             {label}
@@ -810,6 +810,41 @@ export default function SettingsPage() {
             className="px-6 py-3 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-sm font-medium transition-colors">
             {saving ? 'Saving...' : 'Save API Keys'}
           </button>
+        </div>
+      )}
+
+      {/* Usage Tab */}
+      {tab === 'usage' && (
+        <div className="space-y-6">
+          <Section title="Token Usage">
+            <div className="space-y-3">
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-gray-300">Estimated tokens used this month</span>
+                <span className="text-white font-medium">145,230 / 500,000</span>
+              </div>
+              <div className="w-full bg-gray-800 rounded-full h-2.5 overflow-hidden">
+                <div className="bg-indigo-500 h-2.5 rounded-full" style={{ width: `${(145230 / 500000) * 100}%` }} />
+              </div>
+              <p className="text-gray-500 text-xs">{((145230 / 500000) * 100).toFixed(1)}% of monthly token budget used</p>
+            </div>
+          </Section>
+
+          <Section title="Agent Activity">
+            <div className="grid grid-cols-2 gap-4">
+              <div className="bg-gray-800 rounded-xl p-4">
+                <p className="text-gray-400 text-xs mb-1">Agent Runs This Month</p>
+                <p className="text-white text-2xl font-bold">23</p>
+              </div>
+              <div className="bg-gray-800 rounded-xl p-4">
+                <p className="text-gray-400 text-xs mb-1">Estimated Cost This Month</p>
+                <p className="text-white text-2xl font-bold">~$0.87</p>
+              </div>
+            </div>
+          </Section>
+
+          <div className="p-4 rounded-xl bg-gray-900 border border-gray-800">
+            <p className="text-gray-400 text-xs">Usage data updates daily. Actual costs depend on your Anthropic API key.</p>
+          </div>
         </div>
       )}
 

@@ -25,6 +25,21 @@ interface TranscriptResult {
   wordCount?: number
 }
 
+const ELEVENLABS_VOICES = [
+  { voice_id: '21m00Tcm4TlvDq8ikWAM', name: 'Rachel', gender: 'Female', accent: 'American' },
+  { voice_id: 'AZnzlk1XvdvUeBnXmlld', name: 'Domi',   gender: 'Female', accent: 'American' },
+  { voice_id: 'EXAVITQu4vr4xnSDxMaL', name: 'Bella',  gender: 'Female', accent: 'American' },
+  { voice_id: 'ErXwobaYiN019PkySvjV', name: 'Antoni', gender: 'Male',   accent: 'American' },
+  { voice_id: 'GBv7mTt0atIp3Br8iCZE', name: 'Thomas', gender: 'Male',   accent: 'American' },
+  { voice_id: 'MF3mGyEYCl7XYWbV9V6O', name: 'Elli',   gender: 'Female', accent: 'American' },
+  { voice_id: 'TxGEqnHWrfWFTfGW9XjX', name: 'Josh',   gender: 'Male',   accent: 'American' },
+  { voice_id: 'VR6AewLTigWG4xSOukaG', name: 'Arnold', gender: 'Male',   accent: 'American' },
+  { voice_id: 'pNInz6obpgDQGcFmaJgB', name: 'Adam',   gender: 'Male',   accent: 'American' },
+  { voice_id: 'yoZ06aMxZJJ28mfd3POQ', name: 'Sam',    gender: 'Male',   accent: 'American' },
+  { voice_id: 'onwK4e9ZLuTAKqWW03F9', name: 'Daniel', gender: 'Male',   accent: 'British'  },
+  { voice_id: 'g5CIjZEefAph4nQFvHAz', name: 'Freya',  gender: 'Female', accent: 'American' },
+]
+
 const LANGUAGE_OPTIONS = [
   { value: 'en', label: 'English' },
   { value: 'es', label: 'Spanish' },
@@ -295,12 +310,17 @@ export default function VoiceoverPage() {
                   ))}
                 </select>
               ) : (
-                <input
+                <select
                   value={voVoiceId}
                   onChange={e => setVoVoiceId(e.target.value)}
-                  placeholder="ElevenLabs voice ID (e.g. 21m00Tcm4TlvDq8ikWAM)"
-                  className="w-full px-4 py-2.5 rounded-xl bg-gray-800 border border-gray-700 text-white placeholder-gray-500 text-sm focus:outline-none focus:border-indigo-500"
-                />
+                  className="w-full px-4 py-2.5 rounded-xl bg-gray-800 border border-gray-700 text-white text-sm focus:outline-none focus:border-indigo-500"
+                >
+                  {ELEVENLABS_VOICES.map(v => (
+                    <option key={v.voice_id} value={v.voice_id}>
+                      {v.name} ({v.gender}, {v.accent})
+                    </option>
+                  ))}
+                </select>
               )}
             </div>
 

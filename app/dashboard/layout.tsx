@@ -75,10 +75,36 @@ const ADVANCED_NAV = [
     items: [
       { href: '/dashboard/assets', label: 'Assets', icon: '📦' },
       { href: '/dashboard/export', label: 'Export', icon: '📄' },
+      { href: '/dashboard/audit', label: 'Audit Log', icon: '📋' },
       { href: '/dashboard/onboarding', label: 'Onboarding', icon: '🚀' },
     ],
   },
 ]
+
+function getPageTitle(pathname: string): string {
+  const map: Record<string, string> = {
+    '/dashboard': 'CMO Dashboard',
+    '/dashboard/strategy': 'Strategy',
+    '/dashboard/content': 'Content Calendar',
+    '/dashboard/approvals': 'Approvals',
+    '/dashboard/agents': 'Agents',
+    '/dashboard/connections': 'Connections',
+    '/dashboard/settings': 'Settings',
+    '/dashboard/leads-crm': 'CRM',
+    '/dashboard/campaign': 'Campaigns',
+    '/dashboard/email-marketing': 'Email',
+    '/dashboard/ads': 'Paid Ads',
+    '/dashboard/growth': 'Growth',
+    '/dashboard/analytics': 'Analytics',
+    '/dashboard/research': 'Research',
+    '/dashboard/blog': 'Blog & Scripts',
+    '/dashboard/creative': 'Creative Studio',
+    '/dashboard/voiceover': 'Voiceover',
+    '/dashboard/publishing': 'Publishing',
+    '/dashboard/audit': 'Audit Log',
+  }
+  return map[pathname] || pathname.split('/').filter(Boolean).pop()?.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) || 'Dashboard'
+}
 
 const STATUS_ICON: Record<string, string> = {
   running: '⟳',
@@ -191,6 +217,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const [hasRunning, setHasRunning] = useState(false)
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+  const [notifTooltip, setNotifTooltip] = useState(false)
+  const [userMenuOpen, setUserMenuOpen] = useState(false)
 
   // Close mobile menu on route change
   useEffect(() => {
@@ -259,6 +287,63 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
         {/* Main content */}
         <main className="flex-1 overflow-auto">
+          {/* Sticky desktop top header */}
+          <header className="hidden lg:flex bg-gray-950 border-b border-gray-800 sticky top-0 z-10 h-12 px-6 items-center justify-between">
+            {/* Left: page title + workspace chip */}
+            <div className="flex items-center gap-3 min-w-0">
+              <h2 className="text-white font-semibold text-sm">{getPageTitle(pathname)}</h2>
+              {businessName && (
+                <span className="px-2 py-0.5 rounded-full bg-gray-800 border border-gray-700 text-gray-300 text-xs truncate max-w-[140px]">
+                  {businessName}
+                </span>
+              )}
+            </div>
+
+            {/* Right: notification bell + user avatar */}
+            <div className="flex items-center gap-3">
+              {/* Notification bell */}
+              <div className="relative">
+                <button
+                  onClick={() => { setNotifTooltip(v => !v); setUserMenuOpen(false) }}
+                  className="w-8 h-8 flex items-center justify-center rounded-lg text-gray-400 hover:text-white hover:bg-gray-800 transition-colors text-base"
+                  aria-label="Notifications">
+                  🔔
+                </button>
+                {notifTooltip && (
+                  <div className="absolute right-0 top-10 bg-gray-900 border border-gray-700 rounded-xl shadow-xl px-4 py-3 text-sm text-gray-300 whitespace-nowrap z-20">
+                    No new notifications
+                  </div>
+                )}
+              </div>
+
+              {/* User avatar + menu */}
+              <div className="relative">
+                <button
+                  onClick={() => { setUserMenuOpen(v => !v); setNotifTooltip(false) }}
+                  className="flex items-center gap-2 px-2 py-1 rounded-lg hover:bg-gray-800 transition-colors group"
+                  aria-label="User menu">
+                  <div className="w-7 h-7 rounded-full bg-indigo-600 flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
+                    {(businessName || userName || 'O')[0].toUpperCase()}
+                  </div>
+                  <span className="text-gray-300 text-xs font-medium truncate max-w-[100px] hidden xl:block">
+                    {businessName || userName || 'Ooumph'}
+                  </span>
+                </button>
+                {userMenuOpen && (
+                  <div className="absolute right-0 top-10 bg-gray-900 border border-gray-700 rounded-xl shadow-xl py-1 min-w-[160px] z-20">
+                    <div className="px-4 py-2 border-b border-gray-800">
+                      <p className="text-white text-xs font-medium truncate">{businessName || userName || 'Ooumph'}</p>
+                    </div>
+                    <button
+                      onClick={() => { setUserMenuOpen(false); logout() }}
+                      className="w-full text-left px-4 py-2 text-sm text-red-400 hover:bg-gray-800 transition-colors">
+                      Sign out
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          </header>
           {children}
         </main>
       </div>
