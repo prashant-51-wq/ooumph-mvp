@@ -109,6 +109,8 @@ async function postgresQuery(strings: TemplateStringsArray, ...values: unknown[]
     await pgSql`CREATE INDEX IF NOT EXISTS idx_brand_memory_workspace ON brand_memory(workspace_id)`
     await pgSql`CREATE TABLE IF NOT EXISTS scheduled_content (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, platform TEXT NOT NULL, content TEXT NOT NULL, media_urls TEXT DEFAULT '[]', artifact_id TEXT, scheduled_for TEXT, buffer_update_id TEXT, status TEXT NOT NULL DEFAULT 'pending', error_message TEXT, published_at TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`
     await pgSql`CREATE TABLE IF NOT EXISTS published_content (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, artifact_id TEXT, platform TEXT NOT NULL, post_id TEXT, post_url TEXT, title TEXT, published_at TIMESTAMPTZ DEFAULT NOW(), metadata_json TEXT DEFAULT '{}')`
+    await pgSql`CREATE TABLE IF NOT EXISTS inbox_conversations (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, contact_id TEXT, contact_email TEXT, contact_name TEXT, contact_phone TEXT, channel TEXT NOT NULL DEFAULT 'email', subject TEXT, status TEXT DEFAULT 'open', tags TEXT DEFAULT '[]', assigned_to TEXT, last_message_at TIMESTAMPTZ, unread_count INTEGER DEFAULT 0, created_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE TABLE IF NOT EXISTS inbox_messages (id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, workspace_id TEXT NOT NULL, direction TEXT NOT NULL, from_address TEXT, to_address TEXT, subject TEXT, body TEXT NOT NULL, html_body TEXT, channel TEXT DEFAULT 'email', status TEXT DEFAULT 'sent', external_id TEXT, ai_generated INTEGER DEFAULT 0, sent_at TIMESTAMPTZ DEFAULT NOW(), created_at TIMESTAMPTZ DEFAULT NOW())`
   }
 
   const rows = await pgSql(strings, ...values) as Record<string, unknown>[]
@@ -341,6 +343,39 @@ function initSQLiteSync(db: import('better-sqlite3').Database) {
       published_at TEXT NOT NULL DEFAULT (datetime('now')),
       metadata_json TEXT DEFAULT '{}'
     );
+    CREATE TABLE IF NOT EXISTS inbox_conversations (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      contact_id TEXT,
+      contact_email TEXT,
+      contact_name TEXT,
+      contact_phone TEXT,
+      channel TEXT NOT NULL DEFAULT 'email',
+      subject TEXT,
+      status TEXT DEFAULT 'open',
+      tags TEXT DEFAULT '[]',
+      assigned_to TEXT,
+      last_message_at TEXT,
+      unread_count INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS inbox_messages (
+      id TEXT PRIMARY KEY,
+      conversation_id TEXT NOT NULL,
+      workspace_id TEXT NOT NULL,
+      direction TEXT NOT NULL,
+      from_address TEXT,
+      to_address TEXT,
+      subject TEXT,
+      body TEXT NOT NULL,
+      html_body TEXT,
+      channel TEXT DEFAULT 'email',
+      status TEXT DEFAULT 'sent',
+      external_id TEXT,
+      ai_generated INTEGER DEFAULT 0,
+      sent_at TEXT DEFAULT (datetime('now')),
+      created_at TEXT DEFAULT (datetime('now'))
+    );
   `)
   // Safely add columns to existing tables (ignore "already exists" errors)
   const migrations = [
@@ -349,6 +384,8 @@ function initSQLiteSync(db: import('better-sqlite3').Database) {
     'ALTER TABLE integrations ADD COLUMN metadata TEXT',
     'ALTER TABLE workspaces ADD COLUMN extra_settings TEXT DEFAULT \'{}\'',
     'ALTER TABLE leads_captured ADD COLUMN hubspot_id TEXT',
+    'CREATE TABLE IF NOT EXISTS inbox_conversations (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, contact_id TEXT, contact_email TEXT, contact_name TEXT, contact_phone TEXT, channel TEXT NOT NULL DEFAULT \'email\', subject TEXT, status TEXT DEFAULT \'open\', tags TEXT DEFAULT \'[]\', assigned_to TEXT, last_message_at TEXT, unread_count INTEGER DEFAULT 0, created_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE TABLE IF NOT EXISTS inbox_messages (id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, workspace_id TEXT NOT NULL, direction TEXT NOT NULL, from_address TEXT, to_address TEXT, subject TEXT, body TEXT NOT NULL, html_body TEXT, channel TEXT DEFAULT \'email\', status TEXT DEFAULT \'sent\', external_id TEXT, ai_generated INTEGER DEFAULT 0, sent_at TEXT DEFAULT (datetime(\'now\')), created_at TEXT DEFAULT (datetime(\'now\')))',
   ]
   for (const m of migrations) {
     try { db.exec(m) } catch { /* column already exists */ }
@@ -391,5 +428,7 @@ export async function initializeDatabase() {
   await pgSql`CREATE INDEX IF NOT EXISTS idx_brand_memory_workspace ON brand_memory(workspace_id)`
   await pgSql`CREATE TABLE IF NOT EXISTS scheduled_content (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, platform TEXT NOT NULL, content TEXT NOT NULL, media_urls TEXT DEFAULT '[]', artifact_id TEXT, scheduled_for TEXT, buffer_update_id TEXT, status TEXT NOT NULL DEFAULT 'pending', error_message TEXT, published_at TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`
   await pgSql`CREATE TABLE IF NOT EXISTS published_content (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, artifact_id TEXT, platform TEXT NOT NULL, post_id TEXT, post_url TEXT, title TEXT, published_at TIMESTAMPTZ DEFAULT NOW(), metadata_json TEXT DEFAULT '{}')`
+  await pgSql`CREATE TABLE IF NOT EXISTS inbox_conversations (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, contact_id TEXT, contact_email TEXT, contact_name TEXT, contact_phone TEXT, channel TEXT NOT NULL DEFAULT 'email', subject TEXT, status TEXT DEFAULT 'open', tags TEXT DEFAULT '[]', assigned_to TEXT, last_message_at TIMESTAMPTZ, unread_count INTEGER DEFAULT 0, created_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE TABLE IF NOT EXISTS inbox_messages (id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, workspace_id TEXT NOT NULL, direction TEXT NOT NULL, from_address TEXT, to_address TEXT, subject TEXT, body TEXT NOT NULL, html_body TEXT, channel TEXT DEFAULT 'email', status TEXT DEFAULT 'sent', external_id TEXT, ai_generated INTEGER DEFAULT 0, sent_at TIMESTAMPTZ DEFAULT NOW(), created_at TIMESTAMPTZ DEFAULT NOW())`
   console.log('✅ Neon Postgres DB initialized')
 }
