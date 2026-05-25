@@ -158,7 +158,7 @@ export default function CampaignPage() {
   const [selected, setSelected] = useState<Campaign | null>(null)
   const [error, setError] = useState('')
   const [result, setResult] = useState<{ message: string; creativesGenerated: number } | null>(null)
-  const [activeTab, setActiveTab] = useState<'brief' | 'publish' | 'performance' | 'optimize'>('brief')
+  const [activeTab, setActiveTab] = useState<'pipeline' | 'brief' | 'publish' | 'performance' | 'optimize'>('pipeline')
   const [waLoading, setWaLoading] = useState(false)
   const [waResult, setWaResult] = useState('')
   const [waBroadcastType, setWaBroadcastType] = useState<'MARKETING' | 'UTILITY'>('MARKETING')
@@ -343,7 +343,7 @@ export default function CampaignPage() {
       </div>
 
       {/* Generate form */}
-      <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 mb-8">
+      <div data-generate-section className="bg-gray-900 border border-gray-800 rounded-2xl p-6 mb-8">
         <h2 className="text-white font-semibold mb-4">New Campaign Brief</h2>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
           <div className="md:col-span-3">
@@ -397,6 +397,33 @@ export default function CampaignPage() {
           <p className="text-gray-500 text-sm">Enter a campaign goal above to generate your first brief + ad creatives</p>
         </div>
       ) : (
+        <>
+          {/* Top-level tab strip */}
+          <div className="flex gap-1 bg-gray-900 border border-gray-800 rounded-xl p-1 mb-6">
+            {([
+              { id: 'pipeline',    label: '🗂️ Pipeline' },
+              { id: 'brief',       label: '📋 Brief' },
+              { id: 'publish',     label: '🚀 Publish to DSPs' },
+              { id: 'performance', label: '📊 Performance' },
+              { id: 'optimize',    label: '🤖 Optimize' },
+            ] as const).map(t => (
+              <button key={t.id} onClick={() => setActiveTab(t.id)}
+                className={`flex-1 py-2 rounded-lg text-sm font-medium transition-colors ${
+                  activeTab === t.id ? 'bg-orange-600 text-white' : 'text-gray-400 hover:text-white'
+                }`}>{t.label}</button>
+            ))}
+          </div>
+
+          {/* ── Pipeline tab (full-width) ──────────────────────────────────── */}
+          {activeTab === 'pipeline' && (
+            <PipelineBoard
+              campaigns={campaigns}
+              onViewDetails={(c) => { setSelected(c); setActiveTab('brief') }}
+            />
+          )}
+
+          {/* ── Sidebar + detail layout (all non-pipeline tabs) ─────────────── */}
+          {activeTab !== 'pipeline' && (
         <div className="grid grid-cols-5 gap-6">
           {/* Sidebar */}
           <div className="col-span-1 space-y-2">
@@ -419,7 +446,7 @@ export default function CampaignPage() {
           {/* Detail panel */}
           {campaign && (
             <div className="col-span-4 space-y-4">
-              {/* Tab nav */}
+              {/* Tab nav (inner — mirrors top-level strip for visual context) */}
               <div className="flex gap-1 bg-gray-900 border border-gray-800 rounded-xl p-1">
                 {[
                   { id: 'brief',       label: '📋 Brief', },
@@ -808,6 +835,8 @@ export default function CampaignPage() {
             </div>
           )}
         </div>
+          )}
+        </>
       )}
       {/* WhatsApp Broadcast Worker */}
       <div className="mt-8 bg-gray-900 border border-green-800 rounded-2xl p-6">
@@ -833,6 +862,163 @@ export default function CampaignPage() {
           <p className={`text-xs ${waResult.startsWith('Error') ? 'text-red-400' : 'text-green-400'}`}>{waResult}</p>
         )}
         <p className="text-gray-600 text-xs mt-2">Templates saved as artifact → approve in Approvals → send via PUT /api/agents/campaign/whatsapp with recipient list.</p>
+      </div>
+    </div>
+  )
+}
+
+// ─── Pipeline board ───────────────────────────────────────────────────────────
+
+interface PipelineBoardProps {
+  campaigns: Campaign[]
+  onViewDetails: (c: Campaign) => void
+}
+
+interface PipelineColumn {
+  id: string
+  label: string
+  borderColor: string
+  badgeColor: string
+  headerTextColor: string
+  pulse: boolean
+}
+
+const PIPELINE_COLUMNS: PipelineColumn[] = [
+  { id: 'plan',             label: 'PLAN',              borderColor: 'border-t-gray-500',   badgeColor: 'bg-gray-700 text-gray-300',    headerTextColor: 'text-gray-400',   pulse: false },
+  { id: 'generating',       label: 'GENERATING',        borderColor: 'border-t-indigo-500', badgeColor: 'bg-indigo-900/60 text-indigo-300', headerTextColor: 'text-indigo-400', pulse: true  },
+  { id: 'awaiting_approval',label: 'AWAITING APPROVAL', borderColor: 'border-t-yellow-500', badgeColor: 'bg-yellow-900/60 text-yellow-300', headerTextColor: 'text-yellow-400', pulse: false },
+  { id: 'scheduled',        label: 'SCHEDULED',         borderColor: 'border-t-blue-500',   badgeColor: 'bg-blue-900/60 text-blue-300',    headerTextColor: 'text-blue-400',   pulse: false },
+  { id: 'tracking',         label: 'TRACKING',          borderColor: 'border-t-green-500',  badgeColor: 'bg-green-900/60 text-green-300',  headerTextColor: 'text-green-400',  pulse: false },
+]
+
+function campaignColumn(c: Campaign): string {
+  const s = c.approval_status
+  if (s === 'running')   return 'generating'
+  if (s === 'pending')   return 'awaiting_approval'
+  if (s === 'approved')  return 'scheduled'
+  if (s === 'completed') return 'tracking'
+  return 'plan' // 'draft' or not set
+}
+
+function StatusBadge({ status }: { status: string }) {
+  const cls =
+    status === 'approved'  ? 'bg-green-900/40 text-green-400' :
+    status === 'rejected'  ? 'bg-red-900/40 text-red-400' :
+    status === 'running'   ? 'bg-indigo-900/40 text-indigo-300' :
+    status === 'completed' ? 'bg-teal-900/40 text-teal-300' :
+    'bg-yellow-900/40 text-yellow-400'
+  return (
+    <span className={`inline-flex text-xs px-2 py-0.5 rounded-full capitalize ${cls}`}>
+      {status || 'draft'}
+    </span>
+  )
+}
+
+function PipelineBoard({ campaigns, onViewDetails }: PipelineBoardProps) {
+  const total     = campaigns.length
+  const pending   = campaigns.filter(c => c.approval_status === 'pending').length
+  const approved  = campaigns.filter(c => c.approval_status === 'approved').length
+  const running   = campaigns.filter(c => c.approval_status === 'running').length
+
+  const byColumn: Record<string, Campaign[]> = {}
+  for (const col of PIPELINE_COLUMNS) byColumn[col.id] = []
+  for (const c of campaigns) byColumn[campaignColumn(c)].push(c)
+
+  function scrollToGenerate() {
+    const el = document.querySelector<HTMLElement>('[data-generate-section]')
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  }
+
+  return (
+    <div className="space-y-5">
+      {/* Stats bar */}
+      <div className="grid grid-cols-4 gap-4">
+        {[
+          { label: 'Total Campaigns',  value: total,    color: 'text-white' },
+          { label: 'Pending Approval', value: pending,  color: 'text-yellow-400' },
+          { label: 'Approved',         value: approved, color: 'text-green-400' },
+          { label: 'Running',          value: running,  color: 'text-indigo-400' },
+        ].map(stat => (
+          <div key={stat.label} className="bg-gray-900 border border-gray-800 rounded-xl p-4 text-center">
+            <p className={`text-2xl font-bold ${stat.color}`}>{stat.value}</p>
+            <p className="text-gray-500 text-xs mt-1">{stat.label}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* Kanban board */}
+      <div className="overflow-x-auto pb-2">
+        <div className="flex gap-4" style={{ minWidth: 'max-content' }}>
+          {PIPELINE_COLUMNS.map((col, colIdx) => {
+            const cards = byColumn[col.id]
+            return (
+              <div
+                key={col.id}
+                className={`min-w-[12rem] w-52 bg-gray-900 border border-gray-800 rounded-xl flex flex-col border-t-2 ${col.borderColor}`}
+              >
+                {/* Column header */}
+                <div className="flex items-center justify-between px-3 py-2.5 border-b border-gray-800">
+                  <span className={`text-xs font-bold tracking-wider uppercase ${col.headerTextColor} flex items-center gap-1.5`}>
+                    {col.pulse && <span className="inline-block w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse" />}
+                    {col.label}
+                  </span>
+                  <span className={`text-xs px-1.5 py-0.5 rounded-full font-medium ${col.badgeColor}`}>{cards.length}</span>
+                </div>
+
+                {/* Cards */}
+                <div className="flex flex-col gap-2 p-2 flex-1">
+                  {cards.length === 0 && (
+                    <div className="border border-dashed border-gray-700 rounded-lg p-4 text-center">
+                      <p className="text-gray-600 text-xs">No campaigns yet</p>
+                    </div>
+                  )}
+                  {cards.map(c => (
+                    <div key={c.id} className="bg-gray-800 border border-gray-700 rounded-xl p-3 space-y-2">
+                      <p className="text-white text-xs font-semibold leading-tight line-clamp-2">
+                        {c.content_json.campaignName}
+                      </p>
+                      <p className="text-gray-500 text-xs capitalize">
+                        {c.content_json.campaignObjective}
+                      </p>
+                      <div className="flex items-center justify-between text-xs text-gray-500">
+                        <span>{c.content_json.totalBudget || '—'}</span>
+                        <span>{c.content_json.duration || '—'}</span>
+                      </div>
+                      <StatusBadge status={c.approval_status} />
+                      <button
+                        onClick={() => onViewDetails(c)}
+                        className="w-full text-xs text-indigo-400 hover:text-indigo-300 border border-indigo-800 hover:border-indigo-600 py-1 rounded-lg transition-colors"
+                      >
+                        View Details
+                      </button>
+                    </div>
+                  ))}
+
+                  {/* New Campaign button at bottom of Plan column */}
+                  {colIdx === 0 && (
+                    <button
+                      onClick={scrollToGenerate}
+                      className="mt-1 w-full text-xs text-orange-400 hover:text-orange-300 border border-dashed border-orange-800 hover:border-orange-600 py-2 rounded-lg transition-colors"
+                    >
+                      + New Campaign
+                    </button>
+                  )}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+
+      {/* Pipeline legend */}
+      <div className="flex items-center gap-4 text-xs text-gray-600">
+        <span>Pipeline stages:</span>
+        {PIPELINE_COLUMNS.map((col, i) => (
+          <span key={col.id} className="flex items-center gap-1">
+            <span className={col.headerTextColor}>{col.label}</span>
+            {i < PIPELINE_COLUMNS.length - 1 && <span className="text-gray-700">→</span>}
+          </span>
+        ))}
       </div>
     </div>
   )
