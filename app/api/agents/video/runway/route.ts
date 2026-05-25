@@ -6,6 +6,7 @@ import {
   getRunwayTaskStatus,
   cancelRunwayTask,
   isRunwayAvailable,
+  type RunwayGenOptions,
 } from '@/lib/tools/runway'
 
 export async function POST(req: NextRequest) {
@@ -56,7 +57,10 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: 'prompt is required for text_to_video' }, { status: 400 })
       }
 
-      const result = await generateVideoFromText(prompt, { duration, ratio, seed })
+      const result = await generateVideoFromText(prompt, { duration, ratio: ratio as RunwayGenOptions['ratio'], seed })
+      if (!result) {
+        return NextResponse.json({ ok: false, error: 'Runway video generation failed. Check your API key.' }, { status: 500 })
+      }
 
       const artifactId = newId()
       const content = JSON.stringify({
@@ -93,7 +97,10 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: 'imageUrl is required for image_to_video' }, { status: 400 })
       }
 
-      const result = await generateVideoFromImage(imageUrl, prompt, { duration, ratio })
+      const result = await generateVideoFromImage(imageUrl, prompt || '', { duration, ratio: ratio as RunwayGenOptions['ratio'] })
+      if (!result) {
+        return NextResponse.json({ ok: false, error: 'Runway image-to-video failed. Check your API key.' }, { status: 500 })
+      }
 
       const artifactId = newId()
       const content = JSON.stringify({
@@ -127,6 +134,9 @@ export async function POST(req: NextRequest) {
       }
 
       const task = await getRunwayTaskStatus(taskId)
+      if (!task) {
+        return NextResponse.json({ ok: false, error: 'Task not found or status check failed.' }, { status: 404 })
+      }
       const videoUrl = task.output?.[0] || null
 
       if (task.status === 'SUCCEEDED' && videoUrl) {

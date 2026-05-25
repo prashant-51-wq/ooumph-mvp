@@ -62,7 +62,7 @@ export async function searchMemory(
   try {
     // Try Postgres full-text search first
     try {
-      const rows = await sql<MemoryEntry[]>`
+      const rows = await sql`
         SELECT * FROM brand_memory
         WHERE workspace_id = ${workspaceId}
           AND (content_type = ${contentType ?? null}::text OR ${contentType ?? null} IS NULL)
@@ -70,10 +70,10 @@ export async function searchMemory(
         ORDER BY ts_rank(to_tsvector('english', content), plainto_tsquery('english', ${query})) DESC
         LIMIT ${limit}
       `
-      return Array.isArray(rows) ? rows : []
+      return Array.isArray(rows.rows) ? (rows.rows as unknown as MemoryEntry[]) : []
     } catch {
       // Fallback to LIKE search (SQLite)
-      const rows = await sql<MemoryEntry[]>`
+      const rows = await sql`
         SELECT * FROM brand_memory
         WHERE workspace_id = ${workspaceId}
           AND (content_type = ${contentType ?? null} OR ${contentType ?? null} IS NULL)
@@ -81,7 +81,7 @@ export async function searchMemory(
         ORDER BY created_at DESC
         LIMIT ${limit}
       `
-      return Array.isArray(rows) ? rows : []
+      return Array.isArray(rows.rows) ? (rows.rows as unknown as MemoryEntry[]) : []
     }
   } catch {
     return []
@@ -94,7 +94,7 @@ export async function getTopPerforming(
   limit = 5
 ): Promise<MemoryEntry[]> {
   try {
-    const rows = await sql<MemoryEntry[]>`
+    const rows = await sql`
       SELECT * FROM brand_memory
       WHERE workspace_id = ${workspaceId}
         AND content_type = 'top_performing'
@@ -102,7 +102,7 @@ export async function getTopPerforming(
       ORDER BY performance_score DESC
       LIMIT ${limit}
     `
-    return Array.isArray(rows) ? rows : []
+    return Array.isArray(rows.rows) ? (rows.rows as unknown as MemoryEntry[]) : []
   } catch {
     return []
   }
@@ -114,14 +114,14 @@ export async function getRecentMemory(
   limit = 10
 ): Promise<MemoryEntry[]> {
   try {
-    const rows = await sql<MemoryEntry[]>`
+    const rows = await sql`
       SELECT * FROM brand_memory
       WHERE workspace_id = ${workspaceId}
         AND (content_type = ${contentType ?? null} OR ${contentType ?? null} IS NULL)
       ORDER BY created_at DESC
       LIMIT ${limit}
     `
-    return Array.isArray(rows) ? rows : []
+    return Array.isArray(rows.rows) ? (rows.rows as unknown as MemoryEntry[]) : []
   } catch {
     return []
   }

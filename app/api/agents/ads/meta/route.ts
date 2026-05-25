@@ -81,11 +81,7 @@ export async function POST(req: NextRequest) {
     if (action === 'create') {
       if (!name) return NextResponse.json({ error: 'Missing campaign name' }, { status: 400 })
       const budgetCents = dailyBudget ? Math.round(dailyBudget * 100) : 1000 // default $10
-      const campaign = await createMetaCampaign({
-        name,
-        objective: objective || 'OUTCOME_TRAFFIC',
-        dailyBudget: budgetCents,
-      })
+      const campaign = await createMetaCampaign(name, objective || 'OUTCOME_TRAFFIC', budgetCents)
       return NextResponse.json({ ok: true, campaign })
     }
 

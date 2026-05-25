@@ -385,7 +385,7 @@ function TextPreview({ item }: { item: ApprovalItem }) {
           <p className="text-white font-bold text-base">{c.headline as string}</p>
           <p className="text-gray-300">{c.subtext as string}</p>
           <p className="text-indigo-400 font-medium">{c.cta as string}</p>
-          {c.offer && <p className="text-yellow-400 text-xs">🎁 {c.offer as string}</p>}
+          {!!c.offer && <p className="text-yellow-400 text-xs">🎁 {c.offer as string}</p>}
         </div>
       )
     case 'visual_story':
@@ -401,7 +401,7 @@ function TextPreview({ item }: { item: ApprovalItem }) {
         <div className="text-sm space-y-2">
           <p className="text-white font-bold text-lg">{c.headline as string}</p>
           <p className="text-gray-300">{c.subtext as string}</p>
-          {c.accentNumber && <p className="text-yellow-400 font-bold text-2xl">{c.accentNumber as string} {c.accentWord as string}</p>}
+          {!!c.accentNumber && <p className="text-yellow-400 font-bold text-2xl">{c.accentNumber as string} {c.accentWord as string}</p>}
         </div>
       )
     case 'linkedInPost':

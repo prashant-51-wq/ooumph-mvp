@@ -46,6 +46,9 @@ export async function POST(req: NextRequest) {
     }
 
     const result = await transcribeUrl(audioUrl, { language, model })
+    if (!result) {
+      return NextResponse.json({ ok: false, error: 'Transcription failed. Check your Deepgram API key and audio URL.' }, { status: 500 })
+    }
 
     const wordCount = result.transcript.split(' ').filter(Boolean).length
 
@@ -65,7 +68,7 @@ export async function POST(req: NextRequest) {
         ${artifactId},
         ${workspaceId},
         ${'transcription'},
-        ${('Transcription: ' + audioUrl.split('/').pop()?.split('?')[0] || 'audio').slice(0, 200)},
+        ${('Transcription: ' + (audioUrl.split('/').pop()?.split('?')[0] || 'audio')).slice(0, 200)},
         ${content},
         ${'approved'},
         NOW()

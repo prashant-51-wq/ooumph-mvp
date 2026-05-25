@@ -32,15 +32,12 @@ async function publishBlog(
 
   const content = artifact.content_json as Record<string, unknown>
   const platform = (options.platform as string) || 'wordpress'
-  const status = (options.status as string) || 'draft'
+  const rawStatus = (options.status as string) || 'draft'
 
-  const postData = {
-    title: artifact.title || content.title || 'New Post',
-    content: (content.body || content.content || content.html || JSON.stringify(content)) as string,
-    status,
-    excerpt: (content.excerpt || content.summary || '') as string,
-    tags: (content.tags || []) as string[],
-  }
+  const postTitle = String(artifact.title || content.title || 'New Post')
+  const postBody = String(content.body || content.content || content.html || JSON.stringify(content))
+  const postExcerpt = String(content.excerpt || content.summary || '')
+  const postTags = (content.tags || []) as string[]
 
   let publishedUrl = ''
   let publishedId = ''
@@ -54,9 +51,16 @@ async function publishBlog(
       throw new Error('WordPress not configured. Add Site URL, Username and App Password in Settings → API Keys.')
     }
 
-    const result = await createWPPost(wpSiteUrl, wpUsername, wpAppPassword, postData)
-    publishedUrl = (result.link || result.url || '') as string
-    publishedId = String(result.id || '')
+    const wpStatus = (rawStatus === 'publish' || rawStatus === 'pending') ? rawStatus : 'draft'
+    const result = await createWPPost(wpSiteUrl, wpUsername, wpAppPassword, {
+      title: postTitle,
+      content: postBody,
+      status: wpStatus,
+      excerpt: postExcerpt,
+      tags: postTags,
+    })
+    publishedUrl = result?.link || ''
+    publishedId = String(result?.id || '')
 
   } else if (platform === 'ghost') {
     const ghostUrl = modelSettings.ghostUrl as string
@@ -66,9 +70,16 @@ async function publishBlog(
       throw new Error('Ghost not configured. Add Ghost URL and Admin API Key in Settings → API Keys.')
     }
 
-    const result = await createGhostPost(ghostUrl, ghostAdminKey, postData)
-    publishedUrl = (result.url || result.link || '') as string
-    publishedId = String(result.id || '')
+    const ghostStatus = rawStatus === 'published' ? 'published' : 'draft'
+    const result = await createGhostPost(ghostUrl, ghostAdminKey, {
+      title: postTitle,
+      html: postBody,
+      status: ghostStatus,
+      tags: postTags,
+      customExcerpt: postExcerpt || undefined,
+    })
+    publishedUrl = result?.url || ''
+    publishedId = String(result?.id || '')
   }
 
   // Log the publish event

@@ -76,6 +76,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: 'Missing productName or amountCents' }, { status: 400 })
       }
       const link = await createStripePaymentLink(productName, amountCents, currency, description)
+      if (!link) return NextResponse.json({ ok: false, error: 'Failed to create payment link. Check your Stripe key.' }, { status: 500 })
       return NextResponse.json({ ok: true, link: { id: link.id, url: link.url } })
     }
 
@@ -84,13 +85,15 @@ export async function POST(req: NextRequest) {
       if (!productName || !amountCents) {
         return NextResponse.json({ error: 'Missing productName or amountCents' }, { status: 400 })
       }
+      const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://ooumph-mvp.vercel.app'
       const session = await createStripeCheckoutSession(
         productName,
         amountCents,
         currency || 'usd',
-        successUrl,
-        cancelUrl,
+        successUrl || `${appUrl}/dashboard/payments?success=1`,
+        cancelUrl || `${appUrl}/dashboard/payments`,
       )
+      if (!session) return NextResponse.json({ ok: false, error: 'Failed to create checkout session.' }, { status: 500 })
       return NextResponse.json({ ok: true, session: { id: session.id, url: session.url } })
     }
 
@@ -103,7 +106,7 @@ export async function POST(req: NextRequest) {
     // ── Revenue Stats ─────────────────────────────────────────────────────────
     if (action === 'revenue') {
       const stats = await getStripeRevenueStats(days || 30)
-      return NextResponse.json({ ok: true, stats })
+      return NextResponse.json({ ok: true, stats: stats || { totalRevenue: 0, currency: 'usd', transactions: 0, avgOrderValue: 0 } })
     }
 
     // ── Create Subscription ───────────────────────────────────────────────────
@@ -117,6 +120,7 @@ export async function POST(req: NextRequest) {
         interval || 'month',
         currency,
       )
+      if (!result) return NextResponse.json({ ok: false, error: 'Failed to create subscription price.' }, { status: 500 })
       return NextResponse.json({ ok: true, priceId: result.priceId, productId: result.productId })
     }
 

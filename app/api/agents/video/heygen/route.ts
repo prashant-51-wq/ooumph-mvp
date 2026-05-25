@@ -65,8 +65,14 @@ export async function POST(req: NextRequest) {
       if (!script) {
         return NextResponse.json({ error: 'script is required for generate' }, { status: 400 })
       }
+      if (!avatarId || !voiceId) {
+        return NextResponse.json({ error: 'avatarId and voiceId are required for generate' }, { status: 400 })
+      }
 
       const result = await generateHeyGenVideo({ avatarId, voiceId, script, title, background })
+      if (!result) {
+        return NextResponse.json({ ok: false, error: 'HeyGen video generation failed. Check your API key.' }, { status: 500 })
+      }
 
       const artifactId = newId()
       const content = JSON.stringify({
@@ -99,12 +105,15 @@ export async function POST(req: NextRequest) {
       }
 
       const video = await getHeyGenVideoStatus(videoId)
+      if (!video) {
+        return NextResponse.json({ ok: false, error: 'Video not found or status check failed.' }, { status: 404 })
+      }
       return NextResponse.json({
         ok: true,
         video: {
           status: video.status,
-          videoUrl: video.videoUrl,
-          thumbnailUrl: video.thumbnailUrl,
+          videoUrl: video.video_url,
+          thumbnailUrl: video.thumbnail_url,
           duration: video.duration,
         },
       })

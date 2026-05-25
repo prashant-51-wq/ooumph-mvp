@@ -51,6 +51,9 @@ export async function POST(req: NextRequest) {
     }
 
     const result = await generateImage(prompt, { size, quality, style })
+    if (!result) {
+      return NextResponse.json({ ok: false, error: 'Image generation failed. Check your OpenAI API key and try again.' }, { status: 500 })
+    }
 
     // 3. Optionally upload to Cloudinary
     let cloudinaryUrl: string | undefined
@@ -59,7 +62,7 @@ export async function POST(req: NextRequest) {
         const { uploadImageUrl, isCloudinaryAvailable } = await import('@/lib/tools/cloudinary')
         if (isCloudinaryAvailable()) {
           const uploaded = await uploadImageUrl(result.url, 'ooumph/generated')
-          cloudinaryUrl = uploaded.url
+          if (uploaded) cloudinaryUrl = uploaded.secureUrl
         }
       } catch {
         // Cloudinary unavailable — continue without it

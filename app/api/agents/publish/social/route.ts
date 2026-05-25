@@ -5,7 +5,7 @@
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
-import { getBufferProfiles, scheduleBufferPost, groqComplete, isGroqAvailable } from '@/lib/tools'
+import { getBufferProfiles, scheduleBufferPost, groqChat, isGroqAvailable } from '@/lib/tools'
 
 type SocialPlatform = 'twitter' | 'linkedin' | 'instagram' | 'facebook'
 
@@ -36,10 +36,12 @@ async function suggestPostTime(content: string, platforms: SocialPlatform[]): Pr
   if (!isGroqAvailable()) return defaultTime
 
   try {
-    const response = await groqComplete(
-      `Given this social media content for ${platforms.join(', ')}: "${content.slice(0, 200)}..."
-Suggest the single best posting time in ISO 8601 format (within the next 7 days). Consider platform best practices for engagement. Return ONLY the ISO date string, nothing else.`,
-      'You are a social media scheduling expert. Return only an ISO 8601 datetime string.',
+    const response = await groqChat(
+      [
+        { role: 'system', content: 'You are a social media scheduling expert. Return only an ISO 8601 datetime string.' },
+        { role: 'user', content: `Given this social media content for ${platforms.join(', ')}: "${content.slice(0, 200)}..."
+Suggest the single best posting time in ISO 8601 format (within the next 7 days). Consider platform best practices for engagement. Return ONLY the ISO date string, nothing else.` },
+      ],
       { maxTokens: 50 }
     )
     const suggestedTime = response.trim()
@@ -108,20 +110,14 @@ export async function POST(req: NextRequest) {
 
     for (const profile of matchedProfiles) {
       try {
-        const postData: Record<string, unknown> = {
-          profile_ids: [profile.id],
+        const result = await scheduleBufferPost(bufferAccessToken, {
+          profileIds: [profile.id],
           text: content,
-          scheduled_at: finalScheduledAt,
-        }
-        if (mediaUrl) {
-          postData.media = { link: mediaUrl }
-        }
-
-        const result = await scheduleBufferPost(bufferAccessToken, postData)
-        if (result?.updates) {
-          for (const update of result.updates) {
-            bufferIds.push(update.id || '')
-          }
+          scheduledAt: finalScheduledAt,
+          ...(mediaUrl ? { mediaLink: mediaUrl } : {}),
+        })
+        if (result?.id) {
+          bufferIds.push(result.id)
         }
         profilesQueued.push(`${profile.service} (${profile.id})`)
       } catch (err) {

@@ -59,6 +59,9 @@ export async function POST(req: NextRequest) {
       stability,
       similarityBoost,
     })
+    if (!result) {
+      return NextResponse.json({ ok: false, error: 'Voiceover generation failed. Check your ElevenLabs API key.' }, { status: 500 })
+    }
 
     // 3. Save artifact (metadata only — base64 audio is too large to store)
     const artifactId = newId()

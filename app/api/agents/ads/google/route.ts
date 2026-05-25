@@ -8,6 +8,7 @@ import {
   getGoogleAdsCampaigns,
   getGoogleAdsCampaignMetrics,
   getKeywordIdeas,
+  pauseGoogleCampaign,
   isGoogleAdsAvailable,
 } from '@/lib/tools/google-ads'
 
@@ -61,32 +62,38 @@ export async function POST(req: NextRequest) {
       })
     }
 
+    // Access token is required for all actions
+    if (!accessToken) {
+      return NextResponse.json({
+        ok: false,
+        error: 'Google Ads access token not configured. Add your OAuth token in Settings → API Keys.',
+        requiresSetup: true,
+      })
+    }
+
     // ── List Campaigns ────────────────────────────────────────────────────────
     if (action === 'campaigns') {
-      const campaigns = await getGoogleAdsCampaigns({ accessToken, customerId })
+      const campaigns = await getGoogleAdsCampaigns(accessToken, customerId)
       return NextResponse.json({ ok: true, campaigns })
     }
 
     // ── Campaign Metrics ──────────────────────────────────────────────────────
     if (action === 'metrics') {
-      if (!campaignId) return NextResponse.json({ error: 'Missing campaignId' }, { status: 400 })
-      const metrics = await getGoogleAdsCampaignMetrics({
-        campaignId,
-        accessToken,
-        customerId,
-        dateRange: dateRange || 'LAST_7_DAYS',
-      })
+      const metrics = await getGoogleAdsCampaignMetrics(accessToken, customerId, dateRange || 'LAST_7_DAYS')
       return NextResponse.json({ ok: true, metrics })
     }
 
     // ── Keyword Ideas ─────────────────────────────────────────────────────────
     if (action === 'keywords') {
-      const ideas = await getKeywordIdeas({
-        seeds: seeds || [],
-        accessToken,
-        customerId,
-      })
+      const ideas = await getKeywordIdeas(seeds || [], accessToken, customerId)
       return NextResponse.json({ ok: true, ideas })
+    }
+
+    // ── Pause Campaign ────────────────────────────────────────────────────────
+    if (action === 'pause') {
+      if (!campaignId) return NextResponse.json({ error: 'Missing campaignId' }, { status: 400 })
+      const paused = await pauseGoogleCampaign(campaignId, accessToken, customerId)
+      return NextResponse.json({ ok: paused })
     }
 
     return NextResponse.json({ error: 'Unknown action' }, { status: 400 })

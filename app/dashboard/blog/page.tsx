@@ -975,17 +975,17 @@ export default function BlogPage() {
           )}
 
           {/* Chapter timestamps */}
-          {scResult.chaptersTimestamps?.length > 0 && (
+          {(scResult.chaptersTimestamps?.length ?? 0) > 0 && (
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-white font-semibold text-sm">Chapter Timestamps</h3>
                 <CopyButton
-                  text={scResult.chaptersTimestamps.map(c => `${c.time} ${c.title}`).join('\n')}
+                  text={(scResult.chaptersTimestamps ?? []).map(c => `${c.time} ${c.title}`).join('\n')}
                   label="Copy Timestamps"
                 />
               </div>
               <div className="space-y-1.5">
-                {scResult.chaptersTimestamps.map((ch, i) => (
+                {(scResult.chaptersTimestamps ?? []).map((ch, i) => (
                   <div key={i} className="flex items-center gap-3 text-sm">
                     <span className="text-indigo-400 font-mono text-xs">{ch.time}</span>
                     <span className="text-gray-300">{ch.title}</span>

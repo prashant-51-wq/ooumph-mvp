@@ -122,6 +122,9 @@ export async function POST(req: NextRequest) {
       }
 
       const result = await makeOutboundCall(phoneNumber, assistantId, phoneNumberId)
+      if (!result) {
+        return NextResponse.json({ ok: false, error: 'Failed to initiate call. Check your Vapi phone number configuration.' }, { status: 500 })
+      }
       return NextResponse.json({ ok: true, callId: result.id, message: 'Call initiated' })
     }
 

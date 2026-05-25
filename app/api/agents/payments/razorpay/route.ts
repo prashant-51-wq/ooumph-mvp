@@ -76,12 +76,13 @@ export async function POST(req: NextRequest) {
       }
       const link = await createRazorpayPaymentLink({
         amountPaise,
-        description,
+        description: description || '',
         customerName,
         customerEmail,
         customerPhone,
         callbackUrl,
       })
+      if (!link) return NextResponse.json({ ok: false, error: 'Failed to create payment link. Check your Razorpay credentials.' }, { status: 500 })
       return NextResponse.json({ ok: true, link: { id: link.id, short_url: link.short_url, amount: link.amount } })
     }
 

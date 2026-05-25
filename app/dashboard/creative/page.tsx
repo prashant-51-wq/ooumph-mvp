@@ -504,10 +504,10 @@ export default function CreativePage() {
                   <img src={buildThumbnailUrl(thumb.content_json)} alt="YouTube Thumbnail" className="w-full" style={{ aspectRatio: '16/9' }} />
                 </div>
                 <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 text-sm grid grid-cols-2 gap-4">
-                  <div><p className="text-gray-500 text-xs mb-1">Headline</p><p className="text-white font-bold">{thumb.content_json.headline}</p></div>
-                  <div><p className="text-gray-500 text-xs mb-1">Subtext</p><p className="text-gray-300">{thumb.content_json.subtext}</p></div>
-                  {thumb.content_json.accentNumber && <div><p className="text-gray-500 text-xs mb-1">Accent</p><p className="text-indigo-400 font-bold">{thumb.content_json.accentNumber} {thumb.content_json.accentWord}</p></div>}
-                  <div><p className="text-gray-500 text-xs mb-1">Layout</p><p className="text-gray-300 capitalize">{thumb.content_json.layout}</p></div>
+                  <div><p className="text-gray-500 text-xs mb-1">Headline</p><p className="text-white font-bold">{thumb.content_json.headline as string}</p></div>
+                  <div><p className="text-gray-500 text-xs mb-1">Subtext</p><p className="text-gray-300">{thumb.content_json.subtext as string}</p></div>
+                  {!!thumb.content_json.accentNumber && <div><p className="text-gray-500 text-xs mb-1">Accent</p><p className="text-indigo-400 font-bold">{thumb.content_json.accentNumber as string} {thumb.content_json.accentWord as string}</p></div>}
+                  <div><p className="text-gray-500 text-xs mb-1">Layout</p><p className="text-gray-300 capitalize">{thumb.content_json.layout as string}</p></div>
                 </div>
               </div>
               <div className="space-y-3">
@@ -761,7 +761,7 @@ export default function CreativePage() {
 
                 <div className="grid grid-cols-3 gap-5">
                   <div className="col-span-2">
-                    {videoScenes[activeScene] && (
+                    {!!videoScenes[activeScene] && (
                       <div className="bg-gray-900 rounded-2xl overflow-hidden border border-gray-800">
                         <img
                           key={activeScene}
@@ -775,7 +775,7 @@ export default function CreativePage() {
                   </div>
                   <div className="space-y-3">
                     <StatusCard status={video.approval_status} notes="" />
-                    {videoScenes[activeScene] && (
+                    {!!videoScenes[activeScene] && (
                       <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 text-sm space-y-3">
                         <div><p className="text-gray-500 text-xs mb-1">Shot type</p><p className="text-white font-bold capitalize">{videoScenes[activeScene].shotType as string}</p></div>
                         <div><p className="text-gray-500 text-xs mb-1">Visual</p><p className="text-gray-300 text-xs leading-relaxed">{videoScenes[activeScene].visual as string}</p></div>
@@ -793,7 +793,7 @@ export default function CreativePage() {
               </div>
 
               {/* Caption */}
-              {video.content_json.postCaption && (
+              {!!video.content_json.postCaption && (
                 <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
                   <p className="text-gray-500 text-xs uppercase tracking-wider mb-2">Post Caption</p>
                   <p className="text-gray-300 text-sm leading-relaxed whitespace-pre-line">{video.content_json.postCaption as string}</p>
@@ -890,7 +890,7 @@ export default function CreativePage() {
               </div>
 
               {/* Hero copy preview */}
-              {landing.content_json.hero && (
+              {!!landing.content_json.hero && (
                 <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 text-sm grid grid-cols-2 md:grid-cols-4 gap-4">
                   <div><p className="text-gray-500 text-xs mb-1">H1 Headline</p><p className="text-white font-bold">{((landing.content_json.hero as Record<string, string>).headline)}</p></div>
                   <div><p className="text-gray-500 text-xs mb-1">CTA Button</p><p className="text-emerald-400 font-bold">{((landing.content_json.hero as Record<string, string>).cta)}</p></div>
