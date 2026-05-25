@@ -26,6 +26,8 @@ const PRIMARY_NAV = [
   { href: '/dashboard/approvals', label: 'Approvals', icon: '✅' },
   { href: '/dashboard/agents', label: 'Agents', icon: '🤖' },
   { href: '/dashboard/connections', label: 'Connections', icon: '🔗' },
+  { href: '/dashboard/billing', label: 'Billing', icon: '💳' },
+  { href: '/dashboard/agency', label: 'Agency', icon: '🏢' },
   { href: '/dashboard/settings', label: 'Settings', icon: '⚙️' },
 ]
 
@@ -80,6 +82,13 @@ const ADVANCED_NAV = [
     ],
   },
   {
+    label: 'ACCOUNT',
+    items: [
+      { href: '/dashboard/billing', label: 'Billing & Plans', icon: '💳' },
+      { href: '/dashboard/agency', label: 'Agency Dashboard', icon: '🏢' },
+    ],
+  },
+  {
     label: 'SYSTEM',
     items: [
       { href: '/dashboard/assets', label: 'Assets', icon: '📦' },
@@ -116,6 +125,8 @@ function getPageTitle(pathname: string): string {
     '/dashboard/creative': 'Creative Studio',
     '/dashboard/voiceover': 'Voiceover',
     '/dashboard/publishing': 'Publishing',
+    '/dashboard/billing': 'Billing & Plans',
+    '/dashboard/agency': 'Agency Dashboard',
     '/dashboard/audit': 'Audit Log',
     '/dashboard/privacy': 'Privacy & Trust',
     '/dashboard/funnel/form-builder': 'Form Builder',

@@ -124,6 +124,17 @@ async function postgresQuery(strings: TemplateStringsArray, ...values: unknown[]
     await pgSql`CREATE TABLE IF NOT EXISTS reputation_requests (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, contact_id TEXT, contact_name TEXT, contact_email TEXT NOT NULL, booking_id TEXT, status TEXT DEFAULT 'pending', sent_at TIMESTAMPTZ, clicked_at TIMESTAMPTZ, review_platform TEXT DEFAULT 'google', review_link TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`
     await pgSql`CREATE INDEX IF NOT EXISTS idx_reputation_reviews_workspace ON reputation_reviews(workspace_id, created_at DESC)`
     await pgSql`CREATE INDEX IF NOT EXISTS idx_reputation_requests_workspace ON reputation_requests(workspace_id, created_at DESC)`
+    await pgSql`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin INTEGER DEFAULT 0`
+    await pgSql`ALTER TABLE users ADD COLUMN IF NOT EXISTS workspace_id TEXT`
+    await pgSql`CREATE TABLE IF NOT EXISTS plans (id TEXT PRIMARY KEY, name TEXT NOT NULL, slug TEXT NOT NULL UNIQUE, price_monthly INTEGER NOT NULL, price_yearly INTEGER, stripe_price_id TEXT, stripe_price_id_yearly TEXT, commission_rate REAL DEFAULT 0.15, max_sub_accounts INTEGER DEFAULT 0, max_ai_runs_monthly INTEGER DEFAULT 500, features TEXT DEFAULT '[]', is_active INTEGER DEFAULT 1, sort_order INTEGER DEFAULT 0, created_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE TABLE IF NOT EXISTS subscriptions (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL UNIQUE, plan_id TEXT NOT NULL, stripe_customer_id TEXT, stripe_subscription_id TEXT, status TEXT DEFAULT 'trialing', current_period_start TIMESTAMPTZ, current_period_end TIMESTAMPTZ, cancel_at_period_end INTEGER DEFAULT 0, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE TABLE IF NOT EXISTS vendor_profiles (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL UNIQUE, stripe_connect_account_id TEXT, stripe_connect_status TEXT DEFAULT 'not_connected', commission_rate_override REAL, white_label_name TEXT, white_label_logo_url TEXT, white_label_primary_color TEXT DEFAULT '#4F46E5', white_label_domain TEXT, is_approved INTEGER DEFAULT 1, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE TABLE IF NOT EXISTS client_accounts (id TEXT PRIMARY KEY, vendor_workspace_id TEXT NOT NULL, client_workspace_id TEXT, client_name TEXT NOT NULL, client_email TEXT NOT NULL, price_monthly INTEGER NOT NULL, stripe_customer_id TEXT, stripe_subscription_id TEXT, status TEXT DEFAULT 'trial', trial_ends_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE TABLE IF NOT EXISTS commission_ledger (id TEXT PRIMARY KEY, vendor_workspace_id TEXT NOT NULL, client_account_id TEXT, gross_amount INTEGER NOT NULL, commission_rate REAL NOT NULL, commission_amount INTEGER NOT NULL, net_amount INTEGER NOT NULL, stripe_payment_intent_id TEXT, stripe_transfer_id TEXT, description TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE TABLE IF NOT EXISTS platform_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_subscriptions_workspace ON subscriptions(workspace_id)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_commission_ledger_vendor ON commission_ledger(vendor_workspace_id, created_at DESC)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_client_accounts_vendor ON client_accounts(vendor_workspace_id)`
   }
 
   const rows = await pgSql(strings, ...values) as Record<string, unknown>[]
@@ -512,6 +523,84 @@ function initSQLiteSync(db: import('better-sqlite3').Database) {
     );
     CREATE INDEX IF NOT EXISTS idx_reputation_reviews_workspace ON reputation_reviews(workspace_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_reputation_requests_workspace ON reputation_requests(workspace_id, created_at DESC);
+    CREATE TABLE IF NOT EXISTS plans (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      slug TEXT NOT NULL UNIQUE,
+      price_monthly INTEGER NOT NULL,
+      price_yearly INTEGER,
+      stripe_price_id TEXT,
+      stripe_price_id_yearly TEXT,
+      commission_rate REAL DEFAULT 0.15,
+      max_sub_accounts INTEGER DEFAULT 0,
+      max_ai_runs_monthly INTEGER DEFAULT 500,
+      features TEXT DEFAULT '[]',
+      is_active INTEGER DEFAULT 1,
+      sort_order INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS subscriptions (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL UNIQUE,
+      plan_id TEXT NOT NULL,
+      stripe_customer_id TEXT,
+      stripe_subscription_id TEXT,
+      status TEXT DEFAULT 'trialing',
+      current_period_start TEXT,
+      current_period_end TEXT,
+      cancel_at_period_end INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS vendor_profiles (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL UNIQUE,
+      stripe_connect_account_id TEXT,
+      stripe_connect_status TEXT DEFAULT 'not_connected',
+      commission_rate_override REAL,
+      white_label_name TEXT,
+      white_label_logo_url TEXT,
+      white_label_primary_color TEXT DEFAULT '#4F46E5',
+      white_label_domain TEXT,
+      is_approved INTEGER DEFAULT 1,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS client_accounts (
+      id TEXT PRIMARY KEY,
+      vendor_workspace_id TEXT NOT NULL,
+      client_workspace_id TEXT,
+      client_name TEXT NOT NULL,
+      client_email TEXT NOT NULL,
+      price_monthly INTEGER NOT NULL,
+      stripe_customer_id TEXT,
+      stripe_subscription_id TEXT,
+      status TEXT DEFAULT 'trial',
+      trial_ends_at TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS commission_ledger (
+      id TEXT PRIMARY KEY,
+      vendor_workspace_id TEXT NOT NULL,
+      client_account_id TEXT,
+      gross_amount INTEGER NOT NULL,
+      commission_rate REAL NOT NULL,
+      commission_amount INTEGER NOT NULL,
+      net_amount INTEGER NOT NULL,
+      stripe_payment_intent_id TEXT,
+      stripe_transfer_id TEXT,
+      description TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS platform_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_subscriptions_workspace ON subscriptions(workspace_id);
+    CREATE INDEX IF NOT EXISTS idx_commission_ledger_vendor ON commission_ledger(vendor_workspace_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_client_accounts_vendor ON client_accounts(vendor_workspace_id);
   `)
   // Safely add columns to existing tables (ignore "already exists" errors)
   const migrations = [
@@ -535,6 +624,17 @@ function initSQLiteSync(db: import('better-sqlite3').Database) {
     'CREATE TABLE IF NOT EXISTS reputation_requests (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, contact_id TEXT, contact_name TEXT, contact_email TEXT NOT NULL, booking_id TEXT, status TEXT DEFAULT \'pending\', sent_at TEXT, clicked_at TEXT, review_platform TEXT DEFAULT \'google\', review_link TEXT, created_at TEXT DEFAULT (datetime(\'now\')))',
     'CREATE INDEX IF NOT EXISTS idx_reputation_reviews_workspace ON reputation_reviews(workspace_id, created_at DESC)',
     'CREATE INDEX IF NOT EXISTS idx_reputation_requests_workspace ON reputation_requests(workspace_id, created_at DESC)',
+    'ALTER TABLE users ADD COLUMN is_admin INTEGER DEFAULT 0',
+    'ALTER TABLE users ADD COLUMN workspace_id TEXT',
+    'CREATE TABLE IF NOT EXISTS plans (id TEXT PRIMARY KEY, name TEXT NOT NULL, slug TEXT NOT NULL UNIQUE, price_monthly INTEGER NOT NULL, price_yearly INTEGER, stripe_price_id TEXT, stripe_price_id_yearly TEXT, commission_rate REAL DEFAULT 0.15, max_sub_accounts INTEGER DEFAULT 0, max_ai_runs_monthly INTEGER DEFAULT 500, features TEXT DEFAULT \'[]\', is_active INTEGER DEFAULT 1, sort_order INTEGER DEFAULT 0, created_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE TABLE IF NOT EXISTS subscriptions (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL UNIQUE, plan_id TEXT NOT NULL, stripe_customer_id TEXT, stripe_subscription_id TEXT, status TEXT DEFAULT \'trialing\', current_period_start TEXT, current_period_end TEXT, cancel_at_period_end INTEGER DEFAULT 0, created_at TEXT DEFAULT (datetime(\'now\')), updated_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE TABLE IF NOT EXISTS vendor_profiles (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL UNIQUE, stripe_connect_account_id TEXT, stripe_connect_status TEXT DEFAULT \'not_connected\', commission_rate_override REAL, white_label_name TEXT, white_label_logo_url TEXT, white_label_primary_color TEXT DEFAULT \'#4F46E5\', white_label_domain TEXT, is_approved INTEGER DEFAULT 1, created_at TEXT DEFAULT (datetime(\'now\')), updated_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE TABLE IF NOT EXISTS client_accounts (id TEXT PRIMARY KEY, vendor_workspace_id TEXT NOT NULL, client_workspace_id TEXT, client_name TEXT NOT NULL, client_email TEXT NOT NULL, price_monthly INTEGER NOT NULL, stripe_customer_id TEXT, stripe_subscription_id TEXT, status TEXT DEFAULT \'trial\', trial_ends_at TEXT, created_at TEXT DEFAULT (datetime(\'now\')), updated_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE TABLE IF NOT EXISTS commission_ledger (id TEXT PRIMARY KEY, vendor_workspace_id TEXT NOT NULL, client_account_id TEXT, gross_amount INTEGER NOT NULL, commission_rate REAL NOT NULL, commission_amount INTEGER NOT NULL, net_amount INTEGER NOT NULL, stripe_payment_intent_id TEXT, stripe_transfer_id TEXT, description TEXT, created_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE TABLE IF NOT EXISTS platform_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE INDEX IF NOT EXISTS idx_subscriptions_workspace ON subscriptions(workspace_id)',
+    'CREATE INDEX IF NOT EXISTS idx_commission_ledger_vendor ON commission_ledger(vendor_workspace_id, created_at DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_client_accounts_vendor ON client_accounts(vendor_workspace_id)',
   ]
   for (const m of migrations) {
     try { db.exec(m) } catch { /* column already exists */ }
@@ -592,5 +692,16 @@ export async function initializeDatabase() {
   await pgSql`CREATE TABLE IF NOT EXISTS reputation_requests (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, contact_id TEXT, contact_name TEXT, contact_email TEXT NOT NULL, booking_id TEXT, status TEXT DEFAULT 'pending', sent_at TIMESTAMPTZ, clicked_at TIMESTAMPTZ, review_platform TEXT DEFAULT 'google', review_link TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`
   await pgSql`CREATE INDEX IF NOT EXISTS idx_reputation_reviews_workspace ON reputation_reviews(workspace_id, created_at DESC)`
   await pgSql`CREATE INDEX IF NOT EXISTS idx_reputation_requests_workspace ON reputation_requests(workspace_id, created_at DESC)`
+  await pgSql`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin INTEGER DEFAULT 0`
+  await pgSql`ALTER TABLE users ADD COLUMN IF NOT EXISTS workspace_id TEXT`
+  await pgSql`CREATE TABLE IF NOT EXISTS plans (id TEXT PRIMARY KEY, name TEXT NOT NULL, slug TEXT NOT NULL UNIQUE, price_monthly INTEGER NOT NULL, price_yearly INTEGER, stripe_price_id TEXT, stripe_price_id_yearly TEXT, commission_rate REAL DEFAULT 0.15, max_sub_accounts INTEGER DEFAULT 0, max_ai_runs_monthly INTEGER DEFAULT 500, features TEXT DEFAULT '[]', is_active INTEGER DEFAULT 1, sort_order INTEGER DEFAULT 0, created_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE TABLE IF NOT EXISTS subscriptions (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL UNIQUE, plan_id TEXT NOT NULL, stripe_customer_id TEXT, stripe_subscription_id TEXT, status TEXT DEFAULT 'trialing', current_period_start TIMESTAMPTZ, current_period_end TIMESTAMPTZ, cancel_at_period_end INTEGER DEFAULT 0, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE TABLE IF NOT EXISTS vendor_profiles (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL UNIQUE, stripe_connect_account_id TEXT, stripe_connect_status TEXT DEFAULT 'not_connected', commission_rate_override REAL, white_label_name TEXT, white_label_logo_url TEXT, white_label_primary_color TEXT DEFAULT '#4F46E5', white_label_domain TEXT, is_approved INTEGER DEFAULT 1, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE TABLE IF NOT EXISTS client_accounts (id TEXT PRIMARY KEY, vendor_workspace_id TEXT NOT NULL, client_workspace_id TEXT, client_name TEXT NOT NULL, client_email TEXT NOT NULL, price_monthly INTEGER NOT NULL, stripe_customer_id TEXT, stripe_subscription_id TEXT, status TEXT DEFAULT 'trial', trial_ends_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE TABLE IF NOT EXISTS commission_ledger (id TEXT PRIMARY KEY, vendor_workspace_id TEXT NOT NULL, client_account_id TEXT, gross_amount INTEGER NOT NULL, commission_rate REAL NOT NULL, commission_amount INTEGER NOT NULL, net_amount INTEGER NOT NULL, stripe_payment_intent_id TEXT, stripe_transfer_id TEXT, description TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE TABLE IF NOT EXISTS platform_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_subscriptions_workspace ON subscriptions(workspace_id)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_commission_ledger_vendor ON commission_ledger(vendor_workspace_id, created_at DESC)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_client_accounts_vendor ON client_accounts(vendor_workspace_id)`
   console.log('✅ Neon Postgres DB initialized')
 }
