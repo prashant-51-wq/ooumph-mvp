@@ -22,6 +22,30 @@ interface ModelSettings {
   firecrawlApiKey: string
   unsplashAccessKey: string
   pexelsApiKey: string
+  // AI Assistants
+  groqApiKey: string
+  openaiApiKey: string
+  // Notifications
+  slackBotToken: string
+  slackChannelId: string
+  telegramBotToken: string
+  telegramChatId: string
+  // Publishing
+  wpSiteUrl: string
+  wpUsername: string
+  wpAppPassword: string
+  ghostUrl: string
+  ghostAdminKey: string
+  bufferAccessToken: string
+  // CRM & Booking
+  calcomApiKey: string
+  tallyApiKey: string
+  // Automation
+  n8nBaseUrl: string
+  n8nApiKey: string
+  // Search Console & Analytics
+  searchConsoleSiteUrl: string
+  searchConsoleAccessToken: string
 }
 
 export default function SettingsPage() {
@@ -48,7 +72,26 @@ export default function SettingsPage() {
     firecrawlApiKey: '',
     unsplashAccessKey: '',
     pexelsApiKey: '',
+    groqApiKey: '',
+    openaiApiKey: '',
+    slackBotToken: '',
+    slackChannelId: '',
+    telegramBotToken: '',
+    telegramChatId: '',
+    wpSiteUrl: '',
+    wpUsername: '',
+    wpAppPassword: '',
+    ghostUrl: '',
+    ghostAdminKey: '',
+    bufferAccessToken: '',
+    calcomApiKey: '',
+    tallyApiKey: '',
+    n8nBaseUrl: '',
+    n8nApiKey: '',
+    searchConsoleSiteUrl: '',
+    searchConsoleAccessToken: '',
   })
+  const [notifyTestResult, setNotifyTestResult] = useState<Record<string, string>>({})
 
   // Account state
   const [accountName, setAccountName] = useState('')
@@ -123,6 +166,30 @@ export default function SettingsPage() {
     localStorage.setItem('userEmail', accountEmail)
     setAccountSaving(false); setAccountSaved(true)
     setTimeout(() => setAccountSaved(false), 2000)
+  }
+
+  const testNotification = async (service: 'slack' | 'telegram') => {
+    const workspaceId = localStorage.getItem('workspaceId')
+    if (!workspaceId) return
+    setNotifyTestResult(prev => ({ ...prev, [service]: 'Testing...' }))
+    // Save first so the test uses the current tokens
+    await save()
+    try {
+      const res = await fetch(`/api/agents/notify/${service}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspaceId, type: 'test' }),
+      })
+      const data = await res.json()
+      if (data.sent || data.ok) {
+        setNotifyTestResult(prev => ({ ...prev, [service]: '✅ Connected!' }))
+      } else {
+        setNotifyTestResult(prev => ({ ...prev, [service]: `❌ ${data.error || 'Failed'}` }))
+      }
+    } catch (e) {
+      setNotifyTestResult(prev => ({ ...prev, [service]: `❌ ${String(e)}` }))
+    }
+    setTimeout(() => setNotifyTestResult(prev => ({ ...prev, [service]: '' })), 5000)
   }
 
   if (fetching) return (
@@ -320,6 +387,132 @@ export default function SettingsPage() {
               <input type="password" className={input} value={modelSettings.pexelsApiKey}
                 onChange={e => updateModel('pexelsApiKey', e.target.value)}
                 placeholder="Pexels API key" />
+            </Field>
+          </Section>
+
+          <Section title="AI Assistants">
+            <Field label="Groq API Key" hint="Fast free-tier LLM for bulk tasks — get free at console.groq.com">
+              <input type="password" className={input} value={modelSettings.groqApiKey}
+                onChange={e => updateModel('groqApiKey', e.target.value)}
+                placeholder="gsk_..." />
+            </Field>
+            <Field label="OpenAI API Key" hint="For DALL-E image generation and Whisper transcription">
+              <input type="password" className={input} value={modelSettings.openaiApiKey}
+                onChange={e => updateModel('openaiApiKey', e.target.value)}
+                placeholder="sk-..." />
+            </Field>
+          </Section>
+
+          <Section title="Notifications">
+            <Field label="Slack Bot Token" hint="From api.slack.com — needs chat:write scope">
+              <div className="flex gap-2">
+                <input type="password" className={input} value={modelSettings.slackBotToken}
+                  onChange={e => updateModel('slackBotToken', e.target.value)}
+                  placeholder="xoxb-..." />
+                <button onClick={() => testNotification('slack')}
+                  className="px-3 py-2 rounded-lg bg-gray-700 hover:bg-gray-600 text-white text-xs font-medium whitespace-nowrap transition-colors">
+                  Test
+                </button>
+              </div>
+              {notifyTestResult.slack && (
+                <p className={`text-xs mt-1.5 ${notifyTestResult.slack.startsWith('✅') ? 'text-green-400' : 'text-red-400'}`}>{notifyTestResult.slack}</p>
+              )}
+            </Field>
+            <Field label="Slack Channel ID" hint="Channel ID (starts with C...) for approval notifications">
+              <input className={input} value={modelSettings.slackChannelId}
+                onChange={e => updateModel('slackChannelId', e.target.value)}
+                placeholder="C0123456789" />
+            </Field>
+            <Field label="Telegram Bot Token" hint="From @BotFather on Telegram">
+              <div className="flex gap-2">
+                <input type="password" className={input} value={modelSettings.telegramBotToken}
+                  onChange={e => updateModel('telegramBotToken', e.target.value)}
+                  placeholder="123456789:AAF..." />
+                <button onClick={() => testNotification('telegram')}
+                  className="px-3 py-2 rounded-lg bg-gray-700 hover:bg-gray-600 text-white text-xs font-medium whitespace-nowrap transition-colors">
+                  Test
+                </button>
+              </div>
+              {notifyTestResult.telegram && (
+                <p className={`text-xs mt-1.5 ${notifyTestResult.telegram.startsWith('✅') ? 'text-green-400' : 'text-red-400'}`}>{notifyTestResult.telegram}</p>
+              )}
+            </Field>
+            <Field label="Telegram Chat ID" hint="Your chat ID — send /start to your bot then get from getUpdates">
+              <input className={input} value={modelSettings.telegramChatId}
+                onChange={e => updateModel('telegramChatId', e.target.value)}
+                placeholder="-1001234567890" />
+            </Field>
+          </Section>
+
+          <Section title="Publishing">
+            <Field label="WordPress Site URL" hint="e.g. https://yourblog.com (must have REST API enabled)">
+              <input className={input} value={modelSettings.wpSiteUrl}
+                onChange={e => updateModel('wpSiteUrl', e.target.value)}
+                placeholder="https://yourblog.com" />
+            </Field>
+            <Field label="WordPress Username" hint="Your WordPress username">
+              <input className={input} value={modelSettings.wpUsername}
+                onChange={e => updateModel('wpUsername', e.target.value)}
+                placeholder="admin" />
+            </Field>
+            <Field label="WordPress App Password" hint="Generate at Users → Profile → Application Passwords">
+              <input type="password" className={input} value={modelSettings.wpAppPassword}
+                onChange={e => updateModel('wpAppPassword', e.target.value)}
+                placeholder="xxxx xxxx xxxx xxxx xxxx xxxx" />
+            </Field>
+            <Field label="Ghost Site URL" hint="e.g. https://yourblog.ghost.io">
+              <input className={input} value={modelSettings.ghostUrl}
+                onChange={e => updateModel('ghostUrl', e.target.value)}
+                placeholder="https://yourblog.ghost.io" />
+            </Field>
+            <Field label="Ghost Admin API Key" hint="From Ghost Admin → Settings → Integrations">
+              <input type="password" className={input} value={modelSettings.ghostAdminKey}
+                onChange={e => updateModel('ghostAdminKey', e.target.value)}
+                placeholder="Ghost admin key" />
+            </Field>
+            <Field label="Buffer Access Token" hint="From buffer.com/developers">
+              <input type="password" className={input} value={modelSettings.bufferAccessToken}
+                onChange={e => updateModel('bufferAccessToken', e.target.value)}
+                placeholder="Buffer access token" />
+            </Field>
+          </Section>
+
+          <Section title="CRM & Booking">
+            <Field label="Cal.com API Key" hint="From app.cal.com/settings/developer/api-keys">
+              <input type="password" className={input} value={modelSettings.calcomApiKey}
+                onChange={e => updateModel('calcomApiKey', e.target.value)}
+                placeholder="cal_live_..." />
+            </Field>
+            <Field label="Tally API Key" hint="From tally.so/app → Settings → API">
+              <input type="password" className={input} value={modelSettings.tallyApiKey}
+                onChange={e => updateModel('tallyApiKey', e.target.value)}
+                placeholder="Tally API key" />
+            </Field>
+          </Section>
+
+          <Section title="Automation">
+            <Field label="n8n Base URL" hint="e.g. https://your-n8n.domain.com (self-hosted)">
+              <input className={input} value={modelSettings.n8nBaseUrl}
+                onChange={e => updateModel('n8nBaseUrl', e.target.value)}
+                placeholder="https://your-n8n.domain.com" />
+            </Field>
+            <Field label="n8n API Key" hint="From n8n Settings → API">
+              <input type="password" className={input} value={modelSettings.n8nApiKey}
+                onChange={e => updateModel('n8nApiKey', e.target.value)}
+                placeholder="n8n API key" />
+            </Field>
+          </Section>
+
+          <Section title="Search Console & Analytics">
+            <Field label="Search Console Site URL" hint="Exact property URL in Search Console, e.g. https://yourdomain.com">
+              <input className={input} value={modelSettings.searchConsoleSiteUrl}
+                onChange={e => updateModel('searchConsoleSiteUrl', e.target.value)}
+                placeholder="https://yourdomain.com" />
+            </Field>
+            <Field label="Search Console Access Token" hint="Google OAuth access token with Search Console read scope">
+              <input type="password" className={input} value={modelSettings.searchConsoleAccessToken}
+                onChange={e => updateModel('searchConsoleAccessToken', e.target.value)}
+                placeholder="ya29...." />
             </Field>
           </Section>
 

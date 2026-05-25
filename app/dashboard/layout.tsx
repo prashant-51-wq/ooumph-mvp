@@ -26,6 +26,7 @@ const NAV_SECTIONS = [
       { href: '/dashboard/content', label: 'Content Calendar', icon: '📅' },
       { href: '/dashboard/creative', label: 'Creative Studio', icon: '🎨' },
       { href: '/dashboard/research', label: 'Research Hub', icon: '🔍' },
+      { href: '/dashboard/blog', label: 'Blog & Scripts', icon: '✍️' },
     ],
   },
   {
@@ -36,6 +37,7 @@ const NAV_SECTIONS = [
       { href: '/dashboard/growth', label: 'Growth Engine', icon: '📈' },
       { href: '/dashboard/email-marketing', label: 'Email Marketing', icon: '📧' },
       { href: '/dashboard/repurpose', label: 'Content Repurpose', icon: '♻️' },
+      { href: '/dashboard/publishing', label: 'Publishing Hub', icon: '🚀' },
       { href: '/dashboard/pr', label: 'PR Studio', icon: '📰' },
     ],
   },
@@ -57,6 +59,7 @@ const NAV_SECTIONS = [
       { href: '/dashboard/integrations', label: 'Integrations', icon: '🔗' },
       { href: '/dashboard/learning', label: 'AI Learning', icon: '🧬' },
       { href: '/dashboard/export', label: 'Export', icon: '📄' },
+      { href: '/dashboard/memory', label: 'Brand Memory', icon: '🧠' },
       { href: '/dashboard/settings', label: 'Settings', icon: '⚙️' },
     ],
   },
