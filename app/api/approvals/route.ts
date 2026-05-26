@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { after } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { sendApprovalConfirmationEmail } from '@/lib/email'
 
@@ -70,6 +71,52 @@ export async function PATCH(req: NextRequest) {
         artifactType: artifact.type as string,
         action,
         notes,
+      })
+    }
+
+    // ── Strategy approved → trigger CMO decomposition into project_tasks ─────
+    //
+    // When the user approves a strategy artifact, the CMO breaks it down into
+    // concrete sub-agent tasks (social posts, emails, ads, etc.) and dispatches
+    // each one. We fire this in `after()` so the approval response stays fast
+    // and the user sees the modal close immediately. Vercel keeps the function
+    // alive until the decomposition completes; if it fails we log + move on,
+    // the approval is committed regardless.
+    if (action === 'approve' && artifact?.id && artifact?.type === 'strategy') {
+      after(async () => {
+        try {
+          // Idempotency check — skip if tasks already exist for this strategy.
+          const existing = await sql`
+            SELECT COUNT(*) as count FROM project_tasks
+            WHERE workspace_id = ${workspaceId} AND parent_artifact_id = ${artifact.id as string}
+          `
+          const existingCount = Number((existing.rows[0] as { count?: number } | undefined)?.count || 0)
+          if (existingCount > 0) {
+            console.log(`[approvals] strategy ${artifact.id} already has ${existingCount} project_tasks — skipping decomposition`)
+            return
+          }
+
+          const res = await fetch(`${BASE_URL}/api/agents/decompose-strategy`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...(process.env.ADMIN_SECRET ? { 'x-internal-secret': process.env.ADMIN_SECRET } : {}),
+            },
+            body: JSON.stringify({
+              workspaceId,
+              artifactId: artifact.id,
+            }),
+          })
+          if (!res.ok) {
+            const txt = await res.text().catch(() => '')
+            console.error(`[approvals] decompose-strategy returned ${res.status}: ${txt.slice(0, 200)}`)
+          } else {
+            const data = await res.json().catch(() => ({}))
+            console.log(`[approvals] decomposed strategy ${artifact.id} into ${data.taskCount || 0} tasks`)
+          }
+        } catch (err) {
+          console.error('[approvals after()] strategy decomposition failed:', err)
+        }
       })
     }
 

@@ -161,6 +161,11 @@ async function postgresQuery(strings: TemplateStringsArray, ...values: unknown[]
     await pgSql`CREATE INDEX IF NOT EXISTS idx_agent_run_events_run ON agent_run_events(agent_run_id, created_at ASC)`
     await pgSql`CREATE INDEX IF NOT EXISTS idx_agent_run_events_workspace ON agent_run_events(workspace_id, created_at DESC)`
     await pgSql`ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS parent_run_id TEXT`
+    // === Strategy decomposition tasks ===
+    await pgSql`CREATE TABLE IF NOT EXISTS project_tasks (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, initiative_run_id TEXT NOT NULL, parent_artifact_id TEXT NOT NULL, task_index INTEGER NOT NULL DEFAULT 0, agent VARCHAR(100) NOT NULL, task_type VARCHAR(100) NOT NULL, task_brief TEXT NOT NULL, status VARCHAR(30) NOT NULL DEFAULT 'pending', agent_run_id TEXT, produced_artifact_id TEXT, error_message TEXT, created_at TIMESTAMPTZ DEFAULT NOW(), started_at TIMESTAMPTZ, completed_at TIMESTAMPTZ)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_project_tasks_initiative ON project_tasks(initiative_run_id, task_index ASC)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_project_tasks_workspace ON project_tasks(workspace_id, created_at DESC)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_project_tasks_status ON project_tasks(status, created_at ASC)`
   }
 
   const rows = await pgSql(strings, ...values) as Record<string, unknown>[]
@@ -735,6 +740,15 @@ function initSQLiteSync(db: import('better-sqlite3').Database) {
     'CREATE INDEX IF NOT EXISTS idx_agent_run_events_workspace ON agent_run_events(workspace_id, created_at DESC)',
     // Sub-agent runs (e.g. CMO spawning research+brand_voice+strategy) reference their orchestrator.
     'ALTER TABLE agent_runs ADD COLUMN parent_run_id TEXT',
+    // === Strategy decomposition tasks ===
+    // When a Strategy artifact is approved, the CMO decomposes it into concrete
+    // execution tasks for sub-agents. Each task lifecycle: pending → queued
+    // → running → completed | failed. The produced_artifact_id links back to
+    // the artifact that the dispatched sub-agent produced.
+    'CREATE TABLE IF NOT EXISTS project_tasks (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, initiative_run_id TEXT NOT NULL, parent_artifact_id TEXT NOT NULL, task_index INTEGER NOT NULL DEFAULT 0, agent TEXT NOT NULL, task_type TEXT NOT NULL, task_brief TEXT NOT NULL, status TEXT NOT NULL DEFAULT \'pending\', agent_run_id TEXT, produced_artifact_id TEXT, error_message TEXT, created_at TEXT DEFAULT (datetime(\'now\')), started_at TEXT, completed_at TEXT)',
+    'CREATE INDEX IF NOT EXISTS idx_project_tasks_initiative ON project_tasks(initiative_run_id, task_index ASC)',
+    'CREATE INDEX IF NOT EXISTS idx_project_tasks_workspace ON project_tasks(workspace_id, created_at DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_project_tasks_status ON project_tasks(status, created_at ASC)',
   ]
   for (const m of migrations) {
     try { db.exec(m) } catch { /* column already exists */ }
@@ -829,5 +843,10 @@ export async function initializeDatabase() {
   await pgSql`CREATE INDEX IF NOT EXISTS idx_agent_run_events_run ON agent_run_events(agent_run_id, created_at ASC)`
   await pgSql`CREATE INDEX IF NOT EXISTS idx_agent_run_events_workspace ON agent_run_events(workspace_id, created_at DESC)`
   await pgSql`ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS parent_run_id TEXT`
+  // === Strategy decomposition tasks ===
+  await pgSql`CREATE TABLE IF NOT EXISTS project_tasks (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, initiative_run_id TEXT NOT NULL, parent_artifact_id TEXT NOT NULL, task_index INTEGER NOT NULL DEFAULT 0, agent VARCHAR(100) NOT NULL, task_type VARCHAR(100) NOT NULL, task_brief TEXT NOT NULL, status VARCHAR(30) NOT NULL DEFAULT 'pending', agent_run_id TEXT, produced_artifact_id TEXT, error_message TEXT, created_at TIMESTAMPTZ DEFAULT NOW(), started_at TIMESTAMPTZ, completed_at TIMESTAMPTZ)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_project_tasks_initiative ON project_tasks(initiative_run_id, task_index ASC)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_project_tasks_workspace ON project_tasks(workspace_id, created_at DESC)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_project_tasks_status ON project_tasks(status, created_at ASC)`
   console.log('✅ Neon Postgres DB initialized')
 }

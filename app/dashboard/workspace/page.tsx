@@ -36,6 +36,7 @@ import {
   Search, ChevronDown, Check, Briefcase, Clock,
   Brain, MessageSquare, Mail, Video, Megaphone, FileText, Mic,
   Image as ImageIcon, Hash, Pencil, X as XIcon, AlertCircle, Loader2,
+  ArrowRight, Sparkles, ListChecks,
 } from 'lucide-react'
 
 // ─── Types ────────────────────────────────────────────────────────────────
@@ -405,6 +406,17 @@ export default function WorkspaceHubPage() {
     })
   }, [runs, search, channelFilter, runChannels])
 
+  // ─── Detect an approved strategy in the selected initiative ────────────
+  //
+  // The middle panel pivots into a live Task Board the moment we find an
+  // artifact of type='strategy' AND status='approved' in the selected
+  // initiative's artifact bag. The board polls /api/project-tasks every
+  // 2s and renders the autonomous sub-agent execution as it unfolds.
+  const approvedStrategy = useMemo(
+    () => artifacts.find(a => a.type === 'strategy' && a.status === 'approved') || null,
+    [artifacts],
+  )
+
   // ─── Filter workspaces in switcher ─────────────────────────────────────
   const filteredWorkspaces = useMemo(() => {
     if (!workspaceSearch.trim()) return allWorkspaces
@@ -746,65 +758,79 @@ export default function WorkspaceHubPage() {
       </aside>
 
       {/* ╔═════════════════════════════════════════════════════════════╗
-          ║  MIDDLE PANEL: Assets                                       ║
+          ║  MIDDLE PANEL: Assets OR live Task Board                    ║
+          ║                                                             ║
+          ║  Pivots based on selected initiative state:                 ║
+          ║    • approved strategy present → TaskBoard (live polling)   ║
+          ║    • otherwise → flat artifact list                         ║
           ╚═════════════════════════════════════════════════════════════╝ */}
-      <section className="w-[360px] flex-shrink-0 border-r border-gray-800 flex flex-col bg-gray-950 min-w-0">
-        <div className="p-3 border-b border-gray-800">
-          <p className="text-[10px] uppercase tracking-wider text-gray-500 font-semibold">Generated Assets</p>
-          <p className="text-sm text-white font-medium mt-0.5">
-            {selectedRunId
-              ? (artifactsLoading
-                ? <span className="flex items-center gap-1.5"><Loader2 className="w-3 h-3 animate-spin" /> Loading…</span>
-                : `${artifacts.length} ${artifacts.length === 1 ? 'artifact' : 'artifacts'}`
-              )
-              : <span className="text-gray-500 text-xs">Select an initiative →</span>}
-          </p>
-        </div>
-
-        <div className="flex-1 overflow-y-auto min-h-0 p-2">
-          {!selectedRunId && (
-            <div className="p-8 text-center">
-              <div className="text-3xl mb-2 opacity-40">📦</div>
-              <p className="text-gray-500 text-xs leading-relaxed">Pick an initiative from the left to see the artifacts it produced.</p>
-            </div>
-          )}
-          {selectedRunId && !artifactsLoading && artifacts.length === 0 && (
-            <div className="p-6 text-center">
-              <div className="text-3xl mb-2 opacity-40">∅</div>
-              <p className="text-gray-400 text-xs font-medium">No artifacts produced</p>
-              <p className="text-gray-500 text-[11px] mt-1 leading-relaxed">This initiative didn&apos;t generate any saveable content (maybe it failed early).</p>
-            </div>
-          )}
-
-          <div className="space-y-1">
-            {artifacts.map(a => {
-              const Icon = iconForType(a.type)
-              const isSelected = selectedArtifactId === a.id
-              const status = statusFor(a.status)
-              return (
-                <button
-                  key={a.id}
-                  onClick={() => setSelectedArtifactId(a.id)}
-                  className={`w-full text-left px-3 py-2.5 rounded-lg border transition-colors flex items-start gap-3 ${isSelected ? 'bg-indigo-950/60 border-indigo-700 ring-1 ring-indigo-700/40' : 'bg-gray-900 border-gray-800 hover:border-gray-700'}`}
-                >
-                  <Icon className={`w-4 h-4 flex-shrink-0 mt-0.5 ${isSelected ? 'text-indigo-300' : 'text-gray-500'}`} />
-                  <div className="flex-1 min-w-0">
-                    <p className={`text-xs font-medium truncate ${isSelected ? 'text-white' : 'text-gray-200'}`}>
-                      {a.title || 'Untitled artifact'}
-                    </p>
-                    <div className="flex items-center gap-2 mt-1.5 flex-wrap">
-                      <span className={`text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded border ${status.bg} ${status.text} ${status.border}`}>
-                        {status.label}
-                      </span>
-                      <span className="text-gray-600 text-[10px] capitalize">{a.type.replace(/_/g, ' ')}</span>
-                    </div>
-                  </div>
-                </button>
-              )
-            })}
+      {selectedRunId && approvedStrategy && currentWorkspaceId ? (
+        <TaskBoard
+          workspaceId={currentWorkspaceId}
+          initiativeRunId={selectedRunId}
+          strategyArtifact={approvedStrategy}
+          selectedArtifactId={selectedArtifactId}
+          onSelectArtifact={(id) => setSelectedArtifactId(id)}
+        />
+      ) : (
+        <section className="w-[360px] flex-shrink-0 border-r border-gray-800 flex flex-col bg-gray-950 min-w-0">
+          <div className="p-3 border-b border-gray-800">
+            <p className="text-[10px] uppercase tracking-wider text-gray-500 font-semibold">Generated Assets</p>
+            <p className="text-sm text-white font-medium mt-0.5">
+              {selectedRunId
+                ? (artifactsLoading
+                  ? <span className="flex items-center gap-1.5"><Loader2 className="w-3 h-3 animate-spin" /> Loading…</span>
+                  : `${artifacts.length} ${artifacts.length === 1 ? 'artifact' : 'artifacts'}`
+                )
+                : <span className="text-gray-500 text-xs">Select an initiative →</span>}
+            </p>
           </div>
-        </div>
-      </section>
+
+          <div className="flex-1 overflow-y-auto min-h-0 p-2">
+            {!selectedRunId && (
+              <div className="p-8 text-center">
+                <div className="text-3xl mb-2 opacity-40">📦</div>
+                <p className="text-gray-500 text-xs leading-relaxed">Pick an initiative from the left to see the artifacts it produced.</p>
+              </div>
+            )}
+            {selectedRunId && !artifactsLoading && artifacts.length === 0 && (
+              <div className="p-6 text-center">
+                <div className="text-3xl mb-2 opacity-40">∅</div>
+                <p className="text-gray-400 text-xs font-medium">No artifacts produced</p>
+                <p className="text-gray-500 text-[11px] mt-1 leading-relaxed">This initiative didn&apos;t generate any saveable content (maybe it failed early).</p>
+              </div>
+            )}
+
+            <div className="space-y-1">
+              {artifacts.map(a => {
+                const Icon = iconForType(a.type)
+                const isSelected = selectedArtifactId === a.id
+                const status = statusFor(a.status)
+                return (
+                  <button
+                    key={a.id}
+                    onClick={() => setSelectedArtifactId(a.id)}
+                    className={`w-full text-left px-3 py-2.5 rounded-lg border transition-colors flex items-start gap-3 ${isSelected ? 'bg-indigo-950/60 border-indigo-700 ring-1 ring-indigo-700/40' : 'bg-gray-900 border-gray-800 hover:border-gray-700'}`}
+                  >
+                    <Icon className={`w-4 h-4 flex-shrink-0 mt-0.5 ${isSelected ? 'text-indigo-300' : 'text-gray-500'}`} />
+                    <div className="flex-1 min-w-0">
+                      <p className={`text-xs font-medium truncate ${isSelected ? 'text-white' : 'text-gray-200'}`}>
+                        {a.title || 'Untitled artifact'}
+                      </p>
+                      <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                        <span className={`text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded border ${status.bg} ${status.text} ${status.border}`}>
+                          {status.label}
+                        </span>
+                        <span className="text-gray-600 text-[10px] capitalize">{a.type.replace(/_/g, ' ')}</span>
+                      </div>
+                    </div>
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        </section>
+      )}
 
       {/* ╔═════════════════════════════════════════════════════════════╗
           ║  RIGHT PANEL: Live Canvas                                   ║
@@ -1148,5 +1174,344 @@ function GenericReader({ content, primary }: { content: Record<string, unknown>;
         </div>
       )}
     </div>
+  )
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// TaskBoard — live-polling autonomous execution view
+// ═════════════════════════════════════════════════════════════════════════
+//
+// Replaces the flat artifact list in the middle panel when the selected
+// initiative has an approved strategy. Polls /api/project-tasks every 2s
+// until every task has hit a terminal state (completed | failed), then
+// stops to save battery + DB cycles.
+
+type TaskStatus = 'pending' | 'queued' | 'running' | 'completed' | 'failed'
+
+interface ProjectTaskRow {
+  id: string
+  workspace_id: string
+  initiative_run_id: string
+  parent_artifact_id: string
+  task_index: number
+  agent: string
+  task_type: string
+  task_brief: string
+  status: TaskStatus
+  agent_run_id: string | null
+  produced_artifact_id: string | null
+  error_message: string | null
+  created_at: string
+  started_at: string | null
+  completed_at: string | null
+  produced_artifact_title: string | null
+  produced_artifact_type: string | null
+  produced_artifact_status: string | null
+}
+
+interface TaskCounts {
+  total: number
+  pending: number
+  queued: number
+  running: number
+  completed: number
+  failed: number
+}
+
+interface TaskBoardProps {
+  workspaceId: string
+  initiativeRunId: string
+  strategyArtifact: ArtifactRow
+  selectedArtifactId: string | null
+  onSelectArtifact: (artifactId: string) => void
+}
+
+// Maps task.agent slug → Lucide icon (reuses iconForType conceptually but
+// for agent slugs not artifact types)
+function iconForAgent(agent: string) {
+  const a = agent.toLowerCase()
+  if (a === 'social' || a === 'copywriter' || a === 'content') return MessageSquare
+  if (a === 'email') return Mail
+  if (a === 'blog') return FileText
+  if (a === 'ads' || a === 'pr') return Megaphone
+  if (a === 'video') return Video
+  if (a === 'creative') return ImageIcon
+  return FileText
+}
+
+// Status pill styling — color-coded per TaskStatus
+const TASK_STATUS_PILL: Record<TaskStatus, { bg: string; text: string; border: string; label: string; pulse?: boolean }> = {
+  pending:   { bg: 'bg-gray-800',         text: 'text-gray-400',    border: 'border-gray-700',    label: 'Pending' },
+  queued:    { bg: 'bg-blue-950/40',      text: 'text-blue-300',    border: 'border-blue-700/60', label: 'Queued' },
+  running:   { bg: 'bg-yellow-950/40',    text: 'text-yellow-300',  border: 'border-yellow-700',  label: 'Running', pulse: true },
+  completed: { bg: 'bg-emerald-950/40',   text: 'text-emerald-300', border: 'border-emerald-700', label: 'Completed' },
+  failed:    { bg: 'bg-red-950/40',       text: 'text-red-300',     border: 'border-red-700',     label: 'Failed' },
+}
+
+function TaskBoard({
+  workspaceId,
+  initiativeRunId,
+  strategyArtifact,
+  selectedArtifactId,
+  onSelectArtifact,
+}: TaskBoardProps) {
+  const [tasks, setTasks] = useState<ProjectTaskRow[]>([])
+  const [counts, setCounts] = useState<TaskCounts | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  // Track when we last polled so the UI can show a "live · just refreshed" indicator
+  const [lastPoll, setLastPoll] = useState<number>(0)
+
+  // ─── Fetch tasks ───────────────────────────────────────────────────
+  const fetchTasks = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/project-tasks?workspaceId=${workspaceId}&initiativeRunId=${initiativeRunId}`)
+      if (!res.ok) throw new Error(`Status ${res.status}`)
+      const data = await res.json() as { tasks: ProjectTaskRow[]; counts: TaskCounts }
+      setTasks(Array.isArray(data.tasks) ? data.tasks : [])
+      setCounts(data.counts || null)
+      setError(null)
+      setLastPoll(Date.now())
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load tasks')
+    } finally {
+      setLoading(false)
+    }
+  }, [workspaceId, initiativeRunId])
+
+  // Initial fetch on mount / initiative change
+  useEffect(() => {
+    setLoading(true)
+    setTasks([])
+    setCounts(null)
+    setError(null)
+    void fetchTasks()
+  }, [fetchTasks])
+
+  // ─── Active polling — every 2s while there's in-flight work ───────
+  //
+  // Polling stops automatically when every task is in a terminal state
+  // (completed | failed). It also stops if counts.total is 0 AND we've
+  // been polling for more than 60s (decomposition probably failed —
+  // user can click Retry below).
+  const isPollingActive = useMemo(() => {
+    if (!counts) return true  // still loading first response
+    const stillRunning = counts.pending + counts.queued + counts.running > 0
+    return stillRunning
+  }, [counts])
+
+  useEffect(() => {
+    if (!isPollingActive) return
+    const interval = setInterval(() => { void fetchTasks() }, 2000)
+    return () => clearInterval(interval)
+  }, [isPollingActive, fetchTasks])
+
+  // ─── Retry decomposition (when 0 tasks after a while) ─────────────
+  const [retrying, setRetrying] = useState(false)
+  const handleRetryDecomposition = useCallback(async () => {
+    setRetrying(true)
+    try {
+      // Clear existing (empty) tasks first, then re-trigger.
+      await fetch(`/api/project-tasks?workspaceId=${workspaceId}&parentArtifactId=${strategyArtifact.id}`, { method: 'DELETE' })
+      await fetch('/api/agents/decompose-strategy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspaceId, artifactId: strategyArtifact.id }),
+      })
+      await fetchTasks()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Retry failed')
+    } finally {
+      setRetrying(false)
+    }
+  }, [workspaceId, strategyArtifact.id, fetchTasks])
+
+  // ─── Render ───────────────────────────────────────────────────────
+  const completedCount = counts?.completed ?? 0
+  const runningCount = counts?.running ?? 0
+  const totalCount = counts?.total ?? 0
+  const failedCount = counts?.failed ?? 0
+  const allDone = totalCount > 0 && completedCount + failedCount === totalCount
+
+  return (
+    <section className="w-[360px] flex-shrink-0 border-r border-gray-800 flex flex-col bg-gray-950 min-w-0">
+      {/* Header — board summary + live indicator */}
+      <div className="p-3 border-b border-gray-800">
+        <div className="flex items-center gap-2 mb-0.5">
+          <ListChecks className="w-3.5 h-3.5 text-indigo-400" />
+          <p className="text-[10px] uppercase tracking-wider text-indigo-300 font-semibold">Autonomous Task Board</p>
+          {isPollingActive && (
+            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-yellow-950/50 border border-yellow-800 text-yellow-300 text-[9px] font-semibold uppercase tracking-wider">
+              <span className="w-1 h-1 rounded-full bg-yellow-400 animate-pulse" />
+              Live
+            </span>
+          )}
+          {allDone && (
+            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-emerald-950/50 border border-emerald-800 text-emerald-300 text-[9px] font-semibold uppercase tracking-wider">
+              <Check className="w-2 h-2" /> Done
+            </span>
+          )}
+        </div>
+        <p className="text-sm text-white font-medium">
+          {loading
+            ? <span className="flex items-center gap-1.5 text-gray-400"><Loader2 className="w-3 h-3 animate-spin" /> Loading tasks…</span>
+            : totalCount === 0
+              ? <span className="text-gray-400">Awaiting decomposition…</span>
+              : (
+                <span>
+                  {completedCount} of {totalCount} done
+                  {runningCount > 0 && <span className="text-yellow-400 ml-1.5">· {runningCount} running</span>}
+                  {failedCount > 0 && <span className="text-red-400 ml-1.5">· {failedCount} failed</span>}
+                </span>
+              )
+          }
+        </p>
+        <p className="text-[10px] text-gray-500 mt-0.5 truncate" title={strategyArtifact.title}>
+          From: {strategyArtifact.title}
+        </p>
+      </div>
+
+      {/* Task list */}
+      <div className="flex-1 overflow-y-auto min-h-0 p-2">
+        {/* Error state */}
+        {error && (
+          <div className="m-2 p-3 bg-red-950/40 border border-red-800 rounded-xl text-red-300 text-xs flex items-start gap-2">
+            <AlertCircle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+            <span>{error}</span>
+          </div>
+        )}
+
+        {/* Decomposing in progress (no tasks yet) */}
+        {!loading && !error && totalCount === 0 && (
+          <div className="p-6 text-center">
+            <div className="text-3xl mb-2">✨</div>
+            <p className="text-gray-300 text-xs font-medium">Decomposing strategy…</p>
+            <p className="text-gray-500 text-[11px] mt-1 leading-relaxed max-w-[220px] mx-auto">
+              The CMO is breaking your approved strategy into concrete execution tasks. This usually takes ~10 seconds.
+            </p>
+            <button
+              onClick={handleRetryDecomposition}
+              disabled={retrying}
+              className="mt-3 text-[11px] text-indigo-400 hover:text-indigo-300 disabled:opacity-50 inline-flex items-center gap-1"
+            >
+              {retrying ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+              {retrying ? 'Retrying…' : 'Retry decomposition'}
+            </button>
+          </div>
+        )}
+
+        {/* Live task rows */}
+        <div className="space-y-1.5">
+          {tasks.map((task) => {
+            const Icon = iconForAgent(task.agent)
+            const pill = TASK_STATUS_PILL[task.status] || TASK_STATUS_PILL.pending
+            const isCompleted = task.status === 'completed' && task.produced_artifact_id
+            const isFailed = task.status === 'failed'
+            const isSelected = !!task.produced_artifact_id && task.produced_artifact_id === selectedArtifactId
+            const durationMs = task.started_at && task.completed_at
+              ? new Date(task.completed_at).getTime() - new Date(task.started_at).getTime()
+              : null
+
+            return (
+              <div
+                key={task.id}
+                className={`px-3 py-2.5 rounded-lg border transition-colors ${
+                  isSelected
+                    ? 'bg-indigo-950/60 border-indigo-700 ring-1 ring-indigo-700/40'
+                    : isFailed
+                      ? 'bg-red-950/20 border-red-900/50'
+                      : 'bg-gray-900 border-gray-800 hover:border-gray-700'
+                }`}
+              >
+                <div className="flex items-start gap-2.5">
+                  <Icon className={`w-4 h-4 flex-shrink-0 mt-0.5 ${
+                    task.status === 'running'  ? 'text-yellow-300'
+                    : task.status === 'completed' ? 'text-emerald-300'
+                    : task.status === 'failed'   ? 'text-red-400'
+                    : 'text-gray-500'
+                  }`} />
+                  <div className="flex-1 min-w-0">
+                    {/* Top row: agent + status pill */}
+                    <div className="flex items-center gap-2 mb-1 flex-wrap">
+                      <span className="text-[10px] uppercase tracking-wider text-gray-500 font-semibold">{task.agent}</span>
+                      <span className="text-gray-700">·</span>
+                      <span className="text-[10px] text-gray-500 capitalize truncate">{task.task_type.replace(/_/g, ' ')}</span>
+                      <span
+                        className={`ml-auto text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded border font-semibold flex items-center gap-1 ${pill.bg} ${pill.text} ${pill.border}`}
+                      >
+                        {pill.pulse && <span className="w-1 h-1 rounded-full bg-current animate-pulse" />}
+                        {pill.label}
+                      </span>
+                    </div>
+
+                    {/* Brief excerpt */}
+                    <p className="text-xs text-gray-300 leading-snug line-clamp-2">{task.task_brief}</p>
+
+                    {/* Failure details */}
+                    {isFailed && task.error_message && (
+                      <p className="text-[10px] text-red-400 mt-1.5 leading-snug line-clamp-2" title={task.error_message}>
+                        ⚠ {task.error_message}
+                      </p>
+                    )}
+
+                    {/* Completed: View asset CTA + duration */}
+                    {isCompleted && (
+                      <div className="mt-2 flex items-center gap-2">
+                        <button
+                          onClick={() => task.produced_artifact_id && onSelectArtifact(task.produced_artifact_id)}
+                          className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium transition-colors ${
+                            isSelected
+                              ? 'bg-indigo-700 text-white'
+                              : 'bg-indigo-950/60 text-indigo-300 hover:bg-indigo-950 hover:text-indigo-200 border border-indigo-800'
+                          }`}
+                        >
+                          <span>View asset</span>
+                          <ArrowRight className="w-3 h-3" />
+                        </button>
+                        {durationMs != null && (
+                          <span className="text-[10px] text-gray-600">
+                            {durationMs < 1000 ? `${durationMs}ms` : `${(durationMs / 1000).toFixed(1)}s`}
+                          </span>
+                        )}
+                        {task.produced_artifact_title && (
+                          <span className="text-[10px] text-gray-500 truncate flex-1" title={task.produced_artifact_title}>
+                            → {task.produced_artifact_title}
+                          </span>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Running: show elapsed time */}
+                    {task.status === 'running' && task.started_at && (
+                      <p className="text-[10px] text-yellow-400/70 mt-1.5 flex items-center gap-1">
+                        <Clock className="w-2.5 h-2.5" />
+                        Started {timeAgo(task.started_at)}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+
+      {/* Footer — last poll timestamp + manual refresh */}
+      {totalCount > 0 && (
+        <div className="px-3 py-2 border-t border-gray-800 flex items-center justify-between text-[10px] text-gray-600">
+          <span>
+            {lastPoll
+              ? `Last poll ${timeAgo(new Date(lastPoll).toISOString())}`
+              : '—'}
+          </span>
+          <button
+            onClick={() => void fetchTasks()}
+            className="text-indigo-400 hover:text-indigo-300 transition-colors"
+          >
+            ↻ Refresh
+          </button>
+        </div>
+      )}
+    </section>
   )
 }
