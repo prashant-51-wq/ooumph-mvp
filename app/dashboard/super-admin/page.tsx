@@ -1,12 +1,12 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type AgencyPlan = 'Starter' | 'Pro' | 'Agency' | 'Enterprise'
-type AgencyStatus = 'Active' | 'Trial' | 'Suspended' | 'Churned'
+type AgencyPlan = 'Free' | 'Starter' | 'Pro' | 'Agency' | 'Enterprise'
+type AgencyStatus = 'Active' | 'Trial' | 'Suspended' | 'Churned' | 'Free'
 
 interface Agency {
   id: string
@@ -32,92 +32,115 @@ interface Affiliate {
   balance: number
 }
 
-interface CommissionRate {
-  plan: AgencyPlan
-  rate: number
+interface RecentSignup {
+  id: string
+  name: string
+  ownerEmail: string
+  plan: string
+  mrr: number
+  joinDate: string
+  status: string
 }
 
-// ─── Mock Data ────────────────────────────────────────────────────────────────
+interface OverviewData {
+  totalAgencies: number
+  activeMrr: number
+  platformRevenue: number
+  activeSubscriptions: number
+  trialSubscriptions: number
+  churnRate: number
+  avgRevenuePerAgency: number
+  recentSignups: RecentSignup[]
+  revenueByMonth: Array<{ month: string; value: number }>
+}
 
-const MOCK_AGENCIES: Agency[] = [
-  { id: 'ag-1', name: 'Pixel Peak Media', ownerEmail: 'lisa@pixelpeak.com', plan: 'Agency', mrr: 497, seatsUsed: 8, seatsTotal: 10, status: 'Active', joinDate: '2025-11-14' },
-  { id: 'ag-2', name: 'GrowthStack Co.', ownerEmail: 'dev@growthstack.io', plan: 'Pro', mrr: 149, seatsUsed: 3, seatsTotal: 5, status: 'Active', joinDate: '2026-01-02' },
-  { id: 'ag-3', name: 'BrightBrand HQ', ownerEmail: 'ops@brightbrandhq.com', plan: 'Enterprise', mrr: 997, seatsUsed: 22, seatsTotal: 50, status: 'Active', joinDate: '2025-09-30' },
-  { id: 'ag-4', name: 'Funnel Craft Agency', ownerEmail: 'joe@funnelcraft.io', plan: 'Starter', mrr: 49, seatsUsed: 1, seatsTotal: 2, status: 'Trial', joinDate: '2026-05-20' },
-  { id: 'ag-5', name: 'ScaleNow Partners', ownerEmail: 'team@scalenow.com', plan: 'Agency', mrr: 497, seatsUsed: 7, seatsTotal: 10, status: 'Active', joinDate: '2026-02-14' },
-  { id: 'ag-6', name: 'Momentum Marketing', ownerEmail: 'hi@momentumktg.co', plan: 'Pro', mrr: 149, seatsUsed: 4, seatsTotal: 5, status: 'Active', joinDate: '2026-03-08' },
-  { id: 'ag-7', name: 'DraftMark Agency', ownerEmail: 'admin@draftmark.xyz', plan: 'Starter', mrr: 49, seatsUsed: 2, seatsTotal: 2, status: 'Suspended', joinDate: '2025-12-01' },
-  { id: 'ag-8', name: 'ViralVault Studio', ownerEmail: 'vv@viralvault.studio', plan: 'Pro', mrr: 0, seatsUsed: 0, seatsTotal: 5, status: 'Churned', joinDate: '2026-01-15' },
-]
+interface CommissionsData {
+  affiliates: Affiliate[]
+  totalOwed: number
+  paidThisMonth: number
+  topAffiliateName: string
+}
 
-const MOCK_AFFILIATES: Affiliate[] = [
-  { id: 'aff-1', name: 'Jordan Miles', email: 'jordan@affiliates.io', referredAgencies: 14, totalReferralMrr: 3820, commissionRate: 20, earnedThisMonth: 764, paidOut: 4200, balance: 764 },
-  { id: 'aff-2', name: 'Priya Chandran', email: 'priya.c@resellers.net', referredAgencies: 8, totalReferralMrr: 1940, commissionRate: 20, earnedThisMonth: 388, paidOut: 1800, balance: 388 },
-  { id: 'aff-3', name: 'Brett Farley', email: 'brett@brettfarley.com', referredAgencies: 5, totalReferralMrr: 1200, commissionRate: 15, earnedThisMonth: 180, paidOut: 820, balance: 180 },
-  { id: 'aff-4', name: 'Nadia Osei', email: 'nadia@growthhq.africa', referredAgencies: 3, totalReferralMrr: 595, commissionRate: 15, earnedThisMonth: 89, paidOut: 300, balance: 89 },
-]
-
-const REVENUE_BY_MONTH = [
-  { month: 'Dec', value: 8200 },
-  { month: 'Jan', value: 10400 },
-  { month: 'Feb', value: 12800 },
-  { month: 'Mar', value: 15100 },
-  { month: 'Apr', value: 17600 },
-  { month: 'May', value: 21340 },
-]
-
-const MAX_REVENUE = Math.max(...REVENUE_BY_MONTH.map(r => r.value))
-
-const RECENT_SIGNUPS = MOCK_AGENCIES.slice(0, 5).sort(
-  (a, b) => new Date(b.joinDate).getTime() - new Date(a.joinDate).getTime()
-)
+type PlatformSettings = Record<string, string>
 
 // ─── Style helpers ────────────────────────────────────────────────────────────
 
-const PLAN_STYLES: Record<AgencyPlan, string> = {
+const PLAN_STYLES: Record<string, string> = {
+  Free: 'bg-gray-800 text-gray-400 border-gray-700',
   Starter: 'bg-gray-800 text-gray-300 border-gray-700',
   Pro: 'bg-blue-900/50 text-blue-300 border-blue-800',
   Agency: 'bg-indigo-900/50 text-indigo-300 border-indigo-800',
   Enterprise: 'bg-purple-900/50 text-purple-300 border-purple-800',
 }
 
-const STATUS_STYLES: Record<AgencyStatus, string> = {
+const STATUS_STYLES: Record<string, string> = {
   Active: 'bg-green-900/40 text-green-300 border-green-800',
   Trial: 'bg-yellow-900/40 text-yellow-300 border-yellow-800',
   Suspended: 'bg-orange-900/40 text-orange-300 border-orange-800',
   Churned: 'bg-red-900/40 text-red-300 border-red-800',
+  Free: 'bg-gray-800 text-gray-400 border-gray-700',
 }
 
 function fmt$(n: number) {
+  if (n == null || isNaN(n)) return '$0'
   if (n >= 1000) return `$${(n / 1000).toFixed(1)}K`
   return `$${n}`
 }
 
 function fmtDate(iso: string) {
+  if (!iso) return '—'
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+}
+
+// ─── Inline Spinner ───────────────────────────────────────────────────────────
+
+function LoadingPanel({ label = 'Loading…' }: { label?: string }) {
+  return (
+    <div className="flex items-center justify-center py-16 text-gray-500 text-sm gap-3">
+      <span className="w-4 h-4 border-2 border-gray-700 border-t-indigo-500 rounded-full animate-spin" />
+      {label}
+    </div>
+  )
+}
+
+function EmptyPanel({ icon, title, body }: { icon: string; title: string; body: string }) {
+  return (
+    <div className="bg-gray-900 border border-gray-800 rounded-2xl p-10 text-center">
+      <div className="text-5xl mb-3">{icon}</div>
+      <h3 className="text-white font-semibold text-base mb-1">{title}</h3>
+      <p className="text-gray-500 text-sm max-w-md mx-auto">{body}</p>
+    </div>
+  )
 }
 
 // ─── Overview Tab ─────────────────────────────────────────────────────────────
 
-function OverviewTab() {
-  const totalMrr = MOCK_AGENCIES.filter(a => a.status !== 'Churned').reduce((s, a) => s + a.mrr, 0)
-  const totalAgencies = MOCK_AGENCIES.length
-  const activeAgencies = MOCK_AGENCIES.filter(a => a.status === 'Active').length
-  const churnRate = ((MOCK_AGENCIES.filter(a => a.status === 'Churned').length / totalAgencies) * 100).toFixed(1)
-  const avgMrr = Math.round(totalMrr / Math.max(activeAgencies, 1))
-  const platformRevenue = Math.round(totalMrr * 0.2)
+function OverviewTab({ data }: { data: OverviewData | null }) {
+  if (!data) return <LoadingPanel label="Loading platform overview…" />
+
+  if (data.totalAgencies === 0) {
+    return (
+      <EmptyPanel
+        icon="🏢"
+        title="No agencies yet"
+        body="Platform metrics will appear once your first agency signs up. Share your signup link to start onboarding customers."
+      />
+    )
+  }
+
+  const maxRev = Math.max(...data.revenueByMonth.map(r => r.value), 1)
+  const churnHigh = data.churnRate > 5
 
   return (
     <div className="space-y-6">
-      {/* Stats grid */}
       <div className="grid grid-cols-3 gap-4">
         {[
-          { label: 'Total Agencies', value: totalAgencies, sub: `${activeAgencies} active`, color: 'text-white' },
-          { label: 'Total MRR', value: fmt$(totalMrr), sub: '+12% vs last month', color: 'text-green-400' },
-          { label: 'Platform Revenue', value: fmt$(platformRevenue), sub: '20% cut', color: 'text-indigo-400' },
-          { label: 'Active Subscriptions', value: activeAgencies, sub: `${MOCK_AGENCIES.filter(a => a.status === 'Trial').length} on trial`, color: 'text-white' },
-          { label: 'Churn Rate', value: `${churnRate}%`, sub: 'last 30 days', color: parseFloat(churnRate) > 5 ? 'text-red-400' : 'text-green-400' },
-          { label: 'Avg Rev / Agency', value: fmt$(avgMrr), sub: 'active only', color: 'text-white' },
+          { label: 'Total Agencies', value: data.totalAgencies, sub: `${data.activeSubscriptions} active`, color: 'text-white' },
+          { label: 'Total MRR', value: fmt$(data.activeMrr), sub: 'active subscriptions', color: 'text-green-400' },
+          { label: 'Platform Revenue', value: fmt$(data.platformRevenue), sub: '20% cut', color: 'text-indigo-400' },
+          { label: 'Active Subscriptions', value: data.activeSubscriptions, sub: `${data.trialSubscriptions} on trial`, color: 'text-white' },
+          { label: 'Churn Rate', value: `${data.churnRate}%`, sub: 'cumulative', color: churnHigh ? 'text-red-400' : 'text-green-400' },
+          { label: 'Avg Rev / Agency', value: fmt$(data.avgRevenuePerAgency), sub: 'active only', color: 'text-white' },
         ].map(stat => (
           <div key={stat.label} className="bg-gray-900 border border-gray-800 rounded-xl p-5">
             <p className="text-gray-500 text-xs font-medium mb-1">{stat.label}</p>
@@ -131,38 +154,46 @@ function OverviewTab() {
         {/* Revenue chart */}
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
           <h3 className="text-white font-semibold mb-4">Revenue (Last 6 Months)</h3>
-          <div className="flex items-end gap-3 h-32">
-            {REVENUE_BY_MONTH.map(r => (
-              <div key={r.month} className="flex-1 flex flex-col items-center gap-1">
-                <span className="text-gray-500 text-xs">{fmt$(r.value)}</span>
-                <div
-                  className="w-full rounded-t bg-indigo-600 hover:bg-indigo-500 transition-colors"
-                  style={{ height: `${(r.value / MAX_REVENUE) * 80}%` }}
-                />
-                <span className="text-gray-500 text-xs">{r.month}</span>
-              </div>
-            ))}
-          </div>
+          {data.revenueByMonth.every(r => r.value === 0) ? (
+            <p className="text-gray-500 text-sm py-8 text-center">No revenue recorded yet.</p>
+          ) : (
+            <div className="flex items-end gap-3 h-32">
+              {data.revenueByMonth.map(r => (
+                <div key={r.month} className="flex-1 flex flex-col items-center gap-1">
+                  <span className="text-gray-500 text-xs">{fmt$(r.value)}</span>
+                  <div
+                    className="w-full rounded-t bg-indigo-600 hover:bg-indigo-500 transition-colors"
+                    style={{ height: `${(r.value / maxRev) * 80}%` }}
+                  />
+                  <span className="text-gray-500 text-xs">{r.month}</span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Recent signups */}
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
           <h3 className="text-white font-semibold mb-4">Recent Signups</h3>
-          <div className="space-y-3">
-            {RECENT_SIGNUPS.map(agency => (
-              <div key={agency.id} className="flex items-center justify-between">
-                <div className="min-w-0">
-                  <p className="text-white text-sm font-medium truncate">{agency.name}</p>
-                  <p className="text-gray-500 text-xs truncate">{agency.ownerEmail}</p>
+          {data.recentSignups.length === 0 ? (
+            <p className="text-gray-500 text-sm py-8 text-center">No recent signups.</p>
+          ) : (
+            <div className="space-y-3">
+              {data.recentSignups.map(signup => (
+                <div key={signup.id} className="flex items-center justify-between">
+                  <div className="min-w-0">
+                    <p className="text-white text-sm font-medium truncate">{signup.name}</p>
+                    <p className="text-gray-500 text-xs truncate">{signup.ownerEmail}</p>
+                  </div>
+                  <div className="flex items-center gap-2 flex-shrink-0 ml-3">
+                    <span className={`px-2 py-0.5 rounded text-xs border ${PLAN_STYLES[signup.plan] || PLAN_STYLES.Free}`}>{signup.plan}</span>
+                    <span className="text-gray-400 text-xs font-semibold">{fmt$(signup.mrr)}</span>
+                    <span className={`px-2 py-0.5 rounded-full text-xs border ${STATUS_STYLES[signup.status] || STATUS_STYLES.Free}`}>{signup.status}</span>
+                  </div>
                 </div>
-                <div className="flex items-center gap-2 flex-shrink-0 ml-3">
-                  <span className={`px-2 py-0.5 rounded text-xs border ${PLAN_STYLES[agency.plan]}`}>{agency.plan}</span>
-                  <span className="text-gray-400 text-xs font-semibold">{fmt$(agency.mrr)}</span>
-                  <span className={`px-2 py-0.5 rounded-full text-xs border ${STATUS_STYLES[agency.status]}`}>{agency.status}</span>
-                </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -171,14 +202,49 @@ function OverviewTab() {
 
 // ─── Agencies Tab ─────────────────────────────────────────────────────────────
 
-function AgenciesTab() {
+function AgenciesTab({ data, onRefresh }: { data: Agency[] | null; onRefresh: () => void }) {
   const [planFilter, setPlanFilter] = useState<AgencyPlan | 'all'>('all')
   const [statusFilter, setStatusFilter] = useState<AgencyStatus | 'all'>('all')
   const [search, setSearch] = useState('')
   const [messageTarget, setMessageTarget] = useState<Agency | null>(null)
   const [messageText, setMessageText] = useState('')
+  const [updatingId, setUpdatingId] = useState<string | null>(null)
 
-  const filtered = MOCK_AGENCIES.filter(a => {
+  if (data === null) return <LoadingPanel label="Loading agencies…" />
+
+  async function toggleSuspend(agency: Agency) {
+    const action = agency.status === 'Suspended' ? 'unsuspend_workspace' : 'suspend_workspace'
+    setUpdatingId(agency.id)
+    try {
+      const res = await fetch('/api/admin/super', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action, workspaceId: agency.id }),
+      })
+      if (res.ok) {
+        onRefresh()
+      } else {
+        const j = await res.json().catch(() => ({})) as { error?: string }
+        alert(j.error || 'Failed to update status')
+      }
+    } catch (err) {
+      alert(`Error: ${String(err)}`)
+    } finally {
+      setUpdatingId(null)
+    }
+  }
+
+  if (data.length === 0) {
+    return (
+      <EmptyPanel
+        icon="🏢"
+        title="No agencies yet"
+        body="Once customers sign up, they'll appear here. You'll be able to view, impersonate, message, and suspend any workspace from this table."
+      />
+    )
+  }
+
+  const filtered = data.filter(a => {
     const matchPlan = planFilter === 'all' || a.plan === planFilter
     const matchStatus = statusFilter === 'all' || a.status === statusFilter
     const matchSearch = !search.trim() || a.name.toLowerCase().includes(search.toLowerCase()) || a.ownerEmail.toLowerCase().includes(search.toLowerCase())
@@ -201,7 +267,7 @@ function AgenciesTab() {
           className="px-3 py-2 rounded-lg bg-gray-900 border border-gray-800 text-gray-300 text-sm focus:outline-none"
         >
           <option value="all">All Plans</option>
-          {(['Starter', 'Pro', 'Agency', 'Enterprise'] as AgencyPlan[]).map(p => (
+          {(['Free', 'Starter', 'Pro', 'Agency', 'Enterprise'] as AgencyPlan[]).map(p => (
             <option key={p} value={p}>{p}</option>
           ))}
         </select>
@@ -211,7 +277,7 @@ function AgenciesTab() {
           className="px-3 py-2 rounded-lg bg-gray-900 border border-gray-800 text-gray-300 text-sm focus:outline-none"
         >
           <option value="all">All Statuses</option>
-          {(['Active', 'Trial', 'Suspended', 'Churned'] as AgencyStatus[]).map(s => (
+          {(['Active', 'Trial', 'Suspended', 'Churned', 'Free'] as AgencyStatus[]).map(s => (
             <option key={s} value={s}>{s}</option>
           ))}
         </select>
@@ -236,14 +302,20 @@ function AgenciesTab() {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-800">
-              {filtered.map(agency => (
+              {filtered.length === 0 ? (
+                <tr>
+                  <td colSpan={7} className="px-5 py-12 text-center text-gray-500 text-sm">
+                    No agencies match your filters.
+                  </td>
+                </tr>
+              ) : filtered.map(agency => (
                 <tr key={agency.id} className="hover:bg-gray-800/40 transition-colors">
                   <td className="px-5 py-4">
                     <p className="text-white font-medium">{agency.name}</p>
                     <p className="text-gray-500 text-xs">{agency.ownerEmail}</p>
                   </td>
                   <td className="px-5 py-4">
-                    <span className={`px-2.5 py-1 rounded border text-xs font-medium ${PLAN_STYLES[agency.plan]}`}>{agency.plan}</span>
+                    <span className={`px-2.5 py-1 rounded border text-xs font-medium ${PLAN_STYLES[agency.plan] || PLAN_STYLES.Free}`}>{agency.plan}</span>
                   </td>
                   <td className="px-5 py-4">
                     <span className="text-white font-semibold">{fmt$(agency.mrr)}</span>
@@ -253,12 +325,12 @@ function AgenciesTab() {
                     <div className="w-16 bg-gray-800 rounded-full h-1 mt-1">
                       <div
                         className="bg-indigo-500 h-1 rounded-full"
-                        style={{ width: `${(agency.seatsUsed / agency.seatsTotal) * 100}%` }}
+                        style={{ width: `${Math.min(100, (agency.seatsUsed / Math.max(agency.seatsTotal, 1)) * 100)}%` }}
                       />
                     </div>
                   </td>
                   <td className="px-5 py-4">
-                    <span className={`px-2.5 py-1 rounded-full border text-xs font-medium ${STATUS_STYLES[agency.status]}`}>{agency.status}</span>
+                    <span className={`px-2.5 py-1 rounded-full border text-xs font-medium ${STATUS_STYLES[agency.status] || STATUS_STYLES.Free}`}>{agency.status}</span>
                   </td>
                   <td className="px-5 py-4">
                     <span className="text-gray-400 text-xs">{fmtDate(agency.joinDate)}</span>
@@ -277,8 +349,12 @@ function AgenciesTab() {
                       >
                         Message
                       </button>
-                      <button className={`px-2 py-1 rounded text-xs transition-colors ${agency.status === 'Suspended' ? 'bg-green-900/40 hover:bg-green-900 border border-green-800 text-green-300' : 'bg-orange-900/30 hover:bg-orange-900 border border-orange-800 text-orange-300'}`}>
-                        {agency.status === 'Suspended' ? 'Unsuspend' : 'Suspend'}
+                      <button
+                        disabled={updatingId === agency.id}
+                        onClick={() => toggleSuspend(agency)}
+                        className={`px-2 py-1 rounded text-xs transition-colors disabled:opacity-50 ${agency.status === 'Suspended' ? 'bg-green-900/40 hover:bg-green-900 border border-green-800 text-green-300' : 'bg-orange-900/30 hover:bg-orange-900 border border-orange-800 text-orange-300'}`}
+                      >
+                        {updatingId === agency.id ? '…' : (agency.status === 'Suspended' ? 'Unsuspend' : 'Suspend')}
                       </button>
                     </div>
                   </td>
@@ -318,15 +394,35 @@ function AgenciesTab() {
 
 // ─── Commissions Tab ──────────────────────────────────────────────────────────
 
-function CommissionsTab() {
-  const [affiliates, setAffiliates] = useState<Affiliate[]>(MOCK_AFFILIATES)
+function CommissionsTab({ data }: { data: CommissionsData | null }) {
+  // TODO: payout system not wired yet — Mark Paid is client-side optimistic only.
+  const [localAffiliates, setLocalAffiliates] = useState<Affiliate[] | null>(null)
+
+  useEffect(() => {
+    if (data) setLocalAffiliates(data.affiliates)
+  }, [data])
+
+  if (!data) return <LoadingPanel label="Loading commission ledger…" />
+
+  const affiliates = localAffiliates ?? data.affiliates
+
+  if (affiliates.length === 0) {
+    return (
+      <EmptyPanel
+        icon="💰"
+        title="No commissions yet"
+        body="When agencies on the Agency or Agency Scale plan refer paying clients, commission earnings will appear here. Set commission rates in the Platform Settings tab."
+      />
+    )
+  }
 
   const totalOwed = affiliates.reduce((s, a) => s + a.balance, 0)
   const paidThisMonth = affiliates.reduce((s, a) => s + a.earnedThisMonth, 0)
-  const topAffiliate = affiliates.reduce((top, a) => a.balance > top.balance ? a : top, affiliates[0])
+  const topAffiliate = affiliates.reduce<Affiliate | null>((top, a) => (!top || a.balance > top.balance ? a : top), null)
 
   const markPaid = (id: string) => {
-    setAffiliates(prev => prev.map(a => a.id === id ? { ...a, paidOut: a.paidOut + a.balance, balance: 0 } : a))
+    // TODO: when payout system is implemented, POST to /api/admin/super with action='mark_paid'
+    setLocalAffiliates(prev => (prev ?? affiliates).map(a => a.id === id ? { ...a, paidOut: a.paidOut + a.balance, balance: 0 } : a))
   }
 
   return (
@@ -345,8 +441,8 @@ function CommissionsTab() {
         </div>
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
           <p className="text-gray-500 text-xs font-medium mb-1">Top Affiliate</p>
-          <p className="text-white text-xl font-bold">{topAffiliate?.name}</p>
-          <p className="text-gray-400 text-xs mt-1">{topAffiliate?.referredAgencies} agencies · {fmt$(topAffiliate?.balance)} balance</p>
+          <p className="text-white text-xl font-bold">{topAffiliate?.name || '—'}</p>
+          <p className="text-gray-400 text-xs mt-1">{topAffiliate?.referredAgencies ?? 0} agencies · {fmt$(topAffiliate?.balance ?? 0)} balance</p>
         </div>
       </div>
 
@@ -388,6 +484,7 @@ function CommissionsTab() {
                       onClick={() => markPaid(aff.id)}
                       disabled={aff.balance === 0}
                       className="px-3 py-1.5 rounded-lg bg-green-900/40 hover:bg-green-900 border border-green-800 text-green-300 text-xs font-medium transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                      title="Note: payout system not yet wired — this only updates the UI for now."
                     >
                       {aff.balance === 0 ? '✓ Paid' : 'Mark Paid'}
                     </button>
@@ -398,37 +495,77 @@ function CommissionsTab() {
           </table>
         </div>
       </div>
+      <p className="text-xs text-gray-600 italic">
+        Note: &ldquo;Mark Paid&rdquo; currently updates the UI only. Payouts via Stripe Connect are not yet implemented.
+      </p>
     </div>
   )
 }
 
 // ─── Platform Settings Tab ────────────────────────────────────────────────────
 
-function PlatformSettingsTab() {
+function PlatformSettingsTab({ data, onRefresh }: { data: PlatformSettings | null; onRefresh: () => void }) {
   const [byok, setByok] = useState(false)
   const [whiteLabelAll, setWhiteLabelAll] = useState(false)
   const [maintenanceMode, setMaintenanceMode] = useState(false)
   const [announcement, setAnnouncement] = useState('')
-  const [commissionRates, setCommissionRates] = useState<CommissionRate[]>([
-    { plan: 'Starter', rate: 10 },
-    { plan: 'Pro', rate: 15 },
-    { plan: 'Agency', rate: 20 },
-    { plan: 'Enterprise', rate: 25 },
-  ])
+  const [commissionRates, setCommissionRates] = useState<Record<string, number>>({
+    Starter: 10,
+    Pro: 15,
+    Agency: 20,
+    Enterprise: 25,
+  })
   const [savedAnnouncement, setSavedAnnouncement] = useState(false)
+  const [savingKey, setSavingKey] = useState<string | null>(null)
 
-  const aiCredits = { total: 10000000, used: 6843200 }
+  useEffect(() => {
+    if (!data) return
+    setByok(data.force_byok === 'true' || data.force_byok === '1')
+    setWhiteLabelAll(data.white_label_all === 'true' || data.white_label_all === '1')
+    setMaintenanceMode(data.maintenance_mode === 'true' || data.maintenance_mode === '1')
+    setAnnouncement(data.announcement || '')
+    const rates: Record<string, number> = { Starter: 10, Pro: 15, Agency: 20, Enterprise: 25 }
+    for (const plan of Object.keys(rates)) {
+      const k = `commission_rate_${plan.toLowerCase()}`
+      if (data[k]) {
+        const n = parseInt(data[k], 10)
+        if (!isNaN(n)) rates[plan] = n
+      }
+    }
+    setCommissionRates(rates)
+  }, [data])
+
+  if (!data) return <LoadingPanel label="Loading platform settings…" />
+
+  async function saveSetting(key: string, value: string) {
+    setSavingKey(key)
+    try {
+      const res = await fetch('/api/admin/super', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'update_setting', key, value }),
+      })
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({})) as { error?: string }
+        alert(j.error || `Failed to save ${key}`)
+      } else {
+        onRefresh()
+      }
+    } catch (err) {
+      alert(`Error: ${String(err)}`)
+    } finally {
+      setSavingKey(null)
+    }
+  }
+
+  async function toggleAndSave(key: string, next: boolean, setter: (v: boolean) => void) {
+    setter(next)
+    await saveSetting(key, next ? 'true' : 'false')
+  }
+
+  const aiCredits = { total: 10000000, used: parseInt(data.ai_credits_used || '0', 10) || 0 }
   const remaining = aiCredits.total - aiCredits.used
   const usedPct = Math.round((aiCredits.used / aiCredits.total) * 100)
-
-  const updateRate = (plan: AgencyPlan, value: number) => {
-    setCommissionRates(prev => prev.map(r => r.plan === plan ? { ...r, rate: value } : r))
-  }
-
-  const saveAnnouncement = () => {
-    setSavedAnnouncement(true)
-    setTimeout(() => setSavedAnnouncement(false), 2000)
-  }
 
   return (
     <div className="grid grid-cols-2 gap-6">
@@ -463,18 +600,20 @@ function PlatformSettingsTab() {
         <h3 className="text-white font-semibold mb-4">Platform Controls</h3>
         <div className="space-y-4">
           {[
-            { label: 'Force BYOK (agencies use own AI keys)', sub: 'All plans must supply their own API key', value: byok, onChange: setByok },
-            { label: 'White-label for all plans', sub: 'Enable Ooumph branding removal globally', value: whiteLabelAll, onChange: setWhiteLabelAll },
-            { label: 'Maintenance Mode', sub: 'Show maintenance page to all agency users', value: maintenanceMode, onChange: setMaintenanceMode, danger: true },
+            { key: 'force_byok', label: 'Force BYOK (agencies use own AI keys)', sub: 'All plans must supply their own API key', value: byok, setter: setByok, danger: false },
+            { key: 'white_label_all', label: 'White-label for all plans', sub: 'Enable Ooumph branding removal globally', value: whiteLabelAll, setter: setWhiteLabelAll, danger: false },
+            { key: 'maintenance_mode', label: 'Maintenance Mode', sub: 'Show maintenance page to all agency users', value: maintenanceMode, setter: setMaintenanceMode, danger: true },
           ].map(toggle => (
             <div key={toggle.label} className={`flex items-start justify-between gap-4 p-3 rounded-lg ${toggle.value && toggle.danger ? 'bg-red-950/40 border border-red-900' : 'bg-gray-800/50'}`}>
               <div>
                 <p className={`text-sm font-medium ${toggle.danger && toggle.value ? 'text-red-300' : 'text-white'}`}>{toggle.label}</p>
                 <p className="text-gray-500 text-xs mt-0.5">{toggle.sub}</p>
+                {savingKey === toggle.key && <p className="text-indigo-400 text-[10px] mt-0.5">Saving…</p>}
               </div>
               <button
-                onClick={() => toggle.onChange(!toggle.value)}
-                className={`relative flex-shrink-0 w-10 h-5 rounded-full transition-colors ${toggle.value ? toggle.danger ? 'bg-red-600' : 'bg-indigo-600' : 'bg-gray-700'}`}
+                disabled={savingKey === toggle.key}
+                onClick={() => void toggleAndSave(toggle.key, !toggle.value, toggle.setter)}
+                className={`relative flex-shrink-0 w-10 h-5 rounded-full transition-colors disabled:opacity-50 ${toggle.value ? (toggle.danger ? 'bg-red-600' : 'bg-indigo-600') : 'bg-gray-700'}`}
               >
                 <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${toggle.value ? 'translate-x-5' : 'translate-x-0.5'}`} />
               </button>
@@ -495,10 +634,15 @@ function PlatformSettingsTab() {
           className="w-full px-3 py-2.5 rounded-lg bg-gray-800 border border-gray-700 text-white placeholder-gray-500 text-sm resize-none focus:outline-none focus:border-indigo-500"
         />
         <button
-          onClick={saveAnnouncement}
-          className={`mt-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${savedAnnouncement ? 'bg-green-700 text-white' : 'bg-indigo-600 hover:bg-indigo-500 text-white'}`}
+          onClick={async () => {
+            await saveSetting('announcement', announcement)
+            setSavedAnnouncement(true)
+            setTimeout(() => setSavedAnnouncement(false), 2000)
+          }}
+          disabled={savingKey === 'announcement'}
+          className={`mt-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 ${savedAnnouncement ? 'bg-green-700 text-white' : 'bg-indigo-600 hover:bg-indigo-500 text-white'}`}
         >
-          {savedAnnouncement ? '✓ Saved' : 'Publish Announcement'}
+          {savingKey === 'announcement' ? 'Saving…' : savedAnnouncement ? '✓ Saved' : 'Publish Announcement'}
         </button>
       </div>
 
@@ -507,24 +651,31 @@ function PlatformSettingsTab() {
         <h3 className="text-white font-semibold mb-1">Commission Rates by Plan</h3>
         <p className="text-gray-500 text-xs mb-4">Percentage of MRR paid to affiliates who refer agencies on each plan</p>
         <div className="space-y-3">
-          {commissionRates.map(cr => (
-            <div key={cr.plan} className="flex items-center justify-between">
-              <span className={`px-2.5 py-1 rounded border text-xs font-medium ${PLAN_STYLES[cr.plan]}`}>{cr.plan}</span>
-              <div className="flex items-center gap-3">
-                <input
-                  type="range"
-                  min={5}
-                  max={40}
-                  step={5}
-                  value={cr.rate}
-                  onChange={e => updateRate(cr.plan, parseInt(e.target.value))}
-                  className="w-28 accent-indigo-500"
-                />
-                <span className="text-white text-sm font-semibold w-10 text-right">{cr.rate}%</span>
+          {(['Starter', 'Pro', 'Agency', 'Enterprise'] as const).map(plan => {
+            const rate = commissionRates[plan]
+            const key = `commission_rate_${plan.toLowerCase()}`
+            return (
+              <div key={plan} className="flex items-center justify-between">
+                <span className={`px-2.5 py-1 rounded border text-xs font-medium ${PLAN_STYLES[plan]}`}>{plan}</span>
+                <div className="flex items-center gap-3">
+                  <input
+                    type="range"
+                    min={5}
+                    max={40}
+                    step={5}
+                    value={rate}
+                    onChange={e => setCommissionRates(prev => ({ ...prev, [plan]: parseInt(e.target.value, 10) }))}
+                    onMouseUp={() => void saveSetting(key, String(rate))}
+                    onTouchEnd={() => void saveSetting(key, String(rate))}
+                    className="w-28 accent-indigo-500"
+                  />
+                  <span className="text-white text-sm font-semibold w-10 text-right">{rate}%</span>
+                </div>
               </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
+        <p className="text-gray-600 text-xs mt-3">Changes save automatically when you release the slider.</p>
       </div>
     </div>
   )
@@ -539,6 +690,13 @@ export default function SuperAdminPage() {
   const [activeTab, setActiveTab] = useState<Tab>('overview')
   const [authState, setAuthState] = useState<'loading' | 'authorized' | 'denied'>('loading')
 
+  // Section data
+  const [overview, setOverview] = useState<OverviewData | null>(null)
+  const [agencies, setAgencies] = useState<Agency[] | null>(null)
+  const [commissions, setCommissions] = useState<CommissionsData | null>(null)
+  const [platform, setPlatform] = useState<PlatformSettings | null>(null)
+  const [fetchError, setFetchError] = useState<string | null>(null)
+
   // Auth gate: only super admins may access this page.
   useEffect(() => {
     let cancelled = false
@@ -552,6 +710,37 @@ export default function SuperAdminPage() {
       .catch(() => { if (!cancelled) setAuthState('denied') })
     return () => { cancelled = true }
   }, [])
+
+  const fetchAll = useCallback(async () => {
+    setFetchError(null)
+    try {
+      const [ovRes, agRes, commRes, platRes] = await Promise.all([
+        fetch('/api/admin/super?section=overview', { credentials: 'include' }),
+        fetch('/api/admin/super?section=agencies', { credentials: 'include' }),
+        fetch('/api/admin/super?section=commissions', { credentials: 'include' }),
+        fetch('/api/admin/super?section=platform', { credentials: 'include' }),
+      ])
+
+      if (ovRes.ok) setOverview(await ovRes.json() as OverviewData)
+      if (agRes.ok) setAgencies(await agRes.json() as Agency[])
+      if (commRes.ok) setCommissions(await commRes.json() as CommissionsData)
+      if (platRes.ok) setPlatform(await platRes.json() as PlatformSettings)
+
+      if (!ovRes.ok) {
+        const j = await ovRes.json().catch(() => ({})) as { error?: string }
+        setFetchError(j.error || `Failed to load overview (HTTP ${ovRes.status})`)
+      }
+    } catch (err) {
+      setFetchError(`Failed to load admin data: ${String(err)}`)
+    }
+  }, [])
+
+  // Fetch all sections in parallel once authorized
+  useEffect(() => {
+    if (authState === 'authorized') {
+      void fetchAll()
+    }
+  }, [authState, fetchAll])
 
   // While checking auth — render a minimal spinner. Never render the dashboard body.
   if (authState === 'loading') {
@@ -606,7 +795,19 @@ export default function SuperAdminPage() {
           </div>
           <p className="text-gray-400 text-sm">Manage all agencies, revenue, commissions, and platform settings</p>
         </div>
+        <button
+          onClick={() => void fetchAll()}
+          className="px-3 py-1.5 rounded-lg bg-gray-900 border border-gray-800 hover:border-gray-700 text-gray-300 text-xs font-medium transition-colors"
+        >
+          ↻ Refresh
+        </button>
       </div>
+
+      {fetchError && (
+        <div className="mb-4 bg-red-950/40 border border-red-900 rounded-xl p-4 text-red-300 text-sm">
+          {fetchError}
+        </div>
+      )}
 
       {/* Tabs */}
       <div className="flex gap-1 mb-6 bg-gray-900 border border-gray-800 rounded-xl p-1 w-fit">
@@ -623,10 +824,10 @@ export default function SuperAdminPage() {
       </div>
 
       {/* Tab content */}
-      {activeTab === 'overview' && <OverviewTab />}
-      {activeTab === 'agencies' && <AgenciesTab />}
-      {activeTab === 'commissions' && <CommissionsTab />}
-      {activeTab === 'settings' && <PlatformSettingsTab />}
+      {activeTab === 'overview' && <OverviewTab data={overview} />}
+      {activeTab === 'agencies' && <AgenciesTab data={agencies} onRefresh={fetchAll} />}
+      {activeTab === 'commissions' && <CommissionsTab data={commissions} />}
+      {activeTab === 'settings' && <PlatformSettingsTab data={platform} onRefresh={fetchAll} />}
     </div>
   )
 }

@@ -1,178 +1,61 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 
-// ── Mock data ──────────────────────────────────────────────────────────────────
+// ── Types ─────────────────────────────────────────────────────────────────────
 
-const CURRENT_PLAN = {
-  name: 'Agency',
-  price_monthly: 297,
-  price_annually: 238, // 20% off
-  clients: { used: 8, max: 10 },
-  team: { used: 3, max: 5 },
-  storage: { used: 4.2, max: 10 },
-  ai_requests: { used: 4230, max: 10000 },
-  next_billing: 'June 26, 2026',
-  next_amount: 297,
+interface Plan {
+  id: string
+  slug: string
+  name: string
+  price_monthly: number // in cents
+  price_yearly?: number | null
+  commission_rate?: number
+  max_sub_accounts?: number
+  max_ai_runs_monthly?: number
+  features: string[] | string
+  is_active?: number
+  sort_order?: number
+  stripe_price_id?: string | null
 }
 
-const PLANS = [
-  {
-    id: 'starter',
-    name: 'Starter',
-    price_monthly: 49,
-    price_annually: 39,
-    clients: '1',
-    team: '1',
-    ai_requests: '1,000',
-    image_gen: '200',
-    video_gen: '5',
-    voice_minutes: '30',
-    storage: '2GB',
-    white_label: false,
-    custom_domain: false,
-    priority_support: false,
-    byok: false,
-    api_access: false,
-    super_admin: false,
-  },
-  {
-    id: 'pro',
-    name: 'Pro',
-    price_monthly: 97,
-    price_annually: 78,
-    clients: '3',
-    team: '2',
-    ai_requests: '5,000',
-    image_gen: '500',
-    video_gen: '20',
-    voice_minutes: '60',
-    storage: '5GB',
-    white_label: false,
-    custom_domain: false,
-    priority_support: false,
-    byok: true,
-    api_access: true,
-    super_admin: false,
-  },
-  {
-    id: 'agency',
-    name: 'Agency',
-    price_monthly: 297,
-    price_annually: 238,
-    clients: '10',
-    team: '5',
-    ai_requests: '10,000',
-    image_gen: '2,000',
-    video_gen: '50',
-    voice_minutes: '120',
-    storage: '10GB',
-    white_label: true,
-    custom_domain: true,
-    priority_support: true,
-    byok: true,
-    api_access: true,
-    super_admin: false,
-    current: true,
-  },
-  {
-    id: 'enterprise',
-    name: 'Enterprise',
-    price_monthly: 797,
-    price_annually: 638,
-    clients: 'Unlimited',
-    team: 'Unlimited',
-    ai_requests: 'Unlimited',
-    image_gen: 'Unlimited',
-    video_gen: 'Unlimited',
-    voice_minutes: 'Unlimited',
-    storage: '100GB',
-    white_label: true,
-    custom_domain: true,
-    priority_support: true,
-    byok: true,
-    api_access: true,
-    super_admin: true,
-  },
-]
+interface Subscription {
+  plan_name: string
+  plan_slug: string
+  price_monthly: number
+  status: string
+  current_period_end?: string | null
+  features?: string[] | string
+}
+
+// ── Static fallback (kept for the addons + history sections only) ─────────────
 
 const ADDONS = [
-  {
-    id: 'ai_1k',
-    name: '+1,000 AI Requests',
-    description: 'Extra AI request credits',
-    price: 19,
-    unit: 'mo',
-  },
-  {
-    id: 'ai_5k',
-    name: '+5,000 AI Requests',
-    description: 'Bulk AI request credits',
-    price: 79,
-    unit: 'mo',
-  },
-  {
-    id: 'storage',
-    name: '+10GB Storage',
-    description: 'Extra cloud storage',
-    price: 9,
-    unit: 'mo',
-  },
-  {
-    id: 'client_seat',
-    name: 'Extra Client Seat',
-    description: 'Add one more client account',
-    price: 29,
-    unit: 'mo / seat',
-  },
-  {
-    id: 'team_member',
-    name: 'Extra Team Member',
-    description: 'Add one more team member',
-    price: 15,
-    unit: 'mo / member',
-  },
+  { id: 'ai_1k', name: '+1,000 AI Requests', description: 'Extra AI request credits', price: 19, unit: 'mo' },
+  { id: 'ai_5k', name: '+5,000 AI Requests', description: 'Bulk AI request credits', price: 79, unit: 'mo' },
+  { id: 'storage', name: '+10GB Storage', description: 'Extra cloud storage', price: 9, unit: 'mo' },
+  { id: 'client_seat', name: 'Extra Client Seat', description: 'Add one more client account', price: 29, unit: 'mo / seat' },
+  { id: 'team_member', name: 'Extra Team Member', description: 'Add one more team member', price: 15, unit: 'mo / member' },
 ]
 
-const INVOICES = [
-  { date: 'May 26, 2026', description: 'Agency Plan – May 2026', amount: '$297.00', status: 'Paid', id: 'INV-2026-05' },
-  { date: 'Apr 26, 2026', description: 'Agency Plan – April 2026', amount: '$297.00', status: 'Paid', id: 'INV-2026-04' },
-  { date: 'Mar 26, 2026', description: 'Agency Plan – March 2026', amount: '$297.00', status: 'Paid', id: 'INV-2026-03' },
-  { date: 'Feb 26, 2026', description: 'Agency Plan – February 2026', amount: '$297.00', status: 'Paid', id: 'INV-2026-02' },
-  { date: 'Jan 26, 2026', description: 'Agency Plan – January 2026', amount: '$297.00', status: 'Paid', id: 'INV-2026-01' },
-  { date: 'Dec 26, 2025', description: 'Agency Plan – December 2025', amount: '$297.00', status: 'Paid', id: 'INV-2025-12' },
-]
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
-const CREDIT_USAGE = [
-  { type: 'Content Generation', credits: 1240, color: 'bg-indigo-500' },
-  { type: 'Strategy Planning', credits: 890, color: 'bg-purple-500' },
-  { type: 'Image Generation', credits: 450, color: 'bg-pink-500' },
-  { type: 'Voice Synthesis', credits: 380, color: 'bg-amber-500' },
-  { type: 'SEO Analysis', credits: 240, color: 'bg-emerald-500' },
-  { type: 'Analytics Reports', credits: 230, color: 'bg-blue-500' },
-]
-
-const HISTORY = [
-  { date: 'May 26, 2026', description: 'Monthly subscription charge', method: 'Visa ••••4242', amount: '$297.00', status: 'Succeeded' },
-  { date: 'Apr 26, 2026', description: 'Monthly subscription charge', method: 'Visa ••••4242', amount: '$297.00', status: 'Succeeded' },
-  { date: 'Mar 30, 2026', description: 'AI Credit Pack – 1,000 credits', method: 'Visa ••••4242', amount: '$19.00', status: 'Succeeded' },
-  { date: 'Mar 26, 2026', description: 'Monthly subscription charge', method: 'Visa ••••4242', amount: '$297.00', status: 'Succeeded' },
-  { date: 'Feb 26, 2026', description: 'Monthly subscription charge', method: 'Visa ••••4242', amount: '$297.00', status: 'Succeeded' },
-  { date: 'Jan 26, 2026', description: 'Monthly subscription charge', method: 'Visa ••••4242', amount: '$297.00', status: 'Succeeded' },
-]
-
-// ── Feature row helpers ────────────────────────────────────────────────────────
-
-function Check({ value }: { value: boolean | string }) {
-  if (typeof value === 'boolean') {
-    return value
-      ? <span className="text-emerald-400 text-base">✓</span>
-      : <span className="text-gray-600 text-base">✕</span>
-  }
-  return <span className="text-gray-300 text-sm">{value}</span>
+function centsToDollars(cents: number): number {
+  return Math.round((cents || 0) / 100)
 }
 
-// ── Subcomponents ──────────────────────────────────────────────────────────────
+function parseFeatures(features: string[] | string | undefined): string[] {
+  if (!features) return []
+  if (Array.isArray(features)) return features
+  try {
+    const parsed = JSON.parse(features)
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+// ── Subcomponents ─────────────────────────────────────────────────────────────
 
 function FaqItem({ q, a }: { q: string; a: string }) {
   const [open, setOpen] = useState(false)
@@ -190,6 +73,7 @@ function FaqItem({ q, a }: { q: string; a: string }) {
 function AddonCard({ addon }: { addon: typeof ADDONS[0] }) {
   const [qty, setQty] = useState(0)
   const [added, setAdded] = useState(false)
+  // TODO: wire add-on purchases to a real /api/billing/addons endpoint once available.
   function handleAdd() {
     if (qty === 0) setQty(1)
     setAdded(true)
@@ -214,9 +98,7 @@ function AddonCard({ addon }: { addon: typeof ADDONS[0] }) {
           <button
             onClick={handleAdd}
             className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-              added
-                ? 'bg-emerald-600 text-white'
-                : 'bg-indigo-600 hover:bg-indigo-500 text-white'
+              added ? 'bg-emerald-600 text-white' : 'bg-indigo-600 hover:bg-indigo-500 text-white'
             }`}
           >
             {added ? 'Added' : 'Add'}
@@ -227,32 +109,168 @@ function AddonCard({ addon }: { addon: typeof ADDONS[0] }) {
   )
 }
 
-// ── Main Page ──────────────────────────────────────────────────────────────────
+// ── Main Page ─────────────────────────────────────────────────────────────────
 
 export default function BillingPage() {
+  const [workspaceId, setWorkspaceId] = useState<string | null>(null)
+  const [plans, setPlans] = useState<Plan[] | null>(null)
+  const [subscription, setSubscription] = useState<Subscription | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [plansError, setPlansError] = useState<string | null>(null)
   const [billingCycle, setBillingCycle] = useState<'monthly' | 'annually'>('monthly')
-  const [activeTab, setActiveTab] = useState<'overview' | 'history'>('overview')
-  const [portalNote, setPortalNote] = useState(false)
+  const [actioningSlug, setActioningSlug] = useState<string | null>(null)
+  const [portalLoading, setPortalLoading] = useState(false)
+  const [actionError, setActionError] = useState<string | null>(null)
 
-  const totalCreditsUsed = CREDIT_USAGE.reduce((s, c) => s + c.credits, 0)
-  const creditsRemaining = 5770
-  const totalCredits = creditsRemaining + totalCreditsUsed
+  // Init workspaceId
+  useEffect(() => {
+    const wid = typeof window !== 'undefined' ? localStorage.getItem('workspaceId') : null
+    setWorkspaceId(wid)
+  }, [])
 
-  const TABLE_FEATURES = [
-    { label: 'Clients', key: 'clients' },
-    { label: 'Team Members', key: 'team' },
-    { label: 'AI Requests/mo', key: 'ai_requests' },
-    { label: 'Image Generation', key: 'image_gen' },
-    { label: 'Video Generation', key: 'video_gen' },
-    { label: 'Voice Minutes', key: 'voice_minutes' },
-    { label: 'Storage', key: 'storage' },
-    { label: 'White-label', key: 'white_label' },
-    { label: 'Custom Domain', key: 'custom_domain' },
-    { label: 'Priority Support', key: 'priority_support' },
-    { label: 'BYOK', key: 'byok' },
-    { label: 'API Access', key: 'api_access' },
-    { label: 'Super Admin', key: 'super_admin' },
-  ]
+  // Fetch plans + current subscription
+  const fetchData = useCallback(async () => {
+    setLoading(true)
+    setPlansError(null)
+    try {
+      const plansRes = await fetch('/api/billing/plans')
+      if (!plansRes.ok) {
+        setPlansError(`Failed to load plans (HTTP ${plansRes.status})`)
+        setPlans([])
+      } else {
+        const planRows = await plansRes.json() as Plan[]
+        setPlans(planRows)
+      }
+
+      if (workspaceId) {
+        const subRes = await fetch(`/api/billing/subscribe?workspaceId=${workspaceId}`)
+        if (subRes.ok) {
+          const sub = await subRes.json() as Subscription | null
+          setSubscription(sub)
+        }
+      }
+    } catch (err) {
+      setPlansError(`Failed to load plans: ${String(err)}`)
+      setPlans([])
+    } finally {
+      setLoading(false)
+    }
+  }, [workspaceId])
+
+  useEffect(() => {
+    void fetchData()
+  }, [fetchData])
+
+  async function handleUpgrade(planSlug: string) {
+    if (!workspaceId) {
+      setActionError('No workspace loaded. Please reload the page.')
+      return
+    }
+    setActioningSlug(planSlug)
+    setActionError(null)
+    try {
+      // Pull email/name if available
+      let email: string | undefined
+      let name: string | undefined
+      try {
+        const meRes = await fetch('/api/auth/me', { credentials: 'include' })
+        if (meRes.ok) {
+          const me = await meRes.json() as { user?: { email?: string; name?: string } }
+          email = me.user?.email
+          name = me.user?.name
+        }
+      } catch { /* non-fatal */ }
+
+      const res = await fetch('/api/billing/subscribe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspaceId, planSlug, email, name }),
+      })
+      const data = await res.json() as { ok?: boolean; url?: string; error?: string; requiresSetup?: boolean }
+      if (data.url) {
+        window.location.href = data.url
+      } else {
+        setActionError(data.error || 'Could not start checkout.')
+      }
+    } catch (err) {
+      setActionError(`Error: ${String(err)}`)
+    } finally {
+      setActioningSlug(null)
+    }
+  }
+
+  async function handlePortal() {
+    if (!workspaceId) {
+      setActionError('No workspace loaded.')
+      return
+    }
+    setPortalLoading(true)
+    setActionError(null)
+    try {
+      const res = await fetch('/api/billing/portal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspaceId }),
+      })
+      const data = await res.json() as { ok?: boolean; url?: string; error?: string }
+      if (data.url) {
+        window.open(data.url, '_blank', 'noopener,noreferrer')
+      } else {
+        setActionError(data.error || 'Could not open billing portal. You may not have an active subscription yet.')
+      }
+    } catch (err) {
+      setActionError(`Error: ${String(err)}`)
+    } finally {
+      setPortalLoading(false)
+    }
+  }
+
+  // Derived current plan info
+  const currentPlanSlug = subscription?.plan_slug
+  const currentPlanName = subscription?.plan_name || 'Free'
+  const currentPriceMo = centsToDollars(subscription?.price_monthly || 0)
+  const currentFeatures = parseFeatures(subscription?.features)
+
+  // Loading state
+  if (loading) {
+    return (
+      <div className="p-6 max-w-6xl mx-auto">
+        <div className="flex items-center gap-3 text-gray-400 text-sm py-20 justify-center">
+          <span className="w-4 h-4 border-2 border-gray-600 border-t-indigo-500 rounded-full animate-spin" />
+          Loading billing details…
+        </div>
+      </div>
+    )
+  }
+
+  // Error state
+  if (plansError || !plans) {
+    return (
+      <div className="p-6 max-w-6xl mx-auto">
+        <div className="bg-red-950/40 border border-red-900 rounded-2xl p-6 text-center">
+          <div className="text-4xl mb-3">⚠️</div>
+          <h2 className="text-white font-bold text-lg mb-2">Couldn&apos;t load billing</h2>
+          <p className="text-red-300 text-sm mb-4">{plansError}</p>
+          <button onClick={() => void fetchData()} className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-medium">
+            Try again
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  // Empty state — no plans configured at all
+  if (plans.length === 0) {
+    return (
+      <div className="p-6 max-w-6xl mx-auto">
+        <div className="bg-gray-900 border border-gray-800 rounded-2xl p-10 text-center">
+          <div className="text-5xl mb-3">💳</div>
+          <h2 className="text-white font-bold text-lg mb-2">No plans configured</h2>
+          <p className="text-gray-400 text-sm">Contact <a href="mailto:support@ooumph.com" className="text-indigo-400 hover:underline">support@ooumph.com</a> to get plans set up.</p>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-8">
@@ -265,40 +283,37 @@ export default function BillingPage() {
         </div>
         <div className="flex items-center gap-3">
           <span className="bg-indigo-600/20 border border-indigo-500/40 text-indigo-300 text-sm px-3 py-1 rounded-full font-medium">
-            Agency Plan · $297/mo
+            {currentPlanName} Plan · ${currentPriceMo}/mo
           </span>
           <button
-            onClick={() => setPortalNote(v => !v)}
-            className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+            onClick={handlePortal}
+            disabled={portalLoading}
+            className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
           >
-            Manage Subscription
+            {portalLoading ? 'Opening…' : 'Manage Subscription'}
           </button>
         </div>
       </div>
 
-      {portalNote && (
-        <div className="bg-indigo-950/60 border border-indigo-700/50 rounded-xl p-4 flex items-start gap-3">
-          <span className="text-indigo-400 mt-0.5 text-lg">ℹ</span>
-          <div>
-            <p className="text-indigo-200 text-sm font-medium">Secure Billing Portal</p>
-            <p className="text-indigo-300/70 text-sm mt-0.5">You will be redirected to our secure Stripe billing portal to manage your subscription, update payment methods, or cancel.</p>
-          </div>
-          <button onClick={() => setPortalNote(false)} className="ml-auto text-indigo-400 hover:text-white text-xs">✕</button>
+      {actionError && (
+        <div className="bg-red-950/40 border border-red-900 rounded-xl p-4 flex items-start gap-3">
+          <span className="text-red-400 mt-0.5 text-lg">⚠</span>
+          <p className="text-red-300 text-sm flex-1">{actionError}</p>
+          <button onClick={() => setActionError(null)} className="text-red-400 hover:text-white text-xs">✕</button>
         </div>
       )}
 
       {/* ── Current Plan Card ── */}
       <div className="bg-gray-900 border border-indigo-500/40 rounded-2xl p-6">
         <div className="flex flex-col lg:flex-row lg:items-start gap-6">
-
-          {/* Plan info */}
           <div className="flex-1">
             <div className="flex items-center gap-3 mb-4">
-              <h2 className="text-xl font-bold text-white">Agency Plan</h2>
-              <span className="bg-emerald-500/20 text-emerald-400 text-xs px-2 py-0.5 rounded-full font-medium">Active</span>
+              <h2 className="text-xl font-bold text-white">{currentPlanName} Plan</h2>
+              <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${subscription?.status === 'active' || subscription?.status === 'trialing' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-gray-700 text-gray-300'}`}>
+                {subscription?.status === 'trialing' ? 'Trial' : (subscription?.status || 'Free')}
+              </span>
             </div>
 
-            {/* Billing toggle */}
             <div className="flex items-center gap-3 mb-5">
               <button
                 onClick={() => setBillingCycle('monthly')}
@@ -315,71 +330,36 @@ export default function BillingPage() {
 
             <div className="mb-5">
               <span className="text-4xl font-bold text-white">
-                ${billingCycle === 'monthly' ? CURRENT_PLAN.price_monthly : CURRENT_PLAN.price_annually}
+                ${billingCycle === 'monthly' ? currentPriceMo : Math.round(currentPriceMo * 0.8)}
               </span>
               <span className="text-gray-400 text-sm">/month</span>
-              {billingCycle === 'annually' && (
-                <span className="ml-2 text-gray-500 text-sm">(billed $2,856/year)</span>
+              {billingCycle === 'annually' && currentPriceMo > 0 && (
+                <span className="ml-2 text-gray-500 text-sm">(billed ${currentPriceMo * 12 * 0.8}/year)</span>
               )}
             </div>
 
-            {/* Features */}
-            <ul className="grid grid-cols-2 gap-y-2 gap-x-6 mb-6">
-              {[
-                'Up to 10 clients', 'Up to 5 team members', '10,000 AI requests/mo',
-                '2,000 image generations', '50 video generations', '120 voice minutes',
-                '10GB storage', 'White-label dashboard', 'Custom domain', 'Priority support',
-                'BYOK (Bring Your Own Key)', 'Full API access',
-              ].map(f => (
-                <li key={f} className="flex items-center gap-2 text-sm text-gray-300">
-                  <span className="text-emerald-400 flex-shrink-0">✓</span>
-                  {f}
-                </li>
-              ))}
-            </ul>
+            {currentFeatures.length > 0 ? (
+              <ul className="grid grid-cols-2 gap-y-2 gap-x-6 mb-6">
+                {currentFeatures.map(f => (
+                  <li key={f} className="flex items-center gap-2 text-sm text-gray-300">
+                    <span className="text-emerald-400 flex-shrink-0">✓</span>
+                    {f}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-gray-500 text-sm mb-6">No features listed for this plan.</p>
+            )}
 
-            <div className="flex items-center gap-4 text-sm">
-              <p className="text-gray-400">
-                Next billing: <span className="text-white font-medium">{CURRENT_PLAN.next_billing}</span>
-                <span className="text-gray-500"> · ${CURRENT_PLAN.next_amount}.00</span>
-              </p>
-            </div>
-          </div>
-
-          {/* Usage summary */}
-          <div className="lg:w-72 space-y-4">
-            <h3 className="text-gray-400 text-xs font-medium uppercase tracking-wider">Usage This Cycle</h3>
-
-            {[
-              { label: 'Clients', used: CURRENT_PLAN.clients.used, max: CURRENT_PLAN.clients.max, unit: '', color: 'bg-indigo-500' },
-              { label: 'Team Members', used: CURRENT_PLAN.team.used, max: CURRENT_PLAN.team.max, unit: '', color: 'bg-purple-500' },
-              { label: 'AI Requests', used: CURRENT_PLAN.ai_requests.used, max: CURRENT_PLAN.ai_requests.max, unit: '', color: 'bg-pink-500' },
-              { label: 'Storage', used: CURRENT_PLAN.storage.used, max: CURRENT_PLAN.storage.max, unit: 'GB', color: 'bg-amber-500' },
-            ].map(item => (
-              <div key={item.label}>
-                <div className="flex justify-between text-xs text-gray-400 mb-1">
-                  <span>{item.label}</span>
-                  <span>{item.used}{item.unit} / {item.max}{item.unit}</span>
-                </div>
-                <div className="h-2 bg-gray-800 rounded-full overflow-hidden">
-                  <div
-                    className={`h-full ${item.color} rounded-full transition-all`}
-                    style={{ width: `${Math.min(100, (item.used / item.max) * 100)}%` }}
-                  />
-                </div>
+            {subscription?.current_period_end && (
+              <div className="flex items-center gap-4 text-sm">
+                <p className="text-gray-400">
+                  Next billing: <span className="text-white font-medium">{new Date(subscription.current_period_end).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}</span>
+                  <span className="text-gray-500"> · ${currentPriceMo}.00</span>
+                </p>
               </div>
-            ))}
-
-            <div className="pt-2 space-y-2">
-              <button className="w-full bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
-                Upgrade to Enterprise
-              </button>
-              <button className="w-full text-gray-500 hover:text-gray-300 text-xs py-1 transition-colors">
-                Downgrade plan
-              </button>
-            </div>
+            )}
           </div>
-
         </div>
       </div>
 
@@ -391,64 +371,109 @@ export default function BillingPage() {
             <table className="w-full">
               <thead>
                 <tr className="border-b border-gray-800">
-                  <th className="text-left px-5 py-4 text-gray-400 text-sm font-medium w-40">Feature</th>
-                  {PLANS.map(plan => (
-                    <th
-                      key={plan.id}
-                      className={`px-5 py-4 text-center ${plan.current ? 'bg-indigo-600/10' : ''}`}
-                    >
-                      <div className="flex flex-col items-center gap-1">
-                        {plan.current && (
-                          <span className="bg-indigo-600 text-white text-xs px-2 py-0.5 rounded-full font-medium">Current Plan</span>
-                        )}
-                        <span className="text-white font-semibold text-sm">{plan.name}</span>
-                        <span className="text-indigo-300 font-bold text-lg">
-                          ${billingCycle === 'monthly' ? plan.price_monthly : plan.price_annually}
-                          <span className="text-gray-500 font-normal text-xs">/mo</span>
-                        </span>
-                        {plan.current ? (
-                          <span className="text-gray-500 text-xs">Your plan</span>
-                        ) : plan.price_monthly > 297 ? (
-                          <button className="mt-1 bg-indigo-600 hover:bg-indigo-500 text-white text-xs px-3 py-1 rounded-lg font-medium transition-colors">
-                            Upgrade
-                          </button>
-                        ) : (
-                          <button className="mt-1 bg-gray-700 hover:bg-gray-600 text-gray-300 text-xs px-3 py-1 rounded-lg font-medium transition-colors">
-                            Downgrade
-                          </button>
-                        )}
-                      </div>
-                    </th>
-                  ))}
+                  <th className="text-left px-5 py-4 text-gray-400 text-sm font-medium w-40">Plan</th>
+                  {plans.map(plan => {
+                    const isCurrent = plan.slug === currentPlanSlug
+                    const priceMo = centsToDollars(plan.price_monthly)
+                    const priceShown = billingCycle === 'annually' ? Math.round(priceMo * 0.8) : priceMo
+                    return (
+                      <th
+                        key={plan.id}
+                        className={`px-5 py-4 text-center ${isCurrent ? 'bg-indigo-600/10' : ''}`}
+                      >
+                        <div className="flex flex-col items-center gap-1">
+                          {isCurrent && (
+                            <span className="bg-indigo-600 text-white text-xs px-2 py-0.5 rounded-full font-medium">Current Plan</span>
+                          )}
+                          <span className="text-white font-semibold text-sm">{plan.name}</span>
+                          <span className="text-indigo-300 font-bold text-lg">
+                            ${priceShown}
+                            <span className="text-gray-500 font-normal text-xs">/mo</span>
+                          </span>
+                          {isCurrent ? (
+                            <span className="text-gray-500 text-xs">Your plan</span>
+                          ) : priceMo > currentPriceMo ? (
+                            <button
+                              onClick={() => void handleUpgrade(plan.slug)}
+                              disabled={actioningSlug === plan.slug}
+                              className="mt-1 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs px-3 py-1 rounded-lg font-medium transition-colors"
+                            >
+                              {actioningSlug === plan.slug ? 'Loading…' : `Upgrade to ${plan.name}`}
+                            </button>
+                          ) : priceMo === 0 ? (
+                            <button
+                              onClick={handlePortal}
+                              disabled={portalLoading}
+                              className="mt-1 bg-gray-700 hover:bg-gray-600 text-gray-300 text-xs px-3 py-1 rounded-lg font-medium transition-colors disabled:opacity-50"
+                            >
+                              Downgrade
+                            </button>
+                          ) : (
+                            <button
+                              onClick={handlePortal}
+                              disabled={portalLoading}
+                              className="mt-1 bg-gray-700 hover:bg-gray-600 text-gray-300 text-xs px-3 py-1 rounded-lg font-medium transition-colors disabled:opacity-50"
+                            >
+                              Switch
+                            </button>
+                          )}
+                        </div>
+                      </th>
+                    )
+                  })}
                 </tr>
               </thead>
               <tbody>
-                {TABLE_FEATURES.map((feat, i) => (
-                  <tr
-                    key={feat.key}
-                    className={`border-b border-gray-800/60 ${i % 2 === 0 ? '' : 'bg-gray-800/20'}`}
-                  >
-                    <td className="px-5 py-3 text-gray-400 text-sm">{feat.label}</td>
-                    {PLANS.map(plan => (
-                      <td
-                        key={plan.id}
-                        className={`px-5 py-3 text-center ${plan.current ? 'bg-indigo-600/5' : ''}`}
-                      >
-                        <Check value={(plan as Record<string, unknown>)[feat.key] as boolean | string} />
-                      </td>
-                    ))}
-                  </tr>
-                ))}
+                {/* Show union of features as rows */}
+                {(() => {
+                  const allFeatures = new Set<string>()
+                  plans.forEach(p => parseFeatures(p.features).forEach(f => allFeatures.add(f)))
+                  const featureList = Array.from(allFeatures)
+                  if (featureList.length === 0) {
+                    return (
+                      <tr>
+                        <td colSpan={plans.length + 1} className="px-5 py-8 text-center text-gray-500 text-sm">
+                          No feature comparison configured.
+                        </td>
+                      </tr>
+                    )
+                  }
+                  return featureList.map((feat, i) => (
+                    <tr
+                      key={feat}
+                      className={`border-b border-gray-800/60 ${i % 2 === 0 ? '' : 'bg-gray-800/20'}`}
+                    >
+                      <td className="px-5 py-3 text-gray-400 text-sm">{feat}</td>
+                      {plans.map(plan => {
+                        const has = parseFeatures(plan.features).includes(feat)
+                        const isCurrent = plan.slug === currentPlanSlug
+                        return (
+                          <td
+                            key={plan.id}
+                            className={`px-5 py-3 text-center ${isCurrent ? 'bg-indigo-600/5' : ''}`}
+                          >
+                            {has
+                              ? <span className="text-emerald-400 text-base">✓</span>
+                              : <span className="text-gray-600 text-base">✕</span>}
+                          </td>
+                        )
+                      })}
+                    </tr>
+                  ))
+                })()}
               </tbody>
             </table>
           </div>
         </div>
       </div>
 
-      {/* ── Add-ons ── */}
+      {/* ── Add-ons (TODO: not wired to backend yet) ── */}
       <div>
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-white font-semibold text-lg">Add-ons</h2>
+          <div>
+            <h2 className="text-white font-semibold text-lg">Add-ons</h2>
+            <p className="text-gray-500 text-xs mt-0.5">Note: add-on purchases are not yet connected to billing.</p>
+          </div>
           <p className="text-gray-500 text-sm">Extend your plan without upgrading</p>
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
@@ -462,7 +487,6 @@ export default function BillingPage() {
       <div>
         <h2 className="text-white font-semibold text-lg mb-4">Payment Methods</h2>
         <div className="bg-gray-900 border border-gray-800 rounded-2xl p-5 space-y-4">
-          {/* Current card — display only, last 4 digits */}
           <div className="flex items-center justify-between py-3 border border-gray-700 rounded-xl px-4">
             <div className="flex items-center gap-3">
               <div className="bg-blue-600/20 border border-blue-500/30 rounded-lg p-2">
@@ -473,164 +497,41 @@ export default function BillingPage() {
                 </svg>
               </div>
               <div>
-                <p className="text-white text-sm font-medium">Visa ending in 4242</p>
-                <p className="text-gray-500 text-xs">Expires 12/27</p>
+                <p className="text-white text-sm font-medium">Card on file</p>
+                <p className="text-gray-500 text-xs">Managed by Stripe</p>
               </div>
             </div>
-            <span className="bg-emerald-500/20 text-emerald-400 text-xs px-2 py-0.5 rounded-full font-medium">Primary</span>
+            <button
+              onClick={handlePortal}
+              disabled={portalLoading}
+              className="bg-indigo-600/20 border border-indigo-500/40 hover:bg-indigo-600/30 text-indigo-300 px-3 py-1 rounded-lg text-xs font-medium transition-colors disabled:opacity-50"
+            >
+              {portalLoading ? 'Opening…' : 'Update via Stripe Portal'}
+            </button>
           </div>
 
-          <div className="flex items-center gap-3 pt-1">
-            <button
-              onClick={() => setPortalNote(true)}
-              className="bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 px-4 py-2 rounded-lg text-sm font-medium transition-colors"
-            >
-              + Add Payment Method
-            </button>
-            <button
-              onClick={() => setPortalNote(true)}
-              className="bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 px-4 py-2 rounded-lg text-sm font-medium transition-colors"
-            >
-              Update Billing Info
-            </button>
-            <p className="text-gray-600 text-xs">You'll be redirected to our secure billing portal</p>
-          </div>
+          <p className="text-gray-600 text-xs">For PCI compliance, Ooumph never stores or displays card data. Manage all payment methods directly in your secure Stripe billing portal.</p>
         </div>
       </div>
 
-      {/* ── Invoices + History tabs ── */}
+      {/* ── Invoices ── */}
       <div>
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-1 bg-gray-900 border border-gray-800 rounded-lg p-1">
-            <button
-              onClick={() => setActiveTab('overview')}
-              className={`px-4 py-1.5 rounded text-sm font-medium transition-colors ${activeTab === 'overview' ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-white'}`}
-            >
-              Invoices
-            </button>
-            <button
-              onClick={() => setActiveTab('history')}
-              className={`px-4 py-1.5 rounded text-sm font-medium transition-colors ${activeTab === 'history' ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-white'}`}
-            >
-              Payment History
-            </button>
+        <h2 className="text-white font-semibold text-lg mb-4">Invoices &amp; Payment History</h2>
+        <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 flex items-center justify-between gap-4">
+          <div className="flex items-start gap-3">
+            <span className="text-2xl">🧾</span>
+            <div>
+              <p className="text-white text-sm font-medium">Invoices are managed in your Stripe Customer Portal</p>
+              <p className="text-gray-500 text-xs mt-1">Download PDFs, view payment history, and update billing details securely.</p>
+            </div>
           </div>
-          <button className="bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2">
-            <span>↓</span> Export All Invoices
+          <button
+            onClick={handlePortal}
+            disabled={portalLoading}
+            className="flex-shrink-0 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+          >
+            {portalLoading ? 'Opening…' : 'Open Billing Portal →'}
           </button>
-        </div>
-
-        {activeTab === 'overview' && (
-          <div className="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden">
-            <table className="w-full">
-              <thead>
-                <tr className="border-b border-gray-800">
-                  {['Date', 'Description', 'Amount', 'Status', 'Download'].map(h => (
-                    <th key={h} className="text-left px-5 py-3 text-gray-400 text-xs font-medium uppercase tracking-wider">{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {INVOICES.map(inv => (
-                  <tr key={inv.id} className="border-b border-gray-800/50 hover:bg-gray-800/30 transition-colors">
-                    <td className="px-5 py-3 text-sm text-gray-300">{inv.date}</td>
-                    <td className="px-5 py-3 text-sm text-white">{inv.description}</td>
-                    <td className="px-5 py-3 text-sm text-white font-medium">{inv.amount}</td>
-                    <td className="px-5 py-3">
-                      <span className="bg-emerald-500/20 text-emerald-400 text-xs px-2 py-0.5 rounded-full">{inv.status}</span>
-                    </td>
-                    <td className="px-5 py-3">
-                      <button className="flex items-center gap-1.5 text-indigo-400 hover:text-indigo-300 text-xs font-medium transition-colors">
-                        <svg className="w-3.5 h-3.5" viewBox="0 0 16 16" fill="currentColor">
-                          <path d="M8 1v9M4 7l4 4 4-4M3 13h10" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round"/>
-                        </svg>
-                        PDF
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-
-        {activeTab === 'history' && (
-          <div className="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden">
-            <table className="w-full">
-              <thead>
-                <tr className="border-b border-gray-800">
-                  {['Date', 'Description', 'Method', 'Amount', 'Status'].map(h => (
-                    <th key={h} className="text-left px-5 py-3 text-gray-400 text-xs font-medium uppercase tracking-wider">{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {HISTORY.map((h, i) => (
-                  <tr key={i} className="border-b border-gray-800/50 hover:bg-gray-800/30 transition-colors">
-                    <td className="px-5 py-3 text-sm text-gray-300">{h.date}</td>
-                    <td className="px-5 py-3 text-sm text-white">{h.description}</td>
-                    <td className="px-5 py-3 text-sm text-gray-400">{h.method}</td>
-                    <td className="px-5 py-3 text-sm text-white font-medium">{h.amount}</td>
-                    <td className="px-5 py-3">
-                      <span className="bg-emerald-500/20 text-emerald-400 text-xs px-2 py-0.5 rounded-full">{h.status}</span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-
-      {/* ── Credits & Usage ── */}
-      <div>
-        <h2 className="text-white font-semibold text-lg mb-4">Credits &amp; Usage</h2>
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-
-          {/* Balance */}
-          <div className="bg-gray-900 border border-gray-800 rounded-2xl p-5">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-white font-medium">AI Credit Balance</h3>
-              <button className="bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1.5 rounded-lg text-xs font-medium transition-colors">
-                Buy More Credits
-              </button>
-            </div>
-            <div className="flex items-end gap-2 mb-2">
-              <span className="text-4xl font-bold text-white">{creditsRemaining.toLocaleString()}</span>
-              <span className="text-gray-400 text-sm pb-1">credits remaining</span>
-            </div>
-            <div className="h-3 bg-gray-800 rounded-full overflow-hidden mb-2">
-              <div
-                className="h-full bg-gradient-to-r from-indigo-500 to-purple-500 rounded-full"
-                style={{ width: `${(creditsRemaining / totalCredits) * 100}%` }}
-              />
-            </div>
-            <div className="flex justify-between text-xs text-gray-500">
-              <span>{totalCreditsUsed.toLocaleString()} used this month</span>
-              <span>{totalCredits.toLocaleString()} total</span>
-            </div>
-          </div>
-
-          {/* Breakdown */}
-          <div className="bg-gray-900 border border-gray-800 rounded-2xl p-5">
-            <h3 className="text-white font-medium mb-4">Usage by Feature</h3>
-            <div className="space-y-3">
-              {CREDIT_USAGE.map(item => (
-                <div key={item.type}>
-                  <div className="flex justify-between text-xs mb-1">
-                    <span className="text-gray-400">{item.type}</span>
-                    <span className="text-gray-300 font-medium">{item.credits.toLocaleString()}</span>
-                  </div>
-                  <div className="h-1.5 bg-gray-800 rounded-full overflow-hidden">
-                    <div
-                      className={`h-full ${item.color} rounded-full`}
-                      style={{ width: `${(item.credits / totalCreditsUsed) * 100}%` }}
-                    />
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
         </div>
       </div>
 

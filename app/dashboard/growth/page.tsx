@@ -272,6 +272,15 @@ export default function GrowthPage() {
         ))}
       </div>
 
+      {/* Early-stage banner: growth metrics need 30 days of data to be meaningful */}
+      <div className="mb-6 bg-indigo-950/30 border border-indigo-900/60 rounded-xl px-4 py-3 flex items-start gap-3">
+        <span className="text-xl">📈</span>
+        <div className="flex-1">
+          <p className="text-white text-sm font-medium">Not enough data yet</p>
+          <p className="text-gray-400 text-xs mt-0.5">Growth metrics, cohort retention, and experiments will populate after about 30 days of active customer activity. The figures below are illustrative sample data.</p>
+        </div>
+      </div>
+
       {/* ── TAB 1: Growth Dashboard ─────────────────────────────────────── */}
       {activeTab === 'dashboard' && (
         <div className="space-y-6">

@@ -183,8 +183,21 @@ export default function CalendarPage() {
     []
   )
 
+  // Empty-state guidance: when the user has no real events yet (no future events at all),
+  // show a CTA instead of pretending the calendar is populated.
+  const hasAnyEvents = MOCK_EVENTS.length > 0
+
   return (
     <div className="flex flex-col min-h-screen bg-gray-950">
+      {!hasAnyEvents && (
+        <div className="border-b border-gray-800 bg-indigo-950/30 px-6 py-4 flex items-start gap-3">
+          <span className="text-2xl">📅</span>
+          <div className="flex-1">
+            <p className="text-white text-sm font-medium">Your marketing calendar is empty.</p>
+            <p className="text-gray-400 text-xs mt-0.5">Schedule content from the Publishing Hub or click any day to add an event manually.</p>
+          </div>
+        </div>
+      )}
       {/* ── Header ── */}
       <div className="border-b border-gray-800 px-6 py-4">
         <div className="flex items-center justify-between">

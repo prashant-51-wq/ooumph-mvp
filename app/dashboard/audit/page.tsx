@@ -609,13 +609,13 @@ export default function AuditPage() {
       {/* ── TAB 4: System Health ────────────────────────────────────────── */}
       {activeTab === 'health' && (
         <div className="space-y-6">
-          {/* Uptime banner */}
-          <div className="bg-green-900/20 border border-green-800/40 rounded-xl p-4 flex items-center justify-between">
+          {/* Uptime banner — neutral state until real monitoring is wired */}
+          <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <span className="text-2xl">✅</span>
+              <span className="text-2xl">📡</span>
               <div>
-                <p className="text-white font-semibold">All Systems Operational</p>
-                <p className="text-green-300 text-sm mt-0.5">99.94% uptime last 30 days</p>
+                <p className="text-white font-semibold">Service Status</p>
+                <p className="text-gray-400 text-sm mt-0.5">Run a health check to see real-time status of connected services.</p>
               </div>
             </div>
             <button onClick={runHealthCheck} disabled={runningCheck}

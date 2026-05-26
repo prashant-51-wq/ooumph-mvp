@@ -218,6 +218,15 @@ export default function EmailMarketingPage() {
         ))}
       </div>
 
+      {/* ── Empty-state banner ── */}
+      <div className="mb-6 bg-indigo-950/30 border border-indigo-900/60 rounded-xl px-4 py-3 flex items-start gap-3">
+        <span className="text-xl">📧</span>
+        <div className="flex-1">
+          <p className="text-white text-sm font-medium">Connect your email provider to see real data here.</p>
+          <p className="text-gray-400 text-xs mt-0.5">Add your Klaviyo or ActiveCampaign API key in <button onClick={() => setShowSettings(true)} className="text-indigo-400 hover:underline">Provider Settings</button> to start syncing subscribers, campaigns, and analytics. The values below are sample placeholders.</p>
+        </div>
+      </div>
+
       {/* ══════════════════════════════════════════════════════════
           TAB: DASHBOARD
       ══════════════════════════════════════════════════════════ */}

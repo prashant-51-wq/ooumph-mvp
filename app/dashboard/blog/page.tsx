@@ -280,6 +280,19 @@ export default function BlogStudioPage() {
               + Generate New Post
             </button>
           </div>
+          {MOCK_POSTS.length === 0 ? (
+            <div className="bg-gray-900 border border-gray-800 rounded-2xl p-12 text-center">
+              <div className="text-5xl mb-3">📝</div>
+              <h3 className="text-white font-semibold text-base mb-1">No blog posts yet</h3>
+              <p className="text-gray-500 text-sm mb-5 max-w-md mx-auto">Create your first blog post with AI, or connect a destination like WordPress or Ghost to start publishing.</p>
+              <button
+                onClick={() => setActiveTab('composer')}
+                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium rounded-lg"
+              >
+                + Create your first post
+              </button>
+            </div>
+          ) : (
           <div className="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden">
             <table className="w-full text-sm">
               <thead>
@@ -342,6 +355,7 @@ export default function BlogStudioPage() {
               </tbody>
             </table>
           </div>
+          )}
         </div>
       )}
 

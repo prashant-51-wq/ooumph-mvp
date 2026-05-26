@@ -361,7 +361,25 @@ export default function PublishingHubPage() {
                 </div>
               ))}
               {filteredQueue.length === 0 && (
-                <div className="text-center py-12 text-gray-600 text-sm">No posts match this filter</div>
+                <div className="text-center py-16 bg-gray-900 border border-gray-800 rounded-2xl">
+                  <div className="text-5xl mb-3">📅</div>
+                  <h3 className="text-white font-semibold text-base mb-1">
+                    {queueFilter === 'All' ? 'No scheduled posts' : `No ${queueFilter.toLowerCase()} posts`}
+                  </h3>
+                  <p className="text-gray-500 text-sm mb-4 max-w-md mx-auto">
+                    {queueFilter === 'All'
+                      ? 'Your publishing queue is empty. Compose your first post and schedule it across all your connected channels.'
+                      : 'No posts match this filter. Try a different status above.'}
+                  </p>
+                  {queueFilter === 'All' && (
+                    <button
+                      onClick={() => setMainTab('composer')}
+                      className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium rounded-lg"
+                    >
+                      Compose your first post →
+                    </button>
+                  )}
+                </div>
               )}
             </div>
           </div>
