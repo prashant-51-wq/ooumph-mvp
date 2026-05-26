@@ -1,567 +1,787 @@
 'use client'
 
-/**
- * /dashboard/workflows — Workflow Engine
- * Create, manage, and monitor persistent automations.
- * AI agent designs workflows from natural language.
- */
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useRef } from 'react'
 
 // ── Types ──────────────────────────────────────────────────────────────────────
+type NodeType = 'trigger' | 'email' | 'sms' | 'wait' | 'condition' | 'tag' | 'update_contact' | 'ai_action' | 'notification'
+type WorkflowStatus = 'Active' | 'Paused' | 'Draft'
+type SidebarTab = 'workflows' | 'templates'
+
 interface WorkflowNode {
   id: string
-  type: string
-  subject?: string
-  body?: string
-  status?: string
-  scoreChange?: number
-  scoreSet?: number
-  note?: string
-  activityTitle?: string
-  delay_minutes?: number
-  tag?: string
+  type: NodeType
+  label: string
+  config: Record<string, string>
+  branches?: { a: WorkflowNode[]; b: WorkflowNode[] }
 }
 
-interface Workflow {
+interface WorkflowDef {
   id: string
   name: string
-  description: string | null
-  trigger_type: string
-  trigger_config: string | Record<string, unknown>
-  nodes: string | WorkflowNode[]
-  status: 'draft' | 'active' | 'paused'
-  run_count: number
-  last_run_at: string | null
-  total_runs: number
-  successful_runs: number
-  created_at: string
+  triggerIcon: string
+  status: WorkflowStatus
+  enrolled: number
+  lastRun: string
+  nodes: WorkflowNode[]
+  stats: { enrolled: number; completed: number; convRate: number; emailsSent: number; avgTime: string }
 }
 
-interface Suggestion {
+interface Template {
+  id: string
   name: string
+  stepCount: number
+  category: string
   description: string
-  trigger: string
-  priority: string
-  reasoning: string
+  nodes: WorkflowNode[]
 }
 
-// ── Helpers ────────────────────────────────────────────────────────────────────
-function parseNodes(raw: string | WorkflowNode[]): WorkflowNode[] {
-  if (Array.isArray(raw)) return raw
-  try { return JSON.parse(raw) as WorkflowNode[] } catch { return [] }
+// ── Mock node data ─────────────────────────────────────────────────────────────
+const NODE_META: Record<NodeType, { label: string; icon: string; color: string; headerBg: string; border: string }> = {
+  trigger:        { label:'Trigger',         icon:'🟢', color:'text-emerald-300', headerBg:'bg-emerald-950/70', border:'border-emerald-800' },
+  email:          { label:'Send Email',      icon:'📧', color:'text-blue-300',    headerBg:'bg-blue-950/70',    border:'border-blue-800' },
+  sms:            { label:'Send SMS',        icon:'📱', color:'text-blue-300',    headerBg:'bg-blue-950/70',    border:'border-blue-800' },
+  wait:           { label:'Wait',            icon:'⏱',  color:'text-yellow-300',  headerBg:'bg-yellow-950/70',  border:'border-yellow-800' },
+  condition:      { label:'Branch / If',     icon:'🔀', color:'text-purple-300',  headerBg:'bg-purple-950/70',  border:'border-purple-800' },
+  tag:            { label:'Tag Contact',     icon:'🏷',  color:'text-gray-300',    headerBg:'bg-gray-800/70',    border:'border-gray-700' },
+  update_contact: { label:'Update Contact',  icon:'📊', color:'text-gray-300',    headerBg:'bg-gray-800/70',    border:'border-gray-700' },
+  ai_action:      { label:'AI Action',       icon:'🤖', color:'text-indigo-300',  headerBg:'bg-indigo-950/70',  border:'border-indigo-800' },
+  notification:   { label:'Notify Team',     icon:'🔔', color:'text-orange-300',  headerBg:'bg-orange-950/70',  border:'border-orange-800' },
 }
 
-function parseTriggerConfig(raw: string | Record<string, unknown>): Record<string, unknown> {
-  if (typeof raw === 'object') return raw
-  try { return JSON.parse(raw) as Record<string, unknown> } catch { return {} }
+const STATUS_STYLES: Record<WorkflowStatus, string> = {
+  Active: 'bg-emerald-900/50 text-emerald-300 border-emerald-700',
+  Paused: 'bg-yellow-900/50 text-yellow-300 border-yellow-700',
+  Draft:  'bg-gray-800/60 text-gray-400 border-gray-700',
 }
 
-const TRIGGER_LABELS: Record<string, string> = {
-  lead_captured: '🌱 Lead Captured',
-  email_received: '📥 Email Received',
-  meeting_booked: '📅 Meeting Booked',
-  meeting_noshow: '👻 No-show',
-  meeting_completed: '✅ Meeting Completed',
-  score_threshold: '📊 Score Threshold',
-  status_changed: '🔄 Status Changed',
-  manual: '▶️ Manual',
+// ── Shared helpers ─────────────────────────────────────────────────────────────
+function nid(): string { return `n${Date.now()}${Math.random().toString(36).slice(2,6)}` }
+
+function makeNode(type: NodeType, config: Record<string,string> = {}): WorkflowNode {
+  const defaults: Record<NodeType, Record<string,string>> = {
+    trigger:        { event:'Contact Added' },
+    email:          { subject:'Welcome to Ooumph!', from:'team@ooumph.io', template:'Welcome Email' },
+    sms:            { message:'Hey {{first_name}}, thanks for joining! Reply STOP to opt out.' },
+    wait:           { duration:'3', unit:'days', condition:'Continue after wait' },
+    condition:      { field:'email_opened', operator:'=', value:'true', branch_a:'Yes', branch_b:'No' },
+    tag:            { action:'Add', tag:'Onboarded' },
+    update_contact: { field:'stage', value:'Customer' },
+    ai_action:      { action:'Generate personalized email', prompt:'Write a follow-up based on last activity', output_field:'ai_email_body' },
+    notification:   { message:'New hot lead: {{contact_name}}', channel:'Slack #sales' },
+  }
+  return { id: nid(), type, label: NODE_META[type].label, config: { ...defaults[type], ...config } }
 }
 
-const NODE_LABELS: Record<string, string> = {
-  send_email: '📤 Send Email',
-  update_status: '🔄 Update Status',
-  update_score: '📊 Update Score',
-  add_note: '📝 Add Note',
-  log_activity: '📋 Log Activity',
-  wait: '⏳ Wait',
-  condition: '⚡ Condition',
-  send_booking_link: '📅 Send Booking Link',
-  ai_reply: '🤖 AI Reply',
-}
+// ── Mock workflows ─────────────────────────────────────────────────────────────
+const INITIAL_WORKFLOWS: WorkflowDef[] = [
+  {
+    id:'wf1', name:'Lead Nurture — 7-Step', triggerIcon:'🌱', status:'Active', enrolled:247, lastRun:'2m ago',
+    stats:{ enrolled:247, completed:89, convRate:36, emailsSent:1438, avgTime:'8 days' },
+    nodes:[
+      makeNode('trigger', { event:'Lead Captured' }),
+      makeNode('email', { subject:'Welcome! Here\'s what Ooumph can do for you', template:'Welcome Email' }),
+      makeNode('wait', { duration:'1', unit:'days' }),
+      makeNode('condition', { field:'email_opened', operator:'=', value:'true', branch_a:'Opened', branch_b:'Not Opened' }),
+      makeNode('email', { subject:'Quick follow-up — did you get my last email?', template:'Follow-up Email' }),
+      makeNode('wait', { duration:'3', unit:'days' }),
+      makeNode('ai_action', { action:'Generate personalized email', prompt:'Personalize based on signup source and behavior' }),
+    ],
+  },
+  {
+    id:'wf2', name:'New Customer Onboarding', triggerIcon:'🎉', status:'Active', enrolled:58, lastRun:'15m ago',
+    stats:{ enrolled:58, completed:41, convRate:71, emailsSent:312, avgTime:'14 days' },
+    nodes:[
+      makeNode('trigger', { event:'Deal Closed Won' }),
+      makeNode('tag', { action:'Add', tag:'Customer' }),
+      makeNode('update_contact', { field:'stage', value:'Customer' }),
+      makeNode('email', { subject:'🎉 Welcome aboard! Your account is ready', template:'Onboarding Welcome' }),
+      makeNode('notification', { message:'New customer: {{contact_name}} ({{deal_value}})', channel:'Slack #sales' }),
+      makeNode('wait', { duration:'3', unit:'days' }),
+      makeNode('email', { subject:'Getting started — 3 things to do first', template:'Day 3 Onboarding' }),
+      makeNode('wait', { duration:'7', unit:'days' }),
+      makeNode('ai_action', { action:'Score contact with AI', prompt:'Analyze onboarding engagement and risk' }),
+    ],
+  },
+  {
+    id:'wf3', name:'Win-back Campaign', triggerIcon:'🔄', status:'Paused', enrolled:31, lastRun:'2 days ago',
+    stats:{ enrolled:31, completed:6, convRate:19, emailsSent:87, avgTime:'21 days' },
+    nodes:[
+      makeNode('trigger', { event:'Tag Added: At Risk' }),
+      makeNode('wait', { duration:'1', unit:'days' }),
+      makeNode('email', { subject:'We miss you — here\'s 20% off', template:'Win-back Offer' }),
+      makeNode('wait', { duration:'5', unit:'days' }),
+      makeNode('condition', { field:'email_clicked', operator:'=', value:'true', branch_a:'Clicked', branch_b:'Ignored' }),
+      makeNode('ai_action', { action:'Generate personalized email', prompt:'Last-chance personalized win-back message' }),
+    ],
+  },
+  {
+    id:'wf4', name:'Appointment Reminder', triggerIcon:'📅', status:'Draft', enrolled:0, lastRun:'Never',
+    stats:{ enrolled:0, completed:0, convRate:0, emailsSent:0, avgTime:'—' },
+    nodes:[
+      makeNode('trigger', { event:'Meeting Booked' }),
+      makeNode('email', { subject:'Reminder: Your call is in 24 hours', template:'Reminder Email' }),
+      makeNode('wait', { duration:'23', unit:'hours' }),
+      makeNode('sms', { message:'Reminder: Your call with {{rep_name}} is in 1 hour. Join: {{meeting_link}}' }),
+    ],
+  },
+]
 
-function nodeLabel(node: WorkflowNode): string {
-  const base = NODE_LABELS[node.type] || node.type
-  if (node.type === 'wait') return `⏳ Wait ${node.delay_minutes ? Math.round(node.delay_minutes / 60) < 24 ? `${node.delay_minutes}m` : `${Math.round(node.delay_minutes / 1440)}d` : ''}`
-  if (node.type === 'send_email') return `📤 ${node.subject?.slice(0, 30) || 'Email'}...`
-  if (node.type === 'update_status') return `🔄 → ${node.status}`
-  if (node.type === 'update_score') return `📊 Score ${node.scoreChange && node.scoreChange > 0 ? '+' : ''}${node.scoreChange || ''}${node.scoreSet !== undefined ? `= ${node.scoreSet}` : ''}`
-  return base
-}
+const TEMPLATES: Template[] = [
+  { id:'t1', name:'Lead Nurture (7-step email)', stepCount:7, category:'Nurture', description:'Automated 7-email sequence for new leads over 21 days', nodes:[makeNode('trigger',{event:'Lead Captured'}),makeNode('email'),makeNode('wait',{duration:'1',unit:'days'}),makeNode('condition'),makeNode('email'),makeNode('wait',{duration:'3',unit:'days'}),makeNode('email')] },
+  { id:'t2', name:'New Customer Onboarding', stepCount:8, category:'Onboarding', description:'Welcome sequence with milestones for new paying customers', nodes:[makeNode('trigger',{event:'Deal Closed'}),makeNode('tag',{action:'Add',tag:'Customer'}),makeNode('email'),makeNode('wait',{duration:'3',unit:'days'}),makeNode('email'),makeNode('wait',{duration:'7',unit:'days'}),makeNode('email'),makeNode('notification')] },
+  { id:'t3', name:'Win-back Campaign', stepCount:5, category:'Re-engagement', description:'Re-engage churned or at-risk contacts with offers', nodes:[makeNode('trigger',{event:'Tag: At Risk'}),makeNode('wait',{duration:'1',unit:'days'}),makeNode('email'),makeNode('wait',{duration:'5',unit:'days'}),makeNode('condition')] },
+  { id:'t4', name:'Appointment Reminder', stepCount:3, category:'Operational', description:'Email + SMS reminders before scheduled meetings', nodes:[makeNode('trigger',{event:'Meeting Booked'}),makeNode('email'),makeNode('sms')] },
+  { id:'t5', name:'Review Request', stepCount:4, category:'Post-sale', description:'Ask happy customers for reviews and testimonials', nodes:[makeNode('trigger',{event:'Deal Closed'}),makeNode('wait',{duration:'7',unit:'days'}),makeNode('email'),makeNode('notification')] },
+  { id:'t6', name:'Birthday Message', stepCount:2, category:'Engagement', description:'Automated birthday email with a personal touch', nodes:[makeNode('trigger',{event:'Birthday Date'}),makeNode('ai_action',{action:'Generate personalized email',prompt:'Write a warm birthday message'})] },
+  { id:'t7', name:'Event Follow-up', stepCount:5, category:'Events', description:'Post-event nurture sequence to convert attendees', nodes:[makeNode('trigger',{event:'Event Attended'}),makeNode('email'),makeNode('wait',{duration:'1',unit:'days'}),makeNode('email'),makeNode('tag',{action:'Add',tag:'Event Attendee'})] },
+]
 
-function statusColor(s: string) {
-  if (s === 'active') return { bg: '#1e3a2f', color: '#6ee7b7', dot: '#10b981' }
-  if (s === 'paused') return { bg: '#2d2000', color: '#fbbf24', dot: '#f59e0b' }
-  return { bg: '#1f2937', color: '#6b7280', dot: '#4b5563' }
-}
+const AI_SUGGESTIONS = [
+  { text:'Add a 3-day follow-up email after the welcome email', action:'Add Email + Wait node', nodeType:'email' as NodeType },
+  { text:'Consider adding a branch: If email not opened after 2 days → send SMS instead', action:'Add Condition + SMS', nodeType:'condition' as NodeType },
+  { text:'Score contacts with AI after they complete the sequence', action:'Add AI Action node', nodeType:'ai_action' as NodeType },
+  { text:'Tag contacts who clicked the CTA for targeted follow-up', action:'Add Tag node', nodeType:'tag' as NodeType },
+]
 
-function priorityColor(p: string) {
-  if (p === 'high') return '#ef4444'
-  if (p === 'medium') return '#f59e0b'
-  return '#6b7280'
-}
+const NODE_TYPES_PICKER: { type: NodeType; label: string; icon: string }[] = [
+  { type:'email', label:'Send Email', icon:'📧' },
+  { type:'sms', label:'Send SMS', icon:'📱' },
+  { type:'wait', label:'Wait / Delay', icon:'⏱' },
+  { type:'condition', label:'Branch / If', icon:'🔀' },
+  { type:'tag', label:'Tag Contact', icon:'🏷' },
+  { type:'update_contact', label:'Update Contact', icon:'📊' },
+  { type:'ai_action', label:'AI Action', icon:'🤖' },
+  { type:'notification', label:'Notify Team', icon:'🔔' },
+]
 
-function timeAgo(ts: string | null): string {
-  if (!ts) return 'never'
-  const diff = Date.now() - new Date(ts).getTime()
-  const days = Math.floor(diff / 86400000)
-  if (days < 1) return 'today'
-  if (days === 1) return 'yesterday'
-  return `${days}d ago`
-}
-
-// ── Main page ──────────────────────────────────────────────────────────────────
-export default function WorkflowsPage() {
-  const [workspaceId, setWorkspaceId] = useState('')
-  const [workflows, setWorkflows] = useState<Workflow[]>([])
-  const [loading, setLoading] = useState(true)
-  const [expanded, setExpanded] = useState<string | null>(null)
-  const [showCreate, setShowCreate] = useState(false)
-  const [suggestions, setSuggestions] = useState<Suggestion[]>([])
-  const [suggestionsLoading, setSuggestionsLoading] = useState(false)
-
-  // AI design state
-  const [aiPrompt, setAiPrompt] = useState('')
-  const [aiDesigning, setAiDesigning] = useState(false)
-  const [aiDraft, setAiDraft] = useState<{ name: string; description: string; trigger_type: string; trigger_config: Record<string, unknown>; nodes: WorkflowNode[]; explanation: string } | null>(null)
-
-  // Manual create state
-  const [createMode, setCreateMode] = useState<'ai' | 'manual'>('ai')
-  const [manualForm, setManualForm] = useState({ name: '', description: '', triggerType: 'lead_captured', status: 'draft' })
-
-  // Analysis state
-  const [analysisWfId, setAnalysisWfId] = useState<string | null>(null)
-  const [analysisResult, setAnalysisResult] = useState<{ health?: string; summary?: string; issues?: string[]; improvements?: string[] } | null>(null)
-  const [analysisLoading, setAnalysisLoading] = useState(false)
-
-  // Manual trigger state
-  const [triggerWfId, setTriggerWfId] = useState<string | null>(null)
-  const [triggerEmail, setTriggerEmail] = useState('')
-  const [triggering, setTriggering] = useState(false)
-  const [triggerResult, setTriggerResult] = useState<string | null>(null)
-
-  useEffect(() => {
-    const raw = localStorage.getItem('ooumph_workspace')
-    const ws = raw ? (JSON.parse(raw) as { id?: string }) : null
-    const id = ws?.id || localStorage.getItem('workspaceId') || ''
-    setWorkspaceId(id)
-  }, [])
-
-  const load = useCallback(async () => {
-    if (!workspaceId) return
-    setLoading(true)
-    const res = await fetch(`/api/workflows?workspaceId=${workspaceId}`)
-    if (res.ok) setWorkflows(await res.json() as Workflow[])
-    setLoading(false)
-  }, [workspaceId])
-
-  useEffect(() => { void load() }, [load])
-
-  async function getSuggestions() {
-    if (!workspaceId) return
-    setSuggestionsLoading(true)
-    const res = await fetch('/api/agents/workflow', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workspaceId, mode: 'suggest' }),
-    })
-    const data = await res.json() as { suggestions?: Suggestion[] }
-    setSuggestions(data.suggestions || [])
-    setSuggestionsLoading(false)
-  }
-
-  async function designWithAI() {
-    if (!aiPrompt.trim() || !workspaceId) return
-    setAiDesigning(true)
-    setAiDraft(null)
-    const res = await fetch('/api/agents/workflow', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workspaceId, mode: 'design', description: aiPrompt }),
-    })
-    const data = await res.json() as { workflow?: typeof aiDraft }
-    setAiDraft(data.workflow || null)
-    setAiDesigning(false)
-  }
-
-  async function saveAIDraft() {
-    if (!aiDraft || !workspaceId) return
-    await fetch('/api/workflows', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        workspaceId,
-        name: aiDraft.name,
-        description: aiDraft.description,
-        triggerType: aiDraft.trigger_type,
-        triggerConfig: aiDraft.trigger_config,
-        nodes: aiDraft.nodes,
-        status: 'draft',
-      }),
-    })
-    setShowCreate(false)
-    setAiDraft(null)
-    setAiPrompt('')
-    void load()
-  }
-
-  async function saveManual() {
-    if (!workspaceId || !manualForm.name) return
-    await fetch('/api/workflows', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workspaceId, ...manualForm, triggerType: manualForm.triggerType }),
-    })
-    setShowCreate(false)
-    setManualForm({ name: '', description: '', triggerType: 'lead_captured', status: 'draft' })
-    void load()
-  }
-
-  async function toggleStatus(wf: Workflow) {
-    const next = wf.status === 'active' ? 'paused' : 'active'
-    await fetch('/api/workflows', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: wf.id, status: next }),
-    })
-    void load()
-  }
-
-  async function deleteWorkflow(id: string) {
-    await fetch(`/api/workflows?id=${id}`, { method: 'DELETE' })
-    void load()
-  }
-
-  async function analyzeWorkflow(id: string) {
-    setAnalysisWfId(id)
-    setAnalysisResult(null)
-    setAnalysisLoading(true)
-    const res = await fetch('/api/agents/workflow', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workspaceId, mode: 'analyze', workflowId: id }),
-    })
-    const data = await res.json() as { analysis?: typeof analysisResult }
-    setAnalysisResult(data.analysis || null)
-    setAnalysisLoading(false)
-  }
-
-  async function runManually(wf: Workflow) {
-    setTriggerWfId(wf.id)
-    setTriggerResult(null)
-    setTriggering(true)
-    const email = triggerEmail.trim()
-    let leadId: string | null = null
-    if (email && workspaceId) {
-      const lr = await fetch(`/api/leads-captured?workspaceId=${workspaceId}`)
-      const leads = await lr.json() as Array<{ id: string; email: string }>
-      const match = leads.find(l => l.email === email)
-      if (match) leadId = match.id
-    }
-    await fetch('/api/workflows/trigger', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workspaceId, triggerType: wf.trigger_type === 'manual' ? wf.trigger_type : wf.trigger_type, leadId: leadId || undefined, contactEmail: email || undefined }),
-    })
-    setTriggerResult('✅ Workflow triggered')
-    setTriggering(false)
-    setTimeout(() => { setTriggerWfId(null); setTriggerResult(null) }, 3000)
-    void load()
-  }
-
-  async function activateSuggestion(s: Suggestion) {
-    setAiPrompt(s.description)
-    setCreateMode('ai')
-    setShowCreate(true)
-  }
-
-  const s = {
-    page: { padding: '24px', maxWidth: '1100px', margin: '0 auto', fontFamily: 'system-ui, sans-serif' } as React.CSSProperties,
-    title: { fontSize: '22px', fontWeight: 700, color: '#e5e7eb', marginBottom: '4px' },
-    sub: { fontSize: '13px', color: '#6b7280', marginBottom: '24px' },
-    row: { display: 'flex', gap: '12px', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap' as const },
-    btn: (v: 'primary' | 'ghost' | 'danger' | 'green' | 'yellow') => ({
-      padding: '8px 16px', borderRadius: '8px', border: 'none', cursor: 'pointer', fontSize: '13px', fontWeight: 600,
-      background: v === 'primary' ? '#4f46e5' : v === 'green' ? '#065f46' : v === 'danger' ? '#7f1d1d' : v === 'yellow' ? '#451a03' : '#1f2937',
-      color: v === 'primary' ? '#fff' : v === 'green' ? '#6ee7b7' : v === 'danger' ? '#fca5a5' : v === 'yellow' ? '#fbbf24' : '#9ca3af',
-    }),
-    card: { background: '#111827', border: '1px solid #1f2937', borderRadius: '14px', marginBottom: '12px', overflow: 'hidden' } as React.CSSProperties,
-    cardHeader: { padding: '16px 18px', display: 'flex', alignItems: 'center', gap: '12px', cursor: 'pointer' } as React.CSSProperties,
-    nodeChip: { display: 'inline-flex', alignItems: 'center', padding: '3px 8px', borderRadius: '6px', background: '#1f2937', color: '#9ca3af', fontSize: '11px', marginRight: '6px', marginBottom: '4px' } as React.CSSProperties,
-    input: { width: '100%', padding: '9px 12px', background: '#1f2937', border: '1px solid #374151', borderRadius: '8px', color: '#e5e7eb', fontSize: '13px', outline: 'none', boxSizing: 'border-box' as const },
-    textarea: { width: '100%', padding: '9px 12px', background: '#1f2937', border: '1px solid #374151', borderRadius: '8px', color: '#e5e7eb', fontSize: '13px', outline: 'none', boxSizing: 'border-box' as const, resize: 'vertical' as const, fontFamily: 'inherit', minHeight: '80px' },
-    label: { fontSize: '11px', fontWeight: 600, color: '#4b5563', textTransform: 'uppercase' as const, letterSpacing: '0.06em', marginBottom: '6px', display: 'block' },
-    modal: { position: 'fixed' as const, inset: 0, background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50, padding: '24px' },
-    modalBox: { background: '#111827', border: '1px solid #1f2937', borderRadius: '16px', padding: '28px', maxWidth: '640px', width: '100%', maxHeight: '90vh', overflowY: 'auto' as const },
-  }
-
-  const activeCount = workflows.filter(w => w.status === 'active').length
+// ── Node Block Component ───────────────────────────────────────────────────────
+function NodeBlock({
+  node, isFirst, onEdit, onDelete, onAddBelow, isSelected,
+}: {
+  node: WorkflowNode
+  isFirst: boolean
+  onEdit: (n: WorkflowNode) => void
+  onDelete: (id: string) => void
+  onAddBelow: (id: string) => void
+  isSelected: boolean
+}) {
+  const meta = NODE_META[node.type]
+  const configPreview = Object.entries(node.config).slice(0, 2).map(([k, v]) => v).filter(Boolean).join(' · ')
 
   return (
-    <div style={s.page}>
-      {/* Header */}
-      <div style={s.title}>⚡ Workflow Engine</div>
-      <div style={s.sub}>Persistent automations that fire when events happen — no manual intervention needed</div>
-
-      {/* Stats + actions */}
-      <div style={{ display: 'flex', gap: '12px', marginBottom: '20px', flexWrap: 'wrap' }}>
-        <div style={{ background: '#111827', border: '1px solid #1f2937', borderRadius: '10px', padding: '12px 18px', display: 'flex', gap: '20px' }}>
-          {[
-            { label: 'Total', value: workflows.length },
-            { label: 'Active', value: activeCount, color: '#10b981' },
-            { label: 'Total Runs', value: workflows.reduce((s, w) => s + (Number(w.total_runs) || 0), 0) },
-          ].map(stat => (
-            <div key={stat.label}>
-              <div style={{ fontSize: '10px', color: '#4b5563', fontWeight: 600 }}>{stat.label}</div>
-              <div style={{ fontSize: '20px', fontWeight: 700, color: stat.color || '#e5e7eb' }}>{stat.value}</div>
-            </div>
-          ))}
+    <div className="flex flex-col items-center">
+      {/* Connector line from above */}
+      {!isFirst && (
+        <div className="flex flex-col items-center">
+          <div className="w-0.5 h-5 bg-gray-700" />
+          <div className="w-0 h-0 border-l-4 border-r-4 border-t-4 border-transparent border-t-gray-600" />
         </div>
-        <button style={s.btn('primary')} onClick={() => setShowCreate(true)}>+ New Workflow</button>
-        <button style={s.btn('ghost')} onClick={() => void getSuggestions()} disabled={suggestionsLoading}>
-          {suggestionsLoading ? '⏳' : '💡 AI Suggestions'}
-        </button>
+      )}
+
+      {/* Node card */}
+      <div
+        className={`w-72 rounded-xl border transition-all cursor-pointer group ${meta.border} ${isSelected ? 'ring-2 ring-indigo-500 ring-offset-1 ring-offset-gray-950' : 'hover:border-gray-600'}`}
+        onClick={() => onEdit(node)}
+      >
+        {/* Header */}
+        <div className={`${meta.headerBg} px-3 py-2 rounded-t-xl flex items-center justify-between border-b ${meta.border}`}>
+          <div className="flex items-center gap-2">
+            <span className="text-sm">{meta.icon}</span>
+            <span className={`text-xs font-semibold ${meta.color}`}>{meta.label}</span>
+          </div>
+          <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity" onClick={e => e.stopPropagation()}>
+            <button onClick={() => onEdit(node)} className="p-1 rounded hover:bg-gray-700 text-gray-500 hover:text-white text-xs" title="Edit">✏</button>
+            <button onClick={() => onDelete(node.id)} className="p-1 rounded hover:bg-red-900/40 text-gray-600 hover:text-red-400 text-xs" title="Delete">🗑</button>
+          </div>
+        </div>
+
+        {/* Body */}
+        <div className="bg-gray-900 rounded-b-xl px-3 py-2.5">
+          <p className="text-gray-300 text-xs leading-relaxed">{configPreview || 'Click to configure...'}</p>
+          {node.type === 'condition' && (
+            <div className="flex gap-2 mt-2">
+              <span className="flex-1 px-2 py-1 bg-emerald-950/40 border border-emerald-800/40 rounded text-xs text-emerald-400 text-center">
+                A: {node.config.branch_a || 'Yes'}
+              </span>
+              <span className="flex-1 px-2 py-1 bg-red-950/40 border border-red-800/40 rounded text-xs text-red-400 text-center">
+                B: {node.config.branch_b || 'No'}
+              </span>
+            </div>
+          )}
+        </div>
       </div>
 
-      {/* AI Suggestions */}
-      {suggestions.length > 0 && (
-        <div style={{ background: '#0f1117', border: '1px solid #1f2937', borderRadius: '12px', padding: '16px', marginBottom: '20px' }}>
-          <div style={{ fontSize: '11px', fontWeight: 700, color: '#4b5563', letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: '12px' }}>
-            🤖 AI-Suggested Workflows
-          </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '10px' }}>
-            {suggestions.map((s, i) => (
-              <div key={i} style={{ background: '#111827', border: '1px solid #1f2937', borderRadius: '10px', padding: '12px 14px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '6px' }}>
-                  <div style={{ fontSize: '13px', fontWeight: 600, color: '#e5e7eb' }}>{s.name}</div>
-                  <span style={{ fontSize: '9px', fontWeight: 700, color: priorityColor(s.priority), background: '#1f2937', padding: '2px 6px', borderRadius: '4px' }}>{s.priority.toUpperCase()}</span>
-                </div>
-                <div style={{ fontSize: '11px', color: '#6b7280', marginBottom: '8px', lineHeight: 1.5 }}>{s.description}</div>
-                <div style={{ fontSize: '10px', color: '#4b5563', marginBottom: '8px' }}>{TRIGGER_LABELS[s.trigger] || s.trigger}</div>
-                <button style={{ ...s, padding: '5px 10px', borderRadius: '6px', background: '#1e1b4b', color: '#818cf8', border: 'none', cursor: 'pointer', fontSize: '11px', fontWeight: 600 }}
-                  onClick={() => void activateSuggestion(s)}>
-                  Build This →
-                </button>
+      {/* Add below button */}
+      <div className="flex flex-col items-center mt-1" onClick={e => e.stopPropagation()}>
+        <div className="w-0.5 h-3 bg-gray-800" />
+        <button
+          onClick={() => onAddBelow(node.id)}
+          className="w-6 h-6 rounded-full border border-dashed border-gray-700 hover:border-indigo-500 bg-gray-900 hover:bg-indigo-950/40 text-gray-600 hover:text-indigo-400 flex items-center justify-center text-sm transition-all"
+          title="Add step below"
+        >
+          +
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// ── Node Type Picker Dropdown ──────────────────────────────────────────────────
+function NodeTypePicker({ onSelect, onClose }: { onSelect: (type: NodeType) => void; onClose: () => void }) {
+  return (
+    <div className="fixed inset-0 z-40 flex items-center justify-center" onClick={onClose}>
+      <div className="bg-gray-900 border border-gray-700 rounded-xl p-4 w-72 shadow-2xl" onClick={e => e.stopPropagation()}>
+        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Add Step</p>
+        <div className="grid grid-cols-2 gap-2">
+          {NODE_TYPES_PICKER.map(t => (
+            <button
+              key={t.type}
+              onClick={() => { onSelect(t.type); onClose() }}
+              className="flex items-center gap-2 px-3 py-2.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 hover:border-gray-600 rounded-lg text-sm text-gray-300 transition-colors text-left"
+            >
+              <span>{t.icon}</span>
+              <span className="text-xs">{t.label}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Node Config Panel ──────────────────────────────────────────────────────────
+function NodeConfigPanel({ node, onUpdate, onClose }: { node: WorkflowNode; onUpdate: (n: WorkflowNode) => void; onClose: () => void }) {
+  const [cfg, setCfg] = useState({ ...node.config })
+  const meta = NODE_META[node.type]
+
+  function save() { onUpdate({ ...node, config: cfg }); onClose() }
+
+  function field(key: string, label: string, type: 'text' | 'select' = 'text', options?: string[]) {
+    return (
+      <div key={key}>
+        <label className="text-xs text-gray-500 uppercase tracking-wide mb-1.5 block">{label}</label>
+        {type === 'select' && options ? (
+          <select value={cfg[key] || ''} onChange={e => setCfg(c => ({...c, [key]:e.target.value}))} className="w-full px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 text-white text-sm focus:outline-none focus:border-indigo-500">
+            {options.map(o => <option key={o} value={o}>{o}</option>)}
+          </select>
+        ) : (
+          <input value={cfg[key] || ''} onChange={e => setCfg(c => ({...c, [key]:e.target.value}))} className="w-full px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 text-white text-sm focus:outline-none focus:border-indigo-500 placeholder-gray-600" />
+        )}
+      </div>
+    )
+  }
+
+  return (
+    <div className="w-80 bg-gray-900 border-l border-gray-800 flex flex-col overflow-hidden flex-shrink-0">
+      <div className={`${meta.headerBg} border-b ${meta.border} px-4 py-3 flex items-center justify-between`}>
+        <div className="flex items-center gap-2">
+          <span>{meta.icon}</span>
+          <span className={`text-sm font-semibold ${meta.color}`}>{meta.label}</span>
+        </div>
+        <button onClick={onClose} className="text-gray-500 hover:text-white">✕</button>
+      </div>
+
+      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        {node.type === 'trigger' && (
+          <>
+            {field('event', 'Trigger Event', 'select', ['Contact Added','Form Submitted','Tag Added','Deal Stage Changed','Date','Email Opened','Email Clicked','Meeting Booked'])}
+          </>
+        )}
+        {node.type === 'email' && (
+          <>
+            {field('subject', 'Subject Line')}
+            {field('from', 'From Name')}
+            {field('template', 'Template', 'select', ['Welcome Email','Follow-up Email','Proposal Email','Onboarding Welcome','Day 3 Onboarding','Win-back Offer','Custom'])}
+          </>
+        )}
+        {node.type === 'sms' && (
+          <>
+            <div>
+              <label className="text-xs text-gray-500 uppercase tracking-wide mb-1.5 block">SMS Message</label>
+              <textarea value={cfg.message || ''} onChange={e => setCfg(c => ({...c, message:e.target.value}))} rows={4} className="w-full px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 text-white text-sm focus:outline-none focus:border-indigo-500 resize-none" placeholder="Use {{first_name}}, {{company}} etc." />
+              <p className="text-gray-600 text-xs mt-1">{(cfg.message || '').length}/160 chars</p>
+            </div>
+          </>
+        )}
+        {node.type === 'wait' && (
+          <>
+            <div>
+              <label className="text-xs text-gray-500 uppercase tracking-wide mb-1.5 block">Wait Duration</label>
+              <div className="flex gap-2">
+                <input type="number" value={cfg.duration || '1'} onChange={e => setCfg(c => ({...c, duration:e.target.value}))} className="w-20 px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 text-white text-sm focus:outline-none focus:border-indigo-500" />
+                <select value={cfg.unit || 'days'} onChange={e => setCfg(c => ({...c, unit:e.target.value}))} className="flex-1 px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 text-white text-sm focus:outline-none focus:border-indigo-500">
+                  {['minutes','hours','days','weeks'].map(u => <option key={u} value={u}>{u}</option>)}
+                </select>
               </div>
+            </div>
+            {field('condition', 'Wait Condition', 'select', ['Continue after wait','Wait until email opened','Wait until email clicked','Wait until reply received'])}
+          </>
+        )}
+        {node.type === 'condition' && (
+          <>
+            {field('field', 'Field', 'select', ['email_opened','email_clicked','score','stage','tag','last_activity_days'])}
+            {field('operator', 'Operator', 'select', ['=','!=','>=','<=','contains'])}
+            {field('value', 'Value')}
+            {field('branch_a', 'Branch A Label (True)')}
+            {field('branch_b', 'Branch B Label (False)')}
+          </>
+        )}
+        {node.type === 'tag' && (
+          <>
+            {field('action', 'Action', 'select', ['Add','Remove'])}
+            {field('tag', 'Tag Name')}
+          </>
+        )}
+        {node.type === 'update_contact' && (
+          <>
+            {field('field', 'Field to Update', 'select', ['stage','score','notes','company','phone'])}
+            {field('value', 'New Value')}
+          </>
+        )}
+        {node.type === 'ai_action' && (
+          <>
+            {field('action', 'AI Action', 'select', ['Generate personalized email','Score contact with AI','Suggest next action','Summarize contact history','Predict churn risk'])}
+            <div>
+              <label className="text-xs text-gray-500 uppercase tracking-wide mb-1.5 block">Prompt Template</label>
+              <textarea value={cfg.prompt || ''} onChange={e => setCfg(c => ({...c, prompt:e.target.value}))} rows={3} className="w-full px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 text-white text-sm focus:outline-none focus:border-indigo-500 resize-none" />
+            </div>
+            {field('output_field', 'Save Output To')}
+          </>
+        )}
+        {node.type === 'notification' && (
+          <>
+            {field('message', 'Notification Message')}
+            {field('channel', 'Channel', 'select', ['Slack #sales','Slack #marketing','Email: team','In-app notification'])}
+          </>
+        )}
+      </div>
+
+      <div className="border-t border-gray-800 p-4">
+        <button onClick={save} className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-medium transition-colors">
+          Save Node
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// ── AI Generate Workflow Modal ─────────────────────────────────────────────────
+function AIGenerateModal({ onClose, onGenerate }: { onClose: () => void; onGenerate: (name: string, nodes: WorkflowNode[]) => void }) {
+  const [prompt, setPrompt] = useState('')
+  const [generating, setGenerating] = useState(false)
+  const [result, setResult] = useState<{ name: string; nodes: WorkflowNode[] } | null>(null)
+
+  function generate() {
+    if (!prompt.trim()) return
+    setGenerating(true)
+    setTimeout(() => {
+      setResult({
+        name: 'AI-Generated: ' + prompt.slice(0, 40),
+        nodes: [
+          makeNode('trigger', { event:'Contact Added' }),
+          makeNode('email', { subject:`Welcome — ${prompt.slice(0,30)}...`, template:'Welcome Email' }),
+          makeNode('wait', { duration:'2', unit:'days' }),
+          makeNode('condition', { field:'email_opened', operator:'=', value:'true', branch_a:'Engaged', branch_b:'Re-engage' }),
+          makeNode('ai_action', { action:'Generate personalized email', prompt:`Generate follow-up for: ${prompt}` }),
+          makeNode('wait', { duration:'5', unit:'days' }),
+          makeNode('notification', { message:'Contact completed AI workflow', channel:'Slack #sales' }),
+        ],
+      })
+      setGenerating(false)
+    }, 2000)
+  }
+
+  return (
+    <div className="fixed inset-0 bg-gray-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-lg" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800">
+          <h2 className="text-white font-semibold">🤖 Generate Workflow with AI</h2>
+          <button onClick={onClose} className="text-gray-500 hover:text-white">✕</button>
+        </div>
+        <div className="p-6 space-y-4">
+          {!result ? (
+            <>
+              <div>
+                <label className="text-xs text-gray-500 uppercase tracking-wide mb-2 block">Describe your goal</label>
+                <textarea
+                  value={prompt}
+                  onChange={e => setPrompt(e.target.value)}
+                  rows={4}
+                  placeholder="e.g. Nurture new leads with a 5-email sequence over 2 weeks, branch based on email opens, and notify the sales team when someone clicks the CTA..."
+                  className="w-full px-3 py-2.5 rounded-lg bg-gray-800 border border-gray-700 text-white text-sm focus:outline-none focus:border-indigo-500 resize-none placeholder-gray-500"
+                />
+              </div>
+              {generating && (
+                <div className="flex items-center gap-3 p-3 bg-indigo-950/30 border border-indigo-800/40 rounded-lg">
+                  <div className="w-4 h-4 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin flex-shrink-0" />
+                  <p className="text-indigo-300 text-sm">AI is designing your workflow...</p>
+                </div>
+              )}
+              <button onClick={generate} disabled={!prompt.trim() || generating} className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white rounded-lg text-sm font-medium transition-colors">
+                {generating ? 'Generating...' : 'Generate Workflow'}
+              </button>
+            </>
+          ) : (
+            <>
+              <div className="bg-gray-800/50 rounded-xl p-4">
+                <h3 className="text-white font-semibold mb-3">{result.name}</h3>
+                <div className="space-y-1.5">
+                  {result.nodes.map((n, i) => {
+                    const m = NODE_META[n.type]
+                    return (
+                      <div key={i} className="flex items-center gap-2">
+                        <span className="text-xs">{m.icon}</span>
+                        <span className={`text-xs ${m.color}`}>{m.label}</span>
+                        <span className="text-gray-600 text-xs">—</span>
+                        <span className="text-gray-400 text-xs truncate">{Object.values(n.config)[0]}</span>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+              <div className="flex gap-3">
+                <button onClick={() => setResult(null)} className="flex-1 py-2.5 border border-gray-700 text-gray-400 rounded-lg text-sm hover:text-white">← Regenerate</button>
+                <button onClick={() => { onGenerate(result.name, result.nodes); onClose() }} className="flex-1 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-medium">Use this workflow</button>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Main Page ──────────────────────────────────────────────────────────────────
+export default function WorkflowsPage() {
+  const [workflows, setWorkflows] = useState<WorkflowDef[]>(INITIAL_WORKFLOWS)
+  const [selectedId, setSelectedId] = useState<string>(INITIAL_WORKFLOWS[0].id)
+  const [sidebarTab, setSidebarTab] = useState<SidebarTab>('workflows')
+  const [filterStatus, setFilterStatus] = useState<string>('All')
+  const [editingNode, setEditingNode] = useState<WorkflowNode | null>(null)
+  const [addBelowId, setAddBelowId] = useState<string | null>(null)
+  const [showAIGenerate, setShowAIGenerate] = useState(false)
+  const [editingName, setEditingName] = useState(false)
+  const [nameVal, setNameVal] = useState('')
+
+  const selected = workflows.find(w => w.id === selectedId) || workflows[0]
+
+  function updateWorkflow(id: string, patch: Partial<WorkflowDef>) {
+    setWorkflows(ws => ws.map(w => w.id === id ? { ...w, ...patch } : w))
+  }
+
+  function addNode(type: NodeType) {
+    if (!selected) return
+    const newNode = makeNode(type)
+    let nodes: WorkflowNode[]
+    if (addBelowId) {
+      const idx = selected.nodes.findIndex(n => n.id === addBelowId)
+      nodes = [...selected.nodes.slice(0, idx + 1), newNode, ...selected.nodes.slice(idx + 1)]
+    } else {
+      nodes = [...selected.nodes, newNode]
+    }
+    updateWorkflow(selected.id, { nodes })
+    setAddBelowId(null)
+    setEditingNode(newNode)
+  }
+
+  function updateNode(updated: WorkflowNode) {
+    if (!selected) return
+    updateWorkflow(selected.id, { nodes: selected.nodes.map(n => n.id === updated.id ? updated : n) })
+    setEditingNode(updated)
+  }
+
+  function deleteNode(id: string) {
+    if (!selected) return
+    updateWorkflow(selected.id, { nodes: selected.nodes.filter(n => n.id !== id) })
+    if (editingNode?.id === id) setEditingNode(null)
+  }
+
+  function createFromTemplate(t: Template) {
+    const newWf: WorkflowDef = {
+      id: `wf${Date.now()}`,
+      name: t.name,
+      triggerIcon: '✨',
+      status: 'Draft',
+      enrolled: 0,
+      lastRun: 'Never',
+      nodes: t.nodes.map(n => ({ ...n, id: nid() })),
+      stats: { enrolled: 0, completed: 0, convRate: 0, emailsSent: 0, avgTime: '—' },
+    }
+    setWorkflows(ws => [newWf, ...ws])
+    setSelectedId(newWf.id)
+    setSidebarTab('workflows')
+  }
+
+  function createBlank() {
+    const newWf: WorkflowDef = {
+      id: `wf${Date.now()}`,
+      name: 'New Workflow',
+      triggerIcon: '⚡',
+      status: 'Draft',
+      enrolled: 0,
+      lastRun: 'Never',
+      nodes: [makeNode('trigger')],
+      stats: { enrolled: 0, completed: 0, convRate: 0, emailsSent: 0, avgTime: '—' },
+    }
+    setWorkflows(ws => [newWf, ...ws])
+    setSelectedId(newWf.id)
+  }
+
+  function generateFromAI(name: string, nodes: WorkflowNode[]) {
+    const newWf: WorkflowDef = {
+      id: `wf${Date.now()}`,
+      name,
+      triggerIcon: '🤖',
+      status: 'Draft',
+      enrolled: 0,
+      lastRun: 'Never',
+      nodes,
+      stats: { enrolled: 0, completed: 0, convRate: 0, emailsSent: 0, avgTime: '—' },
+    }
+    setWorkflows(ws => [newWf, ...ws])
+    setSelectedId(newWf.id)
+  }
+
+  function toggleStatus() {
+    if (!selected) return
+    const next = selected.status === 'Active' ? 'Paused' : selected.status === 'Paused' ? 'Active' : 'Active'
+    updateWorkflow(selected.id, { status: next })
+  }
+
+  const filteredWorkflows = workflows.filter(w => filterStatus === 'All' || w.status === filterStatus)
+
+  return (
+    <div className="flex h-full bg-gray-950 overflow-hidden">
+
+      {/* ── Left Sidebar ────────────────────────────────────────────────── */}
+      <div className="w-72 flex-shrink-0 bg-gray-900 border-r border-gray-800 flex flex-col overflow-hidden">
+        {/* Sidebar header */}
+        <div className="px-4 py-4 border-b border-gray-800">
+          <button onClick={createBlank} className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-medium transition-colors mb-3">
+            + New Workflow
+          </button>
+          {/* Tabs */}
+          <div className="flex rounded-lg border border-gray-700 overflow-hidden">
+            {(['workflows','templates'] as SidebarTab[]).map(t => (
+              <button key={t} onClick={() => setSidebarTab(t)} className={`flex-1 py-1.5 text-xs font-medium capitalize transition-colors ${sidebarTab === t ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'}`}>{t}</button>
             ))}
           </div>
         </div>
-      )}
 
-      {/* Workflow list */}
-      {loading ? (
-        <div style={{ color: '#4b5563', textAlign: 'center', padding: '40px' }}>Loading workflows...</div>
-      ) : workflows.length === 0 ? (
-        <div style={{ ...s.card, padding: '40px', textAlign: 'center' }}>
-          <div style={{ fontSize: '40px', marginBottom: '12px' }}>⚡</div>
-          <div style={{ fontSize: '16px', fontWeight: 600, color: '#6b7280', marginBottom: '8px' }}>No workflows yet</div>
-          <div style={{ fontSize: '13px', color: '#374151', marginBottom: '16px' }}>Build your first automation or get AI suggestions</div>
-          <button style={s.btn('primary')} onClick={() => setShowCreate(true)}>+ Create First Workflow</button>
-        </div>
-      ) : (
-        workflows.map(wf => {
-          const nodes = parseNodes(wf.nodes)
-          const sc = statusColor(wf.status)
-          const isExpanded = expanded === wf.id
-          return (
-            <div key={wf.id} style={s.card}>
-              {/* Card header */}
-              <div style={s.cardHeader} onClick={() => setExpanded(isExpanded ? null : wf.id)}>
-                <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: sc.dot, flexShrink: 0 }} />
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
-                    <span style={{ fontSize: '14px', fontWeight: 600, color: '#e5e7eb' }}>{wf.name}</span>
-                    <span style={{ fontSize: '10px', fontWeight: 700, padding: '2px 7px', borderRadius: '4px', background: sc.bg, color: sc.color }}>
-                      {wf.status.toUpperCase()}
-                    </span>
-                    <span style={{ fontSize: '11px', color: '#4b5563' }}>{TRIGGER_LABELS[wf.trigger_type] || wf.trigger_type}</span>
-                  </div>
-                  {wf.description && <div style={{ fontSize: '11px', color: '#6b7280', marginTop: '2px' }}>{wf.description}</div>}
-                </div>
-                <div style={{ display: 'flex', gap: '16px', fontSize: '11px', color: '#4b5563', flexShrink: 0 }}>
-                  <span>🏃 {wf.total_runs || 0} runs</span>
-                  <span>Last: {timeAgo(wf.last_run_at)}</span>
-                </div>
-                <span style={{ color: '#4b5563', fontSize: '12px' }}>{isExpanded ? '▲' : '▼'}</span>
+        {/* Sidebar content */}
+        <div className="flex-1 overflow-y-auto">
+          {sidebarTab === 'workflows' && (
+            <>
+              {/* Filter */}
+              <div className="flex gap-1 px-3 py-2 border-b border-gray-800/60">
+                {['All','Active','Paused','Draft'].map(f => (
+                  <button key={f} onClick={() => setFilterStatus(f)} className={`px-2 py-1 rounded text-xs transition-colors ${filterStatus === f ? 'bg-indigo-600 text-white' : 'text-gray-500 hover:text-gray-300'}`}>{f}</button>
+                ))}
               </div>
-
-              {/* Expanded body */}
-              {isExpanded && (
-                <div style={{ padding: '0 18px 18px', borderTop: '1px solid #1f2937' }}>
-                  {/* Nodes visualization */}
-                  <div style={{ marginTop: '14px', marginBottom: '14px' }}>
-                    <div style={{ fontSize: '10px', fontWeight: 700, color: '#4b5563', letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: '8px' }}>
-                      Automation Steps ({nodes.length})
+              <div className="p-2 space-y-1">
+                {filteredWorkflows.map(wf => (
+                  <div
+                    key={wf.id}
+                    onClick={() => setSelectedId(wf.id)}
+                    className={`px-3 py-3 rounded-lg cursor-pointer transition-colors ${selectedId === wf.id ? 'bg-indigo-950/50 border border-indigo-800/60' : 'hover:bg-gray-800/50'}`}
+                  >
+                    <div className="flex items-center gap-2 mb-1.5">
+                      <span className="text-sm">{wf.triggerIcon}</span>
+                      <span className="text-white text-sm font-medium truncate flex-1">{wf.name}</span>
                     </div>
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', alignItems: 'center' }}>
-                      {nodes.map((node, i) => (
-                        <span key={i}>
-                          <span style={s.nodeChip}>{nodeLabel(node)}</span>
-                          {i < nodes.length - 1 && <span style={{ color: '#374151', fontSize: '10px', marginRight: '4px' }}>→</span>}
-                        </span>
-                      ))}
+                    <div className="flex items-center gap-2">
+                      <span className={`text-xs px-1.5 py-0.5 rounded border ${STATUS_STYLES[wf.status]}`}>{wf.status}</span>
+                      <span className="text-gray-600 text-xs">{wf.enrolled} enrolled</span>
+                      <span className="text-gray-700 text-xs ml-auto">{wf.lastRun}</span>
                     </div>
                   </div>
+                ))}
+              </div>
+            </>
+          )}
 
-                  {/* Trigger config */}
-                  {(() => {
-                    const config = parseTriggerConfig(wf.trigger_config)
-                    const keys = Object.keys(config).filter(k => config[k] !== undefined && config[k] !== null && String(config[k]) !== '')
-                    return keys.length > 0 ? (
-                      <div style={{ fontSize: '11px', color: '#6b7280', marginBottom: '12px' }}>
-                        Conditions: {keys.map(k => `${k} = ${String(config[k])}`).join(' · ')}
-                      </div>
-                    ) : null
-                  })()}
-
-                  {/* Analysis result */}
-                  {analysisWfId === wf.id && (
-                    <div style={{ background: '#0f1117', borderRadius: '8px', padding: '12px', marginBottom: '12px' }}>
-                      {analysisLoading ? (
-                        <div style={{ color: '#818cf8', fontSize: '12px' }}>⏳ Analysing...</div>
-                      ) : analysisResult ? (
-                        <>
-                          <div style={{ fontSize: '11px', fontWeight: 700, color: analysisResult.health === 'healthy' ? '#10b981' : '#f59e0b', marginBottom: '6px' }}>
-                            {analysisResult.health?.toUpperCase()} — {analysisResult.summary}
-                          </div>
-                          {analysisResult.improvements?.map((imp, i) => (
-                            <div key={i} style={{ fontSize: '11px', color: '#818cf8', marginTop: '4px' }}>→ {imp}</div>
-                          ))}
-                        </>
-                      ) : null}
+          {sidebarTab === 'templates' && (
+            <div className="p-3 space-y-2">
+              {TEMPLATES.map(t => (
+                <div key={t.id} className="bg-gray-800/50 border border-gray-700/50 rounded-xl p-3">
+                  <div className="flex items-start justify-between mb-1.5">
+                    <div>
+                      <p className="text-white text-sm font-medium leading-tight">{t.name}</p>
+                      <span className="text-xs text-indigo-400">{t.category}</span>
                     </div>
-                  )}
-
-                  {/* Manual trigger */}
-                  {triggerWfId === wf.id && (
-                    <div style={{ display: 'flex', gap: '8px', marginBottom: '12px' }}>
-                      <input
-                        style={{ ...s.input, flex: 1 }}
-                        placeholder="Contact email (optional)..."
-                        value={triggerEmail}
-                        onChange={e => setTriggerEmail(e.target.value)}
-                      />
-                      <button style={s.btn('primary')} onClick={() => void runManually(wf)} disabled={triggering}>
-                        {triggering ? '⏳' : '▶ Run'}
-                      </button>
-                    </div>
-                  )}
-                  {triggerWfId === wf.id && triggerResult && (
-                    <div style={{ fontSize: '12px', color: '#6ee7b7', marginBottom: '10px' }}>{triggerResult}</div>
-                  )}
-
-                  {/* Actions */}
-                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                    <button style={s.btn(wf.status === 'active' ? 'yellow' : 'green')} onClick={() => void toggleStatus(wf)}>
-                      {wf.status === 'active' ? '⏸ Pause' : '▶ Activate'}
-                    </button>
-                    <button style={s.btn('ghost')} onClick={() => { setTriggerWfId(triggerWfId === wf.id ? null : wf.id) }}>
-                      ▶ Manual Run
-                    </button>
-                    <button style={s.btn('ghost')} onClick={() => void analyzeWorkflow(wf.id)}>
-                      🔍 Analyse
-                    </button>
-                    <button style={{ ...s.btn('danger'), marginLeft: 'auto' }} onClick={() => void deleteWorkflow(wf.id)}>
-                      Delete
-                    </button>
+                    <span className="text-xs text-gray-500 ml-2 flex-shrink-0">{t.stepCount} steps</span>
                   </div>
+                  <p className="text-gray-500 text-xs mb-2.5 leading-relaxed">{t.description}</p>
+                  <button onClick={() => createFromTemplate(t)} className="w-full py-1.5 bg-indigo-900/40 hover:bg-indigo-900/60 border border-indigo-800/40 text-indigo-300 rounded-lg text-xs font-medium transition-colors">
+                    Use Template
+                  </button>
                 </div>
-              )}
+              ))}
             </div>
-          )
-        })
-      )}
+          )}
+        </div>
+      </div>
 
-      {/* ── Create / AI Design Modal ─────────────────────────────────────────── */}
-      {showCreate && (
-        <div style={s.modal} onClick={() => setShowCreate(false)}>
-          <div style={s.modalBox} onClick={e => e.stopPropagation()}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '20px' }}>
-              <div style={{ fontSize: '16px', fontWeight: 700, color: '#e5e7eb' }}>New Workflow</div>
-              <button onClick={() => setShowCreate(false)} style={{ background: 'none', border: 'none', color: '#6b7280', cursor: 'pointer', fontSize: '16px' }}>✕</button>
-            </div>
+      {/* ── Main Canvas Area ─────────────────────────────────────────────── */}
+      <div className="flex-1 flex flex-col overflow-hidden">
 
-            {/* Mode switch */}
-            <div style={{ display: 'flex', gap: '8px', marginBottom: '20px' }}>
-              {(['ai', 'manual'] as const).map(m => (
-                <button
-                  key={m}
-                  style={{ ...s.btn(createMode === m ? 'primary' : 'ghost'), flex: 1 }}
-                  onClick={() => setCreateMode(m)}
+        {selected && (
+          <>
+            {/* ── Canvas Header ── */}
+            <div className="flex items-center gap-3 px-6 py-3.5 border-b border-gray-800 bg-gray-900 flex-shrink-0 flex-wrap gap-y-2">
+              {/* Editable workflow name */}
+              {editingName ? (
+                <input
+                  autoFocus
+                  value={nameVal}
+                  onChange={e => setNameVal(e.target.value)}
+                  onBlur={() => { updateWorkflow(selected.id, { name: nameVal || selected.name }); setEditingName(false) }}
+                  onKeyDown={e => { if (e.key === 'Enter') { updateWorkflow(selected.id, { name: nameVal || selected.name }); setEditingName(false) } }}
+                  className="text-white font-semibold bg-gray-800 border border-indigo-500 rounded-lg px-2 py-1 text-sm focus:outline-none"
+                />
+              ) : (
+                <h2
+                  className="text-white font-semibold cursor-pointer hover:text-indigo-300 transition-colors"
+                  onDoubleClick={() => { setNameVal(selected.name); setEditingName(true) }}
+                  title="Double-click to edit"
                 >
-                  {m === 'ai' ? '✨ AI Design' : '⚙️ Manual'}
+                  {selected.name}
+                </h2>
+              )}
+
+              <span className={`text-xs px-2 py-0.5 rounded border ${STATUS_STYLES[selected.status]}`}>{selected.status}</span>
+              <span className="text-gray-600 text-xs">{selected.nodes.length} steps</span>
+              <span className="text-gray-600 text-xs">· {selected.enrolled} enrolled</span>
+
+              <div className="ml-auto flex gap-2">
+                <button
+                  onClick={toggleStatus}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${selected.status === 'Active' ? 'bg-yellow-950/40 border-yellow-800 text-yellow-300 hover:bg-yellow-950/60' : 'bg-emerald-950/40 border-emerald-800 text-emerald-300 hover:bg-emerald-950/60'}`}
+                >
+                  {selected.status === 'Active' ? '⏸ Pause' : '▶ Activate'}
                 </button>
+                <button className="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 rounded-lg text-xs font-medium transition-colors">
+                  ▶ Test Workflow
+                </button>
+                <button className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-medium transition-colors">
+                  💾 Save
+                </button>
+              </div>
+            </div>
+
+            {/* ── Stats Row ── */}
+            <div className="grid grid-cols-5 gap-px bg-gray-800 border-b border-gray-800 flex-shrink-0">
+              {[
+                { label:'Enrolled', value:selected.stats.enrolled, color:'text-white' },
+                { label:'Completed', value:selected.stats.completed, color:'text-emerald-300' },
+                { label:'Conv Rate', value:`${selected.stats.convRate}%`, color:'text-indigo-300' },
+                { label:'Emails Sent', value:selected.stats.emailsSent, color:'text-blue-300' },
+                { label:'Avg Time', value:selected.stats.avgTime, color:'text-gray-300' },
+              ].map(s => (
+                <div key={s.label} className="bg-gray-900 px-4 py-2.5">
+                  <p className="text-xs text-gray-600">{s.label}</p>
+                  <p className={`text-sm font-bold mt-0.5 ${s.color}`}>{s.value}</p>
+                </div>
               ))}
             </div>
 
-            {/* AI design mode */}
-            {createMode === 'ai' && (
-              <>
-                {!aiDraft ? (
-                  <>
-                    <label style={s.label}>Describe the workflow you want</label>
-                    <textarea
-                      style={{ ...s.textarea, marginBottom: '12px' }}
-                      placeholder="E.g. When a new lead is captured with score ≥ 70, immediately send a welcome email, wait 1 day, then send a follow-up with a booking link if they haven't replied..."
-                      value={aiPrompt}
-                      onChange={e => setAiPrompt(e.target.value)}
+            {/* ── Canvas + Right Panel ── */}
+            <div className="flex flex-1 overflow-hidden">
+              {/* Canvas */}
+              <div className="flex-1 overflow-auto p-8 flex justify-center">
+                <div className="flex flex-col items-center">
+                  {selected.nodes.map((node, i) => (
+                    <NodeBlock
+                      key={node.id}
+                      node={node}
+                      isFirst={i === 0}
+                      onEdit={n => setEditingNode(editingNode?.id === n.id ? null : n)}
+                      onDelete={deleteNode}
+                      onAddBelow={id => setAddBelowId(id)}
+                      isSelected={editingNode?.id === node.id}
                     />
-                    <button style={{ ...s.btn('primary'), width: '100%' }} onClick={() => void designWithAI()} disabled={aiDesigning || !aiPrompt.trim()}>
-                      {aiDesigning ? '⏳ Designing...' : '✨ Design Workflow'}
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    <div style={{ background: '#0f1117', borderRadius: '10px', padding: '14px', marginBottom: '16px' }}>
-                      <div style={{ fontSize: '14px', fontWeight: 700, color: '#e5e7eb', marginBottom: '4px' }}>{aiDraft.name}</div>
-                      <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '10px' }}>{aiDraft.description}</div>
-                      <div style={{ fontSize: '11px', color: '#818cf8', marginBottom: '10px' }}>
-                        Trigger: {TRIGGER_LABELS[aiDraft.trigger_type] || aiDraft.trigger_type}
-                      </div>
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginBottom: '10px' }}>
-                        {aiDraft.nodes.map((node, i) => (
-                          <span key={i} style={{ ...s.nodeChip, background: '#1e1b4b', color: '#818cf8' }}>
-                            {nodeLabel(node)}
-                          </span>
-                        ))}
-                      </div>
-                      <div style={{ fontSize: '11px', color: '#6b7280', lineHeight: 1.6 }}>{aiDraft.explanation}</div>
-                    </div>
-                    <div style={{ display: 'flex', gap: '8px' }}>
-                      <button style={{ ...s.btn('ghost'), flex: 1 }} onClick={() => setAiDraft(null)}>← Redesign</button>
-                      <button style={{ ...s.btn('primary'), flex: 2 }} onClick={() => void saveAIDraft()}>💾 Save as Draft</button>
-                    </div>
-                  </>
-                )}
-              </>
-            )}
+                  ))}
 
-            {/* Manual mode */}
-            {createMode === 'manual' && (
-              <>
-                <div style={{ marginBottom: '12px' }}>
-                  <label style={s.label}>Workflow Name</label>
-                  <input style={s.input} value={manualForm.name} onChange={e => setManualForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. Hot Lead Nurture" />
+                  {/* Add node at end */}
+                  {selected.nodes.length === 0 && (
+                    <div className="text-center py-16">
+                      <p className="text-gray-600 text-sm mb-4">No steps yet. Add your first step.</p>
+                    </div>
+                  )}
+                  <div className="mt-2">
+                    <button
+                      onClick={() => { setAddBelowId(null); setAddBelowId('__end__') }}
+                      className="flex items-center gap-2 px-4 py-2 bg-gray-800/60 hover:bg-indigo-950/40 border border-dashed border-gray-700 hover:border-indigo-600 rounded-lg text-gray-500 hover:text-indigo-400 text-sm transition-all"
+                    >
+                      + Add Step
+                    </button>
+                  </div>
                 </div>
-                <div style={{ marginBottom: '12px' }}>
-                  <label style={s.label}>Description</label>
-                  <input style={s.input} value={manualForm.description} onChange={e => setManualForm(f => ({ ...f, description: e.target.value }))} placeholder="What does this workflow do?" />
+              </div>
+
+              {/* Right Config Panel */}
+              {editingNode && (
+                <NodeConfigPanel
+                  node={editingNode}
+                  onUpdate={updateNode}
+                  onClose={() => setEditingNode(null)}
+                />
+              )}
+            </div>
+
+            {/* ── AI Suggestions Strip ── */}
+            <div className="border-t border-gray-800 bg-gray-900/80 px-4 py-3 flex-shrink-0">
+              <div className="flex items-start gap-4 overflow-x-auto pb-0.5">
+                <div className="flex-shrink-0">
+                  <span className="text-xs text-gray-600 font-semibold uppercase tracking-wide">🤖 AI</span>
                 </div>
-                <div style={{ marginBottom: '16px' }}>
-                  <label style={s.label}>Trigger</label>
-                  <select style={s.input} value={manualForm.triggerType} onChange={e => setManualForm(f => ({ ...f, triggerType: e.target.value }))}>
-                    {Object.entries(TRIGGER_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-                  </select>
-                </div>
-                <div style={{ fontSize: '11px', color: '#4b5563', marginBottom: '16px', background: '#0f1117', borderRadius: '8px', padding: '10px 12px' }}>
-                  💡 Use AI Design mode to automatically generate email copy and workflow logic. Manual mode creates a blank workflow — you can edit nodes via the API or use the AI to fill them.
-                </div>
-                <button style={{ ...s.btn('primary'), width: '100%' }} onClick={() => void saveManual()} disabled={!manualForm.name}>
-                  Create Workflow
+                {AI_SUGGESTIONS.map((s, i) => (
+                  <div key={i} className="flex items-center gap-2 flex-shrink-0 bg-gray-800/60 border border-gray-700/60 rounded-lg px-3 py-2">
+                    <p className="text-gray-400 text-xs max-w-xs">{s.text}</p>
+                    <button
+                      onClick={() => addNode(s.nodeType)}
+                      className="flex-shrink-0 px-2.5 py-1 bg-indigo-950/60 hover:bg-indigo-900/60 border border-indigo-800/40 text-indigo-400 text-xs rounded-lg transition-colors whitespace-nowrap"
+                    >
+                      {s.action}
+                    </button>
+                  </div>
+                ))}
+                <button
+                  onClick={() => setShowAIGenerate(true)}
+                  className="flex-shrink-0 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-medium transition-colors whitespace-nowrap"
+                >
+                  Generate Full Workflow with AI
                 </button>
-              </>
-            )}
+              </div>
+            </div>
+          </>
+        )}
+
+        {!selected && (
+          <div className="flex-1 flex items-center justify-center text-gray-600">
+            <div className="text-center">
+              <div className="text-5xl mb-4">⚡</div>
+              <p className="text-lg font-medium text-gray-400 mb-2">Select a workflow</p>
+              <p className="text-sm text-gray-600">or create a new one from the sidebar</p>
+            </div>
           </div>
-        </div>
+        )}
+      </div>
+
+      {/* ── Node Type Picker ── */}
+      {addBelowId && (
+        <NodeTypePicker
+          onSelect={type => { addNode(type); setAddBelowId(null) }}
+          onClose={() => setAddBelowId(null)}
+        />
+      )}
+
+      {/* ── AI Generate Modal ── */}
+      {showAIGenerate && (
+        <AIGenerateModal
+          onClose={() => setShowAIGenerate(false)}
+          onGenerate={generateFromAI}
+        />
       )}
     </div>
   )

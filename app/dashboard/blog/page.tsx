@@ -1,1035 +1,762 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState } from 'react'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type ContentType = 'blog' | 'newsletter' | 'case_study' | 'script'
+type BlogTab = 'posts' | 'composer' | 'analytics'
+type PostStatus = 'Draft' | 'Scheduled' | 'Published' | 'Failed'
 
 interface BlogPost {
-  title: string
-  slug: string
-  metaTitle: string
-  metaDescription: string
-  excerpt: string
-  readTime: string
-  outline: string[]
-  content: string
-  keywords: string[]
-  internalLinkSuggestions: string[]
-  callToAction: string
-  socialCaption: string
-  wordCount: number
-}
-
-interface NewsletterSection {
-  title: string
-  content: string
-  type: 'story' | 'tips' | 'news' | 'spotlight' | 'cta'
-}
-
-interface Newsletter {
-  subject: string
-  previewText: string
-  headline: string
-  intro: string
-  sections: NewsletterSection[]
-  featuredInsight: string
-  cta: { text: string; buttonLabel: string; url?: string }
-  footer: string
-  estimatedReadTime: string
-}
-
-interface CaseStudy {
-  headline: string
-  subheadline: string
-  summary: string
-  clientOverview: string
-  challengeSection: string
-  solutionSection: string
-  resultsSection: string
-  keyMetrics: { label: string; value: string; improvement: string }[]
-  testimonialBlock: string
-  lessonsLearned: string[]
-  cta: string
-  seoTitle: string
-  metaDescription: string
-  fullHtml: string
-}
-
-interface ContentScript {
-  title: string
-  platform: string
-  estimatedDuration: string
-  hook: string
-  intro: string
-  mainContent: {
-    timestamp: string
-    section: string
-    script: string
-    broll?: string
-    onscreen?: string
-  }[]
-  cta: string
-  outro: string
-  description: string
-  hashtags: string[]
-  thumbnailIdeas: string[]
-  chaptersTimestamps?: { time: string; title: string }[]
-}
-
-interface SavedArtifact {
   id: string
   title: string
-  content_json: BlogPost | Newsletter | CaseStudy | ContentScript
-  created_at: string
-  artifactType?: string
+  status: PostStatus
+  wordCount: number
+  seoScore: number
+  destinations: string[]
+  date: string
+  views?: number
+  readTime?: string
+  shares?: number
 }
 
-// ─── Constants ────────────────────────────────────────────────────────────────
+interface PublishDestination {
+  id: string
+  name: string
+  icon: string
+  status: 'connected' | 'warning' | 'disconnected'
+}
 
-const CONTENT_TYPES: { id: ContentType; icon: string; label: string; description: string }[] = [
-  { id: 'blog',       icon: '📝', label: 'Blog Post',    description: 'SEO-optimized article' },
-  { id: 'newsletter', icon: '📧', label: 'Newsletter',   description: 'Email edition' },
-  { id: 'case_study', icon: '📊', label: 'Case Study',   description: 'Customer success story' },
-  { id: 'script',     icon: '🎬', label: 'Script',       description: 'Video / Podcast / Ad' },
+interface DestSettings {
+  id: string
+  name: string
+  fields: { key: string; label: string; type: 'text' | 'password'; placeholder: string }[]
+}
+
+// ─── Mock data ────────────────────────────────────────────────────────────────
+
+const DESTINATIONS: PublishDestination[] = [
+  { id: 'wordpress', name: 'WordPress', icon: 'WP', status: 'connected' },
+  { id: 'ghost', name: 'Ghost', icon: 'Gh', status: 'connected' },
+  { id: 'medium', name: 'Medium', icon: 'M', status: 'warning' },
+  { id: 'substack', name: 'Substack', icon: 'SS', status: 'disconnected' },
+  { id: 'hashnode', name: 'Hashnode', icon: 'HN', status: 'disconnected' },
+  { id: 'linkedin', name: 'LinkedIn Articles', icon: 'in', status: 'connected' },
 ]
 
-const NEWSLETTER_SECTION_OPTIONS = [
-  'Industry News',
-  'Tips & Tricks',
-  'Company Update',
-  'Featured Story',
-  'Product Spotlight',
+const DEST_SETTINGS: DestSettings[] = [
+  { id: 'wordpress', name: 'WordPress', fields: [
+    { key: 'siteUrl', label: 'Site URL', type: 'text', placeholder: 'https://yourblog.com' },
+    { key: 'username', label: 'Username', type: 'text', placeholder: 'admin' },
+    { key: 'appPassword', label: 'App Password', type: 'password', placeholder: 'xxxx xxxx xxxx xxxx' },
+  ]},
+  { id: 'ghost', name: 'Ghost', fields: [
+    { key: 'apiUrl', label: 'API URL', type: 'text', placeholder: 'https://yourblog.ghost.io' },
+    { key: 'adminApiKey', label: 'Admin API Key', type: 'password', placeholder: 'key:secret' },
+  ]},
+  { id: 'medium', name: 'Medium', fields: [
+    { key: 'integrationToken', label: 'Integration Token', type: 'password', placeholder: 'Your Medium token' },
+  ]},
+  { id: 'substack', name: 'Substack', fields: [
+    { key: 'email', label: 'Email', type: 'text', placeholder: 'you@example.com' },
+    { key: 'password', label: 'Password', type: 'password', placeholder: 'Your Substack password' },
+  ]},
+  { id: 'hashnode', name: 'Hashnode', fields: [
+    { key: 'apiKey', label: 'Personal Access Token', type: 'password', placeholder: 'Your Hashnode token' },
+  ]},
+  { id: 'linkedin', name: 'LinkedIn Articles', fields: [
+    { key: 'accessToken', label: 'OAuth Access Token', type: 'password', placeholder: 'OAuth token from LinkedIn' },
+  ]},
 ]
 
-const SECTION_TYPE_COLORS: Record<string, string> = {
-  story:    'bg-purple-900/30 text-purple-300 border-purple-800/40',
-  tips:     'bg-green-900/30 text-green-300 border-green-800/40',
-  news:     'bg-blue-900/30 text-blue-300 border-blue-800/40',
-  spotlight:'bg-yellow-900/30 text-yellow-300 border-yellow-800/40',
-  cta:      'bg-indigo-900/30 text-indigo-300 border-indigo-800/40',
+const MOCK_POSTS: BlogPost[] = [
+  { id: '1', title: '10 AI Marketing Tools That Will Replace Your Agency in 2026', status: 'Published', wordCount: 2847, seoScore: 92, destinations: ['wordpress', 'ghost', 'linkedin'], date: '2026-05-22', views: 4821, readTime: '11 min', shares: 143 },
+  { id: '2', title: 'How to Build a Content Moat: The Unfair Advantage', status: 'Published', wordCount: 1923, seoScore: 78, destinations: ['wordpress', 'medium'], date: '2026-05-18', views: 2304, readTime: '8 min', shares: 87 },
+  { id: '3', title: 'The CMO\'s Complete Guide to Marketing Automation in 2026', status: 'Scheduled', wordCount: 3200, seoScore: 88, destinations: ['wordpress', 'ghost', 'hashnode', 'linkedin'], date: '2026-05-28', views: 0, readTime: '13 min' },
+  { id: '4', title: 'Why Most Brands Fail at Social Media (And How to Fix It)', status: 'Draft', wordCount: 950, seoScore: 45, destinations: ['wordpress'], date: '2026-05-26' },
+  { id: '5', title: 'Customer Story: How TechCorp 3X\'d Their Leads with AI', status: 'Failed', wordCount: 1540, seoScore: 71, destinations: ['medium', 'linkedin'], date: '2026-05-24' },
+]
+
+const SEO_SCORE_COLOR = (score: number) =>
+  score >= 80 ? 'bg-green-900/40 text-green-400' :
+  score >= 50 ? 'bg-yellow-900/40 text-yellow-400' :
+  'bg-red-900/40 text-red-400'
+
+const STATUS_COLORS: Record<PostStatus, string> = {
+  Published: 'bg-green-900/40 text-green-400',
+  Scheduled: 'bg-blue-900/40 text-blue-400',
+  Draft: 'bg-gray-700 text-gray-400',
+  Failed: 'bg-red-900/40 text-red-400',
 }
 
-const PLATFORM_LABELS: Record<string, string> = {
-  youtube:       'YouTube',
-  instagram_reel:'Instagram Reel',
-  tiktok:        'TikTok',
-  podcast:       'Podcast',
-  webinar:       'Webinar',
-  ad:            'Video Ad',
+const DEST_STATUS: Record<string, string> = {
+  connected: 'text-green-400',
+  warning: 'text-yellow-400',
+  disconnected: 'text-gray-600',
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function copyToClipboard(text: string) {
-  navigator.clipboard.writeText(text).catch(() => {})
+const DEST_ICONS: Record<string, string> = {
+  connected: '✅',
+  warning: '⚠',
+  disconnected: '❌',
 }
 
-function CopyButton({ text, label = 'Copy' }: { text: string; label?: string }) {
-  const [copied, setCopied] = useState(false)
-  return (
-    <button
-      onClick={() => { copyToClipboard(text); setCopied(true); setTimeout(() => setCopied(false), 2000) }}
-      className="px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 hover:text-white text-xs transition-colors"
-    >
-      {copied ? '✓ Copied' : label}
-    </button>
-  )
-}
+const AI_TOOLS = [
+  'Expand Section', 'Improve Readability', 'Add Examples',
+  'Generate Intro', 'Write Conclusion', 'Generate H2s',
+]
 
-// ─── Main Page ────────────────────────────────────────────────────────────────
+const FORMAT_TOOLBAR = [
+  { label: 'B', title: 'Bold', action: '**text**' },
+  { label: 'I', title: 'Italic', action: '_text_' },
+  { label: 'H1', title: 'Heading 1', action: '# ' },
+  { label: 'H2', title: 'Heading 2', action: '## ' },
+  { label: 'H3', title: 'Heading 3', action: '### ' },
+  { label: '•', title: 'Bullet list', action: '- ' },
+  { label: '1.', title: 'Numbered list', action: '1. ' },
+  { label: '"', title: 'Quote', action: '> ' },
+  { label: '<>', title: 'Code', action: '`code`' },
+  { label: '🔗', title: 'Link', action: '[text](url)' },
+]
 
-export default function BlogPage() {
-  const [workspaceId, setWorkspaceId]   = useState('')
-  const [activeType, setActiveType]     = useState<ContentType>('blog')
-  const [loading, setLoading]           = useState(false)
-  const [error, setError]               = useState('')
+// ─── Page ─────────────────────────────────────────────────────────────────────
 
-  // Blog state
-  const [blogTopic, setBlogTopic]           = useState('')
-  const [blogKeywords, setBlogKeywords]     = useState('')
-  const [blogWordCount, setBlogWordCount]   = useState(1500)
-  const [blogStyle, setBlogStyle]           = useState<'educational' | 'thought_leadership' | 'how_to' | 'listicle' | 'news_analysis'>('educational')
-  const [blogResult, setBlogResult]         = useState<BlogPost | null>(null)
+export default function BlogStudioPage() {
+  const [activeTab, setActiveTab] = useState<BlogTab>('posts')
+  const [selectedDestinations, setSelectedDestinations] = useState<string[]>(['wordpress', 'ghost'])
+  const [showDestSettings, setShowDestSettings] = useState(false)
+  const [editingDest, setEditingDest] = useState<string | null>(null)
+  const [showNewPostModal, setShowNewPostModal] = useState(false)
 
-  // Newsletter state
-  const [nlTheme, setNlTheme]               = useState('')
-  const [nlSections, setNlSections]         = useState<string[]>([])
-  const [nlEdition, setNlEdition]           = useState('')
-  const [nlTone, setNlTone]                 = useState<'professional' | 'casual' | 'exciting'>('professional')
-  const [nlResult, setNlResult]             = useState<Newsletter | null>(null)
-  const [nlActiveSection, setNlActiveSection] = useState(0)
+  // Composer state
+  const [title, setTitle] = useState('')
+  const [body, setBody] = useState('')
+  const [metaTitle, setMetaTitle] = useState('')
+  const [metaDescription, setMetaDescription] = useState('')
+  const [focusKeyword, setFocusKeyword] = useState('')
+  const [featuredImagePrompt, setFeaturedImagePrompt] = useState('')
+  const [generating, setGenerating] = useState(false)
+  const [generatingAi, setGeneratingAi] = useState<string | null>(null)
+  const [scheduleTime, setScheduleTime] = useState('')
+  const [publishMode, setPublishMode] = useState<'now' | 'schedule'>('now')
+  const [wpCategory, setWpCategory] = useState('General')
+  const [publishSuccess, setPublishSuccess] = useState(false)
 
-  // Case study state
-  const [csClient, setCsClient]             = useState('')
-  const [csIndustry, setCsIndustry]         = useState('')
-  const [csProblem, setCsProblem]           = useState('')
-  const [csSolution, setCsSolution]         = useState('')
-  const [csResults, setCsResults]           = useState('')
-  const [csTimeframe, setCsTimeframe]       = useState('')
-  const [csTestimonial, setCsTestimonial]   = useState('')
-  const [csResult, setCsResult]             = useState<CaseStudy | null>(null)
+  // SEO score calculation
+  const seoScore = Math.min(100, Math.round(
+    (title.length > 20 ? 20 : title.length) +
+    (body.length > 500 ? 25 : Math.round(body.length / 20)) +
+    (metaTitle.length >= 50 && metaTitle.length <= 60 ? 20 : 5) +
+    (metaDescription.length >= 150 && metaDescription.length <= 160 ? 20 : 5) +
+    (focusKeyword && body.toLowerCase().includes(focusKeyword.toLowerCase()) ? 15 : 0)
+  ))
 
-  // Script state
-  const [scTopic, setScTopic]               = useState('')
-  const [scPlatform, setScPlatform]         = useState<'youtube' | 'instagram_reel' | 'tiktok' | 'podcast' | 'webinar' | 'ad'>('youtube')
-  const [scDuration, setScDuration]         = useState(300)
-  const [scHook, setScHook]                 = useState('')
-  const [scResult, setScResult]             = useState<ContentScript | null>(null)
+  const wordCount = body.trim() ? body.trim().split(/\s+/).length : 0
+  const readTime = Math.max(1, Math.round(wordCount / 200))
+  const keywordDensity = focusKeyword && body
+    ? ((body.toLowerCase().split(focusKeyword.toLowerCase()).length - 1) / wordCount * 100).toFixed(1)
+    : '0.0'
 
-  // Previous artifacts
-  const [savedBlogs, setSavedBlogs]         = useState<SavedArtifact[]>([])
-  const [savedNewsletters, setSavedNewsletters] = useState<SavedArtifact[]>([])
-  const [savedCaseStudies, setSavedCaseStudies] = useState<SavedArtifact[]>([])
-  const [savedScripts, setSavedScripts]     = useState<SavedArtifact[]>([])
-  const [savedLoading, setSavedLoading]     = useState(false)
+  const seoChecks = [
+    { label: 'Title contains keyword', pass: focusKeyword ? title.toLowerCase().includes(focusKeyword.toLowerCase()) : false },
+    { label: 'Meta description written', pass: metaDescription.length > 20 },
+    { label: 'Meta title 50-60 chars', pass: metaTitle.length >= 50 && metaTitle.length <= 60 },
+    { label: 'Content 1000+ words', pass: wordCount >= 1000 },
+    { label: 'Keyword density 1-3%', pass: parseFloat(keywordDensity) >= 1 && parseFloat(keywordDensity) <= 3 },
+  ]
 
-  const loadSaved = useCallback(async (wid: string) => {
-    setSavedLoading(true)
-    try {
-      const [blogs, newsletters, caseStudies, scripts] = await Promise.all([
-        fetch(`/api/agents/content/blog?workspaceId=${wid}`).then(r => r.json()),
-        fetch(`/api/agents/content/newsletter?workspaceId=${wid}`).then(r => r.json()),
-        fetch(`/api/agents/content/case-study?workspaceId=${wid}`).then(r => r.json()),
-        fetch(`/api/agents/content/script?workspaceId=${wid}`).then(r => r.json()),
-      ])
-      if (Array.isArray(blogs))        setSavedBlogs(blogs.slice(0, 5).map((a: SavedArtifact) => ({ ...a, artifactType: 'blog' })))
-      if (Array.isArray(newsletters))  setSavedNewsletters(newsletters.slice(0, 5).map((a: SavedArtifact) => ({ ...a, artifactType: 'newsletter' })))
-      if (Array.isArray(caseStudies))  setSavedCaseStudies(caseStudies.slice(0, 5).map((a: SavedArtifact) => ({ ...a, artifactType: 'case_study' })))
-      if (Array.isArray(scripts))      setSavedScripts(scripts.slice(0, 5).map((a: SavedArtifact) => ({ ...a, artifactType: 'script' })))
-    } finally {
-      setSavedLoading(false)
+  function toggleDest(id: string) {
+    setSelectedDestinations(prev => prev.includes(id) ? prev.filter(d => d !== id) : [...prev, id])
+  }
+
+  function insertAtCursor(text: string) {
+    setBody(prev => prev + '\n' + text)
+  }
+
+  async function runAiTool(tool: string) {
+    if (!body.trim()) return
+    setGeneratingAi(tool)
+    await new Promise(r => setTimeout(r, 1500))
+    const additions: Record<string, string> = {
+      'Expand Section': '\n\nFurthermore, this approach creates compounding benefits over time. When organizations implement these strategies consistently, they often see a 40-60% improvement in key metrics within the first quarter alone. The key is to maintain momentum and continue iterating based on data-driven insights.',
+      'Improve Readability': '\n\n**Key takeaway:** The concepts above can be distilled into three simple actions you can take today:\n\n1. Start small and build momentum\n2. Measure what matters most\n3. Iterate based on real user feedback',
+      'Add Examples': '\n\n**Real-world example:** Consider Company X, a mid-size SaaS firm that implemented this exact strategy. Within 6 months, they reduced their customer acquisition cost by 35% and doubled their organic traffic — all without increasing their marketing budget.',
+      'Generate Intro': 'What if you could achieve 10x better results with half the effort? That\'s not a pipe dream — it\'s the reality for companies that have mastered the strategies in this guide.\n\nIn the next 10 minutes, you\'ll discover exactly how to replicate their success.\n\n',
+      'Write Conclusion': '\n\n## Wrapping Up\n\nThe path forward is clear: embrace these strategies, measure consistently, and keep your customer at the center of every decision. The brands winning today are not the ones with the biggest budgets — they\'re the ones with the sharpest focus.\n\nStart with one tactic. Master it. Then stack the next one.\n\n**Ready to get started? Schedule a free strategy call today.**',
+      'Generate H2s': '\n\n## Why This Matters More Than You Think\n\n## The Step-by-Step Framework\n\n## Common Mistakes to Avoid\n\n## Real Results: What to Expect\n\n## Getting Started Today',
     }
-  }, [])
-
-  useEffect(() => {
-    const wid = localStorage.getItem('workspaceId') || ''
-    setWorkspaceId(wid)
-    if (wid) loadSaved(wid)
-  }, [loadSaved])
-
-  // ── Generate handlers ────────────────────────────────────────────────────
-
-  async function generateBlog() {
-    if (!blogTopic.trim()) { setError('Enter a topic'); return }
-    setLoading(true); setError(''); setBlogResult(null)
-    try {
-      const res = await fetch('/api/agents/content/blog', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspaceId, topic: blogTopic, keywords: blogKeywords, targetWordCount: blogWordCount, style: blogStyle }),
-      })
-      const data = await res.json()
-      if (data.error) { setError(data.error); return }
-      setBlogResult(data.blog)
-      loadSaved(workspaceId)
-    } catch (e) { setError(String(e)) } finally { setLoading(false) }
+    setBody(prev => prev + (additions[tool] || `\n\n[AI expanded content for "${tool}"]`))
+    setGeneratingAi(null)
   }
 
-  async function generateNewsletter() {
-    if (!nlTheme.trim()) { setError('Enter a theme or topic'); return }
-    setLoading(true); setError(''); setNlResult(null); setNlActiveSection(0)
-    try {
-      const res = await fetch('/api/agents/content/newsletter', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspaceId, theme: nlTheme, sections: nlSections, edition: nlEdition, tone: nlTone }),
-      })
-      const data = await res.json()
-      if (data.error) { setError(data.error); return }
-      setNlResult(data.newsletter)
-      loadSaved(workspaceId)
-    } catch (e) { setError(String(e)) } finally { setLoading(false) }
+  async function handlePublish() {
+    if (!title.trim() || !body.trim()) return
+    setGenerating(true)
+    await new Promise(r => setTimeout(r, 1500))
+    setGenerating(false)
+    setPublishSuccess(true)
+    setTimeout(() => setPublishSuccess(false), 3000)
   }
 
-  async function generateCaseStudy() {
-    if (!csClient.trim() || !csProblem.trim() || !csSolution.trim() || !csResults.trim()) {
-      setError('Client name, problem, solution, and results are required')
-      return
-    }
-    setLoading(true); setError(''); setCsResult(null)
-    try {
-      const res = await fetch('/api/agents/content/case-study', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspaceId, clientName: csClient, industry: csIndustry, problem: csProblem, solution: csSolution, results: csResults, timeframe: csTimeframe, testimonial: csTestimonial }),
-      })
-      const data = await res.json()
-      if (data.error) { setError(data.error); return }
-      setCsResult(data.caseStudy)
-      loadSaved(workspaceId)
-    } catch (e) { setError(String(e)) } finally { setLoading(false) }
-  }
+  const tabs: { id: BlogTab; label: string }[] = [
+    { id: 'posts', label: 'Posts' },
+    { id: 'composer', label: 'Composer' },
+    { id: 'analytics', label: 'Analytics' },
+  ]
 
-  async function generateScript() {
-    if (!scTopic.trim()) { setError('Enter a topic or title'); return }
-    setLoading(true); setError(''); setScResult(null)
-    try {
-      const res = await fetch('/api/agents/content/script', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspaceId, topic: scTopic, platform: scPlatform, duration: scDuration, hook: scHook }),
-      })
-      const data = await res.json()
-      if (data.error) { setError(data.error); return }
-      setScResult(data.script)
-      loadSaved(workspaceId)
-    } catch (e) { setError(String(e)) } finally { setLoading(false) }
-  }
-
-  const loadingMessages: Record<ContentType, string> = {
-    blog:       'Writing blog post...',
-    newsletter: 'Drafting newsletter...',
-    case_study: 'Writing case study...',
-    script:     'Writing script...',
-  }
-
-  const handleGenerate = () => {
-    setError('')
-    if (activeType === 'blog')       return generateBlog()
-    if (activeType === 'newsletter') return generateNewsletter()
-    if (activeType === 'case_study') return generateCaseStudy()
-    if (activeType === 'script')     return generateScript()
-  }
-
-  const allSaved = [
-    ...savedBlogs,
-    ...savedNewsletters,
-    ...savedCaseStudies,
-    ...savedScripts,
-  ].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()).slice(0, 15)
-
-  const TYPE_BADGE: Record<string, string> = {
-    blog:       'bg-indigo-900/40 text-indigo-300',
-    newsletter: 'bg-yellow-900/40 text-yellow-300',
-    case_study: 'bg-green-900/40 text-green-300',
-    script:     'bg-purple-900/40 text-purple-300',
-  }
-  const TYPE_ICON: Record<string, string> = {
-    blog: '📝', newsletter: '📧', case_study: '📊', script: '🎬',
-  }
-
-  // ── Render ────────────────────────────────────────────────────────────────
+  const currentDestSettings = DEST_SETTINGS.find(d => d.id === editingDest)
 
   return (
-    <div className="p-8 max-w-6xl mx-auto">
+    <div className="p-8 max-w-7xl mx-auto">
       {/* Header */}
-      <div className="mb-8">
-        <div className="flex items-center gap-3 mb-1">
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center text-white font-bold text-sm">✍️</div>
-          <h1 className="text-2xl font-bold text-white">Blog &amp; Long-Form Content</h1>
+      <div className="flex items-start justify-between mb-6">
+        <div>
+          <div className="flex items-center gap-3 mb-1">
+            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center text-sm">✍</div>
+            <h1 className="text-2xl font-bold text-white">Blog Studio</h1>
+          </div>
+          <p className="text-gray-400 text-sm ml-11">Write, optimize, and publish to all your platforms</p>
         </div>
-        <p className="text-gray-400 text-sm ml-11">AI-powered SEO content that ranks and converts</p>
-      </div>
-
-      {/* Content type selector */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
-        {CONTENT_TYPES.map(t => (
-          <button
-            key={t.id}
-            onClick={() => { setActiveType(t.id); setError('') }}
-            className={`p-4 rounded-xl border text-left transition-all ${
-              activeType === t.id
-                ? 'border-indigo-500 bg-indigo-900/30 ring-1 ring-indigo-500/40'
-                : 'border-gray-800 bg-gray-900 hover:border-gray-600'
-            }`}
-          >
-            <div className="text-2xl mb-2">{t.icon}</div>
-            <p className={`font-semibold text-sm mb-1 ${activeType === t.id ? 'text-indigo-300' : 'text-white'}`}>{t.label}</p>
-            <p className="text-gray-500 text-xs leading-relaxed">{t.description}</p>
-          </button>
-        ))}
-      </div>
-
-      {/* Input form */}
-      <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 mb-6">
-        <div className="space-y-4">
-
-          {/* ── Blog Post ── */}
-          {activeType === 'blog' && (
-            <>
-              <div>
-                <label className="text-gray-400 text-xs mb-1.5 block">Topic <span className="text-red-400">*</span></label>
-                <input
-                  value={blogTopic}
-                  onChange={e => setBlogTopic(e.target.value)}
-                  placeholder="e.g. How to build a social media strategy in 2025"
-                  className="w-full px-4 py-2.5 rounded-xl bg-gray-800 border border-gray-700 text-white placeholder-gray-500 text-sm focus:outline-none focus:border-indigo-500"
-                />
-              </div>
-              <div>
-                <label className="text-gray-400 text-xs mb-1.5 block">Target keywords</label>
-                <input
-                  value={blogKeywords}
-                  onChange={e => setBlogKeywords(e.target.value)}
-                  placeholder="e.g. social media strategy, content marketing, brand growth"
-                  className="w-full px-4 py-2.5 rounded-xl bg-gray-800 border border-gray-700 text-white placeholder-gray-500 text-sm focus:outline-none focus:border-indigo-500"
-                />
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="text-gray-400 text-xs mb-1.5 block">Word count</label>
-                  <select
-                    value={blogWordCount}
-                    onChange={e => setBlogWordCount(Number(e.target.value))}
-                    className="w-full px-4 py-2.5 rounded-xl bg-gray-800 border border-gray-700 text-white text-sm focus:outline-none focus:border-indigo-500"
-                  >
-                    <option value={800}>800 words (Short)</option>
-                    <option value={1500}>1,500 words (Standard)</option>
-                    <option value={2500}>2,500 words (Long-form)</option>
-                    <option value={3000}>3,000+ words (Pillar)</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="text-gray-400 text-xs mb-1.5 block">Style</label>
-                  <select
-                    value={blogStyle}
-                    onChange={e => setBlogStyle(e.target.value as typeof blogStyle)}
-                    className="w-full px-4 py-2.5 rounded-xl bg-gray-800 border border-gray-700 text-white text-sm focus:outline-none focus:border-indigo-500"
-                  >
-                    <option value="educational">Educational</option>
-                    <option value="how_to">How-To Guide</option>
-                    <option value="listicle">Listicle</option>
-                    <option value="thought_leadership">Thought Leadership</option>
-                    <option value="news_analysis">News Analysis</option>
-                  </select>
-                </div>
-              </div>
-            </>
-          )}
-
-          {/* ── Newsletter ── */}
-          {activeType === 'newsletter' && (
-            <>
-              <div>
-                <label className="text-gray-400 text-xs mb-1.5 block">Theme / Topic <span className="text-red-400">*</span></label>
-                <input
-                  value={nlTheme}
-                  onChange={e => setNlTheme(e.target.value)}
-                  placeholder="e.g. AI tools transforming marketing in 2025"
-                  className="w-full px-4 py-2.5 rounded-xl bg-gray-800 border border-gray-700 text-white placeholder-gray-500 text-sm focus:outline-none focus:border-indigo-500"
-                />
-              </div>
-              <div>
-                <label className="text-gray-400 text-xs mb-1.5 block">Sections to include</label>
-                <div className="flex flex-wrap gap-2">
-                  {NEWSLETTER_SECTION_OPTIONS.map(sec => (
-                    <button
-                      key={sec}
-                      type="button"
-                      onClick={() => setNlSections(prev =>
-                        prev.includes(sec) ? prev.filter(s => s !== sec) : [...prev, sec]
-                      )}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
-                        nlSections.includes(sec)
-                          ? 'border-indigo-500 bg-indigo-900/40 text-indigo-300'
-                          : 'border-gray-700 bg-gray-800 text-gray-400 hover:border-gray-500'
-                      }`}
-                    >
-                      {sec}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="text-gray-400 text-xs mb-1.5 block">Edition name</label>
-                  <input
-                    value={nlEdition}
-                    onChange={e => setNlEdition(e.target.value)}
-                    placeholder="e.g. May Edition"
-                    className="w-full px-4 py-2.5 rounded-xl bg-gray-800 border border-gray-700 text-white placeholder-gray-500 text-sm focus:outline-none focus:border-indigo-500"
-                  />
-                </div>
-                <div>
-                  <label className="text-gray-400 text-xs mb-1.5 block">Tone</label>
-                  <select
-                    value={nlTone}
-                    onChange={e => setNlTone(e.target.value as typeof nlTone)}
-                    className="w-full px-4 py-2.5 rounded-xl bg-gray-800 border border-gray-700 text-white text-sm focus:outline-none focus:border-indigo-500"
-                  >
-                    <option value="professional">Professional</option>
-                    <option value="casual">Casual</option>
-                    <option value="exciting">Exciting</option>
-                  </select>
-                </div>
-              </div>
-            </>
-          )}
-
-          {/* ── Case Study ── */}
-          {activeType === 'case_study' && (
-            <>
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="text-gray-400 text-xs mb-1.5 block">Client name <span className="text-red-400">*</span></label>
-                  <input
-                    value={csClient}
-                    onChange={e => setCsClient(e.target.value)}
-                    placeholder="e.g. Acme Corp"
-                    className="w-full px-4 py-2.5 rounded-xl bg-gray-800 border border-gray-700 text-white placeholder-gray-500 text-sm focus:outline-none focus:border-indigo-500"
-                  />
-                </div>
-                <div>
-                  <label className="text-gray-400 text-xs mb-1.5 block">Client industry</label>
-                  <input
-                    value={csIndustry}
-                    onChange={e => setCsIndustry(e.target.value)}
-                    placeholder="e.g. E-commerce, SaaS, Healthcare"
-                    className="w-full px-4 py-2.5 rounded-xl bg-gray-800 border border-gray-700 text-white placeholder-gray-500 text-sm focus:outline-none focus:border-indigo-500"
-                  />
-                </div>
-              </div>
-              <div>
-                <label className="text-gray-400 text-xs mb-1.5 block">Their problem <span className="text-red-400">*</span></label>
-                <textarea
-                  value={csProblem}
-                  onChange={e => setCsProblem(e.target.value)}
-                  rows={2}
-                  placeholder="Describe the challenge they were facing before working with you..."
-                  className="w-full px-4 py-2.5 rounded-xl bg-gray-800 border border-gray-700 text-white placeholder-gray-500 text-sm focus:outline-none focus:border-indigo-500 resize-none"
-                />
-              </div>
-              <div>
-                <label className="text-gray-400 text-xs mb-1.5 block">Your solution <span className="text-red-400">*</span></label>
-                <textarea
-                  value={csSolution}
-                  onChange={e => setCsSolution(e.target.value)}
-                  rows={2}
-                  placeholder="Describe your approach, methodology, and what you delivered..."
-                  className="w-full px-4 py-2.5 rounded-xl bg-gray-800 border border-gray-700 text-white placeholder-gray-500 text-sm focus:outline-none focus:border-indigo-500 resize-none"
-                />
-              </div>
-              <div>
-                <label className="text-gray-400 text-xs mb-1.5 block">Results achieved <span className="text-red-400">*</span></label>
-                <textarea
-                  value={csResults}
-                  onChange={e => setCsResults(e.target.value)}
-                  rows={2}
-                  placeholder="e.g. Revenue grew 3x, 40% reduction in CAC, 10,000 new signups in 90 days..."
-                  className="w-full px-4 py-2.5 rounded-xl bg-gray-800 border border-gray-700 text-white placeholder-gray-500 text-sm focus:outline-none focus:border-indigo-500 resize-none"
-                />
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="text-gray-400 text-xs mb-1.5 block">Timeframe</label>
-                  <input
-                    value={csTimeframe}
-                    onChange={e => setCsTimeframe(e.target.value)}
-                    placeholder="e.g. 3 months, Q1 2025"
-                    className="w-full px-4 py-2.5 rounded-xl bg-gray-800 border border-gray-700 text-white placeholder-gray-500 text-sm focus:outline-none focus:border-indigo-500"
-                  />
-                </div>
-                <div>
-                  <label className="text-gray-400 text-xs mb-1.5 block">Client testimonial (optional)</label>
-                  <input
-                    value={csTestimonial}
-                    onChange={e => setCsTestimonial(e.target.value)}
-                    placeholder="Direct quote from client..."
-                    className="w-full px-4 py-2.5 rounded-xl bg-gray-800 border border-gray-700 text-white placeholder-gray-500 text-sm focus:outline-none focus:border-indigo-500"
-                  />
-                </div>
-              </div>
-            </>
-          )}
-
-          {/* ── Script ── */}
-          {activeType === 'script' && (
-            <>
-              <div>
-                <label className="text-gray-400 text-xs mb-1.5 block">Topic / Title <span className="text-red-400">*</span></label>
-                <input
-                  value={scTopic}
-                  onChange={e => setScTopic(e.target.value)}
-                  placeholder="e.g. 5 Marketing Mistakes That Kill Your ROI"
-                  className="w-full px-4 py-2.5 rounded-xl bg-gray-800 border border-gray-700 text-white placeholder-gray-500 text-sm focus:outline-none focus:border-indigo-500"
-                />
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="text-gray-400 text-xs mb-1.5 block">Platform</label>
-                  <select
-                    value={scPlatform}
-                    onChange={e => setScPlatform(e.target.value as typeof scPlatform)}
-                    className="w-full px-4 py-2.5 rounded-xl bg-gray-800 border border-gray-700 text-white text-sm focus:outline-none focus:border-indigo-500"
-                  >
-                    <option value="youtube">YouTube</option>
-                    <option value="instagram_reel">Instagram Reel</option>
-                    <option value="tiktok">TikTok</option>
-                    <option value="podcast">Podcast</option>
-                    <option value="webinar">Webinar</option>
-                    <option value="ad">Video Ad</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="text-gray-400 text-xs mb-1.5 block">Duration (seconds)</label>
-                  <input
-                    type="number"
-                    value={scDuration}
-                    onChange={e => setScDuration(Number(e.target.value))}
-                    min={15}
-                    max={7200}
-                    className="w-full px-4 py-2.5 rounded-xl bg-gray-800 border border-gray-700 text-white text-sm focus:outline-none focus:border-indigo-500"
-                  />
-                </div>
-              </div>
-              <div>
-                <label className="text-gray-400 text-xs mb-1.5 block">Hook idea (optional)</label>
-                <input
-                  value={scHook}
-                  onChange={e => setScHook(e.target.value)}
-                  placeholder="e.g. Start with a shocking stat, or describe the moment everything changed..."
-                  className="w-full px-4 py-2.5 rounded-xl bg-gray-800 border border-gray-700 text-white placeholder-gray-500 text-sm focus:outline-none focus:border-indigo-500"
-                />
-              </div>
-            </>
-          )}
-
-          {error && <p className="text-red-400 text-sm">{error}</p>}
-
-          <button
-            onClick={handleGenerate}
-            disabled={loading || !workspaceId}
-            className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white py-2.5 px-6 rounded-xl font-semibold text-sm transition-colors flex items-center gap-2"
-          >
-            {loading ? (
-              <>
-                <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-                </svg>
-                {loadingMessages[activeType]}
-              </>
-            ) : `✨ Generate ${CONTENT_TYPES.find(t => t.id === activeType)?.label}`}
-          </button>
-        </div>
-      </div>
-
-      {/* ── Results ──────────────────────────────────────────────────────────── */}
-
-      {/* Blog Post Result */}
-      {blogResult && activeType === 'blog' && (
-        <div className="space-y-5 mb-10">
-          {/* Header card */}
-          <div className="bg-gray-900 border border-indigo-800/40 rounded-2xl p-6">
-            <div className="flex items-start justify-between gap-4 mb-3">
-              <div className="flex-1">
-                <h2 className="text-white font-bold text-xl leading-tight mb-2">{blogResult.title}</h2>
-                <p className="text-gray-400 text-sm">{blogResult.metaDescription}</p>
-              </div>
-              <div className="flex flex-col items-end gap-2 flex-shrink-0">
-                <span className="px-2.5 py-1 bg-indigo-900/40 text-indigo-300 text-xs rounded-full font-medium">
-                  {blogResult.wordCount?.toLocaleString() || blogResult.content?.split(' ').length.toLocaleString()} words
+        <div className="flex items-center gap-3">
+          {/* Destination status pills */}
+          <div className="flex items-center gap-1.5">
+            {DESTINATIONS.map(dest => (
+              <div
+                key={dest.id}
+                title={`${dest.name}: ${dest.status}`}
+                className="flex items-center gap-1 bg-gray-900 border border-gray-800 rounded-lg px-2 py-1"
+              >
+                <span className={`text-xs font-bold ${dest.status === 'connected' ? 'text-white' : dest.status === 'warning' ? 'text-yellow-400' : 'text-gray-600'}`}>
+                  {dest.icon}
                 </span>
-                <span className="px-2.5 py-1 bg-gray-800 text-gray-400 text-xs rounded-full">{blogResult.readTime}</span>
+                <span className={`text-xs ${DEST_STATUS[dest.status]}`}>{DEST_ICONS[dest.status]}</span>
               </div>
-            </div>
-            <p className="text-gray-300 text-sm italic leading-relaxed border-l-2 border-indigo-700 pl-3">{blogResult.excerpt}</p>
-          </div>
-
-          {/* Outline */}
-          {blogResult.outline?.length > 0 && (
-            <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-              <h3 className="text-white font-semibold text-sm mb-3">Article Outline</h3>
-              <ol className="space-y-1.5">
-                {blogResult.outline.map((h, i) => (
-                  <li key={i} className="flex gap-3 text-sm">
-                    <span className="text-indigo-400 font-medium flex-shrink-0 w-5">{i + 1}.</span>
-                    <span className="text-gray-300">{h}</span>
-                  </li>
-                ))}
-              </ol>
-            </div>
-          )}
-
-          {/* Full content */}
-          <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-white font-semibold text-sm">Full Article</h3>
-              <CopyButton text={blogResult.content} label="Copy HTML" />
-            </div>
-            <div
-              className="prose prose-invert prose-sm max-w-none text-gray-300 max-h-96 overflow-y-auto scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent pr-2
-                [&_h2]:text-white [&_h2]:font-bold [&_h2]:text-base [&_h2]:mt-5 [&_h2]:mb-2
-                [&_p]:text-gray-300 [&_p]:leading-relaxed [&_p]:mb-3
-                [&_ul]:text-gray-300 [&_ul]:space-y-1 [&_ul]:pl-4
-                [&_li]:text-gray-300
-                [&_strong]:text-white"
-              dangerouslySetInnerHTML={{ __html: blogResult.content }}
-            />
-          </div>
-
-          {/* CTA + Social + Keywords */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-              <h3 className="text-white font-semibold text-sm mb-2">Call to Action</h3>
-              <p className="text-gray-300 text-sm leading-relaxed">{blogResult.callToAction}</p>
-            </div>
-            <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-              <div className="flex items-center justify-between mb-2">
-                <h3 className="text-white font-semibold text-sm">Social Caption</h3>
-                <CopyButton text={blogResult.socialCaption} />
-              </div>
-              <p className="text-gray-300 text-sm leading-relaxed">{blogResult.socialCaption}</p>
-            </div>
-          </div>
-
-          <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-            <h3 className="text-white font-semibold text-sm mb-3">Keywords Used</h3>
-            <div className="flex flex-wrap gap-2">
-              {blogResult.keywords?.map((kw, i) => (
-                <span key={i} className="px-2.5 py-1 bg-indigo-900/30 border border-indigo-800/40 text-indigo-300 text-xs rounded-full">{kw}</span>
-              ))}
-            </div>
-            {blogResult.internalLinkSuggestions?.length > 0 && (
-              <div className="mt-3 pt-3 border-t border-gray-800">
-                <p className="text-gray-500 text-xs mb-2">Internal link opportunities</p>
-                <div className="flex flex-wrap gap-2">
-                  {blogResult.internalLinkSuggestions.map((s, i) => (
-                    <span key={i} className="px-2.5 py-1 bg-gray-800 text-gray-400 text-xs rounded-full">{s}</span>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-
-          <div className="flex gap-3">
-            <CopyButton text={blogResult.content} label="Copy Full HTML" />
-            <button className="px-4 py-1.5 rounded-lg bg-indigo-600/20 border border-indigo-700/40 text-indigo-300 text-xs hover:bg-indigo-600/30 transition-colors">
-              Publish (coming soon)
+            ))}
+            <button
+              onClick={() => setShowDestSettings(true)}
+              className="w-7 h-7 flex items-center justify-center rounded-lg border border-gray-700 text-gray-500 hover:text-white hover:border-gray-500 text-sm transition-colors"
+              title="Configure destinations"
+            >
+              ⚙
             </button>
+          </div>
+          <button
+            onClick={() => { setActiveTab('composer'); setTitle(''); setBody('') }}
+            className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-xl text-sm font-medium flex items-center gap-2"
+          >
+            ✍ New Post
+          </button>
+        </div>
+      </div>
+
+      {/* Tabs */}
+      <div className="border-b border-gray-800 mb-6">
+        <div className="flex gap-0.5">
+          {tabs.map(t => (
+            <button
+              key={t.id}
+              onClick={() => setActiveTab(t.id)}
+              className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
+                activeTab === t.id
+                  ? 'border-indigo-500 text-white'
+                  : 'border-transparent text-gray-500 hover:text-gray-300'
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* ── Tab: Posts ────────────────────────────────────────────────────────── */}
+      {activeTab === 'posts' && (
+        <div>
+          <div className="flex items-center justify-between mb-4">
+            <p className="text-gray-400 text-sm">{MOCK_POSTS.length} posts</p>
+            <button
+              onClick={() => { setActiveTab('composer') }}
+              className="text-indigo-400 text-sm hover:text-indigo-300"
+            >
+              + Generate New Post
+            </button>
+          </div>
+          <div className="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-800">
+                  <th className="text-left text-gray-500 text-xs px-5 py-3 font-medium">Title</th>
+                  <th className="text-left text-gray-500 text-xs px-4 py-3 font-medium">Status</th>
+                  <th className="text-left text-gray-500 text-xs px-4 py-3 font-medium">Words</th>
+                  <th className="text-left text-gray-500 text-xs px-4 py-3 font-medium">SEO</th>
+                  <th className="text-left text-gray-500 text-xs px-4 py-3 font-medium">Destinations</th>
+                  <th className="text-left text-gray-500 text-xs px-4 py-3 font-medium">Date</th>
+                  <th className="text-right text-gray-500 text-xs px-4 py-3 font-medium">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {MOCK_POSTS.map(post => (
+                  <tr key={post.id} className="border-b border-gray-800/50 hover:bg-gray-800/30 transition-colors">
+                    <td className="px-5 py-4">
+                      <p className="text-white font-medium text-sm leading-tight max-w-xs">{post.title}</p>
+                      {post.views ? <p className="text-gray-600 text-xs mt-0.5">{post.views.toLocaleString()} views · {post.readTime}</p> : null}
+                    </td>
+                    <td className="px-4 py-4">
+                      <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${STATUS_COLORS[post.status]}`}>
+                        {post.status}
+                      </span>
+                    </td>
+                    <td className="px-4 py-4 text-gray-400 text-xs">{post.wordCount.toLocaleString()}</td>
+                    <td className="px-4 py-4">
+                      <span className={`text-xs px-2 py-0.5 rounded-full font-bold ${SEO_SCORE_COLOR(post.seoScore)}`}>
+                        {post.seoScore}
+                      </span>
+                    </td>
+                    <td className="px-4 py-4">
+                      <div className="flex gap-1 flex-wrap">
+                        {post.destinations.map(d => {
+                          const dest = DESTINATIONS.find(x => x.id === d)
+                          return dest ? (
+                            <span key={d} className="text-xs bg-gray-800 text-gray-400 px-1.5 py-0.5 rounded font-mono">{dest.icon}</span>
+                          ) : null
+                        })}
+                      </div>
+                    </td>
+                    <td className="px-4 py-4 text-gray-500 text-xs">{post.date}</td>
+                    <td className="px-4 py-4">
+                      <div className="flex justify-end gap-1">
+                        <button
+                          onClick={() => setActiveTab('composer')}
+                          className="text-xs px-2 py-1 text-gray-400 hover:text-white rounded hover:bg-gray-700"
+                        >
+                          Edit
+                        </button>
+                        <button className="text-xs px-2 py-1 text-gray-400 hover:text-white rounded hover:bg-gray-700">Dup</button>
+                        {post.status === 'Published' && (
+                          <button className="text-xs px-2 py-1 text-indigo-400 hover:text-indigo-300 rounded hover:bg-gray-700">↻</button>
+                        )}
+                        <button className="text-xs px-2 py-1 text-red-700 hover:text-red-400 rounded hover:bg-gray-700">✕</button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </div>
       )}
 
-      {/* Newsletter Result */}
-      {nlResult && activeType === 'newsletter' && (
-        <div className="space-y-5 mb-10">
-          {/* Subject + Preview */}
-          <div className="bg-gray-900 border border-indigo-800/40 rounded-2xl p-6">
-            <div className="flex items-start justify-between gap-4 mb-3">
-              <div>
-                <p className="text-gray-500 text-xs mb-1">Subject line</p>
-                <h2 className="text-white font-bold text-lg">{nlResult.subject}</h2>
-              </div>
-              <span className="px-2.5 py-1 bg-gray-800 text-gray-400 text-xs rounded-full flex-shrink-0">{nlResult.estimatedReadTime}</span>
-            </div>
-            <div className="bg-gray-800 rounded-lg px-3 py-2 text-xs text-gray-400 flex items-center gap-2">
-              <span className="text-gray-600">Preview:</span>
-              <span>{nlResult.previewText}</span>
-            </div>
-            {nlResult.headline && (
-              <p className="mt-3 text-indigo-300 font-semibold">{nlResult.headline}</p>
-            )}
-            <p className="mt-2 text-gray-300 text-sm leading-relaxed">{nlResult.intro}</p>
-          </div>
+      {/* ── Tab: Composer ─────────────────────────────────────────────────────── */}
+      {activeTab === 'composer' && (
+        <div className="grid grid-cols-3 gap-6">
+          {/* Editor column */}
+          <div className="col-span-2 space-y-4">
+            {/* Title */}
+            <input
+              value={title}
+              onChange={e => setTitle(e.target.value)}
+              placeholder="Post title — make it compelling and keyword-rich"
+              className="w-full px-5 py-4 bg-gray-900 border border-gray-800 rounded-2xl text-white text-lg font-semibold placeholder-gray-600 focus:outline-none focus:border-indigo-500"
+            />
 
-          {/* Featured insight */}
-          {nlResult.featuredInsight && (
-            <div className="bg-indigo-950/40 border border-indigo-800/40 rounded-xl p-5">
-              <p className="text-indigo-300 text-xs font-medium uppercase tracking-wide mb-2">Featured Insight</p>
-              <p className="text-white text-sm font-medium leading-relaxed italic">&ldquo;{nlResult.featuredInsight}&rdquo;</p>
-            </div>
-          )}
-
-          {/* Sections tabs */}
-          {nlResult.sections?.length > 0 && (
-            <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
-              <div className="flex overflow-x-auto border-b border-gray-800">
-                {nlResult.sections.map((sec, i) => (
+            {/* AI tools */}
+            <div className="bg-gray-900 border border-gray-800 rounded-2xl p-3">
+              <p className="text-gray-500 text-xs mb-2 font-medium">AI Writing Tools</p>
+              <div className="flex flex-wrap gap-2">
+                {AI_TOOLS.map(tool => (
                   <button
-                    key={i}
-                    onClick={() => setNlActiveSection(i)}
-                    className={`px-4 py-3 text-xs font-medium whitespace-nowrap border-r border-gray-800 transition-colors ${
-                      nlActiveSection === i
-                        ? 'bg-indigo-900/30 text-indigo-300'
-                        : 'text-gray-400 hover:text-white hover:bg-gray-800'
-                    }`}
+                    key={tool}
+                    onClick={() => runAiTool(tool)}
+                    disabled={generatingAi !== null}
+                    className="px-3 py-1.5 bg-gray-800 hover:bg-indigo-900/40 hover:text-indigo-300 border border-gray-700 hover:border-indigo-700 text-gray-400 text-xs rounded-xl transition-colors disabled:opacity-50 flex items-center gap-1.5"
                   >
-                    <span className={`mr-1.5 px-1.5 py-0.5 rounded text-xs ${SECTION_TYPE_COLORS[sec.type] || 'bg-gray-800 text-gray-400'}`}>
-                      {sec.type}
-                    </span>
-                    {sec.title}
+                    {generatingAi === tool ? <><SpinnerSm /> {tool}</> : tool}
                   </button>
                 ))}
               </div>
-              <div className="p-5">
-                <div
-                  className="text-gray-300 text-sm leading-relaxed prose prose-invert prose-sm max-w-none
-                    [&_p]:mb-3 [&_ul]:space-y-1 [&_ul]:pl-4 [&_li]:text-gray-300 [&_strong]:text-white"
-                  dangerouslySetInnerHTML={{ __html: nlResult.sections[nlActiveSection]?.content || '' }}
-                />
-              </div>
             </div>
-          )}
 
-          {/* CTA */}
-          {nlResult.cta && (
-            <div className="bg-gray-900 border border-indigo-800/30 rounded-xl p-5 flex items-center justify-between gap-4">
-              <div>
-                <p className="text-gray-300 text-sm leading-relaxed">{nlResult.cta.text}</p>
-              </div>
-              <button className="flex-shrink-0 px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm font-medium whitespace-nowrap">
-                {nlResult.cta.buttonLabel}
-              </button>
-            </div>
-          )}
-
-          {/* Footer */}
-          {nlResult.footer && (
-            <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-              <p className="text-gray-500 text-xs mb-1">Footer / Sign-off</p>
-              <p className="text-gray-300 text-sm">{nlResult.footer}</p>
-            </div>
-          )}
-
-          <CopyButton text={`Subject: ${nlResult.subject}\n\n${nlResult.intro}\n\n${nlResult.sections?.map(s => `## ${s.title}\n${s.content}`).join('\n\n')}`} label="Copy Newsletter Text" />
-        </div>
-      )}
-
-      {/* Case Study Result */}
-      {csResult && activeType === 'case_study' && (
-        <div className="space-y-5 mb-10">
-          {/* Headline */}
-          <div className="bg-gray-900 border border-indigo-800/40 rounded-2xl p-6">
-            <h2 className="text-white font-bold text-xl leading-tight mb-1">{csResult.headline}</h2>
-            <p className="text-indigo-300 text-sm mb-3">{csResult.subheadline}</p>
-            <p className="text-gray-300 text-sm leading-relaxed">{csResult.summary}</p>
-          </div>
-
-          {/* Key Metrics */}
-          {csResult.keyMetrics?.length > 0 && (
-            <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
-              {csResult.keyMetrics.map((m, i) => (
-                <div key={i} className="bg-green-950/30 border border-green-800/30 rounded-xl p-4 text-center">
-                  <p className="text-green-300 font-bold text-2xl">{m.value}</p>
-                  <p className="text-white text-sm font-medium mt-1">{m.label}</p>
-                  {m.improvement && <p className="text-green-400/70 text-xs mt-0.5">{m.improvement}</p>}
-                </div>
+            {/* Format toolbar */}
+            <div className="bg-gray-900 border border-gray-800 rounded-t-2xl rounded-b-none px-4 py-2 flex gap-1 flex-wrap border-b-0">
+              {FORMAT_TOOLBAR.map(btn => (
+                <button
+                  key={btn.label}
+                  onClick={() => insertAtCursor(btn.action)}
+                  title={btn.title}
+                  className="w-8 h-8 flex items-center justify-center text-gray-400 hover:text-white hover:bg-gray-700 rounded-lg text-xs font-bold transition-colors"
+                >
+                  {btn.label}
+                </button>
               ))}
+              <div className="ml-auto flex items-center gap-3 text-xs text-gray-500">
+                <span>{wordCount.toLocaleString()} words</span>
+                <span>{readTime} min read</span>
+              </div>
             </div>
-          )}
 
-          {/* Sections */}
-          {[
-            { label: 'Client Overview', html: csResult.clientOverview },
-            { label: 'The Challenge', html: csResult.challengeSection },
-            { label: 'Our Solution', html: csResult.solutionSection },
-            { label: 'Results', html: csResult.resultsSection },
-          ].map(({ label, html }) => html ? (
-            <div key={label} className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-              <h3 className="text-white font-semibold text-sm mb-3">{label}</h3>
-              <div
-                className="text-gray-300 text-sm leading-relaxed prose prose-invert prose-sm max-w-none
-                  [&_p]:mb-2 [&_ul]:space-y-1 [&_ul]:pl-4 [&_li]:text-gray-300 [&_strong]:text-white"
-                dangerouslySetInnerHTML={{ __html: html }}
-              />
-            </div>
-          ) : null)}
+            {/* Body editor */}
+            <textarea
+              value={body}
+              onChange={e => setBody(e.target.value)}
+              placeholder="Start writing your post... or use the AI tools above to generate content."
+              rows={20}
+              className="w-full px-5 py-4 bg-gray-900 border border-gray-800 rounded-b-2xl rounded-t-none text-gray-200 text-sm placeholder-gray-700 focus:outline-none focus:border-indigo-500 resize-none leading-relaxed font-mono"
+            />
 
-          {/* Testimonial */}
-          {csResult.testimonialBlock && (
-            <div className="bg-gray-900 border border-indigo-800/30 rounded-xl p-5">
-              <p className="text-indigo-300 text-xs font-medium uppercase tracking-wide mb-3">Client Testimonial</p>
-              <p className="text-white text-sm leading-relaxed italic">{csResult.testimonialBlock}</p>
-            </div>
-          )}
-
-          {/* Lessons */}
-          {csResult.lessonsLearned?.length > 0 && (
-            <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-              <h3 className="text-white font-semibold text-sm mb-3">Lessons Learned</h3>
-              <ol className="space-y-2">
-                {csResult.lessonsLearned.map((l, i) => (
-                  <li key={i} className="flex gap-3 text-sm">
-                    <span className="text-indigo-400 font-bold flex-shrink-0 w-5">{i + 1}.</span>
-                    <span className="text-gray-300">{l}</span>
-                  </li>
+            {/* Publishing destinations */}
+            <div className="bg-gray-900 border border-gray-800 rounded-2xl p-5 space-y-4">
+              <h3 className="text-white font-semibold text-sm">Publishing Destinations</h3>
+              <div className="grid grid-cols-3 gap-2">
+                {DESTINATIONS.map(dest => (
+                  <label
+                    key={dest.id}
+                    className={`flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-all ${
+                      selectedDestinations.includes(dest.id)
+                        ? 'border-indigo-500 bg-indigo-900/20'
+                        : 'border-gray-700 hover:border-gray-600'
+                    } ${dest.status === 'disconnected' ? 'opacity-40 cursor-not-allowed' : ''}`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selectedDestinations.includes(dest.id)}
+                      onChange={() => dest.status !== 'disconnected' && toggleDest(dest.id)}
+                      className="accent-indigo-500"
+                      disabled={dest.status === 'disconnected'}
+                    />
+                    <div>
+                      <p className={`text-sm font-medium ${selectedDestinations.includes(dest.id) ? 'text-white' : 'text-gray-400'}`}>
+                        {dest.name}
+                      </p>
+                      <p className={`text-xs ${DEST_STATUS[dest.status]}`}>{dest.status}</p>
+                    </div>
+                  </label>
                 ))}
-              </ol>
-            </div>
-          )}
+              </div>
 
-          {/* CTA */}
-          {csResult.cta && (
-            <div className="bg-gray-900 border border-indigo-800/30 rounded-xl p-5">
-              <p className="text-gray-300 text-sm leading-relaxed">{csResult.cta}</p>
-            </div>
-          )}
+              {/* WordPress-specific settings */}
+              {selectedDestinations.includes('wordpress') && (
+                <div className="bg-gray-800/50 rounded-xl p-4 space-y-3">
+                  <p className="text-gray-400 text-xs font-medium">WordPress Settings</p>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-gray-500 text-xs mb-1 block">Category</label>
+                      <select
+                        value={wpCategory}
+                        onChange={e => setWpCategory(e.target.value)}
+                        className="w-full bg-gray-700 border border-gray-600 text-white text-xs px-2 py-1.5 rounded-lg focus:outline-none"
+                      >
+                        <option>General</option>
+                        <option>Marketing</option>
+                        <option>Tutorials</option>
+                        <option>Case Studies</option>
+                        <option>News</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-gray-500 text-xs mb-1 block">Tags</label>
+                      <input
+                        placeholder="marketing, AI, strategy"
+                        className="w-full bg-gray-700 border border-gray-600 text-white text-xs px-2 py-1.5 rounded-lg focus:outline-none placeholder-gray-600"
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
 
-          <div className="flex gap-3">
-            <CopyButton text={csResult.fullHtml} label="Copy Full HTML" />
-            <button className="px-4 py-1.5 rounded-lg bg-indigo-600/20 border border-indigo-700/40 text-indigo-300 text-xs hover:bg-indigo-600/30 transition-colors">
-              Export PDF (coming soon)
-            </button>
-          </div>
-        </div>
-      )}
+              {/* LinkedIn-specific settings */}
+              {selectedDestinations.includes('linkedin') && (
+                <div className="bg-gray-800/50 rounded-xl p-4">
+                  <p className="text-gray-400 text-xs font-medium mb-2">LinkedIn Settings</p>
+                  <div className="flex gap-2">
+                    <label className="flex items-center gap-2 text-xs text-gray-300 cursor-pointer">
+                      <input type="radio" name="li-type" defaultChecked className="accent-indigo-500" />
+                      Article (Long-form)
+                    </label>
+                    <label className="flex items-center gap-2 text-xs text-gray-300 cursor-pointer">
+                      <input type="radio" name="li-type" className="accent-indigo-500" />
+                      Post (Short)
+                    </label>
+                  </div>
+                </div>
+              )}
 
-      {/* Script Result */}
-      {scResult && activeType === 'script' && (
-        <div className="space-y-5 mb-10">
-          {/* Header */}
-          <div className="bg-gray-900 border border-indigo-800/40 rounded-2xl p-6">
-            <div className="flex items-start justify-between gap-4">
+              {/* Featured image */}
               <div>
-                <div className="flex items-center gap-2 mb-2">
-                  <span className="px-2 py-0.5 bg-indigo-900/40 text-indigo-300 text-xs rounded-full">{PLATFORM_LABELS[scResult.platform] || scResult.platform}</span>
-                  <span className="px-2 py-0.5 bg-gray-800 text-gray-400 text-xs rounded-full">{scResult.estimatedDuration}</span>
+                <p className="text-gray-400 text-xs font-medium mb-2">Featured Image</p>
+                <div className="flex gap-2">
+                  <div className="flex-1 border-2 border-dashed border-gray-700 rounded-xl p-3 text-center text-gray-600 text-xs cursor-pointer hover:border-indigo-600 hover:text-indigo-400 transition-colors">
+                    Upload image
+                  </div>
+                  <div className="flex-1 border border-gray-700 rounded-xl p-3 text-center">
+                    <input
+                      value={featuredImagePrompt}
+                      onChange={e => setFeaturedImagePrompt(e.target.value)}
+                      placeholder="Or describe an AI image..."
+                      className="w-full bg-transparent text-xs text-white placeholder-gray-600 focus:outline-none"
+                    />
+                  </div>
+                  <button className="px-3 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs rounded-xl">
+                    🤖 Generate
+                  </button>
                 </div>
-                <h2 className="text-white font-bold text-xl">{scResult.title}</h2>
               </div>
-              <CopyButton text={`${scResult.hook}\n\n${scResult.intro}\n\n${scResult.mainContent?.map(s => `[${s.timestamp}] ${s.section}\n${s.script}`).join('\n\n')}\n\nCTA: ${scResult.cta}\n\nOutro: ${scResult.outro}`} label="Copy Script" />
-            </div>
-          </div>
 
-          {/* Hook — big feature */}
-          <div className="bg-gradient-to-br from-indigo-950/60 to-purple-950/40 border border-indigo-700/40 rounded-2xl p-6">
-            <p className="text-indigo-400 text-xs font-semibold uppercase tracking-wide mb-3">Hook (0:00 — first impression)</p>
-            <p className="text-white text-lg font-semibold leading-relaxed">{scResult.hook}</p>
-          </div>
-
-          {/* Intro */}
-          {scResult.intro && (
-            <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-              <p className="text-gray-500 text-xs mb-2">Intro</p>
-              <p className="text-gray-300 text-sm leading-relaxed">{scResult.intro}</p>
-            </div>
-          )}
-
-          {/* Timeline table */}
-          {scResult.mainContent?.length > 0 && (
-            <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
-              <div className="px-5 py-3 border-b border-gray-800">
-                <h3 className="text-white font-semibold text-sm">Full Script Timeline</h3>
-              </div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-gray-800">
-                      <th className="px-4 py-3 text-left text-gray-500 font-medium text-xs w-20">Time</th>
-                      <th className="px-4 py-3 text-left text-gray-500 font-medium text-xs w-36">Section</th>
-                      <th className="px-4 py-3 text-left text-gray-500 font-medium text-xs">Script</th>
-                      <th className="px-4 py-3 text-left text-gray-500 font-medium text-xs w-32">Visual/B-roll</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-800">
-                    {scResult.mainContent.map((row, i) => (
-                      <tr key={i} className="hover:bg-gray-800/30 transition-colors">
-                        <td className="px-4 py-3 text-indigo-400 font-mono text-xs">{row.timestamp}</td>
-                        <td className="px-4 py-3 text-gray-300 font-medium text-xs">{row.section}</td>
-                        <td className="px-4 py-3 text-gray-300 text-xs leading-relaxed">{row.script}</td>
-                        <td className="px-4 py-3 text-gray-500 text-xs">{row.broll || row.onscreen || '—'}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
-          {/* CTA + Outro */}
-          <div className="grid grid-cols-2 gap-4">
-            {scResult.cta && (
-              <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-                <p className="text-gray-500 text-xs mb-2">Call to Action</p>
-                <p className="text-gray-300 text-sm leading-relaxed">{scResult.cta}</p>
-              </div>
-            )}
-            {scResult.outro && (
-              <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-                <p className="text-gray-500 text-xs mb-2">Outro</p>
-                <p className="text-gray-300 text-sm leading-relaxed">{scResult.outro}</p>
-              </div>
-            )}
-          </div>
-
-          {/* Description + Hashtags */}
-          <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-            <div className="flex items-center justify-between mb-2">
-              <h3 className="text-white font-semibold text-sm">Platform Description</h3>
-              <CopyButton text={scResult.description} />
-            </div>
-            <p className="text-gray-300 text-sm leading-relaxed mb-4">{scResult.description}</p>
-            <div className="flex flex-wrap gap-1.5">
-              {scResult.hashtags?.map((tag, i) => (
-                <span key={i} className="px-2 py-0.5 bg-gray-800 text-gray-400 text-xs rounded">{tag.startsWith('#') ? tag : `#${tag}`}</span>
-              ))}
-            </div>
-          </div>
-
-          {/* Thumbnail Ideas */}
-          {scResult.thumbnailIdeas?.length > 0 && (
-            <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-              <h3 className="text-white font-semibold text-sm mb-3">Thumbnail Ideas</h3>
-              <div className="space-y-2">
-                {scResult.thumbnailIdeas.map((idea, i) => (
-                  <div key={i} className="flex gap-3 items-start">
-                    <span className="text-indigo-400 font-bold text-xs flex-shrink-0 w-5 mt-0.5">{i + 1}.</span>
-                    <p className="text-gray-300 text-sm">{idea}</p>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Chapter timestamps */}
-          {(scResult.chaptersTimestamps?.length ?? 0) > 0 && (
-            <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-              <div className="flex items-center justify-between mb-3">
-                <h3 className="text-white font-semibold text-sm">Chapter Timestamps</h3>
-                <CopyButton
-                  text={(scResult.chaptersTimestamps ?? []).map(c => `${c.time} ${c.title}`).join('\n')}
-                  label="Copy Timestamps"
-                />
-              </div>
-              <div className="space-y-1.5">
-                {(scResult.chaptersTimestamps ?? []).map((ch, i) => (
-                  <div key={i} className="flex items-center gap-3 text-sm">
-                    <span className="text-indigo-400 font-mono text-xs">{ch.time}</span>
-                    <span className="text-gray-300">{ch.title}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* ── Previous Content ───────────────────────────────────────────────────── */}
-      <div>
-        <h2 className="text-white font-semibold mb-4 text-sm">Previous Content</h2>
-        {savedLoading ? (
-          <div className="text-gray-600 text-sm animate-pulse p-6 text-center">Loading content...</div>
-        ) : allSaved.length === 0 ? (
-          <div className="border border-dashed border-gray-700 rounded-2xl p-10 text-center">
-            <div className="text-4xl mb-3">✍️</div>
-            <p className="text-white font-medium mb-1">No content generated yet</p>
-            <p className="text-gray-500 text-sm">Select a content type above and generate your first piece</p>
-          </div>
-        ) : (
-          <div className="space-y-2">
-            {allSaved.map(artifact => (
-              <div
-                key={artifact.id}
-                className="w-full text-left bg-gray-900 border border-gray-800 hover:border-gray-600 rounded-xl p-4 transition-colors flex items-center justify-between"
-              >
-                <div className="flex items-center gap-3 min-w-0">
-                  <span className="text-lg flex-shrink-0">{TYPE_ICON[artifact.artifactType || ''] || '📄'}</span>
-                  <div className="min-w-0">
-                    <p className="text-white text-sm font-medium truncate">{artifact.title}</p>
-                    <p className="text-gray-500 text-xs mt-0.5">{new Date(artifact.created_at).toLocaleDateString()}</p>
-                  </div>
+              {/* Schedule / Publish */}
+              <div className="flex items-center gap-3 pt-2 border-t border-gray-800">
+                <div className="flex rounded-xl border border-gray-700 overflow-hidden">
+                  <button
+                    onClick={() => setPublishMode('now')}
+                    className={`px-4 py-2 text-sm transition-colors ${publishMode === 'now' ? 'bg-gray-700 text-white' : 'text-gray-500 hover:text-white'}`}
+                  >
+                    Publish Now
+                  </button>
+                  <button
+                    onClick={() => setPublishMode('schedule')}
+                    className={`px-4 py-2 text-sm transition-colors ${publishMode === 'schedule' ? 'bg-gray-700 text-white' : 'text-gray-500 hover:text-white'}`}
+                  >
+                    Schedule
+                  </button>
                 </div>
-                <span className={`text-xs px-2 py-0.5 rounded-full ml-4 flex-shrink-0 ${TYPE_BADGE[artifact.artifactType || ''] || 'bg-gray-800 text-gray-400'}`}>
-                  {artifact.artifactType?.replace('_', ' ')}
+                {publishMode === 'schedule' && (
+                  <input
+                    type="datetime-local"
+                    value={scheduleTime}
+                    onChange={e => setScheduleTime(e.target.value)}
+                    className="bg-gray-800 border border-gray-700 text-white text-sm px-3 py-2 rounded-xl focus:outline-none focus:border-indigo-500"
+                  />
+                )}
+                <button
+                  onClick={handlePublish}
+                  disabled={generating || !title.trim() || !body.trim()}
+                  className="ml-auto bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white px-6 py-2 rounded-xl text-sm font-medium flex items-center gap-2"
+                >
+                  {generating ? <><SpinnerSm /> Publishing...</> :
+                   publishSuccess ? '✅ Published!' :
+                   publishMode === 'schedule' ? '📅 Schedule' : '🚀 Publish'}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* SEO Panel */}
+          <div className="space-y-4">
+            {/* SEO Score */}
+            <div className="bg-gray-900 border border-gray-800 rounded-2xl p-5">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-white font-semibold text-sm">SEO Score</h3>
+                <span className={`text-2xl font-bold ${seoScore >= 80 ? 'text-green-400' : seoScore >= 50 ? 'text-yellow-400' : 'text-red-400'}`}>
+                  {seoScore}
                 </span>
               </div>
-            ))}
+              <div className="w-full h-2 bg-gray-800 rounded-full overflow-hidden mb-4">
+                <div
+                  className={`h-full rounded-full transition-all ${seoScore >= 80 ? 'bg-green-500' : seoScore >= 50 ? 'bg-yellow-500' : 'bg-red-500'}`}
+                  style={{ width: `${seoScore}%` }}
+                />
+              </div>
+              <div className="space-y-2">
+                {seoChecks.map(check => (
+                  <div key={check.label} className="flex items-center gap-2">
+                    <span className={`text-xs ${check.pass ? 'text-green-400' : 'text-gray-600'}`}>
+                      {check.pass ? '✓' : '✕'}
+                    </span>
+                    <span className={`text-xs ${check.pass ? 'text-gray-300' : 'text-gray-600'}`}>{check.label}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Meta Title */}
+            <div className="bg-gray-900 border border-gray-800 rounded-2xl p-5 space-y-3">
+              <h3 className="text-white font-semibold text-sm">SEO Settings</h3>
+              <div>
+                <div className="flex justify-between mb-1">
+                  <label className="text-gray-400 text-xs">Meta Title</label>
+                  <span className={`text-xs ${metaTitle.length >= 50 && metaTitle.length <= 60 ? 'text-green-400' : 'text-yellow-400'}`}>
+                    {metaTitle.length}/60
+                  </span>
+                </div>
+                <input
+                  value={metaTitle}
+                  onChange={e => setMetaTitle(e.target.value)}
+                  placeholder="SEO-optimized page title..."
+                  className="w-full bg-gray-800 border border-gray-700 text-white text-xs px-3 py-2 rounded-xl focus:outline-none focus:border-indigo-500 placeholder-gray-600"
+                />
+              </div>
+              <div>
+                <div className="flex justify-between mb-1">
+                  <label className="text-gray-400 text-xs">Meta Description</label>
+                  <span className={`text-xs ${metaDescription.length >= 150 && metaDescription.length <= 160 ? 'text-green-400' : 'text-yellow-400'}`}>
+                    {metaDescription.length}/160
+                  </span>
+                </div>
+                <textarea
+                  value={metaDescription}
+                  onChange={e => setMetaDescription(e.target.value)}
+                  placeholder="Compelling description that drives clicks from search results..."
+                  rows={3}
+                  className="w-full bg-gray-800 border border-gray-700 text-white text-xs px-3 py-2 rounded-xl focus:outline-none focus:border-indigo-500 placeholder-gray-600 resize-none"
+                />
+              </div>
+              <div>
+                <label className="text-gray-400 text-xs mb-1 block">Focus Keyword</label>
+                <input
+                  value={focusKeyword}
+                  onChange={e => setFocusKeyword(e.target.value)}
+                  placeholder="Primary keyword to rank for..."
+                  className="w-full bg-gray-800 border border-gray-700 text-white text-xs px-3 py-2 rounded-xl focus:outline-none focus:border-indigo-500 placeholder-gray-600"
+                />
+                {focusKeyword && body && (
+                  <p className="text-gray-500 text-xs mt-1">Keyword density: {keywordDensity}%</p>
+                )}
+              </div>
+            </div>
+
+            {/* Quick stats */}
+            {wordCount > 0 && (
+              <div className="bg-gray-900 border border-gray-800 rounded-2xl p-4">
+                <h3 className="text-gray-400 text-xs font-medium mb-3">Content Stats</h3>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="bg-gray-800 rounded-xl p-3 text-center">
+                    <p className="text-white font-bold">{wordCount.toLocaleString()}</p>
+                    <p className="text-gray-500 text-xs">Words</p>
+                  </div>
+                  <div className="bg-gray-800 rounded-xl p-3 text-center">
+                    <p className="text-white font-bold">{readTime} min</p>
+                    <p className="text-gray-500 text-xs">Read time</p>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
-        )}
-      </div>
+        </div>
+      )}
+
+      {/* ── Tab: Analytics ────────────────────────────────────────────────────── */}
+      {activeTab === 'analytics' && (
+        <div className="space-y-5">
+          {/* Best publishing time */}
+          <div className="bg-indigo-900/10 border border-indigo-800/30 rounded-2xl p-5 flex items-center gap-4">
+            <div className="text-3xl">⏰</div>
+            <div>
+              <p className="text-white font-semibold">Best publishing time for your audience</p>
+              <p className="text-indigo-300 text-sm">Tuesday 9 AM or Thursday 2 PM — 34% higher engagement</p>
+            </div>
+          </div>
+
+          {/* Stats table */}
+          <div className="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden">
+            <div className="px-5 py-4 border-b border-gray-800">
+              <h3 className="text-white font-semibold">Post Performance</h3>
+            </div>
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-800">
+                  {['Title', 'Views', 'Read Time Avg', 'Shares', 'SEO Score'].map(h => (
+                    <th key={h} className="text-left text-gray-500 text-xs px-4 py-3 font-medium">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {MOCK_POSTS.filter(p => p.status === 'Published').map(post => (
+                  <tr key={post.id} className="border-b border-gray-800/50 hover:bg-gray-800/30">
+                    <td className="px-4 py-3 text-white text-xs font-medium max-w-xs truncate">{post.title}</td>
+                    <td className="px-4 py-3 text-gray-300 text-xs">{post.views?.toLocaleString() || '—'}</td>
+                    <td className="px-4 py-3 text-gray-400 text-xs">{post.readTime || '—'}</td>
+                    <td className="px-4 py-3 text-gray-400 text-xs">{post.shares?.toLocaleString() || '—'}</td>
+                    <td className="px-4 py-3">
+                      <span className={`text-xs px-2 py-0.5 rounded-full font-bold ${SEO_SCORE_COLOR(post.seoScore)}`}>{post.seoScore}</span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Traffic sources */}
+          <div className="bg-gray-900 border border-gray-800 rounded-2xl p-5">
+            <h3 className="text-white font-semibold text-sm mb-4">Traffic Sources</h3>
+            <div className="space-y-3">
+              {[
+                { label: 'Organic Search', pct: 58, color: 'bg-green-500' },
+                { label: 'Social Media', pct: 23, color: 'bg-indigo-500' },
+                { label: 'Direct', pct: 12, color: 'bg-violet-500' },
+                { label: 'Referral', pct: 7, color: 'bg-amber-500' },
+              ].map(src => (
+                <div key={src.label} className="flex items-center gap-3">
+                  <span className="text-gray-400 text-xs w-32 flex-shrink-0">{src.label}</span>
+                  <div className="flex-1 h-2 bg-gray-800 rounded-full overflow-hidden">
+                    <div className={`h-full ${src.color} rounded-full`} style={{ width: `${src.pct}%` }} />
+                  </div>
+                  <span className="text-white text-xs font-medium w-8 text-right">{src.pct}%</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Destination Settings Slide-over */}
+      {showDestSettings && (
+        <div className="fixed inset-0 bg-gray-950/60 backdrop-blur-sm z-50 flex justify-end">
+          <div className="w-96 bg-gray-900 border-l border-gray-800 overflow-y-auto">
+            <div className="flex items-center justify-between p-5 border-b border-gray-800">
+              <h3 className="text-white font-bold">Publishing Destinations</h3>
+              <button onClick={() => { setShowDestSettings(false); setEditingDest(null) }} className="text-gray-500 hover:text-white text-xl">×</button>
+            </div>
+            <div className="p-5 space-y-4">
+              {DESTINATIONS.map(dest => (
+                <div key={dest.id} className={`bg-gray-800 border rounded-2xl overflow-hidden ${editingDest === dest.id ? 'border-indigo-500' : 'border-gray-700'}`}>
+                  <div className="flex items-center justify-between p-4">
+                    <div className="flex items-center gap-3">
+                      <div className="w-9 h-9 bg-gray-700 rounded-xl flex items-center justify-center text-white font-bold text-sm">{dest.icon}</div>
+                      <div>
+                        <p className="text-white font-medium text-sm">{dest.name}</p>
+                        <p className={`text-xs ${DEST_STATUS[dest.status]}`}>{dest.status}</p>
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => setEditingDest(editingDest === dest.id ? null : dest.id)}
+                        className="text-xs text-gray-400 hover:text-white px-2 py-1 rounded-lg hover:bg-gray-700"
+                      >
+                        {editingDest === dest.id ? 'Close' : 'Configure'}
+                      </button>
+                    </div>
+                  </div>
+                  {editingDest === dest.id && currentDestSettings && (
+                    <div className="px-4 pb-4 space-y-3 border-t border-gray-700">
+                      <div className="pt-3 space-y-3">
+                        {currentDestSettings.fields.map(field => (
+                          <div key={field.key}>
+                            <label className="text-gray-400 text-xs mb-1 block">{field.label}</label>
+                            <input
+                              type={field.type}
+                              placeholder={field.placeholder}
+                              className="w-full bg-gray-700 border border-gray-600 text-white text-xs px-3 py-2 rounded-xl focus:outline-none focus:border-indigo-500 placeholder-gray-500"
+                            />
+                          </div>
+                        ))}
+                        <button className="w-full bg-indigo-600 hover:bg-indigo-500 text-white text-xs py-2 rounded-xl font-medium">
+                          Test Connection
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
+  )
+}
+
+function SpinnerSm() {
+  return (
+    <svg className="animate-spin w-3 h-3" viewBox="0 0 24 24" fill="none">
+      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+    </svg>
   )
 }

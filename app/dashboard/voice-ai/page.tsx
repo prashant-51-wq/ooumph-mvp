@@ -1,613 +1,569 @@
 'use client'
 
-import { useState, useEffect } from 'react'
-import Link from 'next/link'
+import { useState } from 'react'
 
-type Tab = 'assistants' | 'calls'
+// ─── Types ────────────────────────────────────────────────────────────────────
 
-const VOICE_OPTIONS = [
-  { value: '11labs', label: 'ElevenLabs' },
-  { value: 'deepgram', label: 'Deepgram' },
-  { value: 'azure', label: 'Azure' },
+type ModelId = 'elevenlabs' | 'openai' | 'playht' | 'murf' | 'azure' | 'google'
+type CloneStatus = 'Training' | 'Ready' | 'Failed'
+
+interface VoiceModel {
+  id: ModelId
+  name: string
+  provider: string
+  initial: string
+  initialColor: string
+  capabilities: string[]
+  quality: number
+  speed: 'Ultra-fast' | 'Fast' | 'Standard'
+  pricePerChar: string
+  languages: number
+  active: boolean
+}
+
+interface CloneRecord {
+  id: string
+  name: string
+  status: CloneStatus
+  samples: number
+  createdAt: string
+}
+
+// ─── Mock data ────────────────────────────────────────────────────────────────
+
+const VOICE_MODELS: VoiceModel[] = [
+  {
+    id: 'elevenlabs', name: 'ElevenLabs v3', provider: 'ElevenLabs', initial: 'E', initialColor: 'bg-purple-600',
+    capabilities: ['Emotion Control', 'Voice Cloning', 'Real-time', '29 languages'],
+    quality: 5, speed: 'Fast', pricePerChar: '$0.0003', languages: 29, active: true,
+  },
+  {
+    id: 'openai', name: 'OpenAI TTS', provider: 'OpenAI', initial: 'O', initialColor: 'bg-emerald-600',
+    capabilities: ['6 Voices', 'Ultra-fast', 'Cheap', 'Streaming'],
+    quality: 3, speed: 'Ultra-fast', pricePerChar: '$0.000015', languages: 1, active: false,
+  },
+  {
+    id: 'playht', name: 'PlayHT 2.0', provider: 'PlayHT', initial: 'P', initialColor: 'bg-blue-600',
+    capabilities: ['Realistic', 'Ultra-fast Cloning', 'Emotion Control', '142 languages'],
+    quality: 5, speed: 'Ultra-fast', pricePerChar: '$0.0002', languages: 142, active: false,
+  },
+  {
+    id: 'murf', name: 'Murf AI', provider: 'Murf', initial: 'M', initialColor: 'bg-orange-600',
+    capabilities: ['Studio Quality', '120+ Voices', 'Collaboration', 'Video Sync'],
+    quality: 4, speed: 'Standard', pricePerChar: '$0.00025', languages: 20, active: false,
+  },
+  {
+    id: 'azure', name: 'Azure Neural TTS', provider: 'Microsoft', initial: 'A', initialColor: 'bg-sky-600',
+    capabilities: ['Enterprise', '300+ Voices', 'SSML', 'Real-time'],
+    quality: 4, speed: 'Fast', pricePerChar: '$0.000016', languages: 110, active: false,
+  },
+  {
+    id: 'google', name: 'Google WaveNet', provider: 'Google', initial: 'G', initialColor: 'bg-rose-600',
+    capabilities: ['Natural Prosody', 'WaveNet', 'Neural2', '40+ languages'],
+    quality: 4, speed: 'Standard', pricePerChar: '$0.000016', languages: 40, active: false,
+  },
 ]
 
-function Spinner() {
-  return (
-    <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none">
-      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-    </svg>
-  )
+const MOCK_CLONES: CloneRecord[] = [
+  { id: 'cl1', name: 'My Voice Clone', status: 'Ready', samples: 4, createdAt: '2026-05-20' },
+  { id: 'cl2', name: 'CEO Voice', status: 'Training', samples: 6, createdAt: '2026-05-25' },
+  { id: 'cl3', name: 'Old Test Clone', status: 'Failed', samples: 1, createdAt: '2026-05-18' },
+]
+
+const DAILY_USAGE = [420, 680, 310, 890, 1200, 740, 560]
+const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+const MAX_DAILY = Math.max(...DAILY_USAGE)
+
+const SPEED_COLORS: Record<string, string> = {
+  'Ultra-fast': 'bg-emerald-900/60 text-emerald-300 border-emerald-800/50',
+  'Fast': 'bg-blue-900/60 text-blue-300 border-blue-800/50',
+  'Standard': 'bg-gray-800 text-gray-400 border-gray-700',
 }
 
-function SetupError({ message }: { message: string }) {
+function QualityDots({ count }: { count: number }) {
   return (
-    <div className="rounded-xl bg-red-950/40 border border-red-800/40 p-4">
-      <p className="text-red-400 text-sm">{message}</p>
-      <Link
-        href="/dashboard/settings"
-        className="inline-block mt-2 text-xs text-indigo-400 hover:text-indigo-300 underline underline-offset-2"
-      >
-        Go to Settings to configure API keys →
-      </Link>
-    </div>
-  )
-}
-
-function StatusBadge({ status }: { status: string }) {
-  const color =
-    status === 'ended' ? 'bg-emerald-900/50 text-emerald-400 border-emerald-800/50' :
-    status === 'in-progress' ? 'bg-yellow-900/50 text-yellow-400 border-yellow-800/50' :
-    'bg-red-900/50 text-red-400 border-red-800/50'
-  return (
-    <span className={`px-2 py-0.5 rounded-full text-xs border ${color}`}>
-      {status}
+    <span className="flex gap-0.5 items-center">
+      {Array.from({ length: 5 }).map((_, i) => (
+        <span key={i} className={`w-1.5 h-1.5 rounded-full ${i < count ? 'bg-indigo-400' : 'bg-gray-700'}`} />
+      ))}
     </span>
   )
 }
 
-function formatDuration(seconds?: number) {
-  if (!seconds) return '—'
-  const m = Math.floor(seconds / 60)
-  const s = Math.round(seconds % 60)
-  return `${m}:${String(s).padStart(2, '0')}`
+function CloneStatusBadge({ status }: { status: CloneStatus }) {
+  const styles: Record<CloneStatus, string> = {
+    Ready: 'bg-emerald-900/60 text-emerald-400 border-emerald-800/50',
+    Training: 'bg-yellow-900/60 text-yellow-400 border-yellow-800/50',
+    Failed: 'bg-red-900/60 text-red-400 border-red-800/50',
+  }
+  return (
+    <span className={`px-2 py-0.5 rounded-full text-xs border ${styles[status]}`}>{status}</span>
+  )
 }
 
-function formatDate(dateStr?: string) {
-  if (!dateStr) return '—'
-  try {
-    return new Date(dateStr).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
-  } catch { return dateStr }
-}
+// ─── Main page ────────────────────────────────────────────────────────────────
 
 export default function VoiceAIPage() {
-  const [workspaceId, setWorkspaceId] = useState('')
-  const [activeTab, setActiveTab] = useState<Tab>('assistants')
+  const [models, setModels] = useState<VoiceModel[]>(VOICE_MODELS)
+  const [activeModel, setActiveModel] = useState<ModelId | null>('elevenlabs')
+  const [clones, setClones] = useState<CloneRecord[]>(MOCK_CLONES)
+  const [showConnectModal, setShowConnectModal] = useState<ModelId | null>(null)
+  const [connectingKey, setConnectingKey] = useState('')
+  const [connecting, setConnecting] = useState(false)
 
-  // Assistants state
-  const [assistants, setAssistants] = useState<any[]>([])
-  const [assistantsLoading, setAssistantsLoading] = useState(false)
-  const [assistantsError, setAssistantsError] = useState('')
-  const [assistantsSetupError, setAssistantsSetupError] = useState(false)
-  const [showCreateForm, setShowCreateForm] = useState(false)
-  const [createForm, setCreateForm] = useState({
-    name: '',
-    systemPrompt: '',
-    firstMessage: 'Hello! I\'m your Ooumph AI assistant. How can I help?',
-    voiceId: '21m00Tcm4TlvDq8ikWAM',
-    voiceProvider: '11labs',
+  // API keys panel state
+  const [apiKeys, setApiKeys] = useState<Record<string, string>>({
+    ElevenLabs: '', OpenAI: '', PlayHT: '', Murf: '', Azure: '', Google: '',
   })
-  const [creating, setCreating] = useState(false)
-  const [createError, setCreateError] = useState('')
+  const [testingKey, setTestingKey] = useState<string | null>(null)
+  const [testResults, setTestResults] = useState<Record<string, boolean>>({})
 
-  // Calls state
-  const [calls, setCalls] = useState<any[]>([])
-  const [callsLoading, setCallsLoading] = useState(false)
-  const [callsError, setCallsError] = useState('')
-  const [expandedCallId, setExpandedCallId] = useState<string | null>(null)
-  const [transcripts, setTranscripts] = useState<Record<string, any>>({})
-  const [transcriptLoading, setTranscriptLoading] = useState<Record<string, boolean>>({})
+  // Clone form
+  const [cloneName, setCloneName] = useState('')
+  const [clonePrivacy, setClonePrivacy] = useState<'Private' | 'Team'>('Private')
 
-  // Make call state
-  const [callForm, setCallForm] = useState({ phoneNumber: '', assistantId: '' })
-  const [makingCall, setMakingCall] = useState(false)
-  const [callResult, setCallResult] = useState<{ callId: string; message: string } | null>(null)
-  const [callFormError, setCallFormError] = useState('')
+  // Active model settings
+  const [defaultVoice, setDefaultVoice] = useState('Aria')
+  const [defaultSpeed, setDefaultSpeed] = useState(1.0)
+  const [defaultPitch, setDefaultPitch] = useState(0)
+  const [usageFor, setUsageFor] = useState({ cmo: true, voiceover: true, inbox: false, video: false })
 
-  useEffect(() => {
-    const wid = localStorage.getItem('workspaceId') || ''
-    setWorkspaceId(wid)
-    if (wid) fetchAssistants(wid)
-  }, [])
+  const isConnected = models.some(m => m.active)
+  const activeModelObj = models.find(m => m.active)
 
-  useEffect(() => {
-    if (activeTab === 'calls' && workspaceId && calls.length === 0 && !callsLoading) {
-      fetchCalls(workspaceId)
-    }
-  }, [activeTab, workspaceId])
+  const creditsUsed = 1840
+  const creditsTotal = 4240
+  const creditsPct = Math.round((creditsUsed / creditsTotal) * 100)
 
-  async function fetchAssistants(wid: string) {
-    setAssistantsLoading(true)
-    setAssistantsError('')
-    setAssistantsSetupError(false)
-    try {
-      const res = await fetch('/api/agents/voice/vapi', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'assistants', workspaceId: wid }),
-      })
-      const data = await res.json()
-      if (data.requiresSetup) {
-        setAssistantsSetupError(true)
-        setAssistantsError(data.error)
-        return
-      }
-      if (!data.ok) {
-        setAssistantsError(data.error || 'Failed to load assistants.')
-        return
-      }
-      setAssistants(Array.isArray(data.assistants) ? data.assistants : [])
-    } catch (e) {
-      setAssistantsError(String(e))
-    } finally {
-      setAssistantsLoading(false)
-    }
+  const usageByFeature = [
+    { label: 'Voiceover Studio', pct: 58, color: 'bg-indigo-500' },
+    { label: 'CMO Voice', pct: 27, color: 'bg-violet-500' },
+    { label: 'Inbox Auto-reply', pct: 15, color: 'bg-emerald-500' },
+  ]
+
+  async function handleConnect(modelId: ModelId) {
+    setConnecting(true)
+    await new Promise(r => setTimeout(r, 1000))
+    setModels(prev => prev.map(m => m.id === modelId ? { ...m, active: true } : m))
+    setActiveModel(modelId)
+    setConnecting(false)
+    setShowConnectModal(null)
+    setConnectingKey('')
   }
 
-  async function fetchCalls(wid: string) {
-    setCallsLoading(true)
-    setCallsError('')
-    try {
-      const res = await fetch('/api/agents/voice/vapi', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'calls', workspaceId: wid, limit: 20 }),
-      })
-      const data = await res.json()
-      if (!data.ok) {
-        setCallsError(data.error || 'Failed to load calls.')
-        return
-      }
-      setCalls(Array.isArray(data.calls) ? data.calls : [])
-    } catch (e) {
-      setCallsError(String(e))
-    } finally {
-      setCallsLoading(false)
-    }
+  async function testApiKey(provider: string) {
+    setTestingKey(provider)
+    await new Promise(r => setTimeout(r, 900))
+    setTestResults(prev => ({ ...prev, [provider]: apiKeys[provider].length > 6 }))
+    setTestingKey(null)
   }
-
-  async function createAssistant() {
-    if (!createForm.name.trim()) {
-      setCreateError('Name is required.')
-      return
-    }
-    setCreating(true)
-    setCreateError('')
-    try {
-      const res = await fetch('/api/agents/voice/vapi', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'create_assistant',
-          workspaceId,
-          name: createForm.name,
-          systemPrompt: createForm.systemPrompt,
-          firstMessage: createForm.firstMessage,
-          voiceProvider: createForm.voiceProvider,
-          voiceId: createForm.voiceId,
-        }),
-      })
-      const data = await res.json()
-      if (!data.ok) {
-        setCreateError(data.error || 'Failed to create assistant.')
-        return
-      }
-      // Refresh list
-      await fetchAssistants(workspaceId)
-      setShowCreateForm(false)
-      setCreateForm({
-        name: '',
-        systemPrompt: '',
-        firstMessage: 'Hello! I\'m your Ooumph AI assistant. How can I help?',
-        voiceId: '21m00Tcm4TlvDq8ikWAM',
-        voiceProvider: '11labs',
-      })
-    } catch (e) {
-      setCreateError(String(e))
-    } finally {
-      setCreating(false)
-    }
-  }
-
-  async function loadTranscript(callId: string) {
-    if (transcripts[callId]) {
-      setExpandedCallId(expandedCallId === callId ? null : callId)
-      return
-    }
-    setTranscriptLoading(prev => ({ ...prev, [callId]: true }))
-    try {
-      const res = await fetch('/api/agents/voice/vapi', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'call_detail', callId, workspaceId }),
-      })
-      const data = await res.json()
-      if (data.ok && data.call) {
-        setTranscripts(prev => ({ ...prev, [callId]: data.call }))
-        setExpandedCallId(callId)
-      }
-    } catch (e) {
-      console.error('Failed to load transcript:', e)
-    } finally {
-      setTranscriptLoading(prev => ({ ...prev, [callId]: false }))
-    }
-  }
-
-  async function makeCall() {
-    setCallFormError('')
-    setCallResult(null)
-    if (!callForm.phoneNumber.trim() || !callForm.assistantId) {
-      setCallFormError('Phone number and assistant are required.')
-      return
-    }
-    if (!callForm.phoneNumber.startsWith('+')) {
-      setCallFormError('Phone number must start with + (e.g. +12025551234)')
-      return
-    }
-    setMakingCall(true)
-    try {
-      const res = await fetch('/api/agents/voice/vapi', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'make_call',
-          workspaceId,
-          phoneNumber: callForm.phoneNumber,
-          assistantId: callForm.assistantId,
-        }),
-      })
-      const data = await res.json()
-      if (!data.ok) {
-        setCallFormError(data.error || 'Failed to make call.')
-        return
-      }
-      setCallResult({ callId: data.callId, message: data.message })
-    } catch (e) {
-      setCallFormError(String(e))
-    } finally {
-      setMakingCall(false)
-    }
-  }
-
-  // Stats
-  const totalCalls = calls.length
-  const completedCalls = calls.filter(c => c.status === 'ended').length
-  const avgDuration = calls.length > 0
-    ? Math.round(calls.reduce((sum, c) => sum + (c.durationSeconds || 0), 0) / calls.length)
-    : 0
 
   return (
-    <div className="p-8 max-w-5xl mx-auto">
-      {/* Header */}
-      <div className="mb-8">
-        <div className="flex items-center gap-3 mb-1">
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-cyan-600 flex items-center justify-center text-white font-bold text-sm">
-            📞
-          </div>
-          <h1 className="text-2xl font-bold text-white">Voice AI</h1>
+    <div className="p-6 max-w-7xl mx-auto space-y-8">
+
+      {/* ── Hero Section ─────────────────────────────────────────────────────── */}
+      <div className="flex items-start justify-between flex-wrap gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-white flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-blue-500 to-cyan-500 flex items-center justify-center text-sm">
+              🎤
+            </div>
+            Voice AI
+          </h1>
+          <p className="text-gray-400 text-sm mt-1 ml-12">Configure AI voice models for your agents and automation</p>
         </div>
-        <p className="text-gray-400 text-sm ml-11">AI-powered voice agents with Vapi — automate calls, qualify leads</p>
-      </div>
 
-      {/* Tabs */}
-      <div className="flex border-b border-gray-800 mb-6">
-        {([
-          { id: 'assistants' as Tab, icon: '🤖', label: 'Assistants' },
-          { id: 'calls' as Tab, icon: '📋', label: 'Call Logs' },
-        ]).map(tab => (
-          <button
-            key={tab.id}
-            onClick={() => setActiveTab(tab.id)}
-            className={`px-5 py-3 text-sm font-medium border-b-2 transition-colors -mb-px flex items-center gap-2 ${
-              activeTab === tab.id
-                ? 'border-indigo-500 text-indigo-300'
-                : 'border-transparent text-gray-500 hover:text-gray-300'
-            }`}
-          >
-            <span>{tab.icon}</span>
-            {tab.label}
-          </button>
-        ))}
-      </div>
-
-      {/* ── ASSISTANTS TAB ─────────────────────────────────────────────────── */}
-      {activeTab === 'assistants' && (
-        <div className="space-y-6">
-          {/* Header row */}
-          <div className="flex items-center justify-between">
-            <h2 className="text-white font-semibold">
-              {assistants.length > 0 ? `${assistants.length} Assistant${assistants.length !== 1 ? 's' : ''}` : 'Voice Assistants'}
-            </h2>
-            <button
-              onClick={() => setShowCreateForm(v => !v)}
-              className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium transition-colors flex items-center gap-1.5"
-            >
-              <span>+</span> Create Assistant
+        {/* Connection status banner */}
+        {isConnected ? (
+          <div className="flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-950/40 border border-emerald-800/50">
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+            <span className="text-emerald-400 text-sm font-medium">Active · {activeModelObj?.provider}</span>
+            <span className="text-gray-600 text-xs">·</span>
+            <span className="text-gray-400 text-xs">2,400 credits remaining</span>
+          </div>
+        ) : (
+          <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-amber-950/30 border border-amber-800/50">
+            <span className="text-amber-400 text-sm">Not Connected</span>
+            <button className="px-3 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium transition-colors">
+              Connect Now
             </button>
           </div>
+        )}
+      </div>
 
-          {/* Setup/loading errors */}
-          {assistantsError && (
-            assistantsSetupError
-              ? <SetupError message={assistantsError} />
-              : <p className="text-red-400 text-sm">{assistantsError}</p>
-          )}
+      {/* ── Model Cards Grid ──────────────────────────────────────────────────── */}
+      <div>
+        <h2 className="text-white font-semibold text-sm mb-4">Voice AI Models</h2>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {models.map(model => (
+            <div
+              key={model.id}
+              className={`relative bg-gray-900 border rounded-2xl p-5 transition-all ${
+                model.active
+                  ? 'border-indigo-600/60 ring-1 ring-indigo-600/20'
+                  : 'border-gray-800 opacity-60 grayscale'
+              }`}
+            >
+              {/* Active / Inactive badge */}
+              {model.active ? (
+                <div className="absolute top-3 right-3 flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-900/60 border border-emerald-800/50">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                  <span className="text-emerald-400 text-xs">Active</span>
+                </div>
+              ) : (
+                <div className="absolute top-3 right-3 flex items-center gap-1 px-2 py-0.5 rounded-full bg-gray-800 border border-gray-700">
+                  <span className="text-gray-500 text-xs">🔒 Inactive</span>
+                </div>
+              )}
 
-          {/* Create form */}
-          {showCreateForm && (
-            <div className="bg-gray-900 border border-indigo-800/40 rounded-2xl p-6 space-y-4">
-              <h3 className="text-white font-semibold text-sm">New Voice Assistant</h3>
-
-              <div>
-                <label className="text-gray-400 text-xs mb-1.5 block">Name <span className="text-red-400">*</span></label>
-                <input
-                  value={createForm.name}
-                  onChange={e => setCreateForm(f => ({ ...f, name: e.target.value }))}
-                  placeholder="Ooumph Sales Assistant"
-                  className="w-full px-4 py-2.5 rounded-xl bg-gray-800 border border-gray-700 text-white placeholder-gray-500 text-sm focus:outline-none focus:border-indigo-500"
-                />
-              </div>
-
-              <div>
-                <label className="text-gray-400 text-xs mb-1.5 block">System Prompt</label>
-                <textarea
-                  value={createForm.systemPrompt}
-                  onChange={e => setCreateForm(f => ({ ...f, systemPrompt: e.target.value }))}
-                  rows={3}
-                  placeholder="You are a friendly sales agent for Ooumph. Help qualify leads and schedule demos..."
-                  className="w-full px-4 py-2.5 rounded-xl bg-gray-800 border border-gray-700 text-white placeholder-gray-500 text-sm focus:outline-none focus:border-indigo-500 resize-none"
-                />
-              </div>
-
-              <div>
-                <label className="text-gray-400 text-xs mb-1.5 block">First Message</label>
-                <input
-                  value={createForm.firstMessage}
-                  onChange={e => setCreateForm(f => ({ ...f, firstMessage: e.target.value }))}
-                  placeholder="Hello! I'm your Ooumph AI assistant. How can I help?"
-                  className="w-full px-4 py-2.5 rounded-xl bg-gray-800 border border-gray-700 text-white placeholder-gray-500 text-sm focus:outline-none focus:border-indigo-500"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="text-gray-400 text-xs mb-1.5 block">Voice Provider</label>
-                  <select
-                    value={createForm.voiceProvider}
-                    onChange={e => setCreateForm(f => ({ ...f, voiceProvider: e.target.value }))}
-                    className="w-full px-4 py-2.5 rounded-xl bg-gray-800 border border-gray-700 text-white text-sm focus:outline-none focus:border-indigo-500"
-                  >
-                    {VOICE_OPTIONS.map(v => (
-                      <option key={v.value} value={v.value}>{v.label}</option>
-                    ))}
-                  </select>
+              {/* Provider logo */}
+              <div className="flex items-center gap-3 mb-4 pr-20">
+                <div className={`w-10 h-10 rounded-xl ${model.initialColor} flex items-center justify-center text-white font-bold text-sm flex-shrink-0`}>
+                  {model.initial}
                 </div>
                 <div>
-                  <label className="text-gray-400 text-xs mb-1.5 block">Voice ID</label>
-                  <input
-                    value={createForm.voiceId}
-                    onChange={e => setCreateForm(f => ({ ...f, voiceId: e.target.value }))}
-                    placeholder="21m00Tcm4TlvDq8ikWAM"
-                    className="w-full px-4 py-2.5 rounded-xl bg-gray-800 border border-gray-700 text-white placeholder-gray-500 text-sm focus:outline-none focus:border-indigo-500"
-                  />
+                  <h3 className="text-white font-semibold text-sm">{model.name}</h3>
+                  <span className="text-gray-500 text-xs">{model.provider}</span>
                 </div>
               </div>
 
-              {createError && <p className="text-red-400 text-sm">{createError}</p>}
-
-              <div className="flex gap-2">
-                <button
-                  onClick={createAssistant}
-                  disabled={creating}
-                  className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-sm font-medium transition-colors flex items-center gap-2"
-                >
-                  {creating ? <><Spinner /> Creating...</> : 'Create Assistant'}
-                </button>
-                <button
-                  onClick={() => { setShowCreateForm(false); setCreateError('') }}
-                  className="px-4 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm transition-colors"
-                >
-                  Cancel
-                </button>
+              {/* Capability tags */}
+              <div className="flex flex-wrap gap-1 mb-3">
+                {model.capabilities.map(cap => (
+                  <span key={cap} className="px-1.5 py-0.5 rounded bg-gray-800 text-gray-400 text-xs border border-gray-700">
+                    {cap}
+                  </span>
+                ))}
               </div>
-            </div>
-          )}
 
-          {/* Assistants grid */}
-          {assistantsLoading ? (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              {[...Array(2)].map((_, i) => (
-                <div key={i} className="bg-gray-900 border border-gray-800 rounded-2xl p-5 animate-pulse space-y-3">
-                  <div className="h-4 w-32 bg-gray-800 rounded" />
-                  <div className="h-3 w-24 bg-gray-800 rounded" />
-                  <div className="h-3 w-48 bg-gray-800 rounded" />
-                </div>
-              ))}
-            </div>
-          ) : assistants.length === 0 && !assistantsError ? (
-            <div className="bg-gray-900 border border-gray-800 rounded-2xl p-10 text-center">
-              <p className="text-gray-500 text-sm">No assistants yet. Create one to get started.</p>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              {assistants.map((a: any) => {
-                const aid = a.id || a.assistantId || ''
-                const modelInfo = a.model?.model || a.model?.modelId || '—'
-                const voiceInfo = a.voice?.voiceId || a.voice?.provider || '—'
-                const firstMsg = (a.firstMessage || '').slice(0, 80)
-                return (
-                  <div key={aid} className="bg-gray-900 border border-gray-800 rounded-2xl p-5 space-y-3">
-                    <div className="flex items-start justify-between">
-                      <h3 className="text-white font-semibold text-sm">{a.name || aid}</h3>
-                      <span className="text-gray-500 text-xs">{formatDate(a.createdAt)}</span>
-                    </div>
-                    <div className="flex flex-wrap gap-2">
-                      <span className="px-2 py-0.5 rounded-full bg-violet-900/50 text-violet-300 text-xs border border-violet-800/50">
-                        {modelInfo}
-                      </span>
-                      <span className="px-2 py-0.5 rounded-full bg-blue-900/50 text-blue-300 text-xs border border-blue-800/50">
-                        {voiceInfo}
-                      </span>
-                    </div>
-                    {firstMsg && (
-                      <p className="text-gray-400 text-xs leading-relaxed">"{firstMsg}{firstMsg.length >= 80 ? '...' : ''}"</p>
-                    )}
+              {/* Stats row */}
+              <div className="flex items-center gap-3 mb-4">
+                <QualityDots count={model.quality} />
+                <span className={`px-1.5 py-0.5 rounded text-xs border ${SPEED_COLORS[model.speed]}`}>
+                  {model.speed}
+                </span>
+                <span className="text-gray-600 text-xs">{model.pricePerChar}/char</span>
+              </div>
+
+              {/* CTA */}
+              {model.active ? (
+                <div className="flex items-center gap-2">
+                  <div className="flex-1 flex items-center gap-1.5 px-2 py-1.5 rounded-lg bg-emerald-950/30 border border-emerald-800/30">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                    <span className="text-emerald-400 text-xs">Connected</span>
                   </div>
-                )
-              })}
+                  <button
+                    onClick={() => setActiveModel(model.id)}
+                    className="px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs transition-colors"
+                  >
+                    Configure
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setShowConnectModal(model.id)}
+                  className="w-full py-2 rounded-xl border border-indigo-600/50 hover:bg-indigo-600/10 text-indigo-400 hover:text-indigo-300 text-xs font-medium transition-colors"
+                >
+                  Connect to Activate
+                </button>
+              )}
             </div>
-          )}
+          ))}
+        </div>
+      </div>
+
+      {/* ── Active Model Configuration ────────────────────────────────────────── */}
+      {activeModelObj && (
+        <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 space-y-5">
+          <div className="flex items-center gap-3">
+            <div className={`w-8 h-8 rounded-lg ${activeModelObj.initialColor} flex items-center justify-center text-white font-bold text-sm`}>
+              {activeModelObj.initial}
+            </div>
+            <h2 className="text-white font-semibold">{activeModelObj.name} — Configuration</h2>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="space-y-4">
+              <div>
+                <label className="text-gray-400 text-xs block mb-1.5">Default Voice</label>
+                <select
+                  value={defaultVoice}
+                  onChange={e => setDefaultVoice(e.target.value)}
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-indigo-500"
+                >
+                  <option>Aria</option>
+                  <option>Marcus</option>
+                  <option>Luna</option>
+                  <option>Kai</option>
+                  <option>David</option>
+                </select>
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-gray-400 text-xs">Default Speed</label>
+                  <span className="text-gray-500 text-xs font-mono">{defaultSpeed.toFixed(1)}×</span>
+                </div>
+                <input type="range" min={0.5} max={2.0} step={0.1} value={defaultSpeed}
+                  onChange={e => setDefaultSpeed(Number(e.target.value))}
+                  className="w-full accent-indigo-500 h-1"
+                />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-gray-400 text-xs">Default Pitch</label>
+                  <span className="text-gray-500 text-xs font-mono">{defaultPitch > 0 ? '+' : ''}{defaultPitch}%</span>
+                </div>
+                <input type="range" min={-50} max={50} step={5} value={defaultPitch}
+                  onChange={e => setDefaultPitch(Number(e.target.value))}
+                  className="w-full accent-indigo-500 h-1"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="text-gray-400 text-xs block mb-3">Use this voice for</label>
+              <div className="space-y-2.5">
+                {[
+                  { key: 'cmo', label: 'CMO Agent responses' },
+                  { key: 'voiceover', label: 'Content voiceover' },
+                  { key: 'inbox', label: 'Inbox auto-reply' },
+                  { key: 'video', label: 'Video narration' },
+                ].map(({ key, label }) => (
+                  <label key={key} className="flex items-center gap-3 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={usageFor[key as keyof typeof usageFor]}
+                      onChange={e => setUsageFor(prev => ({ ...prev, [key]: e.target.checked }))}
+                      className="accent-indigo-500 w-3.5 h-3.5"
+                    />
+                    <span className="text-gray-300 text-sm">{label}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="flex gap-2">
+            <button className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium transition-colors">
+              Save Configuration
+            </button>
+          </div>
         </div>
       )}
 
-      {/* ── CALLS TAB ──────────────────────────────────────────────────────── */}
-      {activeTab === 'calls' && (
-        <div className="space-y-6">
-          {/* Stats */}
-          {calls.length > 0 && (
-            <div className="grid grid-cols-3 gap-4">
-              {[
-                { label: 'Total Calls', value: totalCalls },
-                { label: 'Avg Duration', value: formatDuration(avgDuration) },
-                { label: 'Completed', value: completedCalls },
-              ].map(stat => (
-                <div key={stat.label} className="bg-gray-900 border border-gray-800 rounded-xl p-4 text-center">
-                  <div className="text-2xl font-bold text-white">{stat.value}</div>
-                  <div className="text-gray-500 text-xs mt-1">{stat.label}</div>
-                </div>
-              ))}
+      {/* ── Voice Cloning Section ─────────────────────────────────────────────── */}
+      <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 space-y-5">
+        <h2 className="text-white font-semibold">Voice Cloning</h2>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          {/* Clone creation form */}
+          <div className="space-y-4">
+            <div>
+              <label className="text-gray-400 text-xs block mb-1.5">Clone Name</label>
+              <input
+                value={cloneName}
+                onChange={e => setCloneName(e.target.value)}
+                placeholder="e.g. My Voice Clone"
+                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-indigo-500"
+              />
             </div>
-          )}
 
-          {/* Call error */}
-          {callsError && <p className="text-red-400 text-sm">{callsError}</p>}
+            <div className="border-2 border-dashed border-gray-700 rounded-xl p-5 text-center hover:border-indigo-600 transition-colors cursor-pointer">
+              <div className="text-2xl mb-2">🎤</div>
+              <p className="text-gray-400 text-sm">Drop audio samples here</p>
+              <p className="text-gray-600 text-xs mt-1">Minimum 30 seconds · MP3, WAV, M4A</p>
+            </div>
 
-          {/* Make outbound call */}
-          <div className="bg-gray-900 border border-gray-800 rounded-2xl p-5 space-y-4">
-            <h3 className="text-white font-semibold text-sm">Make Outbound Call</h3>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
-                <label className="text-gray-400 text-xs mb-1.5 block">Phone Number</label>
-                <input
-                  value={callForm.phoneNumber}
-                  onChange={e => setCallForm(f => ({ ...f, phoneNumber: e.target.value }))}
-                  placeholder="+12025551234"
-                  className="w-full px-4 py-2.5 rounded-xl bg-gray-800 border border-gray-700 text-white placeholder-gray-500 text-sm focus:outline-none focus:border-indigo-500"
-                />
-              </div>
-              <div>
-                <label className="text-gray-400 text-xs mb-1.5 block">Assistant</label>
-                <select
-                  value={callForm.assistantId}
-                  onChange={e => setCallForm(f => ({ ...f, assistantId: e.target.value }))}
-                  className="w-full px-4 py-2.5 rounded-xl bg-gray-800 border border-gray-700 text-white text-sm focus:outline-none focus:border-indigo-500"
-                >
-                  <option value="">Select assistant...</option>
-                  {assistants.map((a: any) => (
-                    <option key={a.id} value={a.id}>{a.name || a.id}</option>
-                  ))}
-                </select>
+            <div>
+              <label className="text-gray-400 text-xs block mb-1.5">Privacy</label>
+              <div className="flex gap-2">
+                {(['Private', 'Team'] as const).map(p => (
+                  <button key={p} onClick={() => setClonePrivacy(p)}
+                    className={`flex-1 py-1.5 rounded-lg border text-sm font-medium transition-colors ${clonePrivacy === p ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-gray-800 border-gray-700 text-gray-400 hover:text-white'}`}>
+                    {p}
+                  </button>
+                ))}
               </div>
             </div>
-            {callFormError && <p className="text-red-400 text-sm">{callFormError}</p>}
-            {callResult && (
-              <div className="bg-emerald-950/40 border border-emerald-800/40 rounded-xl p-3">
-                <p className="text-emerald-400 text-sm">
-                  ✓ {callResult.message} — Call ID: <span className="font-mono">{callResult.callId}</span>
-                </p>
-              </div>
-            )}
+
             <button
-              onClick={makeCall}
-              disabled={makingCall}
-              className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-sm font-medium transition-colors flex items-center gap-2"
+              disabled={!cloneName}
+              className="w-full py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-medium transition-colors"
             >
-              {makingCall ? <><Spinner /> Calling...</> : '📞 Make Call'}
+              Create Voice Clone
             </button>
           </div>
 
-          {/* Call log list */}
-          {callsLoading ? (
-            <div className="space-y-3">
-              {[...Array(3)].map((_, i) => (
-                <div key={i} className="bg-gray-900 border border-gray-800 rounded-xl p-4 animate-pulse h-16" />
+          {/* Clone history */}
+          <div>
+            <h3 className="text-gray-400 text-xs font-medium mb-3 uppercase tracking-wide">Clone History</h3>
+            <div className="space-y-2">
+              {clones.map(clone => (
+                <div key={clone.id} className="flex items-center gap-3 p-3 rounded-xl bg-gray-800/50 border border-gray-700/50">
+                  <div className="w-8 h-8 rounded-full bg-gradient-to-br from-indigo-600 to-violet-700 flex items-center justify-center text-xs text-white font-bold flex-shrink-0">
+                    {clone.name[0]}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-white text-sm font-medium truncate">{clone.name}</p>
+                    <p className="text-gray-500 text-xs">{clone.samples} samples · {clone.createdAt}</p>
+                  </div>
+                  <CloneStatusBadge status={clone.status} />
+                  {clone.status === 'Ready' && (
+                    <button className="text-indigo-400 hover:text-indigo-300 text-xs transition-colors">Use</button>
+                  )}
+                </div>
               ))}
             </div>
-          ) : calls.length === 0 && !callsError ? (
-            <div className="bg-gray-900 border border-gray-800 rounded-2xl p-10 text-center">
-              <p className="text-gray-500 text-sm">No calls yet.</p>
-              <button
-                onClick={() => fetchCalls(workspaceId)}
-                className="mt-3 px-4 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs transition-colors"
-              >
-                Refresh
-              </button>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Usage Stats ───────────────────────────────────────────────────────── */}
+      <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 space-y-5">
+        <h2 className="text-white font-semibold">Usage Statistics</h2>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          {/* Credits */}
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-gray-400 text-sm">Credits used this month</span>
+              <span className="text-white text-sm font-medium">{creditsUsed.toLocaleString()} / {creditsTotal.toLocaleString()}</span>
             </div>
-          ) : (
-            <div className="space-y-3">
-              {calls.map((call: any) => {
-                const cid = call.id || call.callId || ''
-                const isExpanded = expandedCallId === cid
-                const transcript = transcripts[cid]
-                const isLoadingTranscript = transcriptLoading[cid]
-                const phoneNum = call.customer?.number || call.to || '—'
-                const cost = call.cost !== undefined ? `$${Number(call.cost).toFixed(3)}` : '—'
-
-                return (
-                  <div key={cid} className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
-                    <div className="flex flex-wrap items-center gap-3 p-4">
-                      <StatusBadge status={call.status || 'unknown'} />
-                      <span className="text-gray-400 text-xs capitalize">{call.type || 'outbound'}</span>
-                      <span className="text-white text-sm font-mono">{phoneNum}</span>
-                      <span className="text-gray-500 text-xs">{formatDuration(call.durationSeconds)}</span>
-                      <span className="text-gray-500 text-xs">{cost}</span>
-                      <span className="text-gray-600 text-xs ml-auto">{cid.slice(0, 16)}...</span>
-                      <button
-                        onClick={() => loadTranscript(cid)}
-                        disabled={isLoadingTranscript}
-                        className="px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 hover:text-white text-xs transition-colors flex items-center gap-1.5"
-                      >
-                        {isLoadingTranscript ? <><Spinner /> Loading</> : isExpanded ? 'Hide' : 'View Transcript'}
-                      </button>
-                    </div>
-
-                    {isExpanded && transcript && (
-                      <div className="border-t border-gray-800 p-4 space-y-3">
-                        {/* Transcript messages */}
-                        {Array.isArray(transcript.messages) && transcript.messages.length > 0 ? (
-                          <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
-                            {transcript.messages.map((msg: any, idx: number) => (
-                              <div key={idx} className={`flex gap-2 ${msg.role === 'assistant' ? 'justify-start' : 'justify-end'}`}>
-                                <div className={`max-w-xs px-3 py-2 rounded-xl text-xs ${
-                                  msg.role === 'assistant'
-                                    ? 'bg-gray-800 text-gray-200'
-                                    : 'bg-indigo-900/50 text-indigo-200'
-                                }`}>
-                                  <span className="text-gray-500 text-xs font-medium uppercase block mb-0.5">{msg.role}</span>
-                                  {msg.message || msg.content || '—'}
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        ) : transcript.transcript ? (
-                          <textarea
-                            readOnly
-                            value={typeof transcript.transcript === 'string' ? transcript.transcript : JSON.stringify(transcript.transcript, null, 2)}
-                            rows={8}
-                            className="w-full px-4 py-2.5 rounded-xl bg-gray-800 border border-gray-700 text-gray-300 text-xs resize-none focus:outline-none"
-                          />
-                        ) : (
-                          <p className="text-gray-500 text-sm">No transcript available.</p>
-                        )}
-                        <button
-                          onClick={() => setExpandedCallId(null)}
-                          className="px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-400 text-xs transition-colors"
-                        >
-                          Collapse
-                        </button>
-                      </div>
-                    )}
+            <div className="h-2 bg-gray-800 rounded-full overflow-hidden mb-4">
+              <div
+                className={`h-full rounded-full transition-all ${creditsPct > 80 ? 'bg-red-500' : creditsPct > 60 ? 'bg-amber-500' : 'bg-indigo-500'}`}
+                style={{ width: `${creditsPct}%` }}
+              />
+            </div>
+            <div className="space-y-2">
+              {usageByFeature.map(f => (
+                <div key={f.label}>
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-gray-400 text-xs">{f.label}</span>
+                    <span className="text-gray-500 text-xs">{f.pct}%</span>
                   </div>
-                )
-              })}
-              <button
-                onClick={() => fetchCalls(workspaceId)}
-                className="w-full py-2 rounded-xl bg-gray-900 border border-gray-800 text-gray-500 hover:text-gray-300 text-xs transition-colors"
-              >
-                Refresh calls
-              </button>
+                  <div className="h-1.5 bg-gray-800 rounded-full overflow-hidden">
+                    <div className={`h-full rounded-full ${f.color}`} style={{ width: `${f.pct}%` }} />
+                  </div>
+                </div>
+              ))}
             </div>
-          )}
+          </div>
+
+          {/* Daily chart */}
+          <div>
+            <span className="text-gray-400 text-sm block mb-3">Daily Usage — Last 7 Days</span>
+            <div className="flex items-end gap-2 h-28">
+              {DAILY_USAGE.map((val, i) => (
+                <div key={i} className="flex-1 flex flex-col items-center gap-1">
+                  <div
+                    className="w-full rounded-t-sm bg-indigo-600 hover:bg-indigo-500 transition-colors cursor-default"
+                    style={{ height: `${(val / MAX_DAILY) * 100}%` }}
+                    title={`${val} chars`}
+                  />
+                  <span className="text-gray-600 text-xs">{DAYS[i]}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* ── API Settings Panel ────────────────────────────────────────────────── */}
+      <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 space-y-4">
+        <h2 className="text-white font-semibold">API Settings</h2>
+        <p className="text-gray-500 text-sm">Connect your voice AI providers to activate their models.</p>
+
+        <div className="space-y-3">
+          {Object.entries({
+            ElevenLabs: 'ElevenLabs API Key',
+            OpenAI: 'OpenAI API Key',
+            PlayHT: 'PlayHT API Key',
+            Murf: 'Murf API Key',
+            Azure: 'Azure Speech Key',
+            Google: 'Google Cloud API Key',
+          }).map(([provider, label]) => (
+            <div key={provider} className="flex items-center gap-3">
+              <span className="w-28 text-gray-400 text-xs flex-shrink-0">{provider}</span>
+              <input
+                type="password"
+                value={apiKeys[provider]}
+                onChange={e => setApiKeys(prev => ({ ...prev, [provider]: e.target.value }))}
+                placeholder={label}
+                className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-xs focus:outline-none focus:border-indigo-500"
+              />
+              <button
+                onClick={() => testApiKey(provider)}
+                disabled={!apiKeys[provider] || testingKey === provider}
+                className="px-3 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 disabled:opacity-50 text-gray-400 hover:text-white text-xs transition-colors flex-shrink-0"
+              >
+                {testingKey === provider ? '...' : 'Test'}
+              </button>
+              {testResults[provider] !== undefined && (
+                <span className={`text-xs flex-shrink-0 ${testResults[provider] ? 'text-emerald-400' : 'text-red-400'}`}>
+                  {testResults[provider] ? '✓' : '✗'}
+                </span>
+              )}
+              {/* Webhook (ElevenLabs only) */}
+              {provider === 'ElevenLabs' && (
+                <span className="text-gray-600 text-xs flex-shrink-0 hidden lg:block">Streaming ✓</span>
+              )}
+            </div>
+          ))}
+        </div>
+
+        <button className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium transition-colors">
+          Save All Keys
+        </button>
+      </div>
+
+      {/* ── Connect Model Modal ───────────────────────────────────────────────── */}
+      {showConnectModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-gray-950/80 backdrop-blur-sm" onClick={() => setShowConnectModal(null)} />
+          <div className="relative bg-gray-900 border border-gray-800 rounded-2xl p-6 w-full max-w-md shadow-2xl space-y-4">
+            {(() => {
+              const model = models.find(m => m.id === showConnectModal)!
+              return (
+                <>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <div className={`w-9 h-9 rounded-xl ${model.initialColor} flex items-center justify-center text-white font-bold`}>
+                        {model.initial}
+                      </div>
+                      <h2 className="text-white font-semibold">Connect {model.name}</h2>
+                    </div>
+                    <button onClick={() => setShowConnectModal(null)} className="text-gray-500 hover:text-white transition-colors">✕</button>
+                  </div>
+                  <p className="text-gray-400 text-sm">Enter your {model.provider} API key to activate this model.</p>
+                  <div>
+                    <label className="text-gray-400 text-xs block mb-1.5">API Key</label>
+                    <input
+                      type="password"
+                      value={connectingKey}
+                      onChange={e => setConnectingKey(e.target.value)}
+                      placeholder="sk-..."
+                      className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-indigo-500"
+                    />
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => handleConnect(showConnectModal)}
+                      disabled={connecting || !connectingKey}
+                      className="flex-1 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-medium transition-colors"
+                    >
+                      {connecting ? 'Connecting...' : 'Activate Model'}
+                    </button>
+                    <button onClick={() => setShowConnectModal(null)} className="flex-1 py-2.5 rounded-xl bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm transition-colors">
+                      Cancel
+                    </button>
+                  </div>
+                </>
+              )
+            })()}
+          </div>
         </div>
       )}
     </div>

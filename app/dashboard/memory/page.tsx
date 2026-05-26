@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 
 type MemoryContentType =
@@ -60,6 +60,7 @@ const FILTER_OPTIONS = [
   { key: 'learning_note', label: 'Learning Notes' },
   { key: 'top_performing', label: 'Top Performing' },
   { key: 'rejected_example', label: 'Rejected' },
+  { key: 'from_documents', label: 'From Documents' },
 ]
 
 const MEMORY_TYPES: MemoryContentType[] = [
@@ -84,6 +85,16 @@ export default function BrandMemoryPage() {
   const [addPlatform, setAddPlatform] = useState('')
   const [saving, setSaving] = useState(false)
   const [saveResult, setSaveResult] = useState('')
+
+  // Upload brand docs modal state
+  const [showUploadModal, setShowUploadModal] = useState(false)
+  const [uploadUrl, setUploadUrl] = useState('')
+  const [uploadText, setUploadText] = useState('')
+  const [uploadFiles, setUploadFiles] = useState<File[]>([])
+  const [uploading, setUploading] = useState(false)
+  const [uploadResult, setUploadResult] = useState<{ success: boolean; message: string } | null>(null)
+  const uploadFileRef = useRef<HTMLInputElement>(null)
+  const [isDragging, setIsDragging] = useState(false)
 
   const load = useCallback(async (query?: string) => {
     const wid = localStorage.getItem('workspaceId')
@@ -145,6 +156,55 @@ export default function BrandMemoryPage() {
     }
   }
 
+  const handleUploadBrandDocs = async () => {
+    const wid = localStorage.getItem('workspaceId')
+    if (!wid) return
+    setUploading(true)
+    setUploadResult(null)
+
+    const items: Array<{ type: 'pdf' | 'docx' | 'url' | 'text'; content: string; filename?: string }> = []
+    uploadFiles.forEach(f => items.push({ type: f.name.endsWith('.pdf') ? 'pdf' : 'docx', content: `[File: ${f.name}]`, filename: f.name }))
+    if (uploadUrl.trim()) items.push({ type: 'url', content: uploadUrl.trim(), filename: uploadUrl.trim() })
+    if (uploadText.trim()) items.push({ type: 'text', content: uploadText.trim(), filename: 'Pasted brand guidelines' })
+
+    if (items.length === 0) { setUploading(false); return }
+
+    let totalNodes = 0
+    let hasError = false
+
+    for (const item of items) {
+      try {
+        const res = await fetch('/api/learning/ingest', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ workspaceId: wid, type: item.type, content: item.content, filename: item.filename }),
+        })
+        const data = await res.json()
+        if (data.success) {
+          totalNodes += data.nodesCreated || 0
+        } else {
+          hasError = true
+        }
+      } catch {
+        hasError = true
+      }
+    }
+
+    setUploadResult({
+      success: !hasError,
+      message: hasError
+        ? 'Some items failed. Please try again.'
+        : `${totalNodes} knowledge nodes extracted and added to Brand Memory.`,
+    })
+    setUploading(false)
+    if (!hasError) {
+      setUploadFiles([])
+      setUploadUrl('')
+      setUploadText('')
+      setTimeout(() => { setShowUploadModal(false); setUploadResult(null); load() }, 2000)
+    }
+  }
+
   const stats = {
     total: memories.length,
     approved: memories.filter(m => m.content_type === 'approved_post' || m.content_type === 'approved_email').length,
@@ -162,10 +222,16 @@ export default function BrandMemoryPage() {
           <h1 className="text-2xl font-bold text-white">🧠 Brand Memory</h1>
           <p className="text-gray-400 text-sm mt-1">AI learns your brand voice from every approved piece of content</p>
         </div>
-        <button onClick={() => setShowAddModal(true)}
-          className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium transition-colors">
-          + Add Memory
-        </button>
+        <div className="flex gap-2">
+          <button onClick={() => setShowUploadModal(true)}
+            className="px-4 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 border border-gray-700 text-white text-sm font-medium transition-colors">
+            Upload Brand Docs
+          </button>
+          <button onClick={() => setShowAddModal(true)}
+            className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium transition-colors">
+            + Add Memory
+          </button>
+        </div>
       </div>
 
       {/* Notice */}
@@ -321,6 +387,105 @@ export default function BrandMemoryPage() {
               <button onClick={addMemory} disabled={saving || !addContent.trim()}
                 className="flex-1 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-medium transition-colors">
                 {saving ? 'Saving...' : 'Save Memory'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Upload Brand Docs Modal */}
+      {showUploadModal && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => { setShowUploadModal(false); setUploadResult(null) }}>
+          <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 w-full max-w-lg" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-5">
+              <div>
+                <h2 className="text-white font-semibold">Upload Brand Docs</h2>
+                <p className="text-gray-500 text-xs mt-0.5">AI will extract knowledge nodes and add them to Brand Memory.</p>
+              </div>
+              <button onClick={() => { setShowUploadModal(false); setUploadResult(null) }} className="text-gray-500 hover:text-white">✕</button>
+            </div>
+
+            <div className="space-y-4">
+              {/* Drag-drop zone */}
+              <div
+                onDragOver={e => { e.preventDefault(); setIsDragging(true) }}
+                onDragLeave={() => setIsDragging(false)}
+                onDrop={e => {
+                  e.preventDefault(); setIsDragging(false)
+                  if (e.dataTransfer.files.length) setUploadFiles(prev => [...prev, ...Array.from(e.dataTransfer.files)])
+                }}
+                onClick={() => uploadFileRef.current?.click()}
+                className={`border-2 border-dashed rounded-xl p-7 text-center cursor-pointer transition-colors ${
+                  isDragging ? 'border-indigo-500 bg-indigo-950/20' : 'border-gray-700 hover:border-gray-600 bg-gray-800'
+                }`}
+              >
+                <div className="text-3xl mb-2">📄</div>
+                <p className="text-white text-sm font-medium">Drop PDF or DOCX files here</p>
+                <p className="text-gray-500 text-xs mt-0.5">or click to browse</p>
+                <input
+                  ref={uploadFileRef}
+                  type="file"
+                  multiple
+                  accept=".pdf,.docx"
+                  className="hidden"
+                  onChange={e => { if (e.target.files) setUploadFiles(prev => [...prev, ...Array.from(e.target.files!)]) }}
+                />
+              </div>
+
+              {uploadFiles.length > 0 && (
+                <div className="space-y-1.5">
+                  {uploadFiles.map((f, i) => (
+                    <div key={i} className="flex items-center gap-2 px-3 py-2 bg-gray-800 rounded-lg">
+                      <span className="text-gray-400 text-xs flex-1 truncate">{f.name}</span>
+                      <button onClick={() => setUploadFiles(prev => prev.filter((_, j) => j !== i))} className="text-gray-600 hover:text-red-400 text-xs transition-colors">✕</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Text paste */}
+              <div>
+                <label className="block text-xs text-gray-400 mb-1.5">Paste brand guidelines text</label>
+                <textarea
+                  value={uploadText}
+                  onChange={e => setUploadText(e.target.value)}
+                  rows={4}
+                  placeholder="Paste brand guidelines, voice documentation, or strategy notes..."
+                  className={inputCls + ' resize-none'}
+                />
+              </div>
+
+              {/* URL field */}
+              <div>
+                <label className="block text-xs text-gray-400 mb-1.5">Import from URL</label>
+                <input
+                  value={uploadUrl}
+                  onChange={e => setUploadUrl(e.target.value)}
+                  placeholder="https://your-brand-guidelines.com/page"
+                  className={inputCls}
+                />
+              </div>
+
+              {uploadResult && (
+                <div className={`p-3 rounded-lg text-sm ${uploadResult.success ? 'bg-green-950 border border-green-800 text-green-300' : 'bg-red-950 border border-red-800 text-red-300'}`}>
+                  {uploadResult.success ? '✓ ' : '✕ '}{uploadResult.message}
+                </div>
+              )}
+            </div>
+
+            <div className="flex gap-3 mt-5">
+              <button
+                onClick={() => { setShowUploadModal(false); setUploadResult(null) }}
+                className="flex-1 py-2.5 rounded-lg border border-gray-700 text-gray-400 text-sm hover:text-white transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleUploadBrandDocs}
+                disabled={uploading || (uploadFiles.length === 0 && !uploadUrl.trim() && !uploadText.trim())}
+                className="flex-1 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-sm font-medium transition-colors"
+              >
+                {uploading ? 'Extracting...' : 'Extract & Save to Memory'}
               </button>
             </div>
           </div>

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 
 interface ApprovalItem {
@@ -46,6 +46,35 @@ const PUBLISHABLE: Record<string, string[]> = {
 const REGENERATABLE = ['carousel', 'reelScript', 'adCopy', 'emailDraft', 'linkedInPost', 'visual_post', 'visual_carousel', 'visual_story', 'visual_ad', 'youtube_thumbnail']
 
 const BASE_URL = process.env.NEXT_PUBLIC_BASE_URL || ''
+
+// ── Mock brand voice scores ───────────────────────────────────────────────────
+function getBrandVoiceScore(id: string): number {
+  // Deterministic pseudo-random based on id
+  let hash = 0
+  for (let i = 0; i < id.length; i++) hash = ((hash << 5) - hash) + id.charCodeAt(i)
+  return 55 + Math.abs(hash % 45)
+}
+
+// ── Auto-approve countdown helpers ───────────────────────────────────────────
+type AutoApproveDelay = 'off' | '24h' | '48h' | '72h'
+const DELAY_MS: Record<AutoApproveDelay, number> = {
+  off: 0,
+  '24h': 24 * 60 * 60 * 1000,
+  '48h': 48 * 60 * 60 * 1000,
+  '72h': 72 * 60 * 60 * 1000,
+}
+
+function getAutoApproveCountdown(createdAt: string, delay: AutoApproveDelay): { label: string; overdue: boolean } {
+  if (delay === 'off') return { label: '', overdue: false }
+  const created = new Date(createdAt).getTime()
+  const threshold = created + DELAY_MS[delay]
+  const now = Date.now()
+  const remaining = threshold - now
+  if (remaining <= 0) return { label: 'Auto-approving...', overdue: true }
+  const hours = Math.floor(remaining / 3600000)
+  const mins = Math.floor((remaining % 3600000) / 60000)
+  return { label: `Auto-approve in: ${hours}h ${mins}m`, overdue: false }
+}
 
 function buildCreativeUrl(content: Record<string, unknown>, type: string): string {
   const tone = (content.tone as string) || 'professional'
@@ -107,6 +136,42 @@ export default function ApprovalsPage() {
   const [publishResult, setPublishResult] = useState<Record<string, { url: string; platform: string }>>({})
   const [filter, setFilter] = useState<'all' | 'pending' | 'approved' | 'rejected'>('pending')
 
+  // ── Bulk select ──────────────────────────────────────────────────────────────
+  const [bulkMode, setBulkMode] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [bulkActing, setBulkActing] = useState(false)
+
+  // ── Auto-approve settings ────────────────────────────────────────────────────
+  const [autoApproveDelay, setAutoApproveDelay] = useState<AutoApproveDelay>('off')
+  const [autoSettingsOpen, setAutoSettingsOpen] = useState(false)
+  const autoSettingsRef = useRef<HTMLDivElement>(null)
+
+  // ── Inline edit ───────────────────────────────────────────────────────────────
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editContent, setEditContent] = useState('')
+  const [savingEdit, setSavingEdit] = useState(false)
+
+  // ── Brand voice tooltip ───────────────────────────────────────────────────────
+  const [bvTooltipId, setBvTooltipId] = useState<string | null>(null)
+
+  // ── Countdown tick ────────────────────────────────────────────────────────────
+  const [, setTick] = useState(0)
+  useEffect(() => {
+    const interval = setInterval(() => setTick(t => t + 1), 60000)
+    return () => clearInterval(interval)
+  }, [])
+
+  // Close auto settings dropdown on outside click
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (autoSettingsRef.current && !autoSettingsRef.current.contains(e.target as Node)) {
+        setAutoSettingsOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [])
+
   const load = useCallback(async () => {
     const workspaceId = localStorage.getItem('workspaceId')
     if (!workspaceId) { router.push('/dashboard/onboarding'); return }
@@ -122,6 +187,12 @@ export default function ApprovalsPage() {
     if (selected) { setNotes(''); setFeedbackText(''); setRegenResult(null) }
   }, [selected?.id])
 
+  // Exit bulk mode when filter changes
+  useEffect(() => {
+    setBulkMode(false)
+    setSelectedIds(new Set())
+  }, [filter])
+
   const act = async (action: 'approve' | 'reject') => {
     if (!selected) return
     const workspaceId = localStorage.getItem('workspaceId')
@@ -133,6 +204,50 @@ export default function ApprovalsPage() {
     })
     setActing(false); setSelected(null); setNotes('')
     load()
+  }
+
+  const bulkAct = async (action: 'approve' | 'reject') => {
+    const workspaceId = localStorage.getItem('workspaceId')
+    setBulkActing(true)
+    await Promise.all(
+      Array.from(selectedIds).map(id =>
+        fetch('/api/approvals', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ approvalId: id, action, workspaceId }),
+        })
+      )
+    )
+    setBulkActing(false)
+    setSelectedIds(new Set())
+    setBulkMode(false)
+    load()
+  }
+
+  const exportSelected = () => {
+    const toExport = items.filter(i => selectedIds.has(i.id))
+    const blob = new Blob([JSON.stringify(toExport, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `approvals-export-${Date.now()}.json`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const saveEdit = async (item: ApprovalItem) => {
+    setSavingEdit(true)
+    try {
+      await fetch(`/api/approvals?id=${item.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: editContent }),
+      })
+      setEditingId(null)
+      load()
+    } finally {
+      setSavingEdit(false)
+    }
   }
 
   const regenerate = async (item: ApprovalItem, feedback?: string) => {
@@ -167,22 +282,91 @@ export default function ApprovalsPage() {
     } finally { setPublishing(null) }
   }
 
+  const toggleBulkSelect = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation()
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const toggleSelectAll = () => {
+    if (selectedIds.size === filtered.length) {
+      setSelectedIds(new Set())
+    } else {
+      setSelectedIds(new Set(filtered.map(i => i.id)))
+    }
+  }
+
   const filtered = items.filter(i => filter === 'all' ? true : i.status === filter)
+  const allSelected = filtered.length > 0 && selectedIds.size === filtered.length
 
   return (
     <div className="p-8">
-      <div className="mb-8">
-        <h1 className="text-2xl font-bold text-white">✅ Approval Inbox</h1>
-        <p className="text-gray-400 text-sm mt-1">Preview, review, and control every AI output before it goes out.</p>
+      <div className="mb-6">
+        <div className="flex items-start justify-between">
+          <div>
+            <h1 className="text-2xl font-bold text-white">✅ Approval Inbox</h1>
+            <p className="text-gray-400 text-sm mt-1">Preview, review, and control every AI output before it goes out.</p>
+          </div>
+          <div className="flex items-center gap-2">
+            {/* Auto-Approve Settings */}
+            <div className="relative" ref={autoSettingsRef}>
+              <button
+                onClick={() => setAutoSettingsOpen(!autoSettingsOpen)}
+                className={`px-3 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-1.5 ${autoApproveDelay !== 'off' ? 'bg-orange-900/40 border border-orange-700 text-orange-300' : 'bg-gray-800 text-gray-400 hover:text-white'}`}
+              >
+                ⚙ Auto-Approve{autoApproveDelay !== 'off' ? `: ${autoApproveDelay}` : ''}
+              </button>
+              {autoSettingsOpen && (
+                <div className="absolute right-0 top-10 bg-gray-900 border border-gray-700 rounded-xl shadow-xl py-1 min-w-[140px] z-20">
+                  {(['off', '24h', '48h', '72h'] as AutoApproveDelay[]).map(opt => (
+                    <button
+                      key={opt}
+                      onClick={() => { setAutoApproveDelay(opt); setAutoSettingsOpen(false) }}
+                      className={`w-full text-left px-4 py-2 text-sm transition-colors ${autoApproveDelay === opt ? 'text-indigo-400 bg-indigo-950' : 'text-gray-300 hover:bg-gray-800'}`}
+                    >
+                      {opt === 'off' ? 'Off' : opt}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Bulk Select toggle */}
+            <button
+              onClick={() => { setBulkMode(!bulkMode); setSelectedIds(new Set()) }}
+              className={`px-3 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-1.5 ${bulkMode ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'}`}
+            >
+              ⬜ Bulk Select
+            </button>
+          </div>
+        </div>
       </div>
 
-      <div className="flex gap-2 mb-6">
-        {(['pending', 'approved', 'rejected', 'all'] as const).map(f => (
-          <button key={f} onClick={() => setFilter(f)}
-            className={`px-4 py-2 rounded-lg text-sm font-medium capitalize transition-colors ${filter === f ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'}`}>
-            {f} {f !== 'all' && <span className="ml-1 text-xs opacity-70">({items.filter(i => i.status === f).length})</span>}
-          </button>
-        ))}
+      {/* Filter tabs + select all */}
+      <div className="flex items-center justify-between mb-6">
+        <div className="flex gap-2">
+          {(bulkMode) && (
+            <label className="flex items-center gap-2 px-3 py-2 rounded-lg bg-gray-800 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={allSelected}
+                onChange={toggleSelectAll}
+                className="w-4 h-4 accent-indigo-500"
+              />
+              <span className="text-gray-300 text-sm">Select All</span>
+            </label>
+          )}
+          {(['pending', 'approved', 'rejected', 'all'] as const).map(f => (
+            <button key={f} onClick={() => setFilter(f)}
+              className={`px-4 py-2 rounded-lg text-sm font-medium capitalize transition-colors ${filter === f ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'}`}>
+              {f} {f !== 'all' && <span className="ml-1 text-xs opacity-70">({items.filter(i => i.status === f).length})</span>}
+            </button>
+          ))}
+        </div>
       </div>
 
       {loading && (
@@ -214,111 +398,290 @@ export default function ApprovalsPage() {
       )}
 
       <div className="grid grid-cols-1 gap-4">
-        {filtered.map(item => (
-          <div key={item.id} className={`bg-gray-900 border rounded-xl p-5 cursor-pointer transition-all ${selected?.id === item.id ? 'border-indigo-600' : 'border-gray-800 hover:border-gray-700'}`}
-            onClick={() => setSelected(selected?.id === item.id ? null : item)}>
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <span className="text-sm">{TYPE_LABELS[item.artifact_type] || item.artifact_type}</span>
-                <h3 className="text-white font-medium text-sm">{item.artifact_title}</h3>
-              </div>
-              <StatusBadge status={item.status} />
-            </div>
+        {filtered.map(item => {
+          const bvScore = getBrandVoiceScore(item.id)
+          const autoCountdown = item.status === 'pending' ? getAutoApproveCountdown(item.created_at, autoApproveDelay) : null
+          const isEditing = editingId === item.id
 
-            {selected?.id === item.id && (
-              <div className="mt-5 pt-5 border-t border-gray-800">
-                {/* Visual or text preview */}
-                <VisualPreview item={item} buildUrl={buildCreativeUrl} />
+          return (
+            <div
+              key={item.id}
+              className={`bg-gray-900 border rounded-xl p-5 transition-all relative group ${
+                selected?.id === item.id ? 'border-indigo-600' : selectedIds.has(item.id) ? 'border-indigo-500 bg-indigo-950/20' : 'border-gray-800 hover:border-gray-700'
+              } ${autoCountdown?.overdue ? 'border-orange-700/50' : ''}`}
+              onClick={() => {
+                if (bulkMode) return
+                setSelected(selected?.id === item.id ? null : item)
+              }}
+              style={{ cursor: bulkMode ? 'default' : 'pointer' }}
+            >
+              {/* Bulk checkbox */}
+              {bulkMode && (
+                <div
+                  className="absolute top-4 left-4 z-10"
+                  onClick={e => toggleBulkSelect(item.id, e)}
+                >
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.has(item.id)}
+                    onChange={() => {}}
+                    className="w-4 h-4 accent-indigo-500 cursor-pointer"
+                  />
+                </div>
+              )}
 
-                {item.status === 'pending' && (
-                  <div className="mt-5 space-y-3">
-                    <textarea
-                      className="w-full px-4 py-3 rounded-lg bg-gray-800 border border-gray-700 text-white placeholder-gray-500 text-sm resize-none focus:outline-none focus:border-indigo-500"
-                      placeholder="Notes (required for rejection, optional for approval)..."
-                      value={notes} onChange={e => setNotes(e.target.value)} rows={2}
-                    />
-                    <div className="flex gap-3">
-                      <button onClick={e => { e.stopPropagation(); act('approve') }} disabled={acting}
-                        className="flex-1 py-2.5 rounded-lg bg-green-700 hover:bg-green-600 text-white text-sm font-medium transition-colors disabled:opacity-50">
-                        {acting ? 'Saving...' : '✓ Approve'}
-                      </button>
-                      <button onClick={e => { e.stopPropagation(); act('reject') }} disabled={acting || !notes}
-                        className="flex-1 py-2.5 rounded-lg bg-red-900 hover:bg-red-800 text-white text-sm font-medium transition-colors disabled:opacity-50">
-                        ✕ Reject
-                      </button>
-                    </div>
-                  </div>
-                )}
+              {/* Hover checkbox (non-bulk mode) */}
+              {!bulkMode && (
+                <div
+                  className="absolute top-4 left-4 z-10 opacity-0 group-hover:opacity-100 transition-opacity"
+                  onClick={e => { e.stopPropagation(); setBulkMode(true); setSelectedIds(new Set([item.id])) }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={false}
+                    onChange={() => {}}
+                    className="w-4 h-4 accent-indigo-500 cursor-pointer"
+                  />
+                </div>
+              )}
 
-                {/* Feedback & Re-generate section */}
-                {REGENERATABLE.includes(item.artifact_type) && (
-                  <div className="mt-4 p-4 rounded-lg bg-gray-800 border border-gray-700">
-                    <p className="text-gray-400 text-xs font-semibold mb-2">Request Changes</p>
-                    <textarea
-                      className="w-full px-3 py-2.5 rounded-lg bg-gray-900 border border-gray-700 text-white placeholder-gray-500 text-sm resize-none focus:outline-none focus:border-indigo-500"
-                      placeholder="Describe exactly what to change: 'Make it more casual', 'Shorten to 3 slides', 'Change headline to focus on price'..."
-                      value={feedbackText} onChange={e => setFeedbackText(e.target.value)} rows={2}
-                      onClick={e => e.stopPropagation()}
-                    />
+              <div className={`flex items-center justify-between ${bulkMode ? 'pl-7' : ''}`}>
+                <div className="flex items-center gap-3 min-w-0">
+                  <span className="text-sm flex-shrink-0">{TYPE_LABELS[item.artifact_type] || item.artifact_type}</span>
+                  <h3 className="text-white font-medium text-sm truncate">{item.artifact_title}</h3>
+                </div>
+                <div className="flex items-center gap-2 flex-shrink-0 ml-3">
+                  {/* Auto-approve countdown badge */}
+                  {autoCountdown && autoCountdown.label && (
+                    <span className={`text-xs px-2 py-0.5 rounded-full border flex items-center gap-1 ${
+                      autoCountdown.overdue
+                        ? 'bg-orange-900/50 border-orange-700 text-orange-300 animate-pulse'
+                        : 'bg-gray-800 border-gray-700 text-gray-400'
+                    }`}>
+                      ⏱ {autoCountdown.label}
+                    </span>
+                  )}
+
+                  {/* Brand voice badge */}
+                  <div className="relative">
                     <button
-                      onClick={e => { e.stopPropagation(); regenerate(item, feedbackText) }}
-                      disabled={regenerating === item.id}
-                      className="w-full mt-2 py-2 rounded-lg border border-indigo-700 text-indigo-400 hover:bg-indigo-950 text-sm font-medium transition-colors disabled:opacity-50">
-                      {regenerating === item.id ? '⏳ Regenerating...' : '↻ Regenerate with This Feedback'}
+                      onClick={e => { e.stopPropagation(); setBvTooltipId(bvTooltipId === item.id ? null : item.id) }}
+                      className={`text-xs px-2 py-0.5 rounded-full border font-medium transition-colors ${
+                        bvScore >= 80
+                          ? 'bg-green-900/40 border-green-800 text-green-300'
+                          : bvScore >= 60
+                          ? 'bg-yellow-900/40 border-yellow-800 text-yellow-300'
+                          : 'bg-red-900/40 border-red-800 text-red-300'
+                      }`}
+                    >
+                      Brand Voice: {bvScore}%
                     </button>
-                    <p className="text-xs text-gray-600 mt-1 text-center">New version will appear below immediately after generation</p>
+                    {bvTooltipId === item.id && (
+                      <div className="absolute right-0 top-7 bg-gray-900 border border-gray-700 rounded-xl shadow-xl px-4 py-3 z-30 min-w-[240px]"
+                        onClick={e => e.stopPropagation()}>
+                        <p className="text-white text-xs font-semibold mb-2">Brand Voice Analysis</p>
+                        <ul className="space-y-1.5">
+                          {bvScore >= 80 ? (
+                            <>
+                              <li className="text-green-400 text-xs">✓ Strong tone alignment</li>
+                              <li className="text-green-400 text-xs">✓ Consistent terminology</li>
+                              <li className="text-green-400 text-xs">✓ On-brand CTA</li>
+                            </>
+                          ) : bvScore >= 60 ? (
+                            <>
+                              <li className="text-yellow-400 text-xs">~ Tone mostly aligned</li>
+                              <li className="text-yellow-400 text-xs">~ Minor terminology drift</li>
+                              <li className="text-gray-400 text-xs">✗ CTA could be stronger</li>
+                            </>
+                          ) : (
+                            <>
+                              <li className="text-red-400 text-xs">✗ Tone mismatch detected</li>
+                              <li className="text-red-400 text-xs">✗ Off-brand phrasing used</li>
+                              <li className="text-red-400 text-xs">✗ CTA doesn't match voice</li>
+                            </>
+                          )}
+                        </ul>
+                      </div>
+                    )}
                   </div>
-                )}
 
-                {/* Inline regeneration result */}
-                {regenResult && (
-                  <div className="mt-4 p-4 rounded-lg bg-indigo-950 border border-indigo-800">
-                    <div className="flex items-center gap-2 mb-3">
-                      <span className="text-indigo-400 text-sm font-semibold">✨ New Version Generated</span>
-                    </div>
-                    <pre className="text-gray-300 text-xs whitespace-pre-wrap overflow-auto max-h-40">
-                      {JSON.stringify(regenResult.asset, null, 2)}
-                    </pre>
-                    <p className="text-xs text-gray-500 mt-2">Find it in the Pending tab to approve or request more changes</p>
-                  </div>
-                )}
-
-                {item.notes && (
-                  <div className="mt-4 p-3 rounded-lg bg-gray-800 text-sm text-gray-300">
-                    <span className="text-gray-500 text-xs">Notes: </span>{item.notes}
-                  </div>
-                )}
-
-                {item.status === 'approved' && PUBLISHABLE[item.artifact_type] && (
-                  <div className="mt-4 p-4 rounded-lg bg-gray-900 border border-gray-700">
-                    <p className="text-gray-400 text-xs font-semibold uppercase tracking-wider mb-3">Publish to Platform</p>
-                    <div className="flex flex-wrap gap-2">
-                      {PUBLISHABLE[item.artifact_type].map(platform => {
-                        const key = item.id + platform
-                        const result = publishResult[key]
-                        return result ? (
-                          <a key={platform} href={result.url} target="_blank" rel="noopener noreferrer"
-                            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-green-900/30 border border-green-700 text-green-400 text-sm font-medium">
-                            ✅ View on {platform}
-                          </a>
-                        ) : (
-                          <button key={platform}
-                            onClick={e => { e.stopPropagation(); publish(item, platform) }}
-                            disabled={publishing === key}
-                            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-indigo-900/30 border border-indigo-700 text-indigo-300 hover:bg-indigo-900/60 text-sm font-medium transition-colors disabled:opacity-50 capitalize">
-                            {publishing === key ? '⏳ Publishing...' : `▶ Publish to ${platform}`}
-                          </button>
-                        )
-                      })}
-                    </div>
-                    <p className="text-gray-600 text-xs mt-2">Connect accounts in <a href="/dashboard/integrations" className="text-indigo-400 hover:text-indigo-300">Integrations</a> first</p>
-                  </div>
-                )}
+                  <StatusBadge status={item.status} />
+                </div>
               </div>
-            )}
-          </div>
-        ))}
+
+              {selected?.id === item.id && !bulkMode && (
+                <div className="mt-5 pt-5 border-t border-gray-800">
+                  {/* Inline edit / visual preview */}
+                  {isEditing ? (
+                    <div onClick={e => e.stopPropagation()}>
+                      <textarea
+                        className="w-full px-4 py-3 rounded-lg bg-gray-800 border border-indigo-600 text-white text-sm resize-none focus:outline-none min-h-[120px]"
+                        value={editContent}
+                        onChange={e => setEditContent(e.target.value)}
+                        rows={6}
+                      />
+                      <div className="flex items-center justify-between mt-1.5">
+                        <span className="text-gray-600 text-xs">{editContent.length} characters</span>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => setEditingId(null)}
+                            className="px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm transition-colors"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            onClick={() => saveEdit(item)}
+                            disabled={savingEdit}
+                            className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium transition-colors disabled:opacity-50"
+                          >
+                            {savingEdit ? 'Saving...' : 'Save'}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="relative">
+                      <VisualPreview item={item} buildUrl={buildCreativeUrl} />
+                      {/* Edit button */}
+                      <button
+                        onClick={e => {
+                          e.stopPropagation()
+                          setEditingId(item.id)
+                          setEditContent(JSON.stringify(item.content_json, null, 2))
+                        }}
+                        className="absolute top-0 right-0 px-2.5 py-1 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-white text-xs transition-colors flex items-center gap-1"
+                      >
+                        ✏ Edit
+                      </button>
+                    </div>
+                  )}
+
+                  {item.status === 'pending' && !isEditing && (
+                    <div className="mt-5 space-y-3">
+                      <textarea
+                        className="w-full px-4 py-3 rounded-lg bg-gray-800 border border-gray-700 text-white placeholder-gray-500 text-sm resize-none focus:outline-none focus:border-indigo-500"
+                        placeholder="Notes (required for rejection, optional for approval)..."
+                        value={notes} onChange={e => setNotes(e.target.value)} rows={2}
+                        onClick={e => e.stopPropagation()}
+                      />
+                      <div className="flex gap-3">
+                        <button onClick={e => { e.stopPropagation(); act('approve') }} disabled={acting}
+                          className="flex-1 py-2.5 rounded-lg bg-green-700 hover:bg-green-600 text-white text-sm font-medium transition-colors disabled:opacity-50">
+                          {acting ? 'Saving...' : '✓ Approve'}
+                        </button>
+                        <button onClick={e => { e.stopPropagation(); act('reject') }} disabled={acting || !notes}
+                          className="flex-1 py-2.5 rounded-lg bg-red-900 hover:bg-red-800 text-white text-sm font-medium transition-colors disabled:opacity-50">
+                          ✕ Reject
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Feedback & Re-generate section */}
+                  {REGENERATABLE.includes(item.artifact_type) && !isEditing && (
+                    <div className="mt-4 p-4 rounded-lg bg-gray-800 border border-gray-700">
+                      <p className="text-gray-400 text-xs font-semibold mb-2">Request Changes</p>
+                      <textarea
+                        className="w-full px-3 py-2.5 rounded-lg bg-gray-900 border border-gray-700 text-white placeholder-gray-500 text-sm resize-none focus:outline-none focus:border-indigo-500"
+                        placeholder="Describe exactly what to change: 'Make it more casual', 'Shorten to 3 slides', 'Change headline to focus on price'..."
+                        value={feedbackText} onChange={e => setFeedbackText(e.target.value)} rows={2}
+                        onClick={e => e.stopPropagation()}
+                      />
+                      <button
+                        onClick={e => { e.stopPropagation(); regenerate(item, feedbackText) }}
+                        disabled={regenerating === item.id}
+                        className="w-full mt-2 py-2 rounded-lg border border-indigo-700 text-indigo-400 hover:bg-indigo-950 text-sm font-medium transition-colors disabled:opacity-50">
+                        {regenerating === item.id ? '⏳ Regenerating...' : '↻ Regenerate with This Feedback'}
+                      </button>
+                      <p className="text-xs text-gray-600 mt-1 text-center">New version will appear below immediately after generation</p>
+                    </div>
+                  )}
+
+                  {/* Inline regeneration result */}
+                  {regenResult && (
+                    <div className="mt-4 p-4 rounded-lg bg-indigo-950 border border-indigo-800">
+                      <div className="flex items-center gap-2 mb-3">
+                        <span className="text-indigo-400 text-sm font-semibold">✨ New Version Generated</span>
+                      </div>
+                      <pre className="text-gray-300 text-xs whitespace-pre-wrap overflow-auto max-h-40">
+                        {JSON.stringify(regenResult.asset, null, 2)}
+                      </pre>
+                      <p className="text-xs text-gray-500 mt-2">Find it in the Pending tab to approve or request more changes</p>
+                    </div>
+                  )}
+
+                  {item.notes && (
+                    <div className="mt-4 p-3 rounded-lg bg-gray-800 text-sm text-gray-300">
+                      <span className="text-gray-500 text-xs">Notes: </span>{item.notes}
+                    </div>
+                  )}
+
+                  {item.status === 'approved' && PUBLISHABLE[item.artifact_type] && (
+                    <div className="mt-4 p-4 rounded-lg bg-gray-900 border border-gray-700">
+                      <p className="text-gray-400 text-xs font-semibold uppercase tracking-wider mb-3">Publish to Platform</p>
+                      <div className="flex flex-wrap gap-2">
+                        {PUBLISHABLE[item.artifact_type].map(platform => {
+                          const key = item.id + platform
+                          const result = publishResult[key]
+                          return result ? (
+                            <a key={platform} href={result.url} target="_blank" rel="noopener noreferrer"
+                              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-green-900/30 border border-green-700 text-green-400 text-sm font-medium">
+                              ✅ View on {platform}
+                            </a>
+                          ) : (
+                            <button key={platform}
+                              onClick={e => { e.stopPropagation(); publish(item, platform) }}
+                              disabled={publishing === key}
+                              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-indigo-900/30 border border-indigo-700 text-indigo-300 hover:bg-indigo-900/60 text-sm font-medium transition-colors disabled:opacity-50 capitalize">
+                              {publishing === key ? '⏳ Publishing...' : `▶ Publish to ${platform}`}
+                            </button>
+                          )
+                        })}
+                      </div>
+                      <p className="text-gray-600 text-xs mt-2">Connect accounts in <a href="/dashboard/integrations" className="text-indigo-400 hover:text-indigo-300">Integrations</a> first</p>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )
+        })}
       </div>
+
+      {/* Floating bulk action bar */}
+      {bulkMode && selectedIds.size > 0 && (
+        <div className="fixed bottom-12 left-1/2 -translate-x-1/2 z-40 bg-gray-900 border border-gray-700 rounded-2xl shadow-2xl px-5 py-3 flex items-center gap-3">
+          <span className="text-gray-400 text-sm">{selectedIds.size} selected</span>
+          <div className="w-px h-5 bg-gray-700" />
+          <button
+            onClick={() => bulkAct('approve')}
+            disabled={bulkActing}
+            className="px-4 py-2 rounded-lg bg-green-700 hover:bg-green-600 text-white text-sm font-medium transition-colors disabled:opacity-50 flex items-center gap-1.5"
+          >
+            {bulkActing ? <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" /> : '✓'}
+            Approve Selected ({selectedIds.size})
+          </button>
+          <button
+            onClick={() => bulkAct('reject')}
+            disabled={bulkActing}
+            className="px-4 py-2 rounded-lg bg-red-900 hover:bg-red-800 text-white text-sm font-medium transition-colors disabled:opacity-50"
+          >
+            ✕ Reject Selected ({selectedIds.size})
+          </button>
+          <button
+            onClick={exportSelected}
+            className="px-4 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm font-medium transition-colors"
+          >
+            ↓ Export Selected
+          </button>
+          <button
+            onClick={() => { setSelectedIds(new Set()); setBulkMode(false) }}
+            className="px-3 py-2 rounded-lg text-gray-500 hover:text-gray-300 text-sm transition-colors"
+          >
+            ✕
+          </button>
+        </div>
+      )}
     </div>
   )
 }

@@ -98,6 +98,12 @@ const ADVANCED_NAV = [
       { href: '/dashboard/onboarding', label: 'Onboarding', icon: '🚀' },
     ],
   },
+  {
+    label: 'PLATFORM',
+    items: [
+      { href: '/dashboard/super-admin', label: 'Super Admin', icon: '🛡️' },
+    ],
+  },
 ]
 
 function getPageTitle(pathname: string): string {
@@ -130,6 +136,7 @@ function getPageTitle(pathname: string): string {
     '/dashboard/audit': 'Audit Log',
     '/dashboard/privacy': 'Privacy & Trust',
     '/dashboard/funnel/form-builder': 'Form Builder',
+    '/dashboard/super-admin': 'Super Admin',
   }
   return map[pathname] || pathname.split('/').filter(Boolean).pop()?.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) || 'Dashboard'
 }

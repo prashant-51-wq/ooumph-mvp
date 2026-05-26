@@ -1,486 +1,930 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useRef } from 'react'
 
-// ── Agent registry ──────────────────────────────────────────────────────────
+// ── Types ────────────────────────────────────────────────────────────────────
 
-const AGENT_TREE = [
+type AgentStatus = 'active' | 'idle' | 'error' | 'paused'
+type ViewMode = 'grid' | 'list' | 'hierarchy'
+type ToneOption = 'Professional' | 'Casual' | 'Formal' | 'Friendly'
+type PriorityOption = 'Low' | 'Normal' | 'High' | 'Critical'
+type ScheduleOption = 'Always on' | 'Business hours' | 'Custom schedule'
+
+interface AgentConfig {
+  model: string
+  instructions: string
+  tone: ToneOption
+  maxTasksPerDay: number
+  priority: PriorityOption
+  allowedTools: string[]
+  apiKeyOverride: string
+  schedule: ScheduleOption
+  autoEscalateTo: string
+  costCapPerDay: number
+}
+
+interface Agent {
+  id: string
+  name: string
+  icon: string
+  role: string
+  category: 'supervisor' | 'worker'
+  supervisorId?: string
+  supervisorName?: string
+  status: AgentStatus
+  currentTask?: string
+  tasksToday: number
+  costToday: number
+  avgResponseTime: string
+  model: string
+  config: AgentConfig
+  logs: LogEntry[]
+}
+
+interface LogEntry {
+  id: string
+  timestamp: string
+  taskType: string
+  input: string
+  output: string
+  cost: number
+  duration: string
+  status: 'success' | 'failed'
+}
+
+interface ActivityItem {
+  agentId: string
+  agentName: string
+  agentIcon: string
+  message: string
+  timeAgo: string
+}
+
+// ── Mock Data ────────────────────────────────────────────────────────────────
+
+const DEFAULT_TOOLS = ['Web Search', 'Image Gen', 'Email Send', 'CRM Update', 'Social Post', 'File Read', 'Analytics Pull', 'Webhook']
+
+function makeConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
+  return {
+    model: 'Claude 3.5 Sonnet',
+    instructions: 'Follow brand guidelines strictly. Prioritize quality over speed. Always check for factual accuracy before publishing.',
+    tone: 'Professional',
+    maxTasksPerDay: 50,
+    priority: 'Normal',
+    allowedTools: ['Web Search', 'Email Send', 'Social Post'],
+    apiKeyOverride: '',
+    schedule: 'Always on',
+    autoEscalateTo: 'None',
+    costCapPerDay: 5,
+    ...overrides,
+  }
+}
+
+function makeLogs(agentName: string): LogEntry[] {
+  const tasks = [
+    { type: 'Content Generation', input: 'Write blog post about AI trends', output: '1,847 word blog post with 3 SEO keywords', cost: 0.042, dur: '12.4s' },
+    { type: 'Social Scheduling', input: 'Schedule LinkedIn post for Thursday 9am', output: 'Post scheduled: "Top 5 AI Tools for 2026"', cost: 0.008, dur: '3.1s' },
+    { type: 'Lead Score Update', input: 'Score lead: john@acme.com', output: 'Score updated to 87/100 (High Intent)', cost: 0.011, dur: '4.8s' },
+    { type: 'Brand Monitoring', input: 'Scan Twitter for brand mentions', output: '3 new mentions found, 1 requires response', cost: 0.019, dur: '8.2s' },
+    { type: 'Email Draft', input: 'Draft follow-up email for demo request', output: '247 word personalized follow-up email', cost: 0.031, dur: '9.7s' },
+  ]
+  const now = Date.now()
+  return tasks.map((t, i) => ({
+    id: `log-${agentName}-${i}`,
+    timestamp: new Date(now - (i + 1) * 23 * 60000).toISOString(),
+    taskType: t.type,
+    input: t.input,
+    output: t.output,
+    cost: t.cost,
+    duration: t.dur,
+    status: i === 2 ? 'failed' : 'success',
+  }))
+}
+
+const AGENTS: Agent[] = [
+  // Supervisors
   {
-    id: 'strategy',
-    name: 'Strategy Supervisor',
-    icon: '🧠',
-    description: 'Generates the one-page marketing strategy from your brand profile. Gates all downstream agents.',
-    endpoint: '/api/agents/strategy',
-    status: 'active',
-    tools: ['Brave Search', 'Firecrawl', 'Claude Sonnet'],
-    workers: [],
+    id: 'cmo', name: 'CMO Agent', icon: '🧠', role: 'Strategy & Orchestration', category: 'supervisor',
+    status: 'active', currentTask: 'Running: Q2 Strategy Update',
+    tasksToday: 12, costToday: 0.84, avgResponseTime: '14.2s', model: 'Claude 3.5 Sonnet',
+    config: makeConfig({ maxTasksPerDay: 20, priority: 'Critical', allowedTools: ['Web Search', 'Analytics Pull', 'Webhook'], costCapPerDay: 10 }),
+    logs: makeLogs('cmo'),
   },
   {
-    id: 'content',
-    name: 'Content Supervisor',
-    icon: '📅',
-    description: 'Builds the 30-day content calendar across all selected channels.',
-    endpoint: '/api/agents/content',
-    status: 'active',
-    tools: ['Claude Sonnet', 'Groq'],
-    workers: [
-      { id: 'blog', name: 'Blog Writer', icon: '✍️', description: 'Writes long-form blog posts and LinkedIn articles.', endpoint: '/api/agents/blog', tools: ['Claude Sonnet'] },
-      { id: 'repurpose', name: 'Content Repurposer', icon: '♻️', description: 'Transforms one piece of content into multiple formats.', endpoint: '/api/agents/repurpose', tools: ['Claude Sonnet'] },
-      { id: 'pr', name: 'PR Writer', icon: '📰', description: 'Drafts press releases and media pitches.', endpoint: '/api/agents/pr', tools: ['Claude Sonnet'] },
-    ],
+    id: 'content-sup', name: 'Content Supervisor', icon: '📅', role: 'Content & Creative', category: 'supervisor',
+    status: 'active', currentTask: 'Building May content calendar',
+    tasksToday: 34, costToday: 1.12, avgResponseTime: '11.8s', model: 'Claude 3.5 Sonnet',
+    config: makeConfig({ priority: 'High', allowedTools: ['Web Search', 'Image Gen', 'Social Post'] }),
+    logs: makeLogs('content-sup'),
   },
   {
-    id: 'creative',
-    name: 'Creative Supervisor',
-    icon: '🎨',
-    description: 'Coordinates image, video, voiceover, and visual asset generation.',
-    endpoint: '/api/agents/creative',
-    status: 'active',
-    tools: ['DALL-E 3', 'ElevenLabs', 'Runway', 'HeyGen', 'Cloudinary'],
-    workers: [
-      { id: 'image-gen', name: 'Image Generator', icon: '🖼️', description: 'DALL-E 3 image generation with Cloudinary upload.', endpoint: '/api/agents/creative/image-gen', tools: ['DALL-E 3', 'Cloudinary'] },
-      { id: 'voiceover', name: 'Voiceover Agent', icon: '🎙️', description: 'ElevenLabs text-to-speech for any script.', endpoint: '/api/agents/creative/voiceover', tools: ['ElevenLabs'] },
-      { id: 'transcribe', name: 'Transcription Agent', icon: '📝', description: 'Transcribes audio files via Deepgram/Whisper.', endpoint: '/api/agents/creative/transcribe', tools: ['Deepgram', 'Whisper'] },
-      { id: 'runway', name: 'Runway Video Agent', icon: '🎬', description: 'Text-to-video and image-to-video via Runway ML.', endpoint: '/api/agents/video/runway', tools: ['Runway ML'] },
-      { id: 'heygen', name: 'HeyGen Avatar Agent', icon: '👤', description: 'AI avatar video creation with custom scripts.', endpoint: '/api/agents/video/heygen', tools: ['HeyGen'] },
-    ],
+    id: 'growth-sup', name: 'Growth Supervisor', icon: '🎯', role: 'Leads & Revenue', category: 'supervisor',
+    status: 'active', currentTask: 'Analyzing funnel drop-off at checkout',
+    tasksToday: 28, costToday: 0.76, avgResponseTime: '9.4s', model: 'Claude 3.5 Sonnet',
+    config: makeConfig({ priority: 'High', allowedTools: ['Web Search', 'CRM Update', 'Webhook'] }),
+    logs: makeLogs('growth-sup'),
   },
   {
-    id: 'leads',
-    name: 'Leads Supervisor',
-    icon: '🎯',
-    description: 'Handles lead generation planning, CRM management, and enrichment.',
-    endpoint: '/api/agents/leads',
-    status: 'active',
-    tools: ['Claude Sonnet', 'Apollo.io', 'Hunter.io'],
-    workers: [
-      { id: 'leads-enrich', name: 'Lead Enrichment', icon: '🔍', description: 'Enriches leads via Apollo.io and Hunter.io.', endpoint: '/api/agents/leads/enrich', tools: ['Apollo.io', 'Hunter.io'] },
-    ],
+    id: 'engagement-sup', name: 'Engagement Supervisor', icon: '💬', role: 'Inbox & Social', category: 'supervisor',
+    status: 'idle', currentTask: undefined,
+    tasksToday: 8, costToday: 0.23, avgResponseTime: '6.1s', model: 'Claude 3.5 Sonnet',
+    config: makeConfig({ schedule: 'Business hours', allowedTools: ['Email Send', 'Social Post', 'CRM Update'] }),
+    logs: makeLogs('engagement-sup'),
   },
   {
-    id: 'ads',
-    name: 'Ads Supervisor',
-    icon: '📢',
-    description: 'Creates and monitors paid campaigns across Meta, Google, and LinkedIn.',
-    endpoint: '/api/agents/ads',
-    status: 'active',
-    tools: ['Meta Ads API', 'Google Ads API', 'LinkedIn Ads API'],
-    workers: [
-      { id: 'ads-meta', name: 'Meta Ads Agent', icon: '📘', description: 'Creates Facebook/Instagram ad campaigns.', endpoint: '/api/agents/ads/meta', tools: ['Meta Ads API'] },
-      { id: 'ads-google', name: 'Google Ads Agent', icon: '🔍', description: 'Creates Google Search and Display campaigns.', endpoint: '/api/agents/ads/google', tools: ['Google Ads API'] },
-    ],
+    id: 'intelligence-sup', name: 'Intelligence Supervisor', icon: '🔭', role: 'Research & Analytics', category: 'supervisor',
+    status: 'active', currentTask: 'Compiling competitor intelligence report',
+    tasksToday: 19, costToday: 0.91, avgResponseTime: '18.7s', model: 'Claude 3.5 Sonnet',
+    config: makeConfig({ priority: 'High', allowedTools: ['Web Search', 'Analytics Pull', 'File Read'] }),
+    logs: makeLogs('intelligence-sup'),
   },
   {
-    id: 'publish',
-    name: 'Publishing Supervisor',
-    icon: '🚀',
-    description: 'Publishes approved content to WordPress, Ghost, Buffer, and newsletters.',
-    endpoint: '/api/agents/publish',
-    status: 'active',
-    tools: ['WordPress REST API', 'Ghost Admin API', 'Buffer', 'Resend'],
-    workers: [
-      { id: 'publish-social', name: 'Social Scheduler', icon: '📱', description: 'Schedules posts to Buffer across all platforms.', endpoint: '/api/agents/publish/social', tools: ['Buffer'] },
-    ],
+    id: 'brand-sup', name: 'Brand Supervisor', icon: '🎨', role: 'Brand & Reputation', category: 'supervisor',
+    status: 'idle', currentTask: undefined,
+    tasksToday: 5, costToday: 0.18, avgResponseTime: '7.9s', model: 'Claude 3.5 Sonnet',
+    config: makeConfig({ schedule: 'Business hours', costCapPerDay: 3 }),
+    logs: makeLogs('brand-sup'),
+  },
+  // Workers
+  {
+    id: 'blog-writer', name: 'Blog Writer Agent', icon: '✍️', role: 'Long-form Content', category: 'worker',
+    supervisorId: 'content-sup', supervisorName: 'Content Supervisor',
+    status: 'active', currentTask: 'Writing: "Top 10 SaaS Tools for 2026"',
+    tasksToday: 8, costToday: 0.38, avgResponseTime: '22.1s', model: 'Claude 3.5 Sonnet',
+    config: makeConfig({ instructions: 'Write SEO-optimized blog posts. Min 1500 words. Include H2/H3 subheadings and meta description.' }),
+    logs: makeLogs('blog-writer'),
   },
   {
-    id: 'email-marketing',
-    name: 'Email Marketing Agent',
-    icon: '📧',
-    description: 'Sends newsletters and email sequences via Resend/Brevo/Mailchimp.',
-    endpoint: '/api/agents/email-marketing',
-    status: 'active',
-    tools: ['Resend', 'Brevo', 'Mailchimp'],
-    workers: [],
+    id: 'social-agent', name: 'Social Media Agent', icon: '📱', role: 'Social Posting', category: 'worker',
+    supervisorId: 'content-sup', supervisorName: 'Content Supervisor',
+    status: 'active', currentTask: 'Scheduling 3 LinkedIn posts for next week',
+    tasksToday: 24, costToday: 0.29, avgResponseTime: '5.3s', model: 'Claude 3.5 Sonnet',
+    config: makeConfig({ allowedTools: ['Social Post', 'Image Gen'] }),
+    logs: makeLogs('social-agent'),
   },
   {
-    id: 'payments',
-    name: 'Payments Agent',
-    icon: '💳',
-    description: 'Creates Stripe and Razorpay payment links and tracks revenue.',
-    endpoint: '/api/agents/payments',
-    status: 'active',
-    tools: ['Stripe', 'Razorpay'],
-    workers: [
-      { id: 'payments-stripe', name: 'Stripe Agent', icon: '💳', description: 'Creates Stripe checkout sessions and payment links.', endpoint: '/api/agents/payments/stripe', tools: ['Stripe'] },
-      { id: 'payments-razorpay', name: 'Razorpay Agent', icon: '💰', description: 'Creates Razorpay payment links for Indian payments.', endpoint: '/api/agents/payments/razorpay', tools: ['Razorpay'] },
-    ],
+    id: 'email-copy', name: 'Email Copywriter Agent', icon: '📧', role: 'Email Sequences', category: 'worker',
+    supervisorId: 'content-sup', supervisorName: 'Content Supervisor',
+    status: 'idle', currentTask: undefined,
+    tasksToday: 3, costToday: 0.14, avgResponseTime: '8.4s', model: 'Claude 3.5 Sonnet',
+    config: makeConfig({ allowedTools: ['Email Send', 'CRM Update'] }),
+    logs: makeLogs('email-copy'),
   },
   {
-    id: 'voice-ai',
-    name: 'Voice AI Agent',
-    icon: '📞',
-    description: 'Makes outbound voice calls and books meetings via Vapi.',
-    endpoint: '/api/agents/voice/vapi',
-    status: 'active',
-    tools: ['Vapi', 'Cal.com'],
-    workers: [],
+    id: 'ad-copy', name: 'Ad Copy Agent', icon: '📢', role: 'Paid Advertising Copy', category: 'worker',
+    supervisorId: 'content-sup', supervisorName: 'Content Supervisor',
+    status: 'active', currentTask: 'Writing Meta ad variants for summer campaign',
+    tasksToday: 7, costToday: 0.22, avgResponseTime: '9.1s', model: 'Claude 3.5 Sonnet',
+    config: makeConfig({ allowedTools: ['Web Search', 'Image Gen'] }),
+    logs: makeLogs('ad-copy'),
   },
   {
-    id: 'analytics',
-    name: 'Analytics Agent',
-    icon: '📊',
-    description: 'Fetches performance data from GA4, Meta, Google Search Console.',
-    endpoint: '/api/agents/analytics',
-    status: 'active',
-    tools: ['Google Analytics 4', 'Google Search Console', 'Meta Insights'],
-    workers: [],
+    id: 'seo-agent', name: 'SEO Agent', icon: '🔍', role: 'SEO Optimization', category: 'worker',
+    supervisorId: 'content-sup', supervisorName: 'Content Supervisor',
+    status: 'active', currentTask: 'Auditing on-page SEO for 5 blog posts',
+    tasksToday: 12, costToday: 0.31, avgResponseTime: '11.2s', model: 'Claude 3.5 Sonnet',
+    config: makeConfig({ allowedTools: ['Web Search', 'Analytics Pull'] }),
+    logs: makeLogs('seo-agent'),
   },
   {
-    id: 'research',
-    name: 'Research Agent',
-    icon: '🔍',
-    description: 'Monitors trends, competitor signals, and brand mentions.',
-    endpoint: '/api/agents/research',
-    status: 'active',
-    tools: ['Brave Search', 'Firecrawl'],
-    workers: [],
+    id: 'lead-scorer', name: 'Lead Scorer Agent', icon: '⚡', role: 'Lead Qualification', category: 'worker',
+    supervisorId: 'growth-sup', supervisorName: 'Growth Supervisor',
+    status: 'active', currentTask: 'Scoring 47 new inbound leads from Typeform',
+    tasksToday: 47, costToday: 0.18, avgResponseTime: '3.7s', model: 'Claude 3.5 Sonnet',
+    config: makeConfig({ allowedTools: ['CRM Update', 'Webhook'] }),
+    logs: makeLogs('lead-scorer'),
   },
   {
-    id: 'notify',
-    name: 'Notification Agent',
-    icon: '🔔',
-    description: 'Sends approval alerts via Slack and Telegram.',
-    endpoint: '/api/agents/notify',
-    status: 'active',
-    tools: ['Slack', 'Telegram'],
-    workers: [],
-  },
-  // ── Sprint 3: Sales, Retargeting, Scheduling, Branding ──────────────────────
-  {
-    id: 'sales',
-    name: 'Sales Supervisor',
-    icon: '💼',
-    description: 'Full sales intelligence stack: pipeline analysis, AI proposals, multi-channel outreach sequences, deal scoring, revenue forecasting, demo scripts, and win/loss analysis.',
-    endpoint: '/api/agents/sales',
-    status: 'active',
-    tools: ['Claude Sonnet', 'Brave Search', 'PostgreSQL'],
-    workers: [
-      { id: 'pipeline', name: 'Pipeline Manager', icon: '📊', description: 'CRUD for deals across 6 pipeline stages with auto-probability updates and stage-change activity logging.', endpoint: '/api/agents/sales/pipeline', tools: ['Claude Sonnet'] },
-      { id: 'proposal', name: 'Proposal Writer', icon: '📄', description: 'Generates complete HTML sales proposals with pricing tiers, ROI callouts, social proof, and a print-ready layout.', endpoint: '/api/agents/sales/proposal', tools: ['Claude Sonnet'] },
-      { id: 'outreach', name: 'Outreach Sequencer', icon: '📬', description: 'Builds cold/warm/enterprise/win-back multi-channel sequences (email + LinkedIn + phone) with A/B subject variants.', endpoint: '/api/agents/sales/outreach', tools: ['Claude Sonnet'] },
-      { id: 'deal', name: 'Deal Analyzer', icon: '🔍', description: 'AI deal health scoring 0–100, win probability, blocker identification, and recommended next action with urgency level.', endpoint: '/api/agents/sales/deal', tools: ['Claude Sonnet'] },
-      { id: 'forecast', name: 'Revenue Forecaster', icon: '📈', description: 'Best/committed/realistic/worst-case forecast with 3-month monthly projection and pipeline risk analysis.', endpoint: '/api/agents/sales/forecast', tools: ['Claude Sonnet', 'Brave Search'] },
-      { id: 'demo-script', name: 'Demo Script Writer', icon: '🎬', description: 'Personalized 25-minute demo script: discovery questions, step-by-step flow, objection handlers, and closing CTA.', endpoint: '/api/agents/sales/demo-script', tools: ['Claude Sonnet'] },
-      { id: 'objections', name: 'Objection Playbook', icon: '🛡️', description: 'Generates 10 objection handlers with exact conversational responses and named psychology tactics.', endpoint: '/api/agents/sales/objections', tools: ['Claude Sonnet'] },
-      { id: 'win-loss', name: 'Win/Loss Analyst', icon: '⚖️', description: 'Mines closed deals for patterns: top win factors, loss reasons, segment insights, and top-3 win-rate recommendations.', endpoint: '/api/agents/sales/win-loss', tools: ['Claude Sonnet'] },
-    ],
+    id: 'outreach-agent', name: 'Outreach Agent', icon: '📬', role: 'Sales Outreach', category: 'worker',
+    supervisorId: 'growth-sup', supervisorName: 'Growth Supervisor',
+    status: 'idle', currentTask: undefined,
+    tasksToday: 0, costToday: 0.00, avgResponseTime: '—', model: 'Claude 3.5 Sonnet',
+    config: makeConfig({ schedule: 'Business hours', allowedTools: ['Email Send', 'CRM Update'] }),
+    logs: makeLogs('outreach-agent'),
   },
   {
-    id: 'retargeting',
-    name: 'Retargeting Supervisor',
-    icon: '🎯',
-    description: 'Full retargeting intelligence: RFM audience segmentation, campaign blueprints, lookalike strategies, abandoned journey recovery, warm-audience copy, and pixel implementation.',
-    endpoint: '/api/agents/retargeting',
-    status: 'active',
-    tools: ['Claude Sonnet', 'Meta Ads API', 'Google Ads API', 'PostgreSQL'],
-    workers: [
-      { id: 'audiences', name: 'Audience Segmenter', icon: '👥', description: 'Analyzes real lead data (score tiers, sources, statuses) to create 5–8 precise retargeting segments with per-platform instructions.', endpoint: '/api/agents/retargeting/audiences', tools: ['Claude Sonnet'] },
-      { id: 'campaigns', name: 'Campaign Builder', icon: '📢', description: 'Full retargeting campaign blueprint: creative directions with actual copy, frequency caps, exclusions, and estimated ROAS.', endpoint: '/api/agents/retargeting/campaigns', tools: ['Claude Sonnet'] },
-      { id: 'lookalike', name: 'Lookalike Creator', icon: '🪞', description: 'Seed-quality-aware lookalike strategy with real source size from DB and step-by-step creation guides for Meta, Google, and LinkedIn.', endpoint: '/api/agents/retargeting/lookalike', tools: ['Claude Sonnet'] },
-      { id: 'copy', name: 'Ad Copy Writer', icon: '✍️', description: 'Writes 5–6 psychologically distinct warm-audience copy angles per segment × platform, avoiding previous messaging.', endpoint: '/api/agents/retargeting/copy', tools: ['Claude Sonnet'] },
-      { id: 'pixel', name: 'Pixel Strategist', icon: '🔧', description: 'GTM-ready pixel event mapping with actual fbq()/gtag()/lintrk() code snippets and audience-building recommendations.', endpoint: '/api/agents/retargeting/pixel', tools: ['Claude Sonnet'] },
-      { id: 'abandoned', name: 'Abandoned Journey Mapper', icon: '🗺️', description: 'Maps funnel drop-off stages with recovery strategies, actual ad copy per stage, and estimated monthly revenue recovery.', endpoint: '/api/agents/retargeting/abandoned', tools: ['Claude Sonnet'] },
-    ],
+    id: 'crm-agent', name: 'CRM Agent', icon: '🗄️', role: 'CRM Management', category: 'worker',
+    supervisorId: 'growth-sup', supervisorName: 'Growth Supervisor',
+    status: 'active', currentTask: 'Syncing 23 deal stage updates from Slack',
+    tasksToday: 23, costToday: 0.09, avgResponseTime: '2.8s', model: 'Claude 3.5 Sonnet',
+    config: makeConfig({ allowedTools: ['CRM Update', 'Webhook', 'Email Send'] }),
+    logs: makeLogs('crm-agent'),
   },
   {
-    id: 'scheduling',
-    name: 'Scheduling Supervisor',
-    icon: '🗓️',
-    description: 'Intelligent content scheduling: optimal time analysis, calendar auditing, smart batch scheduling with platform gap enforcement, recurring templates, and multi-timezone optimization.',
-    endpoint: '/api/agents/scheduling',
-    status: 'active',
-    tools: ['Claude Sonnet', 'Brave Search', 'PostgreSQL'],
-    workers: [
-      { id: 'optimal-times', name: 'Optimal Times Analyzer', icon: '⏰', description: 'Evidence-based optimal posting slots per platform using historical data, platform algorithm patterns, and audience timezone.', endpoint: '/api/agents/scheduling/optimal-times', tools: ['Claude Sonnet'] },
-      { id: 'queue', name: 'Queue Manager', icon: '📋', description: 'Full schedule queue CRUD with smart-add that finds next gap-compliant optimal slot automatically.', endpoint: '/api/agents/scheduling/queue', tools: ['Claude Sonnet'] },
-      { id: 'audit', name: 'Calendar Auditor', icon: '🔍', description: 'Calendar health score with gap days, overload detection, platform balance, streak analysis, and best day/hour metrics.', endpoint: '/api/agents/scheduling/audit', tools: ['Claude Sonnet'] },
-      { id: 'recurring', name: 'Recurring Schedule Builder', icon: '🔄', description: 'Designs a sustainable recurring template and expands it to 4 weeks of concrete DB-ready posting slots.', endpoint: '/api/agents/scheduling/recurring', tools: ['Claude Sonnet'] },
-      { id: 'timezone', name: 'Timezone Optimizer', icon: '🌍', description: 'Finds UTC posting windows that maximize simultaneous audience coverage across multiple target markets.', endpoint: '/api/agents/scheduling/timezone', tools: ['Claude Sonnet'] },
-    ],
+    id: 'brand-monitor', name: 'Brand Monitor Agent', icon: '👁️', role: 'Brand Monitoring', category: 'worker',
+    supervisorId: 'brand-sup', supervisorName: 'Brand Supervisor',
+    status: 'active', currentTask: 'Scanning 156 social mentions across platforms',
+    tasksToday: 156, costToday: 0.12, avgResponseTime: '4.2s', model: 'Claude 3.5 Sonnet',
+    config: makeConfig({ allowedTools: ['Web Search', 'Analytics Pull'] }),
+    logs: makeLogs('brand-monitor'),
   },
   {
-    id: 'branding',
-    name: 'Branding Supervisor',
-    icon: '🎨',
-    description: 'Complete brand identity system: full identity with archetype + colors + typography + logo, voice guide, visual guidelines, brand story, taglines, MVV, and consistency auditing.',
-    endpoint: '/api/agents/branding',
-    status: 'active',
-    tools: ['Claude Sonnet', 'DALL-E 3', 'Google Fonts'],
-    workers: [
-      { id: 'identity', name: 'Brand Identity Builder', icon: '🏛️', description: 'Full brand identity: archetype, color palette, typography, logo direction, DALL-E prompt, and brand summary in one output.', endpoint: '/api/agents/branding/identity', tools: ['Claude Sonnet'] },
-      { id: 'voice', name: 'Brand Voice Guide', icon: '🗣️', description: 'Comprehensive voice guide with vocabulary lists, Do/Not-This examples, emoji policy, and content test mode (scores 0–100).', endpoint: '/api/agents/branding/voice', tools: ['Claude Sonnet'] },
-      { id: 'visual', name: 'Visual Style Guide', icon: '👁️', description: 'Art director spec for all platforms: logo usage rules, color combinations with WCAG ratios, typography scale, image style.', endpoint: '/api/agents/branding/visual', tools: ['Claude Sonnet'] },
-      { id: 'logo', name: 'Logo Generator', icon: '✨', description: 'Generates a logo concept via DALL-E 3. Falls back gracefully with a ready-to-use prompt if OPENAI_API_KEY is not set.', endpoint: '/api/agents/branding/logo', tools: ['DALL-E 3'] },
-      { id: 'colors', name: 'Color Palette Generator', icon: '🎨', description: 'Generates a brand color palette with CSS custom properties, Tailwind config snippet, and WCAG contrast ratios.', endpoint: '/api/agents/branding/colors', tools: ['Claude Sonnet'] },
-      { id: 'typography', name: 'Typography System', icon: '🔤', description: 'Designs a complete type system with real Google Fonts, fluid clamp() sizes, and a copy-paste CSS block.', endpoint: '/api/agents/branding/typography', tools: ['Claude Sonnet', 'Google Fonts'] },
-      { id: 'story', name: 'Brand Story Writer', icon: '📖', description: 'Writes 4 brand story formats: full narrative (~500 words), elevator pitch (30 sec), press paragraph, and hero story.', endpoint: '/api/agents/branding/story', tools: ['Claude Sonnet'] },
-      { id: 'taglines', name: 'Tagline Generator', icon: '💬', description: 'Generates 10 taglines across 9 creative angles with per-tagline rationale, SEO version, and short-form badge copy.', endpoint: '/api/agents/branding/taglines', tools: ['Claude Sonnet'] },
-      { id: 'consistency', name: 'Consistency Auditor', icon: '✅', description: '7-point brand audit: tone, vocabulary, messaging, prohibited claims, clarity, CTA, and audience relevance with specific quotes.', endpoint: '/api/agents/branding/consistency', tools: ['Claude Sonnet'] },
-      { id: 'mvv', name: 'Mission / Vision / Values', icon: '🧭', description: 'Generates Mission, Vision, Values (with behavioral descriptions), and Purpose. Writes back to brand profile automatically.', endpoint: '/api/agents/branding/mvv', tools: ['Claude Sonnet'] },
-    ],
+    id: 'reputation-agent', name: 'Reputation Agent', icon: '⭐', role: 'Review Management', category: 'worker',
+    supervisorId: 'brand-sup', supervisorName: 'Brand Supervisor',
+    status: 'active', currentTask: 'Drafting response to G2 review',
+    tasksToday: 8, costToday: 0.06, avgResponseTime: '6.8s', model: 'Claude 3.5 Sonnet',
+    config: makeConfig({ allowedTools: ['Web Search', 'Email Send'] }),
+    logs: makeLogs('reputation-agent'),
+  },
+  {
+    id: 'research-agent', name: 'Research Agent', icon: '🧪', role: 'Market Intelligence', category: 'worker',
+    supervisorId: 'intelligence-sup', supervisorName: 'Intelligence Supervisor',
+    status: 'active', currentTask: 'Compiling competitor pricing analysis',
+    tasksToday: 4, costToday: 0.44, avgResponseTime: '31.2s', model: 'Claude 3.5 Sonnet',
+    config: makeConfig({ allowedTools: ['Web Search', 'File Read', 'Analytics Pull'], costCapPerDay: 8 }),
+    logs: makeLogs('research-agent'),
+  },
+  {
+    id: 'analytics-agent', name: 'Analytics Agent', icon: '📊', role: 'Performance Analytics', category: 'worker',
+    supervisorId: 'intelligence-sup', supervisorName: 'Intelligence Supervisor',
+    status: 'active', currentTask: 'Ongoing: Q2 performance dashboard refresh',
+    tasksToday: 11, costToday: 0.28, avgResponseTime: '14.9s', model: 'Claude 3.5 Sonnet',
+    config: makeConfig({ allowedTools: ['Analytics Pull', 'File Read', 'Webhook'] }),
+    logs: makeLogs('analytics-agent'),
   },
 ]
 
-type TestState = 'idle' | 'running' | 'ok' | 'fail'
+const ACTIVITY_FEED: ActivityItem[] = [
+  { agentId: 'blog-writer', agentName: 'Blog Writer Agent', agentIcon: '✍️', message: 'Published "Top 10 SaaS Tools for 2026" to WordPress', timeAgo: '2m ago' },
+  { agentId: 'analytics-agent', agentName: 'Analytics Agent', agentIcon: '📊', message: 'Generated Q2 performance report — 14 slides', timeAgo: '4m ago' },
+  { agentId: 'lead-scorer', agentName: 'Lead Scorer Agent', agentIcon: '⚡', message: 'Scored 47 leads — 12 marked High Intent', timeAgo: '6m ago' },
+  { agentId: 'social-agent', agentName: 'Social Media Agent', agentIcon: '📱', message: 'Scheduled 8 posts across LinkedIn, X, Instagram', timeAgo: '9m ago' },
+  { agentId: 'brand-monitor', agentName: 'Brand Monitor Agent', agentIcon: '👁️', message: 'Detected 3 negative mentions on Reddit — escalated to Brand Supervisor', timeAgo: '11m ago' },
+  { agentId: 'cmo', agentName: 'CMO Agent', agentIcon: '🧠', message: 'Q2 strategy update completed — sent to approvals', timeAgo: '15m ago' },
+  { agentId: 'crm-agent', agentName: 'CRM Agent', agentIcon: '🗄️', message: 'Updated 23 deal stages in CRM', timeAgo: '18m ago' },
+  { agentId: 'ad-copy', agentName: 'Ad Copy Agent', agentIcon: '📢', message: 'Created 5 Meta ad variants for summer campaign', timeAgo: '21m ago' },
+  { agentId: 'seo-agent', agentName: 'SEO Agent', agentIcon: '🔍', message: 'SEO audit complete: 5 posts optimized, avg score 84/100', timeAgo: '27m ago' },
+  { agentId: 'research-agent', agentName: 'Research Agent', agentIcon: '🧪', message: 'Competitor pricing analysis complete — Notion saved', timeAgo: '33m ago' },
+  { agentId: 'reputation-agent', agentName: 'Reputation Agent', agentIcon: '⭐', message: 'Responded to 2 G2 reviews and 1 Trustpilot review', timeAgo: '41m ago' },
+  { agentId: 'email-copy', agentName: 'Email Copywriter Agent', agentIcon: '📧', message: 'Drafted 3 follow-up emails for demo pipeline', timeAgo: '52m ago' },
+]
 
-interface AgentRun {
-  id: string
-  agent_name: string
-  status: string
-  created_at: string
-  completed_at?: string
-  error_message?: string
-}
+const AVAILABLE_MODELS = [
+  'Claude 3.5 Sonnet', 'Claude 3.5 Haiku', 'Claude 3 Opus',
+  'GPT-4o', 'GPT-4o Mini', 'GPT-4 Turbo',
+  'Gemini 1.5 Pro', 'Gemini 1.5 Flash',
+  'Llama 3.1 70B', 'Mistral Large',
+]
 
-function agentLabel(name: string) {
-  return name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
-}
+// ── Sub-components ───────────────────────────────────────────────────────────
 
-function ToolBadge({ name }: { name: string }) {
+function StatusBadge({ status }: { status: AgentStatus }) {
+  const map = {
+    active: { dot: 'bg-green-400 animate-pulse', text: 'text-green-400', label: 'Active' },
+    idle: { dot: 'bg-yellow-400', text: 'text-yellow-400', label: 'Idle' },
+    error: { dot: 'bg-red-400 animate-pulse', text: 'text-red-400', label: 'Error' },
+    paused: { dot: 'bg-gray-500', text: 'text-gray-400', label: 'Paused' },
+  }
+  const s = map[status]
   return (
-    <span className="px-2 py-0.5 rounded text-xs bg-gray-800 border border-gray-700 text-gray-400">{name}</span>
-  )
-}
-
-function RunRow({ run }: { run: AgentRun }) {
-  const color = run.status === 'completed' ? 'text-green-400' : run.status === 'failed' ? 'text-red-400' : run.status === 'running' ? 'text-indigo-400' : 'text-gray-500'
-  const ago = Math.round((Date.now() - new Date(run.created_at).getTime()) / 60000)
-  return (
-    <div className="flex items-center gap-3 py-1.5 border-b border-gray-800 last:border-0">
-      <span className={`w-2 h-2 rounded-full flex-shrink-0 ${run.status === 'completed' ? 'bg-green-500' : run.status === 'failed' ? 'bg-red-500' : run.status === 'running' ? 'bg-indigo-400 animate-pulse' : 'bg-gray-600'}`} />
-      <span className="text-gray-300 text-xs flex-1 truncate">{agentLabel(run.agent_name)}</span>
-      <span className={`text-xs ${color} capitalize`}>{run.status}</span>
-      <span className="text-gray-600 text-xs">{ago < 1 ? 'just now' : `${ago}m ago`}</span>
-    </div>
+    <span className="flex items-center gap-1.5">
+      <span className={`w-2 h-2 rounded-full flex-shrink-0 ${s.dot}`} />
+      <span className={`text-xs font-medium ${s.text}`}>{s.label}</span>
+    </span>
   )
 }
 
 function AgentCard({
   agent,
-  runs,
-  onTest,
+  onConfigure,
+  onViewLogs,
+  onTogglePause,
 }: {
-  agent: typeof AGENT_TREE[0]
-  runs: AgentRun[]
-  onTest: (id: string, endpoint: string) => void
+  agent: Agent
+  onConfigure: (a: Agent) => void
+  onViewLogs: (a: Agent) => void
+  onTogglePause: (id: string) => void
 }) {
-  const [expanded, setExpanded] = useState(false)
-  const [testState, setTestState] = useState<TestState>('idle')
-
-  const agentRuns = runs.filter(r => r.agent_name === agent.id || r.agent_name.startsWith(agent.id))
-  const lastRun = agentRuns[0]
-  const statusColor = lastRun?.status === 'completed' ? 'text-green-400' : lastRun?.status === 'failed' ? 'text-red-400' : lastRun?.status === 'running' ? 'text-indigo-400' : 'text-gray-600'
-
-  const runTest = async () => {
-    setTestState('running')
-    try {
-      const wid = localStorage.getItem('workspaceId')
-      const res = await fetch(agent.endpoint, {
-        method: 'GET',
-        headers: { 'Content-Type': 'application/json' },
-      })
-      // If GET is not supported, try a lightweight OPTIONS/HEAD
-      if (res.ok || res.status === 405) {
-        setTestState('ok')
-      } else {
-        setTestState('fail')
-      }
-    } catch {
-      setTestState('fail')
-    }
-    setTimeout(() => setTestState('idle'), 4000)
-    onTest(agent.id, agent.endpoint)
-  }
-
+  const isSupervisor = agent.category === 'supervisor'
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
-      {/* Header */}
-      <div className="p-4 flex items-start gap-3">
-        <div className="w-10 h-10 rounded-lg bg-gray-800 flex items-center justify-center text-xl flex-shrink-0">{agent.icon}</div>
+    <div className={`bg-gray-900 rounded-xl p-4 border flex flex-col gap-3 ${isSupervisor ? 'border-indigo-700/60' : 'border-gray-800'}`}>
+      {/* Top row */}
+      <div className="flex items-start gap-3">
+        <div className={`w-10 h-10 rounded-lg flex items-center justify-center text-xl flex-shrink-0 ${isSupervisor ? 'bg-indigo-900/50' : 'bg-gray-800'}`}>
+          {agent.icon}
+        </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
-            <h3 className="text-white font-medium text-sm">{agent.name}</h3>
-            {agent.status === 'coming_soon' ? (
-              <span className="px-1.5 py-0.5 rounded text-xs bg-yellow-950 border border-yellow-800 text-yellow-400">Coming Soon</span>
-            ) : (
-              <span className="px-1.5 py-0.5 rounded text-xs bg-green-950 border border-green-800 text-green-400">Active</span>
-            )}
-            {lastRun && (
-              <span className={`text-xs ${statusColor}`}>
-                Last: {lastRun.status}
-              </span>
+            <span className="text-white font-semibold text-sm">{agent.name}</span>
+            {isSupervisor && (
+              <span className="px-1.5 py-0.5 rounded text-xs bg-indigo-900/60 border border-indigo-700/50 text-indigo-300">Supervisor</span>
             )}
           </div>
-          <p className="text-gray-500 text-xs mt-0.5 leading-relaxed">{agent.description}</p>
+          <p className="text-gray-500 text-xs mt-0.5">{agent.role}</p>
+          {agent.supervisorName && (
+            <p className="text-gray-600 text-xs mt-0.5">Under: {agent.supervisorName}</p>
+          )}
         </div>
-
-        <div className="flex items-center gap-2 flex-shrink-0">
-          <button
-            onClick={runTest}
-            disabled={testState === 'running'}
-            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors border ${
-              testState === 'ok' ? 'bg-green-950 border-green-700 text-green-400' :
-              testState === 'fail' ? 'bg-red-950 border-red-700 text-red-400' :
-              testState === 'running' ? 'bg-gray-800 border-gray-700 text-gray-400' :
-              'bg-gray-800 border-gray-700 text-gray-300 hover:border-indigo-600 hover:text-indigo-400'
-            }`}>
-            {testState === 'running' ? 'Testing...' : testState === 'ok' ? '✓ OK' : testState === 'fail' ? '✕ Failed' : '▷ Test'}
-          </button>
-          <button onClick={() => setExpanded(!expanded)}
-            className="p-1.5 rounded-lg text-gray-500 hover:text-white hover:bg-gray-800 transition-colors text-xs">
-            {expanded ? '▴' : '▾'}
-          </button>
-        </div>
+        <StatusBadge status={agent.status} />
       </div>
 
-      {/* Tools */}
-      <div className="px-4 pb-3 flex flex-wrap gap-1.5">
-        {agent.tools.map(t => <ToolBadge key={t} name={t} />)}
-      </div>
-
-      {/* Expanded detail */}
-      {expanded && (
-        <div className="border-t border-gray-800 p-4 space-y-4">
-          {/* Endpoint */}
-          <div>
-            <p className="text-xs text-gray-500 mb-1">Endpoint</p>
-            <code className="text-xs text-indigo-300 bg-gray-800 px-2 py-1 rounded">{agent.endpoint}</code>
-          </div>
-
-          {/* Workers */}
-          {agent.workers.length > 0 && (
-            <div>
-              <p className="text-xs text-gray-500 mb-2">Workers ({agent.workers.length})</p>
-              <div className="space-y-2">
-                {agent.workers.map(w => (
-                  <div key={w.id} className="flex items-start gap-3 p-3 rounded-lg bg-gray-800 border border-gray-700">
-                    <span className="text-base flex-shrink-0">{w.icon}</span>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-white text-xs font-medium">{w.name}</p>
-                      <p className="text-gray-500 text-xs mt-0.5">{w.description}</p>
-                      <div className="flex flex-wrap gap-1 mt-1.5">
-                        {w.tools.map(t => <ToolBadge key={t} name={t} />)}
-                      </div>
-                    </div>
-                    <code className="text-xs text-gray-600 hidden sm:block">{w.endpoint}</code>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Recent runs for this agent */}
-          {agentRuns.length > 0 && (
-            <div>
-              <p className="text-xs text-gray-500 mb-2">Recent runs</p>
-              <div>
-                {agentRuns.slice(0, 5).map(r => <RunRow key={r.id} run={r} />)}
-              </div>
-            </div>
-          )}
+      {/* Current task */}
+      {agent.currentTask && (
+        <div className="flex items-center gap-2 bg-gray-800 rounded-lg px-3 py-2">
+          <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse flex-shrink-0" />
+          <p className="text-indigo-300 text-xs truncate">{agent.currentTask}</p>
         </div>
       )}
+
+      {/* Stats row */}
+      <div className="grid grid-cols-3 gap-2">
+        <div className="bg-gray-800/60 rounded-lg px-2.5 py-2 text-center">
+          <p className="text-white font-bold text-sm">{agent.tasksToday}</p>
+          <p className="text-gray-500 text-xs">tasks today</p>
+        </div>
+        <div className="bg-gray-800/60 rounded-lg px-2.5 py-2 text-center">
+          <p className="text-white font-bold text-sm">${agent.costToday.toFixed(2)}</p>
+          <p className="text-gray-500 text-xs">cost today</p>
+        </div>
+        <div className="bg-gray-800/60 rounded-lg px-2.5 py-2 text-center">
+          <p className="text-white font-bold text-sm">{agent.avgResponseTime}</p>
+          <p className="text-gray-500 text-xs">avg resp</p>
+        </div>
+      </div>
+
+      {/* Model badge */}
+      <div className="flex items-center justify-between">
+        <span className="px-2 py-0.5 rounded text-xs bg-gray-800 border border-gray-700 text-gray-400">{agent.model}</span>
+        <button
+          onClick={() => onTogglePause(agent.id)}
+          className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${
+            agent.status === 'paused'
+              ? 'bg-green-900/40 border border-green-700/50 text-green-400 hover:bg-green-900/70'
+              : 'bg-yellow-900/40 border border-yellow-700/50 text-yellow-400 hover:bg-yellow-900/70'
+          }`}>
+          {agent.status === 'paused' ? '▶ Resume' : '⏸ Pause'}
+        </button>
+      </div>
+
+      {/* Actions */}
+      <div className="flex gap-2 pt-1 border-t border-gray-800">
+        <button onClick={() => onConfigure(agent)}
+          className="flex-1 px-3 py-1.5 rounded-lg text-xs font-medium bg-indigo-600 hover:bg-indigo-500 text-white transition-colors">
+          Configure
+        </button>
+        <button onClick={() => onViewLogs(agent)}
+          className="flex-1 px-3 py-1.5 rounded-lg text-xs font-medium bg-gray-800 hover:bg-gray-700 text-gray-300 hover:text-white transition-colors border border-gray-700">
+          View Logs
+        </button>
+      </div>
     </div>
   )
 }
 
-export default function AgentsPage() {
-  const [runs, setRuns] = useState<AgentRun[]>([])
-  const [loading, setLoading] = useState(true)
-  const [search, setSearch] = useState('')
-  const [testLog, setTestLog] = useState<{ id: string; endpoint: string; time: string }[]>([])
+function AgentListRow({
+  agent,
+  onConfigure,
+  onViewLogs,
+  onTogglePause,
+}: {
+  agent: Agent
+  onConfigure: (a: Agent) => void
+  onViewLogs: (a: Agent) => void
+  onTogglePause: (id: string) => void
+}) {
+  return (
+    <div className={`flex items-center gap-4 px-4 py-3 border-b border-gray-800 hover:bg-gray-800/30 transition-colors ${agent.category === 'supervisor' ? 'bg-indigo-950/10' : ''}`}>
+      <div className="w-8 h-8 rounded-lg bg-gray-800 flex items-center justify-center text-base flex-shrink-0">{agent.icon}</div>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2">
+          <span className="text-white font-medium text-sm">{agent.name}</span>
+          {agent.category === 'supervisor' && <span className="text-xs text-indigo-400 border border-indigo-700/50 px-1.5 py-0.5 rounded">SUP</span>}
+        </div>
+        <p className="text-gray-500 text-xs truncate">{agent.supervisorName ? `Under: ${agent.supervisorName}` : agent.role}</p>
+      </div>
+      <StatusBadge status={agent.status} />
+      <div className="text-right hidden sm:block w-20">
+        <p className="text-white text-sm font-medium">{agent.tasksToday}</p>
+        <p className="text-gray-500 text-xs">tasks</p>
+      </div>
+      <div className="text-right hidden md:block w-16">
+        <p className="text-white text-sm font-medium">${agent.costToday.toFixed(2)}</p>
+        <p className="text-gray-500 text-xs">cost</p>
+      </div>
+      <span className="hidden lg:block px-2 py-0.5 rounded text-xs bg-gray-800 border border-gray-700 text-gray-400">{agent.model}</span>
+      <div className="flex items-center gap-2 flex-shrink-0">
+        <button onClick={() => onConfigure(agent)} className="px-3 py-1.5 rounded-lg text-xs font-medium bg-indigo-600 hover:bg-indigo-500 text-white transition-colors">Configure</button>
+        <button onClick={() => onViewLogs(agent)} className="px-3 py-1.5 rounded-lg text-xs font-medium bg-gray-800 hover:bg-gray-700 text-gray-300 transition-colors border border-gray-700">Logs</button>
+        <button onClick={() => onTogglePause(agent.id)}
+          className={`px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors ${agent.status === 'paused' ? 'text-green-400' : 'text-yellow-400'}`}>
+          {agent.status === 'paused' ? '▶' : '⏸'}
+        </button>
+      </div>
+    </div>
+  )
+}
 
-  const loadRuns = useCallback(async () => {
-    const wid = localStorage.getItem('workspaceId')
-    if (!wid) { setLoading(false); return }
-    try {
-      const res = await fetch(`/api/agent-runs?workspaceId=${wid}&limit=50`)
-      const data: AgentRun[] = await res.json()
-      setRuns(Array.isArray(data) ? data : [])
-    } catch { setRuns([]) }
-    setLoading(false)
-  }, [])
+// Config Slide-over
+function ConfigSlideover({ agent, onClose, onSave }: { agent: Agent; onClose: () => void; onSave: (id: string, cfg: AgentConfig) => void }) {
+  const [cfg, setCfg] = useState<AgentConfig>({ ...agent.config })
 
-  useEffect(() => { loadRuns() }, [loadRuns])
-
-  const handleTest = (id: string, endpoint: string) => {
-    setTestLog(prev => [{ id, endpoint, time: new Date().toLocaleTimeString() }, ...prev].slice(0, 10))
+  const toggleTool = (tool: string) => {
+    setCfg(prev => ({
+      ...prev,
+      allowedTools: prev.allowedTools.includes(tool)
+        ? prev.allowedTools.filter(t => t !== tool)
+        : [...prev.allowedTools, tool],
+    }))
   }
 
-  const filtered = search
-    ? AGENT_TREE.filter(a =>
-        a.name.toLowerCase().includes(search.toLowerCase()) ||
-        a.description.toLowerCase().includes(search.toLowerCase()) ||
-        a.tools.some(t => t.toLowerCase().includes(search.toLowerCase()))
-      )
-    : AGENT_TREE
+  return (
+    <div className="fixed inset-0 bg-gray-950/80 backdrop-blur-sm z-50 flex justify-end">
+      <div className="w-full max-w-lg bg-gray-900 border-l border-gray-800 h-full overflow-y-auto flex flex-col">
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-5 border-b border-gray-800 sticky top-0 bg-gray-900 z-10">
+          <div>
+            <h2 className="text-white font-semibold text-lg">{agent.icon} {agent.name}</h2>
+            <p className="text-gray-400 text-xs mt-0.5">{agent.role}</p>
+          </div>
+          <button onClick={onClose} className="p-2 rounded-lg hover:bg-gray-800 text-gray-400 hover:text-white transition-colors text-lg">✕</button>
+        </div>
 
-  const totalWorkers = AGENT_TREE.reduce((sum, a) => sum + a.workers.length, 0)
-  const runningCount = runs.filter(r => r.status === 'running').length
-  const completedToday = runs.filter(r => {
-    const d = new Date(r.created_at)
-    const now = new Date()
-    return d.getDate() === now.getDate() && r.status === 'completed'
-  }).length
+        <div className="flex-1 p-6 space-y-6">
+          {/* Status toggle */}
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-white text-sm font-medium">Agent Status</p>
+              <p className="text-gray-500 text-xs mt-0.5">Enable or disable this agent</p>
+            </div>
+            <StatusBadge status={agent.status} />
+          </div>
+
+          {/* Model selector */}
+          <div>
+            <label className="text-white text-sm font-medium block mb-2">AI Model</label>
+            <select value={cfg.model} onChange={e => setCfg(p => ({ ...p, model: e.target.value }))}
+              className="w-full bg-gray-800 border border-gray-700 text-white rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-indigo-500">
+              {AVAILABLE_MODELS.map(m => <option key={m} value={m}>{m}</option>)}
+            </select>
+          </div>
+
+          {/* Instructions */}
+          <div>
+            <label className="text-white text-sm font-medium block mb-2">Custom Instructions</label>
+            <textarea value={cfg.instructions} onChange={e => setCfg(p => ({ ...p, instructions: e.target.value }))}
+              rows={4} placeholder="Your custom instructions for this agent..."
+              className="w-full bg-gray-800 border border-gray-700 text-white rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-indigo-500 resize-none placeholder-gray-600" />
+          </div>
+
+          {/* Tone */}
+          <div>
+            <label className="text-white text-sm font-medium block mb-2">Tone</label>
+            <div className="grid grid-cols-4 gap-2">
+              {(['Professional', 'Casual', 'Formal', 'Friendly'] as ToneOption[]).map(t => (
+                <button key={t} onClick={() => setCfg(p => ({ ...p, tone: t }))}
+                  className={`py-2 rounded-lg text-xs font-medium border transition-colors ${cfg.tone === t ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-gray-800 border-gray-700 text-gray-400 hover:text-white'}`}>
+                  {t}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Max tasks + Cost cap */}
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="text-white text-sm font-medium block mb-2">Max Tasks/Day</label>
+              <input type="number" value={cfg.maxTasksPerDay} onChange={e => setCfg(p => ({ ...p, maxTasksPerDay: +e.target.value }))}
+                className="w-full bg-gray-800 border border-gray-700 text-white rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-indigo-500" />
+            </div>
+            <div>
+              <label className="text-white text-sm font-medium block mb-2">Cost Cap/Day ($)</label>
+              <input type="number" step="0.50" value={cfg.costCapPerDay} onChange={e => setCfg(p => ({ ...p, costCapPerDay: +e.target.value }))}
+                className="w-full bg-gray-800 border border-gray-700 text-white rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-indigo-500" />
+            </div>
+          </div>
+
+          {/* Priority */}
+          <div>
+            <label className="text-white text-sm font-medium block mb-2">Priority</label>
+            <div className="grid grid-cols-4 gap-2">
+              {(['Low', 'Normal', 'High', 'Critical'] as PriorityOption[]).map(p => (
+                <button key={p} onClick={() => setCfg(prev => ({ ...prev, priority: p }))}
+                  className={`py-2 rounded-lg text-xs font-medium border transition-colors ${cfg.priority === p ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-gray-800 border-gray-700 text-gray-400 hover:text-white'}`}>
+                  {p}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Allowed tools */}
+          <div>
+            <label className="text-white text-sm font-medium block mb-2">Allowed Tools</label>
+            <div className="grid grid-cols-2 gap-2">
+              {DEFAULT_TOOLS.map(tool => (
+                <label key={tool} className="flex items-center gap-2.5 cursor-pointer">
+                  <input type="checkbox" checked={cfg.allowedTools.includes(tool)} onChange={() => toggleTool(tool)}
+                    className="w-4 h-4 rounded border-gray-600 bg-gray-800 text-indigo-600 focus:ring-indigo-500 focus:ring-offset-0" />
+                  <span className="text-gray-300 text-xs">{tool}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+
+          {/* API Key override */}
+          <div>
+            <label className="text-white text-sm font-medium block mb-2">API Key Override</label>
+            <input type="password" value={cfg.apiKeyOverride} onChange={e => setCfg(p => ({ ...p, apiKeyOverride: e.target.value }))}
+              placeholder="Leave blank to use workspace default"
+              className="w-full bg-gray-800 border border-gray-700 text-white rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-indigo-500 placeholder-gray-600" />
+          </div>
+
+          {/* Schedule */}
+          <div>
+            <label className="text-white text-sm font-medium block mb-2">Schedule</label>
+            <div className="grid grid-cols-3 gap-2">
+              {(['Always on', 'Business hours', 'Custom schedule'] as ScheduleOption[]).map(s => (
+                <button key={s} onClick={() => setCfg(p => ({ ...p, schedule: s }))}
+                  className={`py-2 rounded-lg text-xs font-medium border transition-colors ${cfg.schedule === s ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-gray-800 border-gray-700 text-gray-400 hover:text-white'}`}>
+                  {s}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Auto-escalate */}
+          <div>
+            <label className="text-white text-sm font-medium block mb-2">Auto-Escalate To</label>
+            <select value={cfg.autoEscalateTo} onChange={e => setCfg(p => ({ ...p, autoEscalateTo: e.target.value }))}
+              className="w-full bg-gray-800 border border-gray-700 text-white rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-indigo-500">
+              <option value="None">None</option>
+              <option value="Human">Human</option>
+              <option value="CMO Agent">CMO Agent</option>
+              <option value="Content Supervisor">Content Supervisor</option>
+            </select>
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="px-6 py-4 border-t border-gray-800 flex gap-3 sticky bottom-0 bg-gray-900">
+          <button onClick={() => { onSave(agent.id, cfg); onClose() }}
+            className="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2.5 rounded-lg text-sm font-medium transition-colors">
+            Save Configuration
+          </button>
+          <button onClick={() => { setCfg(makeConfig()); }}
+            className="px-4 py-2.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm font-medium transition-colors border border-gray-700">
+            Reset
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// Log Modal
+function LogModal({ agent, onClose }: { agent: Agent; onClose: () => void }) {
+  const [filter, setFilter] = useState<'1h' | '24h' | '7d'>('24h')
+  const [expanded, setExpanded] = useState<string | null>(null)
 
   return (
-    <div className="p-6 max-w-5xl">
+    <div className="fixed inset-0 bg-gray-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+      <div className="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-2xl max-h-[85vh] flex flex-col">
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800">
+          <div>
+            <h2 className="text-white font-semibold">{agent.icon} {agent.name} — Activity Log</h2>
+            <p className="text-gray-400 text-xs mt-0.5">{agent.logs.length} recent tasks</p>
+          </div>
+          <div className="flex items-center gap-3">
+            <div className="flex bg-gray-800 rounded-lg p-1 gap-1">
+              {(['1h', '24h', '7d'] as const).map(f => (
+                <button key={f} onClick={() => setFilter(f)}
+                  className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${filter === f ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-white'}`}>
+                  {f}
+                </button>
+              ))}
+            </div>
+            <button className="px-3 py-1.5 rounded-lg bg-gray-800 text-gray-400 hover:text-white text-xs border border-gray-700 transition-colors">
+              Export Logs
+            </button>
+            <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-gray-800 text-gray-400 hover:text-white transition-colors">✕</button>
+          </div>
+        </div>
+
+        {/* Log entries */}
+        <div className="flex-1 overflow-y-auto p-4 space-y-2">
+          {agent.logs.map(log => (
+            <div key={log.id} className={`border rounded-xl overflow-hidden ${log.status === 'failed' ? 'border-red-800' : 'border-gray-800'}`}>
+              <button onClick={() => setExpanded(expanded === log.id ? null : log.id)}
+                className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-gray-800/40 transition-colors">
+                <span className={`w-2 h-2 rounded-full flex-shrink-0 ${log.status === 'success' ? 'bg-green-400' : 'bg-red-400'}`} />
+                <div className="flex-1 min-w-0">
+                  <p className="text-white text-xs font-medium">{log.taskType}</p>
+                  <p className="text-gray-500 text-xs mt-0.5 truncate">{log.input}</p>
+                </div>
+                <div className="flex items-center gap-3 flex-shrink-0 text-xs">
+                  <span className="text-gray-500">{log.duration}</span>
+                  <span className="text-gray-500">${log.cost.toFixed(3)}</span>
+                  <span className="text-gray-600">{new Date(log.timestamp).toLocaleTimeString()}</span>
+                  <span className="text-gray-600">{expanded === log.id ? '▴' : '▾'}</span>
+                </div>
+              </button>
+              {expanded === log.id && (
+                <div className="px-4 pb-4 pt-2 border-t border-gray-800 grid grid-cols-2 gap-4">
+                  <div>
+                    <p className="text-gray-500 text-xs mb-1.5 font-medium uppercase tracking-wider">Input</p>
+                    <p className="text-gray-300 text-xs bg-gray-800 rounded-lg px-3 py-2">{log.input}</p>
+                  </div>
+                  <div>
+                    <p className="text-gray-500 text-xs mb-1.5 font-medium uppercase tracking-wider">Output</p>
+                    <p className={`text-xs bg-gray-800 rounded-lg px-3 py-2 ${log.status === 'failed' ? 'text-red-400' : 'text-green-300'}`}>{log.output}</p>
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// Hierarchy View
+function HierarchyView({ agents, onConfigure }: { agents: Agent[]; onConfigure: (a: Agent) => void }) {
+  const supervisors = agents.filter(a => a.category === 'supervisor')
+  const workers = agents.filter(a => a.category === 'worker')
+
+  return (
+    <div className="overflow-x-auto pb-4">
+      {/* CMO at top */}
+      <div className="flex flex-col items-center gap-0">
+        {supervisors.filter(s => s.id === 'cmo').map(cmo => (
+          <div key={cmo.id} className="flex flex-col items-center">
+            <button onClick={() => onConfigure(cmo)}
+              className="bg-indigo-900/40 border-2 border-indigo-600 rounded-xl px-6 py-4 flex items-center gap-3 hover:bg-indigo-900/60 transition-colors group">
+              <span className="text-2xl">{cmo.icon}</span>
+              <div className="text-left">
+                <p className="text-white font-bold text-sm">{cmo.name}</p>
+                <p className="text-indigo-300 text-xs">{cmo.role}</p>
+                <StatusBadge status={cmo.status} />
+              </div>
+            </button>
+            {/* Vertical line */}
+            <div className="w-px h-8 bg-indigo-700/40" />
+          </div>
+        ))}
+
+        {/* Horizontal line across supervisors */}
+        <div className="relative w-full flex justify-center">
+          <div className="absolute top-0 left-8 right-8 h-px bg-gray-700" />
+        </div>
+
+        {/* Supervisors row */}
+        <div className="flex gap-6 relative pt-0 flex-wrap justify-center">
+          {supervisors.filter(s => s.id !== 'cmo').map(sup => {
+            const supWorkers = workers.filter(w => w.supervisorId === sup.id)
+            return (
+              <div key={sup.id} className="flex flex-col items-center gap-0">
+                {/* Vertical line from top */}
+                <div className="w-px h-8 bg-gray-700" />
+                <button onClick={() => onConfigure(sup)}
+                  className="bg-gray-900 border border-indigo-700/50 rounded-xl px-4 py-3 flex items-center gap-2 hover:border-indigo-500 transition-colors min-w-36">
+                  <span className="text-xl">{sup.icon}</span>
+                  <div className="text-left">
+                    <p className="text-white font-semibold text-xs">{sup.name}</p>
+                    <StatusBadge status={sup.status} />
+                  </div>
+                </button>
+                {/* Workers */}
+                {supWorkers.length > 0 && (
+                  <>
+                    <div className="w-px h-6 bg-gray-700" />
+                    <div className="flex gap-3 relative flex-wrap justify-center">
+                      {supWorkers.map((w, i) => (
+                        <div key={w.id} className="flex flex-col items-center gap-0">
+                          {i === 0 && supWorkers.length > 1 && <div className="w-full h-px bg-gray-800 absolute top-0" />}
+                          <div className="w-px h-4 bg-gray-800" />
+                          <button onClick={() => onConfigure(w)}
+                            className="bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 flex items-center gap-1.5 hover:border-gray-600 transition-colors text-left">
+                            <span className="text-sm">{w.icon}</span>
+                            <div>
+                              <p className="text-white text-xs font-medium whitespace-nowrap">{w.name}</p>
+                              <span className={`w-1.5 h-1.5 rounded-full inline-block mr-1 ${w.status === 'active' ? 'bg-green-400' : 'bg-yellow-400'}`} />
+                              <span className="text-gray-500 text-xs">{w.tasksToday}t</span>
+                            </div>
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Main Page ────────────────────────────────────────────────────────────────
+
+export default function AgentsPage() {
+  const [agents, setAgents] = useState<Agent[]>(AGENTS)
+  const [view, setView] = useState<ViewMode>('grid')
+  const [configAgent, setConfigAgent] = useState<Agent | null>(null)
+  const [logAgent, setLogAgent] = useState<Agent | null>(null)
+  const [allPaused, setAllPaused] = useState(false)
+  const [search, setSearch] = useState('')
+  const [categoryFilter, setCategoryFilter] = useState<'all' | 'supervisor' | 'worker'>('all')
+
+  const togglePause = (id: string) => {
+    setAgents(prev => prev.map(a => a.id === id
+      ? { ...a, status: (a.status === 'paused' ? 'idle' : 'paused') as AgentStatus }
+      : a
+    ))
+  }
+
+  const toggleAll = () => {
+    const newPaused = !allPaused
+    setAllPaused(newPaused)
+    setAgents(prev => prev.map(a => ({
+      ...a,
+      status: newPaused ? 'paused' : (a.id.includes('sup') || a.id === 'cmo' ? 'active' : 'idle') as AgentStatus,
+    })))
+  }
+
+  const saveConfig = (id: string, cfg: AgentConfig) => {
+    setAgents(prev => prev.map(a => a.id === id ? { ...a, config: cfg, model: cfg.model } : a))
+  }
+
+  const filtered = agents.filter(a => {
+    const matchSearch = !search ||
+      a.name.toLowerCase().includes(search.toLowerCase()) ||
+      a.role.toLowerCase().includes(search.toLowerCase())
+    const matchCat = categoryFilter === 'all' || a.category === categoryFilter
+    return matchSearch && matchCat
+  })
+
+  const activeCount = agents.filter(a => a.status === 'active').length
+  const idleCount = agents.filter(a => a.status === 'idle').length
+  const errorCount = agents.filter(a => a.status === 'error').length
+  const totalTasks = agents.reduce((s, a) => s + a.tasksToday, 0)
+  const totalCost = agents.reduce((s, a) => s + a.costToday, 0)
+  const avgResp = '9.2s'
+  const uptime = '99.97%'
+
+  return (
+    <div className="p-6 max-w-screen-xl">
       {/* Header */}
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-white">🤖 AI Agents</h1>
-        <p className="text-gray-400 text-sm mt-1">All active agents, their workers, tools, and recent activity.</p>
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 mb-6">
+        <div>
+          <h1 className="text-2xl font-bold text-white">AI Agents</h1>
+          <p className="text-gray-400 text-sm mt-1">Your autonomous marketing workforce</p>
+          <div className="flex items-center gap-3 mt-2 flex-wrap">
+            <span className="flex items-center gap-1.5 text-sm">
+              <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
+              <span className="text-green-400 font-medium">{activeCount} agents active</span>
+            </span>
+            <span className="text-gray-600">·</span>
+            <span className="text-yellow-400 text-sm">{idleCount} idle</span>
+            <span className="text-gray-600">·</span>
+            <span className={`text-sm ${errorCount > 0 ? 'text-red-400' : 'text-gray-500'}`}>{errorCount} errors</span>
+          </div>
+        </div>
+        <div className="flex items-center gap-3 flex-wrap">
+          <span className="px-3 py-1.5 rounded-lg bg-gray-900 border border-gray-700 text-gray-300 text-sm font-medium">
+            {totalTasks} tasks completed today
+          </span>
+          <button onClick={toggleAll}
+            className={`px-4 py-2 rounded-lg text-sm font-medium border transition-colors ${
+              allPaused
+                ? 'bg-green-600 hover:bg-green-500 border-green-500 text-white'
+                : 'bg-yellow-900/40 hover:bg-yellow-900/60 border-yellow-700 text-yellow-300'
+            }`}>
+            {allPaused ? '▶ Resume All' : '⏸ Pause All Agents'}
+          </button>
+        </div>
       </div>
 
-      {/* Stats */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
+      {/* Stats Bar */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
         {[
-          { label: 'Active Supervisors', value: AGENT_TREE.filter(a => a.status !== 'coming_soon').length, color: 'text-indigo-400' },
-          { label: 'Total Workers', value: totalWorkers, color: 'text-purple-400' },
-          { label: 'Running Now', value: runningCount, color: runningCount > 0 ? 'text-yellow-400' : 'text-gray-500' },
-          { label: 'Done Today', value: completedToday, color: 'text-green-400' },
+          { label: 'Total Agents', value: agents.length.toString(), color: 'text-white' },
+          { label: 'Active Now', value: activeCount.toString(), color: 'text-green-400' },
+          { label: 'Tasks Today', value: totalTasks.toString(), color: 'text-indigo-400' },
+          { label: 'Avg Response', value: avgResp, color: 'text-blue-400' },
+          { label: 'AI Cost Today', value: `$${totalCost.toFixed(2)}`, color: 'text-purple-400' },
+          { label: 'Uptime', value: uptime, color: 'text-emerald-400' },
         ].map(s => (
           <div key={s.label} className="bg-gray-900 border border-gray-800 rounded-xl p-4 text-center">
-            <p className={`text-2xl font-bold ${s.color}`}>{loading ? '—' : s.value}</p>
+            <p className={`text-xl font-bold ${s.color}`}>{s.value}</p>
             <p className="text-gray-500 text-xs mt-0.5">{s.label}</p>
           </div>
         ))}
       </div>
 
-      {/* Search */}
-      <div className="mb-4">
-        <input
-          className="w-full max-w-sm px-4 py-2.5 rounded-lg bg-gray-900 border border-gray-800 text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500 text-sm"
-          placeholder="Search agents, tools…"
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-        />
-      </div>
-
-      {/* Agent cards */}
-      <div className="space-y-3">
-        {filtered.map(agent => (
-          <AgentCard key={agent.id} agent={agent} runs={runs} onTest={handleTest} />
-        ))}
-        {filtered.length === 0 && (
-          <div className="bg-gray-900 border border-gray-800 rounded-xl p-8 text-center">
-            <p className="text-gray-500 text-sm">No agents match &quot;{search}&quot;</p>
-          </div>
-        )}
-      </div>
-
-      {/* Test log */}
-      {testLog.length > 0 && (
-        <div className="mt-6 bg-gray-900 border border-gray-800 rounded-xl p-4">
-          <p className="text-xs text-gray-500 mb-3 font-medium uppercase tracking-wider">Test Log</p>
-          <div className="space-y-1.5">
-            {testLog.map((t, i) => (
-              <div key={i} className="flex items-center gap-3 text-xs">
-                <span className="text-gray-600">{t.time}</span>
-                <code className="text-indigo-300">{t.endpoint}</code>
-              </div>
+      {/* Controls */}
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-5">
+        <div className="flex items-center gap-3 flex-wrap">
+          {/* Search */}
+          <input value={search} onChange={e => setSearch(e.target.value)}
+            placeholder="Search agents..."
+            className="px-4 py-2 rounded-lg bg-gray-900 border border-gray-800 text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500 text-sm w-56" />
+          {/* Category filter */}
+          <div className="flex bg-gray-900 border border-gray-800 rounded-lg p-1 gap-1">
+            {(['all', 'supervisor', 'worker'] as const).map(c => (
+              <button key={c} onClick={() => setCategoryFilter(c)}
+                className={`px-3 py-1 rounded-md text-xs font-medium capitalize transition-colors ${categoryFilter === c ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-white'}`}>
+                {c}
+              </button>
             ))}
           </div>
         </div>
+        {/* View toggle */}
+        <div className="flex bg-gray-900 border border-gray-800 rounded-lg p-1 gap-1">
+          {([
+            { v: 'grid', icon: '⊞', label: 'Grid' },
+            { v: 'list', icon: '☰', label: 'List' },
+            { v: 'hierarchy', icon: '⬡', label: 'Hierarchy' },
+          ] as const).map(({ v, icon, label }) => (
+            <button key={v} onClick={() => setView(v)}
+              className={`px-3 py-1.5 rounded-md text-xs font-medium flex items-center gap-1.5 transition-colors ${view === v ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-white'}`}>
+              <span>{icon}</span><span>{label}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Main content area */}
+      <div className="flex gap-6">
+        <div className="flex-1 min-w-0">
+          {/* Grid View */}
+          {view === 'grid' && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+              {filtered.map(agent => (
+                <AgentCard key={agent.id} agent={agent}
+                  onConfigure={setConfigAgent}
+                  onViewLogs={setLogAgent}
+                  onTogglePause={togglePause} />
+              ))}
+            </div>
+          )}
+
+          {/* List View */}
+          {view === 'list' && (
+            <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+              {/* Header */}
+              <div className="flex items-center gap-4 px-4 py-3 border-b border-gray-800 bg-gray-800/50">
+                <div className="w-8 h-8 flex-shrink-0" />
+                <div className="flex-1 text-xs text-gray-500 font-medium uppercase tracking-wider">Agent</div>
+                <div className="w-24 text-xs text-gray-500 font-medium uppercase tracking-wider text-center hidden sm:block">Status</div>
+                <div className="w-20 text-xs text-gray-500 font-medium uppercase tracking-wider text-right hidden sm:block">Tasks</div>
+                <div className="w-16 text-xs text-gray-500 font-medium uppercase tracking-wider text-right hidden md:block">Cost</div>
+                <div className="w-28 text-xs text-gray-500 font-medium uppercase tracking-wider hidden lg:block">Model</div>
+                <div className="w-44 text-xs text-gray-500 font-medium uppercase tracking-wider text-right">Actions</div>
+              </div>
+              {filtered.map(agent => (
+                <AgentListRow key={agent.id} agent={agent}
+                  onConfigure={setConfigAgent}
+                  onViewLogs={setLogAgent}
+                  onTogglePause={togglePause} />
+              ))}
+            </div>
+          )}
+
+          {/* Hierarchy View */}
+          {view === 'hierarchy' && (
+            <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+              <p className="text-gray-500 text-xs mb-6 text-center">Click any node to configure · Agents auto-route tasks through the hierarchy</p>
+              <HierarchyView agents={agents} onConfigure={setConfigAgent} />
+            </div>
+          )}
+        </div>
+
+        {/* Activity Feed Sidebar */}
+        <div className="w-72 flex-shrink-0 hidden xl:block">
+          <div className="bg-gray-900 border border-gray-800 rounded-xl sticky top-6">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-800">
+              <h3 className="text-white font-semibold text-sm">Live Activity</h3>
+              <span className="flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
+                <span className="text-green-400 text-xs">Live</span>
+              </span>
+            </div>
+            <div className="p-3 space-y-0 max-h-[600px] overflow-y-auto">
+              {ACTIVITY_FEED.map((item, i) => (
+                <div key={i} className="flex items-start gap-2.5 py-2.5 border-b border-gray-800 last:border-0">
+                  <span className="text-base flex-shrink-0 mt-0.5">{item.agentIcon}</span>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-indigo-300 text-xs font-medium truncate">{item.agentName}</p>
+                    <p className="text-gray-400 text-xs mt-0.5 leading-relaxed">{item.message}</p>
+                    <p className="text-gray-600 text-xs mt-1">{item.timeAgo}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Config Slide-over */}
+      {configAgent && (
+        <ConfigSlideover agent={configAgent} onClose={() => setConfigAgent(null)} onSave={saveConfig} />
+      )}
+
+      {/* Log Modal */}
+      {logAgent && (
+        <LogModal agent={logAgent} onClose={() => setLogAgent(null)} />
       )}
     </div>
   )

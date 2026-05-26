@@ -1,226 +1,921 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 
-const CHANNELS = ['Instagram', 'LinkedIn', 'Twitter/X', 'YouTube', 'WhatsApp', 'Email', 'Google Ads', 'Meta Ads'] as const
-const TONES = ['Professional', 'Friendly & Conversational', 'Bold & Direct', 'Educational', 'Inspirational', 'Witty & Playful', 'Founder-led / Personal']
-const INDUSTRIES = ['SaaS / Tech', 'E-commerce', 'Consulting / Coaching', 'Agency / Services', 'Healthcare', 'Education / EdTech', 'Finance / FinTech', 'Real Estate', 'Food & Beverage', 'Other']
+// ─── Constants ────────────────────────────────────────────────────────────────
+const INDUSTRIES = ['SaaS', 'E-commerce', 'Local Business', 'Agency', 'Healthcare', 'Real Estate', 'Finance', 'Other']
+const BUSINESS_TYPES = ['B2B', 'B2C', 'Both']
+const PRIMARY_GOALS = [
+  { icon: '🎯', label: 'Generate Leads', value: 'leads' },
+  { icon: '📈', label: 'Grow Revenue', value: 'revenue' },
+  { icon: '🏆', label: 'Build Brand', value: 'brand' },
+  { icon: '🔄', label: 'Retain Customers', value: 'retain' },
+]
+const VOICE_ADJECTIVES = ['Professional', 'Friendly', 'Bold', 'Authoritative', 'Playful', 'Innovative', 'Trustworthy', 'Casual', 'Inspirational', 'Educational']
+const PLATFORMS = [
+  { id: 'facebook', name: 'Facebook', icon: '📘' },
+  { id: 'instagram', name: 'Instagram', icon: '📸' },
+  { id: 'linkedin', name: 'LinkedIn', icon: '💼' },
+  { id: 'twitter', name: 'Twitter/X', icon: '🐦' },
+  { id: 'tiktok', name: 'TikTok', icon: '🎵' },
+  { id: 'youtube', name: 'YouTube', icon: '▶️' },
+  { id: 'google_ads', name: 'Google Ads', icon: '🔍' },
+  { id: 'meta_ads', name: 'Meta Ads', icon: '📣' },
+  { id: 'email', name: 'Email (Klaviyo)', icon: '📧' },
+]
+const CONTENT_TYPES = [
+  { id: 'blog', label: 'Blog Posts', icon: '📝' },
+  { id: 'social', label: 'Social Media', icon: '📱' },
+  { id: 'email', label: 'Email Campaigns', icon: '📧' },
+  { id: 'ads', label: 'Ad Copy', icon: '📣' },
+  { id: 'video', label: 'Video Scripts', icon: '🎬' },
+  { id: 'pr', label: 'PR', icon: '📰' },
+  { id: 'voice', label: 'Voiceover', icon: '🎙️' },
+]
+const POSTING_FREQS = ['Daily', '3x/week', 'Weekly', 'Monthly']
+const TEAM_ROLES = ['Admin', 'Manager', 'Analyst', 'Viewer']
 
+const STEP_NAMES = ['Setup', 'Brand', 'AI Models', 'Channels', 'Content', 'Team', 'Launch']
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+interface TeamMember { email: string; role: string }
+
+interface WizardState {
+  // Step 1
+  businessName: string
+  industry: string
+  businessType: string
+  website: string
+  description: string
+  primaryGoal: string
+  // Step 2
+  colorPrimary: string
+  colorSecondary: string
+  colorAccent: string
+  voiceAdjectives: string[]
+  toneExampleSocial: string
+  toneExampleEmail: string
+  toneExampleCTA: string
+  ageMin: number
+  ageMax: number
+  painPoints: string
+  jobTitles: string[]
+  jobTitleInput: string
+  // Step 3
+  useSharedKeys: boolean
+  openaiKey: string
+  anthropicKey: string
+  elevenlabsKey: string
+  modelQuality: number
+  aiBudget: string
+  // Step 4
+  connectedChannels: string[]
+  // Step 5
+  contentTypes: string[]
+  postingFreq: Record<string, string>
+  contentTopics: string[]
+  contentTopicInput: string
+  brandKeywords: string[]
+  brandKeywordInput: string
+  avoidKeywords: string[]
+  avoidKeywordInput: string
+  // Step 6
+  teamMembers: TeamMember[]
+}
+
+const defaultState: WizardState = {
+  businessName: '', industry: '', businessType: '', website: '', description: '', primaryGoal: '',
+  colorPrimary: '#6366f1', colorSecondary: '#8b5cf6', colorAccent: '#06b6d4',
+  voiceAdjectives: [], toneExampleSocial: '', toneExampleEmail: '', toneExampleCTA: '',
+  ageMin: 25, ageMax: 45, painPoints: '', jobTitles: [], jobTitleInput: '',
+  useSharedKeys: true, openaiKey: '', anthropicKey: '', elevenlabsKey: '',
+  modelQuality: 70, aiBudget: '',
+  connectedChannels: [],
+  contentTypes: [], postingFreq: {}, contentTopics: [], contentTopicInput: '',
+  brandKeywords: [], brandKeywordInput: '', avoidKeywords: [], avoidKeywordInput: '',
+  teamMembers: [{ email: '', role: 'Manager' }],
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+const cls = (...args: (string | false | undefined)[]) => args.filter(Boolean).join(' ')
+const inp = 'w-full px-3 py-2.5 rounded-lg bg-gray-800 border border-gray-700 text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500 text-sm'
+const textarea = 'w-full px-3 py-2.5 rounded-lg bg-gray-800 border border-gray-700 text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500 text-sm resize-none'
+
+// ─── Component ────────────────────────────────────────────────────────────────
 export default function OnboardingPage() {
   const router = useRouter()
   const [step, setStep] = useState(1)
+  const [form, setForm] = useState<WizardState>(defaultState)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const [form, setForm] = useState({
-    businessName: '', industry: '', website: '', tagline: '',
-    offer: '', uniqueValue: '', targetAudience: '', tone: '',
-    competitors: '', channels: [] as string[], goals: '',
-    monthlyBudget: '', prohibitedClaims: '', approvalEmail: '',
-  })
+  const [completedSteps, setCompletedSteps] = useState<number[]>([])
+  const [animDir, setAnimDir] = useState<'forward' | 'back'>('forward')
+  const [visible, setVisible] = useState(true)
 
-  const update = (field: string, value: string | string[]) => setForm((f) => ({ ...f, [field]: value }))
+  // Auto-save to localStorage
+  useEffect(() => {
+    const saved = localStorage.getItem('onboarding_progress')
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved)
+        if (parsed.form) setForm(parsed.form)
+        if (parsed.step) setStep(parsed.step)
+        if (parsed.completedSteps) setCompletedSteps(parsed.completedSteps)
+      } catch { /* ignore */ }
+    }
+  }, [])
 
-  const fillDemo = () => {
-    setForm({
-      businessName: 'Ooumph',
-      industry: 'SaaS / Tech',
-      website: 'https://ooumph.com',
-      tagline: 'Your AI Marketing Agency OS',
-      offer: 'AI-powered marketing automation for SMBs — we replace a full marketing team with autonomous AI agents that generate, plan, and optimize content. Human approval on every output.',
-      uniqueValue: 'India-first, 10x cheaper than an agency, fully autonomous agents with human-in-the-loop governance, supports Hinglish and regional campaigns.',
-      targetAudience: 'Founders and marketing heads of B2B SaaS companies in India with 10-100 employees, spending ₹50k-5L/month on marketing, frustrated with inconsistent agency results and lack of transparency.',
-      tone: 'Bold & Direct',
-      competitors: 'Jasper, Copy.ai, HubSpot, traditional agencies',
-      channels: ['LinkedIn', 'Instagram', 'Email', 'Twitter/X'],
-      goals: 'Get 50 qualified demo requests in 30 days, grow LinkedIn from 200 to 1000 followers, close first 5 paying clients at ₹50k/month each.',
-      monthlyBudget: '₹1,00,000/month',
-      prohibitedClaims: 'No ROI guarantees, no promises of viral content, no competitor bashing, no aggressive cold outreach without approval.',
-      approvalEmail: 'prashant.mishra@ooumph.com',
-    })
+  useEffect(() => {
+    localStorage.setItem('onboarding_progress', JSON.stringify({ form, step, completedSteps }))
+  }, [form, step, completedSteps])
+
+  const update = (patch: Partial<WizardState>) => setForm(f => ({ ...f, ...patch }))
+
+  const goTo = (n: number) => {
+    setAnimDir(n > step ? 'forward' : 'back')
+    setVisible(false)
+    setTimeout(() => {
+      if (!completedSteps.includes(step)) setCompletedSteps(c => [...c, step])
+      setStep(n)
+      setVisible(true)
+    }, 150)
   }
 
-  const toggleChannel = (ch: string) => {
-    const next = form.channels.includes(ch)
-      ? form.channels.filter((c) => c !== ch)
-      : [...form.channels, ch]
-    update('channels', next)
+  const next = () => goTo(step + 1)
+  const back = () => goTo(step - 1)
+
+  const toggleArr = (arr: string[], val: string) =>
+    arr.includes(val) ? arr.filter(x => x !== val) : [...arr, val]
+
+  const addTag = (field: keyof WizardState, inputField: keyof WizardState, arr: string[]) => {
+    const val = (form[inputField] as string).trim()
+    if (val && !arr.includes(val)) {
+      update({ [field]: [...arr, val], [inputField]: '' } as Partial<WizardState>)
+    }
   }
 
-  const handleSubmit = async () => {
+  const removeTag = (field: keyof WizardState, arr: string[], val: string) =>
+    update({ [field]: arr.filter(x => x !== val) } as Partial<WizardState>)
+
+  const handleLaunch = async () => {
     setLoading(true)
     setError('')
     try {
-      // Get userId from auth/me so workspace is linked to the logged-in user
       let userId: string | null = null
       try {
-        const meRes = await fetch('/api/auth/me')
-        const meData = await meRes.json()
-        userId = meData.user?.id || null
-      } catch { /* ignore — allows demo mode without auth */ }
+        const me = await fetch('/api/auth/me')
+        const d = await me.json()
+        userId = d.user?.id || null
+      } catch { /* allow demo */ }
 
       const res = await fetch('/api/workspaces', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...form, userId }),
+        body: JSON.stringify({
+          businessName: form.businessName,
+          industry: form.industry,
+          website: form.website,
+          businessType: form.businessType,
+          description: form.description,
+          primaryGoal: form.primaryGoal,
+          channels: form.connectedChannels,
+          contentTypes: form.contentTypes,
+          userId,
+        }),
       })
       const data = await res.json()
       if (data.workspaceId) {
         localStorage.setItem('workspaceId', data.workspaceId)
         localStorage.setItem('businessName', form.businessName)
-        router.push('/dashboard/strategy')
+        localStorage.removeItem('onboarding_progress')
+        router.push('/dashboard')
       } else {
         setError(data.error || 'Workspace creation failed. Please try again.')
       }
-    } catch (err) {
-      console.error(err)
+    } catch {
       setError('Network error. Please check your connection and try again.')
     } finally {
       setLoading(false)
     }
   }
 
+  const pct = Math.round(((step - 1) / 6) * 100)
+
   return (
-    <div className="p-8 max-w-3xl">
-      {/* Header */}
-      <div className="mb-8">
-        <div className="flex items-center gap-2 text-sm text-gray-400 mb-4">
-          {[1, 2, 3].map((n) => (
-            <div key={n} className="flex items-center gap-2">
-              <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold ${step >= n ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-500'}`}>{n}</div>
-              {n < 3 && <div className={`w-12 h-0.5 ${step > n ? 'bg-indigo-600' : 'bg-gray-800'}`} />}
-            </div>
+    <div className="min-h-screen bg-gray-950 flex flex-col items-center justify-start py-8 px-4">
+      {/* Progress header */}
+      <div className="w-full max-w-5xl mb-8">
+        <div className="flex items-center justify-between mb-3">
+          <span className="text-xs text-gray-500 font-medium">Step {step} of 7 · {pct}% complete</span>
+          <span className="text-xs text-indigo-400 font-medium">{STEP_NAMES[step - 1]}</span>
+        </div>
+        {/* Step circles */}
+        <div className="flex items-center gap-0">
+          {STEP_NAMES.map((name, i) => {
+            const n = i + 1
+            const done = completedSteps.includes(n)
+            const active = step === n
+            return (
+              <div key={n} className="flex items-center flex-1 last:flex-none">
+                <button
+                  onClick={() => completedSteps.includes(n) || n < step ? goTo(n) : undefined}
+                  className={cls(
+                    'w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold transition-all shrink-0',
+                    done && 'bg-green-600 text-white',
+                    active && !done && 'bg-indigo-600 text-white ring-2 ring-indigo-400 ring-offset-1 ring-offset-gray-950',
+                    !done && !active && 'bg-gray-800 text-gray-500',
+                  )}
+                  title={name}
+                >
+                  {done ? '✓' : n}
+                </button>
+                {i < 6 && (
+                  <div className={cls('h-0.5 flex-1 mx-1 transition-all', (done || step > n) ? 'bg-green-600' : 'bg-gray-800')} />
+                )}
+              </div>
+            )
+          })}
+        </div>
+        <div className="flex justify-between mt-1.5">
+          {STEP_NAMES.map((name, i) => (
+            <span key={i} className={cls('text-[10px] font-medium', step === i + 1 ? 'text-indigo-400' : 'text-gray-600')}>
+              {name}
+            </span>
           ))}
-          <span className="ml-2 text-gray-500 text-xs">Step {step} of 3</span>
         </div>
-        <div className="flex items-start justify-between">
-          <h1 className="text-2xl font-bold text-white">
-            {step === 1 && 'Tell us about your business'}
-            {step === 2 && 'Your offer and audience'}
-            {step === 3 && 'Channels, goals, and preferences'}
-          </h1>
-          {step === 1 && (
-            <button onClick={fillDemo} type="button"
-              className="px-3 py-1.5 rounded-lg border border-indigo-700 text-indigo-400 text-xs hover:bg-indigo-950 transition-colors whitespace-nowrap">
-              ⚡ Fill Demo Data
-            </button>
-          )}
-        </div>
-        <p className="text-gray-400 text-sm mt-1">Your AI marketing team is being briefed. This takes ~5 minutes.</p>
       </div>
 
-      {/* Step 1: Business Basics */}
-      {step === 1 && (
-        <div className="space-y-5">
-          <Field label="Business Name *" required>
-            <input className={input} value={form.businessName} onChange={(e) => update('businessName', e.target.value)} placeholder="e.g. Ooumph" />
+      {/* Main layout: form + side panel */}
+      <div
+        className="w-full max-w-5xl flex gap-6 transition-all duration-150"
+        style={{ opacity: visible ? 1 : 0, transform: visible ? 'translateX(0)' : animDir === 'forward' ? 'translateX(20px)' : 'translateX(-20px)' }}
+      >
+        {/* Form panel */}
+        <div className="flex-1 bg-gray-900 border border-gray-800 rounded-2xl p-8 min-h-[520px] flex flex-col">
+          {step === 1 && <Step1 form={form} update={update} next={next} toggleArr={toggleArr} />}
+          {step === 2 && <Step2 form={form} update={update} next={next} back={back} toggleArr={toggleArr} addTag={addTag} removeTag={removeTag} />}
+          {step === 3 && <Step3 form={form} update={update} next={next} back={back} />}
+          {step === 4 && <Step4 form={form} update={update} next={next} back={back} toggleArr={toggleArr} />}
+          {step === 5 && <Step5 form={form} update={update} next={next} back={back} toggleArr={toggleArr} addTag={addTag} removeTag={removeTag} />}
+          {step === 6 && <Step6 form={form} update={update} next={next} back={back} />}
+          {step === 7 && <Step7 form={form} loading={loading} error={error} onLaunch={handleLaunch} back={back} router={router} />}
+        </div>
+
+        {/* Right preview panel */}
+        <div className="w-72 shrink-0 hidden lg:block">
+          <SidePanel step={step} form={form} />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Step 1 ───────────────────────────────────────────────────────────────────
+function Step1({ form, update, next, toggleArr }: {
+  form: WizardState
+  update: (p: Partial<WizardState>) => void
+  next: () => void
+  toggleArr: (arr: string[], val: string) => string[]
+}) {
+  const canNext = !!form.businessName && !!form.industry
+  return (
+    <div className="flex flex-col flex-1">
+      <div className="mb-6">
+        <h1 className="text-2xl font-bold text-white">Welcome to Ooumph 👋</h1>
+        <p className="text-gray-400 text-sm mt-1">Let&apos;s get your AI marketing workforce ready in 5 minutes.</p>
+      </div>
+      <div className="space-y-4 flex-1">
+        <div className="grid grid-cols-2 gap-4">
+          <Field label="Business Name *">
+            <input className={inp} value={form.businessName} onChange={e => update({ businessName: e.target.value })} placeholder="e.g. Acme Corp" />
           </Field>
           <Field label="Industry *">
-            <select className={input} value={form.industry} onChange={(e) => update('industry', e.target.value)}>
+            <select className={inp} value={form.industry} onChange={e => update({ industry: e.target.value })}>
               <option value="">Select industry</option>
-              {INDUSTRIES.map((i) => <option key={i}>{i}</option>)}
+              {INDUSTRIES.map(i => <option key={i}>{i}</option>)}
             </select>
           </Field>
-          <Field label="Website URL">
-            <input className={input} value={form.website} onChange={(e) => update('website', e.target.value)} placeholder="https://ooumph.com" />
-          </Field>
-          <Field label="Tagline or Slogan">
-            <input className={input} value={form.tagline} onChange={(e) => update('tagline', e.target.value)} placeholder="What's your VIBE?" />
-          </Field>
-          <Field label="Approval Email (who reviews AI outputs) *">
-            <input className={input} type="email" value={form.approvalEmail} onChange={(e) => update('approvalEmail', e.target.value)} placeholder="praveen@ooumph.com" />
-          </Field>
-          <NavButtons next={() => setStep(2)} canNext={!!form.businessName && !!form.industry && !!form.approvalEmail} />
+        </div>
+
+        <Field label="Business Type">
+          <div className="flex gap-2 mt-1">
+            {BUSINESS_TYPES.map(bt => (
+              <button key={bt} type="button"
+                onClick={() => update({ businessType: bt })}
+                className={cls('px-4 py-2 rounded-lg text-sm font-medium border transition-all', form.businessType === bt ? 'bg-indigo-600 border-indigo-600 text-white' : 'bg-gray-800 border-gray-700 text-gray-300 hover:border-indigo-600')}
+              >{bt}</button>
+            ))}
+          </div>
+        </Field>
+
+        <Field label="Website URL">
+          <input className={inp} value={form.website} onChange={e => update({ website: e.target.value })} placeholder="https://yoursite.com" />
+        </Field>
+
+        <Field label="Business Description" hint="Tell us about your business, what you do, and who you serve.">
+          <textarea className={textarea} rows={3} value={form.description} onChange={e => update({ description: e.target.value })} placeholder="Tell us about your business..." />
+        </Field>
+
+        <Field label="Primary Goal">
+          <div className="grid grid-cols-2 gap-2 mt-1">
+            {PRIMARY_GOALS.map(g => (
+              <button key={g.value} type="button"
+                onClick={() => update({ primaryGoal: g.value })}
+                className={cls('flex items-center gap-2 px-3 py-2.5 rounded-lg border text-sm font-medium transition-all', form.primaryGoal === g.value ? 'bg-indigo-600/20 border-indigo-500 text-indigo-300' : 'bg-gray-800 border-gray-700 text-gray-300 hover:border-gray-600')}
+              >
+                <span>{g.icon}</span>{g.label}
+              </button>
+            ))}
+          </div>
+        </Field>
+      </div>
+      <NavBtns next={next} canNext={canNext} />
+    </div>
+  )
+}
+
+// ─── Step 2 ───────────────────────────────────────────────────────────────────
+function Step2({ form, update, next, back, toggleArr, addTag, removeTag }: {
+  form: WizardState
+  update: (p: Partial<WizardState>) => void
+  next: () => void
+  back: () => void
+  toggleArr: (arr: string[], val: string) => string[]
+  addTag: (field: keyof WizardState, inputField: keyof WizardState, arr: string[]) => void
+  removeTag: (field: keyof WizardState, arr: string[], val: string) => void
+}) {
+  return (
+    <div className="flex flex-col flex-1">
+      <div className="mb-6">
+        <h1 className="text-2xl font-bold text-white">Brand Identity</h1>
+        <p className="text-gray-400 text-sm mt-1">Set up your brand so your AI agents always stay on-brand.</p>
+      </div>
+      <div className="space-y-5 flex-1 overflow-y-auto pr-1">
+        {/* Brand Colors */}
+        <div>
+          <label className="block text-sm font-medium text-gray-200 mb-2">Brand Colors</label>
+          <div className="flex gap-3">
+            {([
+              { label: 'Primary', key: 'colorPrimary' },
+              { label: 'Secondary', key: 'colorSecondary' },
+              { label: 'Accent', key: 'colorAccent' },
+            ] as { label: string; key: keyof WizardState }[]).map(({ label, key }) => (
+              <div key={key} className="flex-1">
+                <p className="text-xs text-gray-500 mb-1.5">{label}</p>
+                <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-gray-800 border border-gray-700">
+                  <input type="color" value={form[key] as string} onChange={e => update({ [key]: e.target.value } as Partial<WizardState>)} className="w-6 h-6 rounded cursor-pointer bg-transparent border-0 p-0" />
+                  <input className="flex-1 bg-transparent text-white text-xs font-mono focus:outline-none" value={form[key] as string} onChange={e => update({ [key]: e.target.value } as Partial<WizardState>)} />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Brand Logo */}
+        <Field label="Brand Logo">
+          <div className="flex items-center justify-center w-full h-20 rounded-lg border-2 border-dashed border-gray-700 hover:border-indigo-600 transition-colors cursor-pointer text-gray-500 text-sm">
+            📎 Drag & drop logo or click to upload
+          </div>
+        </Field>
+
+        {/* Voice adjectives */}
+        <Field label="Brand Voice">
+          <div className="flex flex-wrap gap-2 mt-1">
+            {VOICE_ADJECTIVES.map(v => (
+              <button key={v} type="button"
+                onClick={() => update({ voiceAdjectives: toggleArr(form.voiceAdjectives, v) })}
+                className={cls('px-3 py-1 rounded-full text-xs font-medium border transition-all', form.voiceAdjectives.includes(v) ? 'bg-indigo-600 border-indigo-600 text-white' : 'bg-gray-800 border-gray-700 text-gray-400 hover:border-indigo-600 hover:text-white')}
+              >{v}</button>
+            ))}
+          </div>
+        </Field>
+
+        {/* Tone examples */}
+        <div>
+          <label className="block text-sm font-medium text-gray-200 mb-2">Tone Examples</label>
+          <div className="space-y-2">
+            <textarea className={textarea} rows={2} placeholder="Social post example..." value={form.toneExampleSocial} onChange={e => update({ toneExampleSocial: e.target.value })} />
+            <textarea className={textarea} rows={2} placeholder="Email subject line example..." value={form.toneExampleEmail} onChange={e => update({ toneExampleEmail: e.target.value })} />
+            <textarea className={textarea} rows={2} placeholder="CTA button text example..." value={form.toneExampleCTA} onChange={e => update({ toneExampleCTA: e.target.value })} />
+          </div>
+        </div>
+
+        {/* Target Audience */}
+        <div>
+          <label className="block text-sm font-medium text-gray-200 mb-3">Target Audience</label>
+          <div className="space-y-3">
+            <div>
+              <p className="text-xs text-gray-500 mb-2">Age Range: {form.ageMin}–{form.ageMax}</p>
+              <div className="flex items-center gap-3">
+                <span className="text-xs text-gray-500 w-6">18</span>
+                <input type="range" min={18} max={65} value={form.ageMin} onChange={e => update({ ageMin: Number(e.target.value) })} className="flex-1 accent-indigo-500" />
+                <input type="range" min={18} max={65} value={form.ageMax} onChange={e => update({ ageMax: Number(e.target.value) })} className="flex-1 accent-indigo-500" />
+                <span className="text-xs text-gray-500 w-6">65</span>
+              </div>
+            </div>
+            <textarea className={textarea} rows={2} placeholder="Pain points..." value={form.painPoints} onChange={e => update({ painPoints: e.target.value })} />
+            <TagInput
+              label="Job Titles"
+              tags={form.jobTitles}
+              inputValue={form.jobTitleInput}
+              onInputChange={v => update({ jobTitleInput: v })}
+              onAdd={() => addTag('jobTitles', 'jobTitleInput', form.jobTitles)}
+              onRemove={v => removeTag('jobTitles', form.jobTitles, v)}
+              placeholder="Add job title, press Enter"
+            />
+          </div>
+        </div>
+      </div>
+      <NavBtns next={next} back={back} canNext={true} />
+    </div>
+  )
+}
+
+// ─── Step 3 ───────────────────────────────────────────────────────────────────
+function Step3({ form, update, next, back }: {
+  form: WizardState
+  update: (p: Partial<WizardState>) => void
+  next: () => void
+  back: () => void
+}) {
+  return (
+    <div className="flex flex-col flex-1">
+      <div className="mb-6">
+        <h1 className="text-2xl font-bold text-white">AI Model Setup</h1>
+        <p className="text-gray-400 text-sm mt-1">Connect your AI models — or use shared keys to get started fast.</p>
+      </div>
+      <div className="space-y-5 flex-1">
+        {/* Shared keys toggle */}
+        <div className={cls('p-4 rounded-xl border-2 cursor-pointer transition-all', form.useSharedKeys ? 'border-indigo-500 bg-indigo-600/10' : 'border-gray-700 bg-gray-800')}
+          onClick={() => update({ useSharedKeys: true })}>
+          <div className="flex items-center gap-3">
+            <div className={cls('w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0', form.useSharedKeys ? 'border-indigo-500 bg-indigo-500' : 'border-gray-600')}>
+              {form.useSharedKeys && <div className="w-2 h-2 rounded-full bg-white" />}
+            </div>
+            <div>
+              <p className="text-white text-sm font-medium">Use Ooumph Shared Keys (recommended)</p>
+              <p className="text-xs text-gray-400 mt-0.5">Get started instantly. Shared rate limits apply — upgrade to bring your own keys for unlimited access.</p>
+            </div>
+          </div>
+        </div>
+
+        <div className={cls('p-4 rounded-xl border-2 cursor-pointer transition-all', !form.useSharedKeys ? 'border-indigo-500 bg-indigo-600/10' : 'border-gray-700 bg-gray-800')}
+          onClick={() => update({ useSharedKeys: false })}>
+          <div className="flex items-center gap-3">
+            <div className={cls('w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0', !form.useSharedKeys ? 'border-indigo-500 bg-indigo-500' : 'border-gray-600')}>
+              {!form.useSharedKeys && <div className="w-2 h-2 rounded-full bg-white" />}
+            </div>
+            <p className="text-white text-sm font-medium">Use My Own API Keys (BYOK)</p>
+          </div>
+        </div>
+
+        {!form.useSharedKeys && (
+          <div className="space-y-3 pl-2">
+            {([
+              { label: 'OpenAI API Key', key: 'openaiKey', placeholder: 'sk-...' },
+              { label: 'Anthropic API Key', key: 'anthropicKey', placeholder: 'sk-ant-...' },
+              { label: 'ElevenLabs API Key (optional)', key: 'elevenlabsKey', placeholder: 'xi-...' },
+            ] as { label: string; key: keyof WizardState; placeholder: string }[]).map(({ label, key, placeholder }) => (
+              <Field key={key} label={label}>
+                <input type="password" className={inp} value={form[key] as string} onChange={e => update({ [key]: e.target.value } as Partial<WizardState>)} placeholder={placeholder} />
+              </Field>
+            ))}
+            <button className="px-4 py-2 rounded-lg bg-gray-800 border border-gray-700 text-gray-300 text-sm hover:bg-gray-700 transition-colors">
+              Test All Connections
+            </button>
+          </div>
+        )}
+
+        <div>
+          <label className="block text-sm font-medium text-gray-200 mb-2">Model Preference</label>
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-gray-400 w-12">Quality</span>
+            <div className="flex items-center gap-2 flex-1">
+              <span className="text-blue-400">🔵</span>
+              <input type="range" min={0} max={100} value={form.modelQuality} onChange={e => update({ modelQuality: Number(e.target.value) })} className="flex-1 accent-indigo-500" />
+              <span className="text-gray-500">⚪</span>
+            </div>
+            <span className="text-xs text-gray-400 w-12 text-right">Speed</span>
+          </div>
+        </div>
+
+        <Field label="Monthly AI Budget Cap" hint="We'll warn you when approaching this limit.">
+          <input className={inp} value={form.aiBudget} onChange={e => update({ aiBudget: e.target.value })} placeholder="e.g. $100" />
+        </Field>
+      </div>
+      <NavBtns next={next} back={back} canNext={true} />
+    </div>
+  )
+}
+
+// ─── Step 4 ───────────────────────────────────────────────────────────────────
+function Step4({ form, update, next, back, toggleArr }: {
+  form: WizardState
+  update: (p: Partial<WizardState>) => void
+  next: () => void
+  back: () => void
+  toggleArr: (arr: string[], val: string) => string[]
+}) {
+  const connectedCount = form.connectedChannels.length
+  return (
+    <div className="flex flex-col flex-1">
+      <div className="flex items-start justify-between mb-6">
+        <div>
+          <h1 className="text-2xl font-bold text-white">Connect Channels</h1>
+          <p className="text-gray-400 text-sm mt-1">Connect your social and marketing channels.</p>
+        </div>
+        {connectedCount > 0 && (
+          <span className="px-3 py-1 rounded-full bg-green-600/20 text-green-400 text-xs font-semibold border border-green-700">
+            {connectedCount} connected
+          </span>
+        )}
+      </div>
+      <div className="grid grid-cols-3 gap-3 flex-1">
+        {PLATFORMS.map(p => {
+          const connected = form.connectedChannels.includes(p.id)
+          return (
+            <button key={p.id} type="button"
+              onClick={() => update({ connectedChannels: toggleArr(form.connectedChannels, p.id) })}
+              className={cls('flex flex-col items-center gap-2 p-4 rounded-xl border-2 text-sm font-medium transition-all', connected ? 'border-green-500 bg-green-600/10 text-green-300' : 'border-gray-700 bg-gray-800 text-gray-300 hover:border-indigo-600 hover:text-white')}
+            >
+              <span className="text-2xl">{p.icon}</span>
+              <span className="text-xs">{p.name}</span>
+              {connected ? <span className="text-[10px] text-green-400">✅ Connected</span> : <span className="text-[10px] text-indigo-400">Connect</span>}
+            </button>
+          )
+        })}
+      </div>
+      <div className="mt-4">
+        <button type="button" onClick={next} className="text-xs text-gray-500 hover:text-gray-300 transition-colors">
+          Skip for now →
+        </button>
+      </div>
+      <NavBtns next={next} back={back} canNext={true} />
+    </div>
+  )
+}
+
+// ─── Step 5 ───────────────────────────────────────────────────────────────────
+function Step5({ form, update, next, back, toggleArr, addTag, removeTag }: {
+  form: WizardState
+  update: (p: Partial<WizardState>) => void
+  next: () => void
+  back: () => void
+  toggleArr: (arr: string[], val: string) => string[]
+  addTag: (field: keyof WizardState, inputField: keyof WizardState, arr: string[]) => void
+  removeTag: (field: keyof WizardState, arr: string[], val: string) => void
+}) {
+  return (
+    <div className="flex flex-col flex-1">
+      <div className="mb-6">
+        <h1 className="text-2xl font-bold text-white">Content Preferences</h1>
+        <p className="text-gray-400 text-sm mt-1">Tell your AI agents what content to create.</p>
+      </div>
+      <div className="space-y-5 flex-1 overflow-y-auto pr-1">
+        {/* Content types */}
+        <Field label="Content Types">
+          <div className="flex flex-wrap gap-2 mt-1">
+            {CONTENT_TYPES.map(ct => (
+              <button key={ct.id} type="button"
+                onClick={() => update({ contentTypes: toggleArr(form.contentTypes, ct.id) })}
+                className={cls('flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-medium transition-all', form.contentTypes.includes(ct.id) ? 'bg-indigo-600 border-indigo-600 text-white' : 'bg-gray-800 border-gray-700 text-gray-400 hover:border-indigo-600 hover:text-white')}
+              >
+                <span>{ct.icon}</span>{ct.label}
+              </button>
+            ))}
+          </div>
+        </Field>
+
+        {/* Posting frequency per connected channel */}
+        {form.connectedChannels.length > 0 && (
+          <div>
+            <label className="block text-sm font-medium text-gray-200 mb-2">Posting Frequency</label>
+            <div className="space-y-2">
+              {form.connectedChannels.slice(0, 4).map(chId => {
+                const ch = PLATFORMS.find(p => p.id === chId)
+                return ch ? (
+                  <div key={chId} className="flex items-center gap-3">
+                    <span className="text-sm text-gray-300 w-28">{ch.icon} {ch.name}</span>
+                    <select className={cls(inp, 'flex-1')} value={form.postingFreq[chId] || ''} onChange={e => update({ postingFreq: { ...form.postingFreq, [chId]: e.target.value } })}>
+                      <option value="">Select frequency</option>
+                      {POSTING_FREQS.map(f => <option key={f}>{f}</option>)}
+                    </select>
+                  </div>
+                ) : null
+              })}
+            </div>
+          </div>
+        )}
+
+        <TagInput label="Content Topics" tags={form.contentTopics} inputValue={form.contentTopicInput} onInputChange={v => update({ contentTopicInput: v })} onAdd={() => addTag('contentTopics', 'contentTopicInput', form.contentTopics)} onRemove={v => removeTag('contentTopics', form.contentTopics, v)} placeholder="Add topic, press Enter" />
+        <TagInput label="Brand Keywords (always include)" tags={form.brandKeywords} inputValue={form.brandKeywordInput} onInputChange={v => update({ brandKeywordInput: v })} onAdd={() => addTag('brandKeywords', 'brandKeywordInput', form.brandKeywords)} onRemove={v => removeTag('brandKeywords', form.brandKeywords, v)} placeholder="Add keyword, press Enter" />
+        <TagInput label="Keywords/Competitors to Avoid" tags={form.avoidKeywords} inputValue={form.avoidKeywordInput} onInputChange={v => update({ avoidKeywordInput: v })} onAdd={() => addTag('avoidKeywords', 'avoidKeywordInput', form.avoidKeywords)} onRemove={v => removeTag('avoidKeywords', form.avoidKeywords, v)} placeholder="Add keyword to avoid, press Enter" />
+      </div>
+      <NavBtns next={next} back={back} canNext={true} />
+    </div>
+  )
+}
+
+// ─── Step 6 ───────────────────────────────────────────────────────────────────
+function Step6({ form, update, next, back }: {
+  form: WizardState
+  update: (p: Partial<WizardState>) => void
+  next: () => void
+  back: () => void
+}) {
+  const addMember = () => {
+    if (form.teamMembers.length >= 5) return
+    update({ teamMembers: [...form.teamMembers, { email: '', role: 'Viewer' }] })
+  }
+  const removeMember = (i: number) => update({ teamMembers: form.teamMembers.filter((_, idx) => idx !== i) })
+  const updateMember = (i: number, patch: Partial<TeamMember>) => {
+    const next = [...form.teamMembers]
+    next[i] = { ...next[i], ...patch }
+    update({ teamMembers: next })
+  }
+
+  return (
+    <div className="flex flex-col flex-1">
+      <div className="mb-6">
+        <h1 className="text-2xl font-bold text-white">Invite Your Team</h1>
+        <p className="text-gray-400 text-sm mt-1">Optional — you can always do this later from Settings.</p>
+      </div>
+      <div className="space-y-3 flex-1">
+        {form.teamMembers.map((m, i) => (
+          <div key={i} className="flex items-center gap-2">
+            <input className={cls(inp, 'flex-1')} type="email" placeholder="team@company.com" value={m.email} onChange={e => updateMember(i, { email: e.target.value })} />
+            <select className={cls(inp, 'w-32')} value={m.role} onChange={e => updateMember(i, { role: e.target.value })}>
+              {TEAM_ROLES.map(r => <option key={r}>{r}</option>)}
+            </select>
+            {form.teamMembers.length > 1 && (
+              <button type="button" onClick={() => removeMember(i)} className="text-gray-500 hover:text-red-400 transition-colors text-sm">✕</button>
+            )}
+          </div>
+        ))}
+        {form.teamMembers.length < 5 && (
+          <button type="button" onClick={addMember} className="text-indigo-400 text-sm hover:text-indigo-300 transition-colors">
+            + Add Another
+          </button>
+        )}
+        <div className="p-3 rounded-lg bg-blue-950/40 border border-blue-800/40 text-blue-300 text-xs mt-2">
+          Your team will get an email invitation to join your workspace.
+        </div>
+      </div>
+      <div className="mt-3">
+        <button type="button" onClick={next} className="text-xs text-gray-500 hover:text-gray-300 transition-colors">
+          Skip for now →
+        </button>
+      </div>
+      <NavBtns next={next} back={back} canNext={true} />
+    </div>
+  )
+}
+
+// ─── Step 7 ───────────────────────────────────────────────────────────────────
+function Step7({ form, loading, error, onLaunch, back, router }: {
+  form: WizardState
+  loading: boolean
+  error: string
+  onLaunch: () => void
+  back: () => void
+  router: ReturnType<typeof useRouter>
+}) {
+  const channelNames = form.connectedChannels.map(id => PLATFORMS.find(p => p.id === id)?.name).filter(Boolean)
+  const teamFilled = form.teamMembers.some(m => m.email.trim())
+
+  const summaryItems = [
+    { ok: !!form.businessName, label: `Workspace: ${form.businessName || '—'} (${[form.industry, form.businessType].filter(Boolean).join(' · ') || '—'})` },
+    { ok: form.voiceAdjectives.length > 0 || !!form.colorPrimary, label: 'Brand identity configured' },
+    { ok: true, label: form.useSharedKeys ? 'AI Models: Shared keys (upgrade anytime)' : 'AI Models: Own API keys connected' },
+    { ok: channelNames.length > 0, label: channelNames.length > 0 ? `Channels: ${channelNames.slice(0, 3).join(', ')}${channelNames.length > 3 ? ' +more' : ''}` : 'Channels: None connected yet' },
+    { ok: form.contentTypes.length > 0, label: `Content: ${form.contentTypes.length} types · ${form.contentTopics.length} topics configured` },
+    { ok: teamFilled, warn: !teamFilled, label: teamFilled ? 'Team: Invitations sent' : 'Team: No members invited yet' },
+  ]
+
+  return (
+    <div className="flex flex-col flex-1">
+      <div className="text-center mb-8">
+        <div className="text-6xl mb-3">🚀</div>
+        <h1 className="text-2xl font-bold text-white">Your workspace is ready!</h1>
+        <p className="text-gray-400 text-sm mt-1">Everything is configured. Let&apos;s launch your AI marketing workforce.</p>
+      </div>
+
+      {/* Summary card */}
+      <div className="bg-gray-800 rounded-xl p-4 mb-5 space-y-2">
+        {summaryItems.map((item, i) => (
+          <div key={i} className="flex items-start gap-2 text-sm">
+            <span className={item.ok ? 'text-green-400' : 'text-yellow-500'}>{item.ok ? '✅' : '⚠'}</span>
+            <span className={item.ok ? 'text-gray-200' : 'text-yellow-300'}>{item.label}</span>
+          </div>
+        ))}
+      </div>
+
+      {/* What happens next */}
+      <div className="bg-indigo-950/40 border border-indigo-800/40 rounded-xl p-4 mb-5">
+        <p className="text-white text-sm font-medium mb-2">What happens next</p>
+        <ul className="space-y-1.5 text-sm text-indigo-200">
+          <li>• Your CMO Agent will brief you on your first strategy</li>
+          <li>• AI agents are standing by to generate content</li>
+          <li>• Check Approvals before anything goes live</li>
+        </ul>
+      </div>
+
+      {error && <div className="mb-4 p-3 rounded-lg bg-red-950 border border-red-800 text-red-300 text-sm">{error}</div>}
+
+      <div className="mt-auto space-y-3">
+        <button onClick={onLaunch} disabled={loading}
+          className="w-full py-3.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-base font-semibold transition-colors">
+          {loading ? 'Setting up workspace...' : '🚀 Go to Dashboard'}
+        </button>
+        <button onClick={() => router.push('/dashboard/onboarding/checklist')} type="button"
+          className="w-full py-2.5 rounded-xl bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 text-sm font-medium transition-colors">
+          📋 View Onboarding Checklist
+        </button>
+        <button type="button" onClick={back} className="w-full text-center text-xs text-gray-600 hover:text-gray-400 transition-colors">
+          ← Back to review
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// ─── Side Panel ───────────────────────────────────────────────────────────────
+function SidePanel({ step, form }: { step: number; form: WizardState }) {
+  return (
+    <div className="bg-gray-900 border border-gray-800 rounded-2xl p-5 h-full">
+      <p className="text-xs text-gray-500 font-semibold uppercase tracking-wider mb-4">Preview</p>
+      {step === 1 && (
+        <div className="space-y-3">
+          <div className="p-3 rounded-lg bg-gray-800">
+            <p className="text-xs text-gray-500">Business</p>
+            <p className="text-white text-sm font-semibold mt-0.5">{form.businessName || 'Your Business'}</p>
+          </div>
+          <div className="p-3 rounded-lg bg-gray-800">
+            <p className="text-xs text-gray-500">Industry</p>
+            <p className="text-white text-sm mt-0.5">{form.industry || '—'}</p>
+          </div>
+          <div className="p-3 rounded-lg bg-gray-800">
+            <p className="text-xs text-gray-500">Type · Goal</p>
+            <p className="text-white text-sm mt-0.5">{[form.businessType, form.primaryGoal].filter(Boolean).join(' · ') || '—'}</p>
+          </div>
+          {form.website && (
+            <div className="p-3 rounded-lg bg-gray-800">
+              <p className="text-xs text-gray-500">Website</p>
+              <p className="text-indigo-400 text-xs mt-0.5 truncate">{form.website}</p>
+            </div>
+          )}
         </div>
       )}
-
-      {/* Step 2: Offer & Audience */}
       {step === 2 && (
-        <div className="space-y-5">
-          <Field label="What do you sell / offer? *" hint="Be specific. Include the result/transformation.">
-            <textarea className={textarea} value={form.offer} onChange={(e) => update('offer', e.target.value)} placeholder="e.g. AI-powered marketing automation for SMBs in India - replace a full marketing team with autonomous AI agents that generate, publish, and optimize content." rows={3} />
-          </Field>
-          <Field label="What makes you unique? *" hint="Your unfair advantage vs competitors.">
-            <textarea className={textarea} value={form.uniqueValue} onChange={(e) => update('uniqueValue', e.target.value)} placeholder="e.g. India-first, Hinglish support, 10x cheaper than an agency, human approval on every output" rows={3} />
-          </Field>
-          <Field label="Who is your ideal customer? *" hint="Be specific: their role, company size, pain, situation.">
-            <textarea className={textarea} value={form.targetAudience} onChange={(e) => update('targetAudience', e.target.value)} placeholder="e.g. Founders of B2B SaaS companies in India with 10-100 employees, spending Rs.50k-5L/month on marketing, frustrated with inconsistent agency results" rows={3} />
-          </Field>
-          <Field label="Top 3 competitors">
-            <input className={input} value={form.competitors} onChange={(e) => update('competitors', e.target.value)} placeholder="e.g. Hubspot, Jasper, Copy.ai" />
-          </Field>
-          <NavButtons prev={() => setStep(1)} next={() => setStep(3)} canNext={!!form.offer && !!form.uniqueValue && !!form.targetAudience} />
-        </div>
-      )}
-
-      {/* Step 3: Channels & Goals */}
-      {step === 3 && (
-        <div className="space-y-5">
-          <Field label="Marketing Channels *" hint="Select all channels you want to use.">
-            <div className="flex flex-wrap gap-2 mt-2">
-              {CHANNELS.map((ch) => (
-                <button key={ch} type="button" onClick={() => toggleChannel(ch)}
-                  className={`px-3 py-1.5 rounded-lg text-sm border transition-colors ${form.channels.includes(ch) ? 'bg-indigo-600 border-indigo-600 text-white' : 'bg-gray-800 border-gray-700 text-gray-300 hover:border-indigo-700'}`}>
-                  {ch}
-                </button>
+        <div className="space-y-3">
+          <div className="p-3 rounded-lg bg-gray-800">
+            <p className="text-xs text-gray-500 mb-2">Brand Colors</p>
+            <div className="flex gap-2">
+              {[form.colorPrimary, form.colorSecondary, form.colorAccent].map((c, i) => (
+                <div key={i} className="w-8 h-8 rounded-lg border border-gray-700" style={{ backgroundColor: c }} />
               ))}
             </div>
-          </Field>
-          <Field label="Brand Tone *">
-            <select className={input} value={form.tone} onChange={(e) => update('tone', e.target.value)}>
-              <option value="">Select tone</option>
-              {TONES.map((t) => <option key={t}>{t}</option>)}
-            </select>
-          </Field>
-          <Field label="30-Day Marketing Goal *" hint="What does success look like in 30 days?">
-            <textarea className={textarea} value={form.goals} onChange={(e) => update('goals', e.target.value)} placeholder="e.g. Get 50 qualified leads, close 5 clients, grow LinkedIn from 200 to 500 followers, get first Rs.5L in MRR" rows={2} />
-          </Field>
-          <Field label="Monthly Marketing Budget" hint="Approximate spend on ads, tools, content.">
-            <input className={input} value={form.monthlyBudget} onChange={(e) => update('monthlyBudget', e.target.value)} placeholder="e.g. Rs.50,000/month" />
-          </Field>
-          <Field label="Prohibited Claims or Topics" hint="Anything we should NEVER say.">
-            <input className={input} value={form.prohibitedClaims} onChange={(e) => update('prohibitedClaims', e.target.value)} placeholder="e.g. No guarantees, no ROI promises, no competitor bashing" />
-          </Field>
-          {error && (
-            <div className="p-3 rounded-lg bg-red-950 border border-red-800 text-red-300 text-sm">{error}</div>
+          </div>
+          {form.voiceAdjectives.length > 0 && (
+            <div className="p-3 rounded-lg bg-gray-800">
+              <p className="text-xs text-gray-500 mb-2">Voice</p>
+              <div className="flex flex-wrap gap-1">
+                {form.voiceAdjectives.map(v => <span key={v} className="px-2 py-0.5 rounded-full bg-indigo-600/30 text-indigo-300 text-[10px]">{v}</span>)}
+              </div>
+            </div>
           )}
-          <NavButtons
-            prev={() => setStep(2)}
-            next={handleSubmit}
-            nextLabel={loading ? 'Creating workspace...' : 'Launch AI Agents →'}
-            canNext={form.channels.length > 0 && !!form.tone && !!form.goals && !loading}
-          />
+          <div className="p-3 rounded-lg bg-gray-800">
+            <p className="text-xs text-gray-500">Age Range</p>
+            <p className="text-white text-sm mt-0.5">{form.ageMin}–{form.ageMax} years</p>
+          </div>
+        </div>
+      )}
+      {step === 3 && (
+        <div className="space-y-3">
+          <div className="p-3 rounded-lg bg-gray-800">
+            <p className="text-xs text-gray-500">Keys</p>
+            <p className="text-white text-sm mt-0.5">{form.useSharedKeys ? '✓ Shared (Ooumph)' : '✓ Own API keys'}</p>
+          </div>
+          <div className="p-3 rounded-lg bg-gray-800">
+            <p className="text-xs text-gray-500 mb-1">Model preference</p>
+            <div className="w-full bg-gray-700 rounded-full h-1.5">
+              <div className="bg-indigo-500 h-1.5 rounded-full" style={{ width: `${form.modelQuality}%` }} />
+            </div>
+            <div className="flex justify-between text-[10px] text-gray-500 mt-1"><span>Quality</span><span>Speed</span></div>
+          </div>
+          {form.aiBudget && (
+            <div className="p-3 rounded-lg bg-gray-800">
+              <p className="text-xs text-gray-500">Monthly cap</p>
+              <p className="text-white text-sm mt-0.5">{form.aiBudget}</p>
+            </div>
+          )}
+        </div>
+      )}
+      {step === 4 && (
+        <div className="space-y-2">
+          {PLATFORMS.map(p => (
+            <div key={p.id} className={cls('flex items-center gap-2 p-2 rounded-lg text-xs', form.connectedChannels.includes(p.id) ? 'bg-green-900/30 text-green-300' : 'bg-gray-800 text-gray-600')}>
+              <span>{p.icon}</span>
+              <span>{p.name}</span>
+              {form.connectedChannels.includes(p.id) && <span className="ml-auto">✓</span>}
+            </div>
+          ))}
+        </div>
+      )}
+      {step === 5 && (
+        <div className="space-y-3">
+          {form.contentTypes.length > 0 && (
+            <div className="p-3 rounded-lg bg-gray-800">
+              <p className="text-xs text-gray-500 mb-2">Content Types</p>
+              <div className="flex flex-wrap gap-1">
+                {form.contentTypes.map(ct => {
+                  const found = CONTENT_TYPES.find(c => c.id === ct)
+                  return found ? <span key={ct} className="px-2 py-0.5 rounded bg-indigo-600/30 text-indigo-300 text-[10px]">{found.icon} {found.label}</span> : null
+                })}
+              </div>
+            </div>
+          )}
+          {form.contentTopics.length > 0 && (
+            <div className="p-3 rounded-lg bg-gray-800">
+              <p className="text-xs text-gray-500 mb-2">Topics</p>
+              <div className="flex flex-wrap gap-1">
+                {form.contentTopics.map(t => <span key={t} className="px-2 py-0.5 rounded bg-gray-700 text-gray-300 text-[10px]">{t}</span>)}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+      {step === 6 && (
+        <div className="space-y-2">
+          {form.teamMembers.filter(m => m.email).map((m, i) => (
+            <div key={i} className="p-2 rounded-lg bg-gray-800 text-xs">
+              <p className="text-white truncate">{m.email}</p>
+              <p className="text-gray-500">{m.role}</p>
+            </div>
+          ))}
+          {!form.teamMembers.some(m => m.email) && (
+            <p className="text-gray-600 text-xs">No team members added yet</p>
+          )}
+        </div>
+      )}
+      {step === 7 && (
+        <div className="space-y-2 text-xs text-gray-400">
+          <div className="p-3 rounded-lg bg-green-900/20 border border-green-800/30">
+            <p className="text-green-400 font-medium">Setup complete ✓</p>
+            <p className="mt-1 text-gray-400">Your AI agents are ready to deploy</p>
+          </div>
+          <p className="text-gray-600">Workspace · Brand · AI · Channels · Content · Team</p>
         </div>
       )}
     </div>
   )
 }
 
-const input = 'w-full px-4 py-3 rounded-lg bg-gray-800 border border-gray-700 text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500 text-sm'
-const textarea = 'w-full px-4 py-3 rounded-lg bg-gray-800 border border-gray-700 text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500 text-sm resize-none'
-
-function Field({ label, children, hint, required }: { label: string; children: React.ReactNode; hint?: string; required?: boolean }) {
+// ─── Shared sub-components ────────────────────────────────────────────────────
+function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
     <div>
-      <label className="block text-sm font-medium text-gray-200 mb-1.5">
-        {label} {required && <span className="text-indigo-400">*</span>}
-      </label>
-      {hint && <p className="text-xs text-gray-500 mb-2">{hint}</p>}
+      <label className="block text-sm font-medium text-gray-200 mb-1.5">{label}</label>
+      {hint && <p className="text-xs text-gray-500 mb-1.5">{hint}</p>}
       {children}
     </div>
   )
 }
 
-function NavButtons({ prev, next, nextLabel, canNext }: { prev?: () => void; next?: () => void; nextLabel?: string; canNext?: boolean }) {
+function TagInput({ label, tags, inputValue, onInputChange, onAdd, onRemove, placeholder }: {
+  label: string; tags: string[]; inputValue: string
+  onInputChange: (v: string) => void; onAdd: () => void; onRemove: (v: string) => void; placeholder: string
+}) {
   return (
-    <div className="flex justify-between pt-4">
-      {prev ? (
-        <button onClick={prev} className="px-5 py-2.5 rounded-lg border border-gray-700 text-gray-300 hover:bg-gray-800 text-sm transition-colors">
+    <div>
+      <label className="block text-sm font-medium text-gray-200 mb-1.5">{label}</label>
+      <div className="flex flex-wrap gap-1.5 mb-2">
+        {tags.map(t => (
+          <span key={t} className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-indigo-600/20 border border-indigo-600/40 text-indigo-300 text-xs">
+            {t}
+            <button type="button" onClick={() => onRemove(t)} className="text-indigo-400 hover:text-white ml-0.5">✕</button>
+          </span>
+        ))}
+      </div>
+      <div className="flex gap-2">
+        <input className={cls(inp, 'flex-1')} value={inputValue} onChange={e => onInputChange(e.target.value)} placeholder={placeholder} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); onAdd() } }} />
+        <button type="button" onClick={onAdd} className="px-3 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm transition-colors">Add</button>
+      </div>
+    </div>
+  )
+}
+
+function NavBtns({ next, back, canNext, nextLabel }: { next?: () => void; back?: () => void; canNext?: boolean; nextLabel?: string }) {
+  return (
+    <div className="flex justify-between pt-5 mt-4 border-t border-gray-800">
+      {back ? (
+        <button type="button" onClick={back} className="px-5 py-2.5 rounded-lg border border-gray-700 text-gray-300 hover:bg-gray-800 text-sm transition-colors">
           ← Back
         </button>
       ) : <div />}
       {next && (
-        <button onClick={next} disabled={!canNext}
+        <button type="button" onClick={next} disabled={canNext === false}
           className="px-6 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-medium transition-colors">
           {nextLabel || 'Continue →'}
         </button>

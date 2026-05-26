@@ -1,653 +1,829 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useRef } from 'react'
 
-type PublishMode = 'compose' | 'blog' | 'newsletter' | 'queue'
-type SocialPlatform = 'twitter' | 'linkedin' | 'instagram' | 'facebook'
-type BlogPlatform = 'wordpress' | 'ghost'
+// ─── Types ────────────────────────────────────────────────────────────────────
 
-interface Artifact {
-  id: string
-  title: string
-  type: string
-  content_json?: Record<string, unknown>
-  created_at: string
-}
+type MainTab = 'queue' | 'composer' | 'analytics'
+type Platform = 'instagram' | 'facebook' | 'twitter' | 'linkedin' | 'tiktok' | 'youtube'
+type PostStatus = 'Scheduled' | 'Published' | 'Failed' | 'Draft'
 
 interface ScheduledPost {
   id: string
-  platform: string
-  content_json: { text?: string }
-  scheduled_time: string
-  status: string
-  artifact_title?: string
+  platforms: Platform[]
+  content: string
+  scheduledTime: string
+  status: PostStatus
+  hasMedia: boolean
 }
 
-interface PublishedPost {
+interface AnalyticsPost {
   id: string
-  platform: string
-  title: string | null
-  post_id: string | null
-  post_url: string | null
-  published_at: string
+  content: string
+  platform: Platform
+  reach: number
+  engagement: number
+  clicks: number
+  date: string
 }
 
-interface ConnectedPlatforms {
-  twitter: boolean
-  linkedin: boolean
-  facebook: boolean
-  instagram: boolean
-  wordpress: boolean
-  ghost: boolean
-  buffer: boolean
+interface PlatformConn {
+  connected: boolean
+  status: 'ok' | 'warning' | 'disconnected'
 }
 
-interface PlatformResult {
-  platform: string
-  ok: boolean
-  postUrl?: string
-  error?: string
+// ─── Mock data ────────────────────────────────────────────────────────────────
+
+const PLATFORM_META: Record<Platform, { label: string; icon: string; charLimit: number; color: string }> = {
+  instagram: { label: 'Instagram', icon: '📸', charLimit: 2200, color: 'text-pink-400' },
+  facebook: { label: 'Facebook', icon: '📘', charLimit: 63206, color: 'text-blue-400' },
+  twitter: { label: 'Twitter / X', icon: '🐦', charLimit: 280, color: 'text-sky-400' },
+  linkedin: { label: 'LinkedIn', icon: '💼', charLimit: 3000, color: 'text-indigo-400' },
+  tiktok: { label: 'TikTok', icon: '🎵', charLimit: 2200, color: 'text-rose-400' },
+  youtube: { label: 'YouTube', icon: '▶', charLimit: 5000, color: 'text-red-400' },
 }
 
-const PLATFORM_META: Record<string, { icon: string; label: string; limit: number; color: string }> = {
-  twitter:   { icon: '🐦', label: 'X / Twitter',  limit: 280,   color: 'text-sky-400' },
-  linkedin:  { icon: '💼', label: 'LinkedIn',      limit: 3000,  color: 'text-blue-400' },
-  instagram: { icon: '📸', label: 'Instagram',     limit: 2200,  color: 'text-pink-400' },
-  facebook:  { icon: '📘', label: 'Facebook',      limit: 63206, color: 'text-indigo-400' },
-  wordpress: { icon: '🔵', label: 'WordPress',     limit: 0,     color: 'text-cyan-400' },
-  ghost:     { icon: '👻', label: 'Ghost',         limit: 0,     color: 'text-gray-400' },
-  buffer:    { icon: '📦', label: 'Buffer',        limit: 0,     color: 'text-orange-400' },
+const PLATFORM_CONNECTIONS: Record<Platform, PlatformConn> = {
+  instagram: { connected: true, status: 'ok' },
+  facebook: { connected: true, status: 'ok' },
+  twitter: { connected: true, status: 'warning' },
+  linkedin: { connected: true, status: 'ok' },
+  tiktok: { connected: false, status: 'disconnected' },
+  youtube: { connected: false, status: 'disconnected' },
 }
 
-const SOCIAL_PLATFORMS: SocialPlatform[] = ['twitter', 'linkedin', 'instagram', 'facebook']
+const MOCK_QUEUE: ScheduledPost[] = [
+  { id: 'q1', platforms: ['instagram', 'facebook'], content: 'Exciting news! We just launched our new AI-powered marketing suite...', scheduledTime: '2026-05-27 09:00', status: 'Scheduled', hasMedia: true },
+  { id: 'q2', platforms: ['linkedin'], content: 'We\'re thrilled to announce a major milestone: 10,000 customers served!', scheduledTime: '2026-05-27 14:00', status: 'Scheduled', hasMedia: false },
+  { id: 'q3', platforms: ['twitter'], content: 'The future of marketing is AI-driven. Here\'s why... 🧵', scheduledTime: '2026-05-26 16:30', status: 'Published', hasMedia: false },
+  { id: 'q4', platforms: ['instagram', 'tiktok'], content: 'Behind the scenes: how our team builds world-class AI...', scheduledTime: '2026-05-25 12:00', status: 'Published', hasMedia: true },
+  { id: 'q5', platforms: ['facebook'], content: 'Don\'t miss our upcoming webinar on AI marketing automation!', scheduledTime: '2026-05-28 10:00', status: 'Draft', hasMedia: false },
+  { id: 'q6', platforms: ['linkedin', 'twitter'], content: 'New blog post: 5 ways AI is transforming content creation...', scheduledTime: '2026-05-24 09:00', status: 'Failed', hasMedia: false },
+]
 
-function charLimitColor(length: number, limit: number): string {
-  if (!limit) return 'text-gray-500'
-  const pct = length / limit
-  if (pct > 1) return 'text-red-400'
-  if (pct > 0.85) return 'text-yellow-400'
-  return 'text-gray-500'
+const MOCK_ANALYTICS: AnalyticsPost[] = [
+  { id: 'a1', content: 'Exciting news! We just launched our new AI-powered...', platform: 'instagram', reach: 12400, engagement: 8.4, clicks: 340, date: '2026-05-24' },
+  { id: 'a2', content: 'The future of marketing is AI-driven...', platform: 'twitter', reach: 5600, engagement: 5.2, clicks: 142, date: '2026-05-23' },
+  { id: 'a3', content: 'We\'re thrilled to announce a major milestone...', platform: 'linkedin', reach: 8900, engagement: 11.1, clicks: 520, date: '2026-05-22' },
+  { id: 'a4', content: 'Behind the scenes: how our team builds world-class AI...', platform: 'instagram', reach: 9800, engagement: 9.7, clicks: 280, date: '2026-05-21' },
+  { id: 'a5', content: 'New blog post: 5 ways AI is transforming content...', platform: 'facebook', reach: 3200, engagement: 4.1, clicks: 88, date: '2026-05-20' },
+]
+
+// Heatmap data: [day][hour] = engagement score 0-5
+const HEATMAP_DATA = Array.from({ length: 7 }, (_, d) =>
+  Array.from({ length: 24 }, (_, h) => {
+    if (h < 6 || h > 22) return 0
+    const peaks = d < 5 ? [9, 12, 17, 20] : [11, 15, 19]
+    const nearPeak = peaks.some(p => Math.abs(h - p) <= 1)
+    return nearPeak ? Math.floor(Math.random() * 2 + 3) : Math.floor(Math.random() * 2 + 1)
+  })
+)
+const HEATMAP_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+const HEATMAP_COLORS = ['bg-gray-800', 'bg-indigo-900/60', 'bg-indigo-700/60', 'bg-indigo-600/70', 'bg-indigo-500', 'bg-indigo-400']
+
+const CONTENT_IDEAS = [
+  'Tuesday post idea: Share a behind-the-scenes of your team',
+  'Midweek tip: How AI saves your team 10 hours a week',
+  'Friday Feature: Highlight a customer success story',
+]
+
+const QUICK_TEMPLATES = [
+  { label: 'Product Feature', icon: '🚀', desc: 'Announce a new feature or update' },
+  { label: 'Testimonial', icon: '⭐', desc: 'Share a customer success story' },
+  { label: 'Promotional', icon: '🎁', desc: 'Limited-time offer or discount' },
+]
+
+// ─── Sub-components ───────────────────────────────────────────────────────────
+
+function StatusBadge({ status }: { status: PostStatus }) {
+  const styles: Record<PostStatus, string> = {
+    Scheduled: 'bg-blue-900/60 text-blue-400 border-blue-800/50',
+    Published: 'bg-emerald-900/60 text-emerald-400 border-emerald-800/50',
+    Failed: 'bg-red-900/60 text-red-400 border-red-800/50',
+    Draft: 'bg-gray-800 text-gray-400 border-gray-700',
+  }
+  return <span className={`px-2 py-0.5 rounded-full text-xs border ${styles[status]}`}>{status}</span>
 }
 
-function timeAgo(ts: string) {
-  const d = Date.now() - new Date(ts).getTime()
-  const h = Math.floor(d / 3600000)
-  if (h < 1) return 'just now'
-  if (h < 24) return `${h}h ago`
-  return `${Math.floor(h / 24)}d ago`
+function PlatformChip({ platform, connected, status }: { platform: Platform; connected: boolean; status: string }) {
+  const meta = PLATFORM_META[platform]
+  return (
+    <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs border ${
+      connected
+        ? status === 'warning' ? 'bg-amber-950/30 border-amber-800/50 text-amber-300' : 'bg-gray-800 border-gray-700 text-gray-300'
+        : 'bg-gray-900 border-gray-800 text-gray-600'
+    }`}>
+      <span>{meta.icon}</span>
+      <span>{meta.label}</span>
+      <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+        !connected ? 'bg-gray-700' : status === 'warning' ? 'bg-amber-400' : 'bg-emerald-400'
+      }`} />
+    </div>
+  )
 }
 
-export default function PublishingPage() {
-  const [workspaceId, setWorkspaceId] = useState('')
-  const [mode, setMode] = useState<PublishMode>('compose')
-  const [artifacts, setArtifacts] = useState<Artifact[]>([])
-  const [scheduledPosts, setScheduledPosts] = useState<ScheduledPost[]>([])
-  const [publishedPosts, setPublishedPosts] = useState<PublishedPost[]>([])
-  const [connections, setConnections] = useState<ConnectedPlatforms>({
-    twitter: false, linkedin: false, facebook: false, instagram: false,
-    wordpress: false, ghost: false, buffer: false,
+// ─── Main page ────────────────────────────────────────────────────────────────
+
+export default function PublishingHubPage() {
+  const [mainTab, setMainTab] = useState<MainTab>('queue')
+  const [showCalendar, setShowCalendar] = useState(false)
+  const [showComposer, setShowComposer] = useState(false)
+
+  // Queue state
+  const [queueFilter, setQueueFilter] = useState<PostStatus | 'All'>('All')
+  const [selectedPosts, setSelectedPosts] = useState<string[]>([])
+
+  // Composer state
+  const [compPlatforms, setCompPlatforms] = useState<Platform[]>(['instagram', 'linkedin'])
+  const [compContent, setCompContent] = useState('')
+  const [firstComment, setFirstComment] = useState('')
+  const [scheduleDate, setScheduleDate] = useState('')
+  const [showUTM, setShowUTM] = useState(false)
+  const [utmSource, setUtmSource] = useState('')
+  const [utmMedium, setUtmMedium] = useState('social')
+  const [utmCampaign, setUtmCampaign] = useState('')
+  const [aiCaption, setAiCaption] = useState('')
+  const [analyzingMedia, setAnalyzingMedia] = useState(false)
+  const [captionAccepted, setCaptionAccepted] = useState(false)
+  const [altText, setAltText] = useState('')
+  const [hashtags] = useState(['#AIMarketing', '#ContentCreation', '#DigitalMarketing', '#MarketingAutomation', '#SocialMedia', '#B2BSaaS', '#GrowthHacking', '#ContentStrategy', '#MarTech', '#InboundMarketing'])
+  const [selectedHashtags, setSelectedHashtags] = useState<string[]>([])
+  const [captionText, setCaptionText] = useState('')
+  const [showCaption, setShowCaption] = useState(false)
+  const [generatingCaptions, setGeneratingCaptions] = useState(false)
+  const [bestTimeShown, setBestTimeShown] = useState(false)
+  const [publishing, setPublishing] = useState(false)
+  const [publishSuccess, setPublishSuccess] = useState(false)
+  const fileRef = useRef<HTMLInputElement>(null)
+
+  // Analytics
+  const [analyticsPlatformFilter, setAnalyticsPlatformFilter] = useState<Platform | 'all'>('all')
+
+  const filteredQueue = queueFilter === 'All' ? MOCK_QUEUE : MOCK_QUEUE.filter(p => p.status === queueFilter)
+  const filteredAnalytics = analyticsPlatformFilter === 'all' ? MOCK_ANALYTICS : MOCK_ANALYTICS.filter(p => p.platform === analyticsPlatformFilter)
+
+  function togglePlatform(p: Platform) {
+    setCompPlatforms(prev => prev.includes(p) ? prev.filter(x => x !== p) : [...prev, p])
+  }
+
+  function togglePost(id: string) {
+    setSelectedPosts(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id])
+  }
+
+  function toggleHashtag(tag: string) {
+    setSelectedHashtags(prev => prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag])
+  }
+
+  async function handleMediaDrop() {
+    setAnalyzingMedia(true)
+    await new Promise(r => setTimeout(r, 1600))
+    setAiCaption('A powerful AI-driven workspace transforming how teams create and distribute marketing content. Streamline your workflow, amplify your reach.')
+    setAltText('Team collaborating on marketing strategy using AI tools on a modern dashboard interface')
+    setAnalyzingMedia(false)
+  }
+
+  async function generateCaptions() {
+    setGeneratingCaptions(true)
+    await new Promise(r => setTimeout(r, 1200))
+    setCaptionText('00:00:01,000 --> 00:00:04,000\nWelcome to the future of AI marketing\n\n00:00:04,500 --> 00:00:08,000\nwhere content creation meets automation\n\n00:00:08,500 --> 00:00:12,000\nPowered by Ooumph AI platform')
+    setShowCaption(true)
+    setGeneratingCaptions(false)
+  }
+
+  async function handlePublish(mode: 'schedule' | 'now' | 'draft') {
+    setPublishing(true)
+    await new Promise(r => setTimeout(r, 1400))
+    setPublishing(false)
+    setPublishSuccess(true)
+    setTimeout(() => { setPublishSuccess(false); setShowComposer(false) }, 2000)
+  }
+
+  const effectiveContent = captionAccepted ? aiCaption : compContent
+  const allContent = effectiveContent + (selectedHashtags.length ? '\n\n' + selectedHashtags.join(' ') : '')
+
+  // Calendar view — simplified 7-day
+  const calDays = Array.from({ length: 7 }, (_, i) => {
+    const d = new Date('2026-05-27')
+    d.setDate(d.getDate() + i)
+    return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
   })
 
-  // ── Compose / direct publish state ──────────────────────────────────────────
-  const [baseContent, setBaseContent] = useState('')
-  const [selectedPlatforms, setSelectedPlatforms] = useState<SocialPlatform[]>(['linkedin'])
-  const [adaptedContent, setAdaptedContent] = useState<Record<string, string>>({})
-  const [charCounts, setCharCounts] = useState<Record<string, number>>({})
-  const [adapting, setAdapting] = useState(false)
-  const [adaptContext, setAdaptContext] = useState('')
-  const [publishMode, setPublishMode] = useState<'direct' | 'buffer'>('direct')
-  const [scheduleMode, setScheduleMode] = useState<'now' | 'pick'>('now')
-  const [scheduledAt, setScheduledAt] = useState('')
-  const [mediaUrl, setMediaUrl] = useState('')
-  const [composeArtifactId, setComposeArtifactId] = useState('')
-  const [publishing, setPublishing] = useState(false)
-  const [publishResults, setPublishResults] = useState<PlatformResult[] | null>(null)
-
-  // ── Blog publish state ───────────────────────────────────────────────────────
-  const [blogArtifactId, setBlogArtifactId] = useState('')
-  const [blogPlatform, setBlogPlatform] = useState<BlogPlatform>('wordpress')
-  const [blogStatus, setBlogStatus] = useState<'draft' | 'publish'>('draft')
-  const [publishingBlog, setPublishingBlog] = useState(false)
-  const [blogResult, setBlogResult] = useState<{ success?: boolean; error?: string; message?: string } | null>(null)
-
-  // ── Newsletter state ─────────────────────────────────────────────────────────
-  const [nlArtifactId, setNlArtifactId] = useState('')
-  const [nlTag, setNlTag] = useState('')
-  const [sendingNl, setSendingNl] = useState(false)
-  const [nlResult, setNlResult] = useState<{ success?: boolean; error?: string; message?: string } | null>(null)
-  const [nlConfirm, setNlConfirm] = useState(false)
-
-  useEffect(() => {
-    const raw = localStorage.getItem('ooumph_workspace')
-    const wid = raw ? (JSON.parse(raw) as { id: string }).id : (localStorage.getItem('workspaceId') || '')
-    setWorkspaceId(wid)
-  }, [])
-
-  const loadData = useCallback(async () => {
-    if (!workspaceId) return
-    try {
-      const [artRes, schedRes, pubRes, connRes] = await Promise.all([
-        fetch(`/api/artifacts?workspaceId=${workspaceId}&limit=30`),
-        fetch(`/api/agents/publish/social?workspaceId=${workspaceId}`),
-        fetch(`/api/publish/direct?workspaceId=${workspaceId}`),
-        fetch(`/api/integrations?workspaceId=${workspaceId}`),
-      ])
-      if (artRes.ok) {
-        const data = await artRes.json()
-        setArtifacts(Array.isArray(data) ? data : (data as { artifacts?: Artifact[] }).artifacts || [])
-      }
-      if (schedRes.ok) setScheduledPosts(await schedRes.json() as ScheduledPost[])
-      if (pubRes.ok) setPublishedPosts(await pubRes.json() as PublishedPost[])
-      if (connRes.ok) {
-        const integrations = await connRes.json() as Array<{ platform: string; status: string }>
-        const conn = { twitter: false, linkedin: false, facebook: false, instagram: false, wordpress: false, ghost: false, buffer: false }
-        for (const i of integrations) {
-          if (i.status === 'active' && i.platform in conn) {
-            (conn as Record<string, boolean>)[i.platform] = true
-          }
-        }
-        setConnections(conn)
-      }
-    } catch { /* ignore */ }
-  }, [workspaceId])
-
-  useEffect(() => { loadData() }, [loadData])
-
-  // Pre-fill base content from artifact
-  useEffect(() => {
-    if (!composeArtifactId) return
-    const art = artifacts.find(a => a.id === composeArtifactId)
-    if (!art) return
-    const cj = art.content_json
-    const body = typeof cj === 'object' && cj
-      ? (String(cj.body || cj.text || cj.content || art.title || ''))
-      : art.title
-    setBaseContent(body)
-    setAdaptedContent({})
-  }, [composeArtifactId, artifacts])
-
-  const togglePlatform = (p: SocialPlatform) =>
-    setSelectedPlatforms(prev => prev.includes(p) ? prev.filter(x => x !== p) : [...prev, p])
-
-  // ── AI Adapt ─────────────────────────────────────────────────────────────────
-  const handleAdapt = async () => {
-    if (!baseContent || selectedPlatforms.length === 0) return
-    setAdapting(true)
-    setAdaptedContent({})
-    try {
-      const res = await fetch('/api/agents/publish/adapt', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspaceId, content: baseContent, platforms: selectedPlatforms, context: adaptContext }),
-      })
-      const data = await res.json() as { adapted?: Record<string, string>; charCounts?: Record<string, number> }
-      if (data.adapted) setAdaptedContent(data.adapted)
-      if (data.charCounts) setCharCounts(data.charCounts)
-    } catch { /* ignore */ }
-    setAdapting(false)
-  }
-
-  // ── Direct Publish ────────────────────────────────────────────────────────────
-  const handleDirectPublish = async () => {
-    if (!workspaceId || !baseContent || selectedPlatforms.length === 0) return
-    setPublishing(true)
-    setPublishResults(null)
-    try {
-      const res = await fetch('/api/publish/direct', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          workspaceId,
-          platforms: selectedPlatforms,
-          content: baseContent,
-          adaptedContent: Object.keys(adaptedContent).length > 0 ? adaptedContent : undefined,
-          artifactId: composeArtifactId || undefined,
-        }),
-      })
-      const data = await res.json() as { results?: PlatformResult[] }
-      setPublishResults(data.results || [])
-      await loadData()
-    } catch { /* ignore */ }
-    setPublishing(false)
-  }
-
-  // ── Buffer Schedule ───────────────────────────────────────────────────────────
-  const handleBufferSchedule = async () => {
-    if (!workspaceId || !baseContent || selectedPlatforms.length === 0) return
-    setPublishing(true)
-    setPublishResults(null)
-    try {
-      const body: Record<string, unknown> = {
-        workspaceId, content: baseContent, platforms: selectedPlatforms,
-        ...(scheduleMode === 'pick' && scheduledAt ? { scheduledAt: new Date(scheduledAt).toISOString() } : {}),
-        ...(mediaUrl ? { mediaUrl } : {}),
-        ...(composeArtifactId ? { artifactId: composeArtifactId } : {}),
-      }
-      const res = await fetch('/api/agents/publish/social', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      })
-      const data = await res.json() as { scheduled?: boolean; message?: string; error?: string }
-      setPublishResults([{
-        platform: 'buffer',
-        ok: !!data.scheduled,
-        postUrl: undefined,
-        error: data.error,
-      }])
-      if (data.scheduled) await loadData()
-    } catch { /* ignore */ }
-    setPublishing(false)
-  }
-
-  // ── Blog publish ─────────────────────────────────────────────────────────────
-  const handlePublishBlog = async () => {
-    if (!workspaceId || !blogArtifactId) return
-    setPublishingBlog(true)
-    setBlogResult(null)
-    try {
-      const res = await fetch('/api/agents/publish', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspaceId, action: 'publish_blog', artifactId: blogArtifactId, options: { platform: blogPlatform, status: blogStatus } }),
-      })
-      setBlogResult(await res.json())
-    } catch (e) { setBlogResult({ error: String(e) }) }
-    setPublishingBlog(false)
-  }
-
-  // ── Newsletter ────────────────────────────────────────────────────────────────
-  const handleSendNewsletter = async () => {
-    if (!workspaceId || !nlArtifactId) return
-    setSendingNl(true)
-    setNlConfirm(false)
-    setNlResult(null)
-    try {
-      const res = await fetch('/api/agents/publish', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspaceId, action: 'publish_newsletter', artifactId: nlArtifactId, options: { recipientTag: nlTag || undefined } }),
-      })
-      setNlResult(await res.json())
-    } catch (e) { setNlResult({ error: String(e) }) }
-    setSendingNl(false)
-  }
-
-  const blogArtifacts = artifacts.filter(a => ['blog_post', 'article', 'landing_page', 'newsletter'].includes(a.type))
-  const nlArtifacts = artifacts.filter(a => ['newsletter', 'email_sequence', 'blog_post'].includes(a.type))
-
   return (
-    <div className="p-6 max-w-7xl mx-auto space-y-6">
-      {/* Header */}
-      <div>
-        <h1 className="text-xl font-bold text-white">Publishing Hub</h1>
-        <p className="text-gray-400 text-sm">Write once, publish everywhere — AI adapts content per platform</p>
-      </div>
+    <div className="flex h-full bg-gray-950">
+      {/* ── Main area ─────────────────────────────────────────────────────────── */}
+      <div className="flex-1 flex flex-col min-w-0">
 
-      {/* Connections bar */}
-      <div className="flex flex-wrap items-center gap-3 p-3 bg-gray-900 border border-gray-800 rounded-xl text-xs">
-        <span className="text-gray-500 font-medium flex-shrink-0">Connected:</span>
-        {Object.entries(connections).map(([p, connected]) => (
-          <span key={p} className="flex items-center gap-1.5">
-            <span className={`w-2 h-2 rounded-full flex-shrink-0 ${connected ? 'bg-green-400' : 'bg-gray-700'}`} />
-            <span className={connected ? 'text-gray-300' : 'text-gray-600'}>
-              {PLATFORM_META[p]?.icon} {PLATFORM_META[p]?.label || p}
-            </span>
-          </span>
-        ))}
-        <a href="/dashboard/connections" className="ml-auto text-indigo-400 hover:text-indigo-300 text-xs">
-          Manage connections →
-        </a>
-      </div>
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800 flex-shrink-0 flex-wrap gap-3">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-rose-500 to-pink-600 flex items-center justify-center text-sm">
+              📡
+            </div>
+            <h1 className="text-white font-bold text-lg">Publishing Hub</h1>
+          </div>
 
-      {/* Mode tabs */}
-      <div className="flex gap-1 border-b border-gray-800">
-        {([
-          { id: 'compose', label: '📱 Social', desc: 'AI-adapted multi-platform' },
-          { id: 'blog', label: '📝 Blog', desc: 'WordPress / Ghost' },
-          { id: 'newsletter', label: '📧 Newsletter', desc: 'Via Resend' },
-          { id: 'queue', label: '📊 Queue', desc: 'History & scheduled' },
-        ] as const).map(tab => (
-          <button key={tab.id} onClick={() => setMode(tab.id)}
-            className={`px-4 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px ${mode === tab.id ? 'border-indigo-500 text-white' : 'border-transparent text-gray-500 hover:text-gray-300'}`}>
-            {tab.label}
-          </button>
-        ))}
-      </div>
+          <div className="flex items-center gap-3 flex-wrap">
+            {/* Platform chips */}
+            {(Object.entries(PLATFORM_CONNECTIONS) as [Platform, PlatformConn][]).map(([p, conn]) => (
+              <PlatformChip key={p} platform={p} connected={conn.connected} status={conn.status} />
+            ))}
+          </div>
 
-      {/* ── COMPOSE / SOCIAL TAB ────────────────────────────────────────────────── */}
-      {mode === 'compose' && (
-        <div className="space-y-5">
-          {/* Platform selector */}
-          <div>
-            <label className="text-xs text-gray-400 block mb-2">Publish to</label>
-            <div className="flex flex-wrap gap-2">
-              {SOCIAL_PLATFORMS.map(p => {
-                const meta = PLATFORM_META[p]
-                const isConnected = connections[p]
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setShowCalendar(v => !v)}
+              className={`px-3 py-2 rounded-lg border text-sm font-medium transition-colors ${showCalendar ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-gray-900 border-gray-800 text-gray-400 hover:text-white'}`}
+            >
+              🗓 Calendar
+            </button>
+            <button
+              onClick={() => { setShowComposer(true); setMainTab('composer') }}
+              className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium transition-colors"
+            >
+              + New Post
+            </button>
+          </div>
+        </div>
+
+        {/* Calendar view */}
+        {showCalendar && (
+          <div className="mx-6 mt-4 bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden flex-shrink-0">
+            <div className="grid grid-cols-7">
+              {calDays.map((day, i) => {
+                const posts = MOCK_QUEUE.filter((_, j) => j % 7 === i)
                 return (
-                  <button key={p} onClick={() => togglePlatform(p)}
-                    className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-sm font-medium transition-colors ${selectedPlatforms.includes(p) ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-gray-900 border-gray-700 text-gray-400 hover:border-gray-600 hover:text-white'}`}>
-                    <span>{meta.icon}</span>
-                    <span>{meta.label}</span>
-                    {isConnected && <span className="w-1.5 h-1.5 rounded-full bg-green-400" />}
+                  <div key={day} className="border-r border-gray-800 last:border-r-0 p-3 min-h-[120px]">
+                    <p className="text-gray-500 text-xs mb-2">{day}</p>
+                    <div className="space-y-1">
+                      {posts.map(p => (
+                        <div key={p.id} className={`px-1.5 py-1 rounded text-xs truncate ${p.status === 'Published' ? 'bg-emerald-900/40 text-emerald-400' : p.status === 'Scheduled' ? 'bg-indigo-900/40 text-indigo-400' : 'bg-gray-800 text-gray-500'}`}>
+                          {p.platforms.map(pl => PLATFORM_META[pl].icon).join('')} {p.content.slice(0, 20)}...
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Tabs */}
+        <div className="flex border-b border-gray-800 px-6 flex-shrink-0">
+          {(['queue', 'composer', 'analytics'] as MainTab[]).map(tab => (
+            <button
+              key={tab}
+              onClick={() => setMainTab(tab)}
+              className={`px-4 py-3 text-sm font-medium border-b-2 -mb-px transition-colors capitalize ${mainTab === tab ? 'border-indigo-500 text-white' : 'border-transparent text-gray-500 hover:text-gray-300'}`}
+            >
+              {tab === 'queue' ? 'Queue' : tab === 'composer' ? 'Composer' : 'Analytics'}
+            </button>
+          ))}
+        </div>
+
+        {/* ── QUEUE TAB ───────────────────────────────────────────────────────── */}
+        {mainTab === 'queue' && (
+          <div className="flex-1 overflow-y-auto p-6 space-y-4">
+            {/* Filters + bulk actions */}
+            <div className="flex items-center justify-between flex-wrap gap-3">
+              <div className="flex gap-2 flex-wrap">
+                {(['All', 'Scheduled', 'Published', 'Failed', 'Draft'] as const).map(f => (
+                  <button
+                    key={f}
+                    onClick={() => setQueueFilter(f)}
+                    className={`px-3 py-1.5 rounded-lg text-xs border transition-colors ${queueFilter === f ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-gray-900 border-gray-800 text-gray-400 hover:text-white'}`}
+                  >
+                    {f}
                   </button>
+                ))}
+              </div>
+              {selectedPosts.length > 0 && (
+                <div className="flex gap-2">
+                  <button className="px-3 py-1.5 rounded-lg text-xs bg-indigo-600 hover:bg-indigo-500 text-white transition-colors">
+                    Publish Now ({selectedPosts.length})
+                  </button>
+                  <button className="px-3 py-1.5 rounded-lg text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 transition-colors">
+                    Reschedule
+                  </button>
+                  <button className="px-3 py-1.5 rounded-lg text-xs bg-red-900/40 hover:bg-red-900/60 text-red-400 transition-colors">
+                    Delete
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Post list */}
+            <div className="space-y-2">
+              {filteredQueue.map(post => (
+                <div
+                  key={post.id}
+                  className={`flex items-center gap-4 p-4 bg-gray-900 border rounded-xl transition-all hover:border-gray-700 ${selectedPosts.includes(post.id) ? 'border-indigo-600/50' : 'border-gray-800'}`}
+                >
+                  {/* Drag handle */}
+                  <div className="text-gray-700 cursor-grab text-lg flex-shrink-0">⋮⋮</div>
+
+                  {/* Checkbox */}
+                  <input
+                    type="checkbox"
+                    checked={selectedPosts.includes(post.id)}
+                    onChange={() => togglePost(post.id)}
+                    className="accent-indigo-500 w-3.5 h-3.5 flex-shrink-0"
+                  />
+
+                  {/* Platform icons */}
+                  <div className="flex items-center gap-1 flex-shrink-0">
+                    {post.platforms.map(p => (
+                      <span key={p} className="text-base" title={PLATFORM_META[p].label}>{PLATFORM_META[p].icon}</span>
+                    ))}
+                  </div>
+
+                  {/* Media thumbnail */}
+                  {post.hasMedia && (
+                    <div className="w-10 h-10 rounded-lg bg-gray-800 flex items-center justify-center text-gray-600 flex-shrink-0 text-lg">
+                      🖼
+                    </div>
+                  )}
+
+                  {/* Content */}
+                  <p className="flex-1 text-gray-300 text-sm truncate min-w-0">{post.content}</p>
+
+                  {/* Time */}
+                  <span className="text-gray-500 text-xs flex-shrink-0 hidden md:block">{post.scheduledTime}</span>
+
+                  {/* Status */}
+                  <StatusBadge status={post.status} />
+
+                  {/* Actions */}
+                  <div className="flex gap-1 flex-shrink-0">
+                    <button className="px-2 py-1 rounded text-xs bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-white transition-colors">Edit</button>
+                    <button className="px-2 py-1 rounded text-xs bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-white transition-colors">...</button>
+                  </div>
+                </div>
+              ))}
+              {filteredQueue.length === 0 && (
+                <div className="text-center py-12 text-gray-600 text-sm">No posts match this filter</div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ── COMPOSER TAB ────────────────────────────────────────────────────── */}
+        {mainTab === 'composer' && (
+          <div className="flex-1 overflow-y-auto p-6 space-y-5">
+
+            {publishSuccess && (
+              <div className="p-4 rounded-xl bg-emerald-950/40 border border-emerald-800/50 text-emerald-400 text-sm flex items-center gap-2">
+                <span>✓</span> Post submitted successfully!
+              </div>
+            )}
+
+            {/* Platform multi-select */}
+            <div>
+              <label className="text-gray-400 text-xs block mb-2">Publish to</label>
+              <div className="flex flex-wrap gap-2">
+                {(Object.keys(PLATFORM_META) as Platform[]).map(p => {
+                  const meta = PLATFORM_META[p]
+                  const selected = compPlatforms.includes(p)
+                  return (
+                    <button
+                      key={p}
+                      onClick={() => togglePlatform(p)}
+                      className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-sm transition-colors ${selected ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-gray-900 border-gray-800 text-gray-400 hover:border-gray-700 hover:text-white'}`}
+                    >
+                      {meta.icon} {meta.label}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+
+            {/* Content textarea with char counters */}
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <label className="text-gray-400 text-xs">Content</label>
+                <div className="flex gap-3">
+                  {compPlatforms.map(p => {
+                    const len = allContent.length
+                    const limit = PLATFORM_META[p].charLimit
+                    const over = len > limit
+                    return (
+                      <span key={p} className={`text-xs ${over ? 'text-red-400' : len > limit * 0.85 ? 'text-amber-400' : 'text-gray-500'}`}>
+                        {PLATFORM_META[p].icon} {len}/{limit > 0 ? limit : '∞'}
+                      </span>
+                    )
+                  })}
+                </div>
+              </div>
+              <textarea
+                value={captionAccepted ? aiCaption : compContent}
+                onChange={e => { captionAccepted ? setAiCaption(e.target.value) : setCompContent(e.target.value) }}
+                rows={5}
+                placeholder="Write your post here..."
+                className="w-full bg-gray-900 border border-gray-800 rounded-xl px-4 py-3 text-white text-sm placeholder-gray-600 focus:outline-none focus:border-indigo-500 resize-none"
+              />
+            </div>
+
+            {/* Hashtag suggestions */}
+            <div>
+              <label className="text-gray-400 text-xs block mb-2">Hashtag Suggestions</label>
+              <div className="flex flex-wrap gap-1.5">
+                {hashtags.map(tag => (
+                  <button
+                    key={tag}
+                    onClick={() => toggleHashtag(tag)}
+                    className={`px-2.5 py-1 rounded-full text-xs border transition-colors ${selectedHashtags.includes(tag) ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-gray-900 border-gray-700 text-gray-400 hover:text-white'}`}
+                  >
+                    {tag}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* AI-Assisted Upload */}
+            <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 space-y-4">
+              <h3 className="text-white text-sm font-semibold">AI-Assisted Media</h3>
+
+              <div
+                onDragOver={e => e.preventDefault()}
+                onDrop={e => { e.preventDefault(); handleMediaDrop() }}
+                onClick={() => fileRef.current?.click()}
+                className="border-2 border-dashed border-gray-700 hover:border-indigo-600 rounded-xl p-8 text-center cursor-pointer transition-colors"
+              >
+                <input ref={fileRef} type="file" accept="image/*,video/*" className="hidden" onChange={handleMediaDrop} />
+                <div className="text-3xl mb-2">🖼</div>
+                {analyzingMedia ? (
+                  <div className="flex items-center justify-center gap-2 text-indigo-400 text-sm">
+                    <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                    AI analyzing media...
+                  </div>
+                ) : (
+                  <>
+                    <p className="text-gray-400 text-sm">Drop images or videos here</p>
+                    <p className="text-gray-600 text-xs mt-1">AI will auto-generate captions and alt text</p>
+                  </>
+                )}
+              </div>
+
+              {aiCaption && !captionAccepted && (
+                <div className="p-3 rounded-xl bg-indigo-950/30 border border-indigo-800/40 space-y-2">
+                  <p className="text-indigo-400 text-xs font-medium">AI Caption Suggestion</p>
+                  <p className="text-gray-300 text-sm leading-relaxed">{aiCaption}</p>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => setCaptionAccepted(true)}
+                      className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs transition-colors"
+                    >
+                      Use AI Caption
+                    </button>
+                    <button
+                      onClick={() => setAiCaption('')}
+                      className="px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-400 text-xs transition-colors"
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {altText && (
+                <div>
+                  <label className="text-gray-400 text-xs block mb-1">Alt Text (auto-generated)</label>
+                  <input
+                    value={altText}
+                    onChange={e => setAltText(e.target.value)}
+                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-gray-300 text-xs focus:outline-none focus:border-indigo-500"
+                  />
+                </div>
+              )}
+            </div>
+
+            {/* Auto-caption for video */}
+            <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 space-y-3">
+              <h3 className="text-white text-sm font-semibold">Video Auto-Captions</h3>
+              <div className="flex items-center gap-3 flex-wrap">
+                <button
+                  onClick={generateCaptions}
+                  disabled={generatingCaptions}
+                  className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-medium transition-colors"
+                >
+                  {generatingCaptions ? 'Generating...' : 'Generate Captions'}
+                </button>
+                <select className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-gray-300 text-xs focus:outline-none">
+                  <option>English</option>
+                  <option>Spanish</option>
+                  <option>French</option>
+                  <option>German</option>
+                  <option>Portuguese</option>
+                </select>
+                {showCaption && (
+                  <button className="px-3 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-400 text-xs transition-colors">
+                    Download SRT
+                  </button>
+                )}
+              </div>
+              {showCaption && captionText && (
+                <textarea
+                  readOnly
+                  value={captionText}
+                  rows={5}
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-gray-300 text-xs font-mono resize-none focus:outline-none"
+                />
+              )}
+            </div>
+
+            {/* Schedule */}
+            <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 space-y-3">
+              <h3 className="text-white text-sm font-semibold">Schedule</h3>
+              <div className="flex items-center gap-3 flex-wrap">
+                <input
+                  type="datetime-local"
+                  value={scheduleDate}
+                  onChange={e => setScheduleDate(e.target.value)}
+                  className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-indigo-500"
+                />
+                <button
+                  onClick={() => { setScheduleDate('2026-05-27T17:00'); setBestTimeShown(true) }}
+                  className="px-3 py-2 rounded-lg bg-gray-800 hover:bg-indigo-600/30 border border-gray-700 hover:border-indigo-700 text-gray-400 hover:text-indigo-300 text-xs transition-colors"
+                >
+                  Best Time
+                </button>
+                {bestTimeShown && (
+                  <span className="text-indigo-400 text-xs">AI recommends Tue 5:00 PM (highest engagement for your audience)</span>
+                )}
+              </div>
+            </div>
+
+            {/* First comment */}
+            <div>
+              <label className="text-gray-400 text-xs block mb-1.5">First Comment (Instagram hashtag stacking)</label>
+              <input
+                value={firstComment}
+                onChange={e => setFirstComment(e.target.value)}
+                placeholder="#marketing #ai #contentcreation ..."
+                className="w-full bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-gray-300 text-sm placeholder-gray-600 focus:outline-none focus:border-indigo-500"
+              />
+            </div>
+
+            {/* UTM */}
+            <div>
+              <button
+                onClick={() => setShowUTM(v => !v)}
+                className="flex items-center gap-2 text-gray-400 hover:text-white text-xs transition-colors"
+              >
+                <span>{showUTM ? '▼' : '▶'}</span>
+                UTM Parameters
+              </button>
+              {showUTM && (
+                <div className="mt-3 grid grid-cols-3 gap-3">
+                  {[
+                    { label: 'Source', value: utmSource, setter: setUtmSource, placeholder: 'instagram' },
+                    { label: 'Medium', value: utmMedium, setter: setUtmMedium, placeholder: 'social' },
+                    { label: 'Campaign', value: utmCampaign, setter: setUtmCampaign, placeholder: 'q2-launch' },
+                  ].map(({ label, value, setter, placeholder }) => (
+                    <div key={label}>
+                      <label className="text-gray-500 text-xs block mb-1">{label}</label>
+                      <input
+                        value={value}
+                        onChange={e => setter(e.target.value)}
+                        placeholder={placeholder}
+                        className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-xs focus:outline-none focus:border-indigo-500"
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Action buttons */}
+            <div className="flex gap-2 pt-2">
+              <button
+                onClick={() => handlePublish('now')}
+                disabled={publishing || (!compContent && !captionAccepted)}
+                className="flex-1 py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-semibold text-sm transition-colors"
+              >
+                {publishing ? 'Publishing...' : 'Publish Now'}
+              </button>
+              <button
+                onClick={() => handlePublish('schedule')}
+                disabled={publishing || !scheduleDate}
+                className="flex-1 py-3 rounded-xl bg-gray-800 hover:bg-gray-700 disabled:opacity-50 text-white font-semibold text-sm transition-colors border border-gray-700"
+              >
+                Schedule
+              </button>
+              <button
+                onClick={() => handlePublish('draft')}
+                className="px-5 py-3 rounded-xl bg-gray-900 hover:bg-gray-800 text-gray-400 font-medium text-sm transition-colors border border-gray-800"
+              >
+                Save Draft
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* ── ANALYTICS TAB ───────────────────────────────────────────────────── */}
+        {mainTab === 'analytics' && (
+          <div className="flex-1 overflow-y-auto p-6 space-y-6">
+
+            {/* Platform filter */}
+            <div className="flex gap-2 flex-wrap">
+              <button
+                onClick={() => setAnalyticsPlatformFilter('all')}
+                className={`px-3 py-1.5 rounded-lg text-xs border transition-colors ${analyticsPlatformFilter === 'all' ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-gray-900 border-gray-800 text-gray-400 hover:text-white'}`}
+              >
+                All Platforms
+              </button>
+              {(Object.keys(PLATFORM_META) as Platform[]).map(p => (
+                <button
+                  key={p}
+                  onClick={() => setAnalyticsPlatformFilter(p)}
+                  className={`px-3 py-1.5 rounded-lg text-xs border transition-colors ${analyticsPlatformFilter === p ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-gray-900 border-gray-800 text-gray-400 hover:text-white'}`}
+                >
+                  {PLATFORM_META[p].icon} {PLATFORM_META[p].label}
+                </button>
+              ))}
+            </div>
+
+            {/* Performance table */}
+            <div className="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden">
+              <table className="w-full">
+                <thead>
+                  <tr className="border-b border-gray-800">
+                    {['Content', 'Platform', 'Reach', 'Engagement', 'Clicks', 'Date'].map(h => (
+                      <th key={h} className="text-left text-gray-500 text-xs font-medium px-4 py-3">{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredAnalytics.map(post => (
+                    <tr key={post.id} className="border-b border-gray-800/50 hover:bg-gray-800/30">
+                      <td className="px-4 py-3 text-gray-300 text-xs max-w-xs truncate">{post.content}</td>
+                      <td className="px-4 py-3 text-xs">
+                        <span className={PLATFORM_META[post.platform].color}>
+                          {PLATFORM_META[post.platform].icon} {PLATFORM_META[post.platform].label}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-white text-sm font-medium">{post.reach.toLocaleString()}</td>
+                      <td className="px-4 py-3 text-sm">
+                        <span className={`font-medium ${post.engagement > 8 ? 'text-emerald-400' : post.engagement > 5 ? 'text-amber-400' : 'text-gray-400'}`}>
+                          {post.engagement}%
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-gray-300 text-sm">{post.clicks}</td>
+                      <td className="px-4 py-3 text-gray-500 text-xs">{post.date}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Engagement heatmap */}
+            <div className="bg-gray-900 border border-gray-800 rounded-2xl p-5">
+              <h3 className="text-white text-sm font-semibold mb-4">Best Posting Times Heatmap</h3>
+              <div className="overflow-x-auto">
+                <div className="min-w-[700px]">
+                  {/* Hour labels */}
+                  <div className="flex mb-1">
+                    <div className="w-10 flex-shrink-0" />
+                    {Array.from({ length: 24 }).map((_, h) => (
+                      <div key={h} className="flex-1 text-center text-gray-700 text-xs">
+                        {h % 6 === 0 ? `${h}h` : ''}
+                      </div>
+                    ))}
+                  </div>
+                  {HEATMAP_DATA.map((row, d) => (
+                    <div key={d} className="flex items-center gap-0.5 mb-0.5">
+                      <span className="w-10 text-gray-600 text-xs flex-shrink-0">{HEATMAP_DAYS[d]}</span>
+                      {row.map((val, h) => (
+                        <div
+                          key={h}
+                          className={`flex-1 h-5 rounded-sm ${HEATMAP_COLORS[val]} transition-colors`}
+                          title={`${HEATMAP_DAYS[d]} ${h}:00 — Score: ${val}`}
+                        />
+                      ))}
+                    </div>
+                  ))}
+                  {/* Legend */}
+                  <div className="flex items-center gap-2 mt-3">
+                    <span className="text-gray-600 text-xs">Low</span>
+                    {HEATMAP_COLORS.map((c, i) => <div key={i} className={`w-4 h-4 rounded-sm ${c}`} />)}
+                    <span className="text-gray-600 text-xs">High</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Platform comparison */}
+            <div className="bg-gray-900 border border-gray-800 rounded-2xl p-5">
+              <h3 className="text-white text-sm font-semibold mb-4">Platform Comparison — Avg. Engagement</h3>
+              <div className="space-y-3">
+                {[
+                  { platform: 'instagram', value: 9.1 },
+                  { platform: 'linkedin', value: 11.1 },
+                  { platform: 'twitter', value: 5.2 },
+                  { platform: 'facebook', value: 4.1 },
+                ].map(({ platform, value }) => {
+                  const meta = PLATFORM_META[platform as Platform]
+                  return (
+                    <div key={platform} className="flex items-center gap-3">
+                      <span className={`text-xs w-28 flex-shrink-0 ${meta.color}`}>{meta.icon} {meta.label}</span>
+                      <div className="flex-1 h-2 bg-gray-800 rounded-full overflow-hidden">
+                        <div className="h-full bg-indigo-500 rounded-full" style={{ width: `${(value / 15) * 100}%` }} />
+                      </div>
+                      <span className="text-white text-xs w-12 text-right font-medium">{value}%</span>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* ── RIGHT SIDEBAR ─────────────────────────────────────────────────────── */}
+      <div className="w-72 flex-shrink-0 border-l border-gray-800 overflow-y-auto">
+        <div className="p-4 space-y-5">
+
+          {/* Connected platforms */}
+          <div>
+            <h3 className="text-gray-400 text-xs font-medium uppercase tracking-wide mb-3">Connections</h3>
+            <div className="space-y-2">
+              {(Object.entries(PLATFORM_CONNECTIONS) as [Platform, PlatformConn][]).map(([p, conn]) => {
+                const meta = PLATFORM_META[p]
+                return (
+                  <div key={p} className="flex items-center gap-2 p-2 rounded-lg bg-gray-900 border border-gray-800">
+                    <span className="text-base flex-shrink-0">{meta.icon}</span>
+                    <span className="text-gray-300 text-xs flex-1">{meta.label}</span>
+                    {conn.connected ? (
+                      conn.status === 'warning' ? (
+                        <button className="text-amber-400 hover:text-amber-300 text-xs transition-colors">Reconnect</button>
+                      ) : (
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                      )
+                    ) : (
+                      <button className="text-indigo-400 hover:text-indigo-300 text-xs transition-colors">Connect</button>
+                    )}
+                  </div>
                 )
               })}
             </div>
           </div>
 
-          {/* From artifact */}
+          {/* Upcoming schedule */}
           <div>
-            <label className="text-xs text-gray-400 block mb-2">Import from artifact (optional)</label>
-            <select value={composeArtifactId} onChange={e => setComposeArtifactId(e.target.value)}
-              className="w-full bg-gray-900 border border-gray-700 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:border-indigo-500">
-              <option value="">— Start from scratch —</option>
-              {artifacts.map(a => <option key={a.id} value={a.id}>{a.title}</option>)}
-            </select>
-          </div>
-
-          {/* Base content */}
-          <div>
-            <div className="flex items-center justify-between mb-2">
-              <label className="text-xs text-gray-400">Base content</label>
-              <span className="text-xs text-gray-600">{baseContent.length} chars</span>
-            </div>
-            <textarea value={baseContent} onChange={e => { setBaseContent(e.target.value); setAdaptedContent({}) }}
-              rows={5} placeholder="Write your post here, or import from an artifact above..."
-              className="w-full bg-gray-900 border border-gray-700 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:border-indigo-500 resize-none" />
-          </div>
-
-          {/* AI Adapt */}
-          <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 space-y-3">
-            <div className="flex items-center justify-between">
-              <p className="text-sm font-medium text-white">🤖 AI Platform Adaptation</p>
-              <button onClick={handleAdapt} disabled={adapting || !baseContent || selectedPlatforms.length === 0}
-                className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs rounded-lg transition-colors disabled:opacity-50">
-                {adapting ? 'Adapting...' : `Adapt for ${selectedPlatforms.length} platform${selectedPlatforms.length !== 1 ? 's' : ''}`}
-              </button>
-            </div>
-            <input value={adaptContext} onChange={e => setAdaptContext(e.target.value)}
-              placeholder="Context hint (e.g. 'announcing our new feature', 'celebrating a milestone')"
-              className="w-full bg-gray-800 border border-gray-700 text-white text-xs rounded-lg px-3 py-2 focus:outline-none focus:border-indigo-500" />
-
-            {/* Per-platform preview cards */}
-            {selectedPlatforms.length > 0 && (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-2">
-                {selectedPlatforms.map(p => {
-                  const meta = PLATFORM_META[p]
-                  const text = adaptedContent[p] || ''
-                  const count = charCounts[p] || text.length
-                  const hasAdapted = !!adaptedContent[p]
-                  return (
-                    <div key={p} className={`rounded-lg border p-3 space-y-2 ${hasAdapted ? 'border-indigo-500/50 bg-indigo-950/20' : 'border-gray-700 bg-gray-800/50'}`}>
-                      <div className="flex items-center justify-between">
-                        <span className={`text-xs font-medium ${meta.color}`}>{meta.icon} {meta.label}</span>
-                        {meta.limit > 0 && (
-                          <span className={`text-xs ${charLimitColor(count, meta.limit)}`}>
-                            {count}/{meta.limit}
-                          </span>
-                        )}
-                      </div>
-                      {hasAdapted ? (
-                        <textarea
-                          value={adaptedContent[p]}
-                          onChange={e => {
-                            setAdaptedContent(prev => ({ ...prev, [p]: e.target.value }))
-                            setCharCounts(prev => ({ ...prev, [p]: e.target.value.length }))
-                          }}
-                          rows={4}
-                          className="w-full bg-gray-900 border border-gray-700 text-gray-200 text-xs rounded-lg px-2 py-1.5 focus:outline-none focus:border-indigo-500 resize-none" />
-                      ) : (
-                        <p className="text-gray-600 text-xs italic">Click &quot;Adapt&quot; to generate platform-specific copy</p>
-                      )}
-                    </div>
-                  )
-                })}
-              </div>
-            )}
-          </div>
-
-          {/* Publish method toggle */}
-          <div className="flex gap-2">
-            <button onClick={() => setPublishMode('direct')}
-              className={`px-4 py-2 rounded-lg border text-sm font-medium transition-colors ${publishMode === 'direct' ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-gray-900 border-gray-700 text-gray-400 hover:text-white'}`}>
-              ⚡ Publish Now (Direct)
-            </button>
-            <button onClick={() => setPublishMode('buffer')}
-              className={`px-4 py-2 rounded-lg border text-sm font-medium transition-colors ${publishMode === 'buffer' ? 'bg-orange-600 border-orange-500 text-white' : 'bg-gray-900 border-gray-700 text-gray-400 hover:text-white'}`}>
-              📦 Schedule via Buffer
-            </button>
-          </div>
-
-          {publishMode === 'buffer' && (
-            <div className="space-y-3 p-4 bg-gray-900 border border-gray-800 rounded-xl">
-              <div className="flex gap-2">
-                <button onClick={() => setScheduleMode('now')}
-                  className={`px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors ${scheduleMode === 'now' ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-gray-800 border-gray-700 text-gray-400'}`}>
-                  ⚡ AI Optimal Time
-                </button>
-                <button onClick={() => setScheduleMode('pick')}
-                  className={`px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors ${scheduleMode === 'pick' ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-gray-800 border-gray-700 text-gray-400'}`}>
-                  📅 Pick Time
-                </button>
-              </div>
-              {scheduleMode === 'pick' && (
-                <input type="datetime-local" value={scheduledAt} onChange={e => setScheduledAt(e.target.value)}
-                  className="px-3 py-2 bg-gray-800 border border-gray-700 text-white text-sm rounded-lg focus:outline-none" />
-              )}
-              <input type="url" value={mediaUrl} onChange={e => setMediaUrl(e.target.value)}
-                placeholder="Media URL (optional)"
-                className="w-full px-3 py-2 bg-gray-800 border border-gray-700 text-white text-sm rounded-lg focus:outline-none" />
-            </div>
-          )}
-
-          {/* Publish button */}
-          <button
-            onClick={publishMode === 'direct' ? handleDirectPublish : handleBufferSchedule}
-            disabled={publishing || !baseContent || selectedPlatforms.length === 0}
-            className={`w-full py-3 rounded-xl text-white font-medium text-sm transition-colors disabled:opacity-50 ${publishMode === 'direct' ? 'bg-indigo-600 hover:bg-indigo-700' : 'bg-orange-600 hover:bg-orange-700'}`}>
-            {publishing
-              ? 'Publishing...'
-              : publishMode === 'direct'
-              ? `⚡ Publish to ${selectedPlatforms.length} platform${selectedPlatforms.length !== 1 ? 's' : ''} now`
-              : `📦 Schedule via Buffer (${selectedPlatforms.length} platform${selectedPlatforms.length !== 1 ? 's' : ''})`}
-          </button>
-
-          {/* Results */}
-          {publishResults && (
+            <h3 className="text-gray-400 text-xs font-medium uppercase tracking-wide mb-3">Up Next</h3>
             <div className="space-y-2">
-              {publishResults.map(r => (
-                <div key={r.platform} className={`flex items-center gap-3 p-3 rounded-lg border text-sm ${r.ok ? 'bg-green-950/30 border-green-700' : 'bg-red-950/30 border-red-800'}`}>
-                  <span>{r.ok ? '✅' : '❌'}</span>
-                  <span className="text-white capitalize font-medium">{PLATFORM_META[r.platform]?.label || r.platform}</span>
-                  {r.ok && r.postUrl && (
-                    <a href={r.postUrl} target="_blank" rel="noopener noreferrer"
-                      className="text-indigo-400 hover:underline text-xs ml-auto">View post →</a>
-                  )}
-                  {!r.ok && <span className="text-red-400 text-xs ml-auto">{r.error}</span>}
+              {MOCK_QUEUE.filter(p => p.status === 'Scheduled').slice(0, 5).map(post => (
+                <div key={post.id} className="p-2.5 rounded-lg bg-gray-900 border border-gray-800 space-y-1">
+                  <div className="flex items-center gap-1.5">
+                    {post.platforms.map(p => (
+                      <span key={p} className="text-sm">{PLATFORM_META[p].icon}</span>
+                    ))}
+                    <StatusBadge status={post.status} />
+                  </div>
+                  <p className="text-gray-400 text-xs truncate">{post.content}</p>
+                  <p className="text-gray-600 text-xs">{post.scheduledTime}</p>
                 </div>
               ))}
             </div>
-          )}
-        </div>
-      )}
-
-      {/* ── BLOG TAB ─────────────────────────────────────────────────────────────── */}
-      {mode === 'blog' && (
-        <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 space-y-5">
-          <h2 className="text-white font-semibold">Publish Blog Post</h2>
-          <div>
-            <label className="text-xs text-gray-400 block mb-2">Select content artifact</label>
-            <select value={blogArtifactId} onChange={e => setBlogArtifactId(e.target.value)}
-              className="w-full bg-gray-800 border border-gray-700 text-white text-sm rounded-lg px-3 py-2 focus:outline-none">
-              <option value="">— Choose artifact —</option>
-              {blogArtifacts.map(a => <option key={a.id} value={a.id}>{a.title}</option>)}
-            </select>
-            {blogArtifacts.length === 0 && <p className="text-gray-600 text-xs mt-1">No blog artifacts yet. Generate content first.</p>}
           </div>
+
+          {/* AI Content Ideas */}
           <div>
-            <label className="text-xs text-gray-400 block mb-2">Platform</label>
-            <div className="flex gap-2">
-              {(['wordpress', 'ghost'] as BlogPlatform[]).map(p => (
-                <button key={p} onClick={() => setBlogPlatform(p)}
-                  className={`flex items-center gap-2 px-4 py-2 rounded-lg border text-sm font-medium transition-colors capitalize ${blogPlatform === p ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-gray-800 border-gray-700 text-gray-300 hover:border-gray-600'}`}>
-                  {PLATFORM_META[p]?.icon} {p}
-                  {(p === 'wordpress' ? connections.wordpress : connections.ghost) && <span className="w-1.5 h-1.5 rounded-full bg-green-400" />}
+            <h3 className="text-gray-400 text-xs font-medium uppercase tracking-wide mb-3">AI Content Ideas</h3>
+            <div className="space-y-2">
+              {CONTENT_IDEAS.map((idea, i) => (
+                <div key={i} className="flex items-start gap-2 p-2.5 rounded-lg bg-indigo-950/20 border border-indigo-800/30">
+                  <span className="text-indigo-400 text-xs mt-0.5">💡</span>
+                  <p className="text-gray-400 text-xs leading-relaxed">{idea}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Quick publish templates */}
+          <div>
+            <h3 className="text-gray-400 text-xs font-medium uppercase tracking-wide mb-3">Quick Templates</h3>
+            <div className="space-y-2">
+              {QUICK_TEMPLATES.map(tmpl => (
+                <button
+                  key={tmpl.label}
+                  onClick={() => setMainTab('composer')}
+                  className="w-full flex items-start gap-3 p-3 rounded-xl bg-gray-900 border border-gray-800 hover:border-gray-700 text-left transition-colors"
+                >
+                  <span className="text-lg flex-shrink-0">{tmpl.icon}</span>
+                  <div>
+                    <p className="text-white text-xs font-medium">{tmpl.label}</p>
+                    <p className="text-gray-500 text-xs mt-0.5">{tmpl.desc}</p>
+                  </div>
                 </button>
               ))}
             </div>
           </div>
-          <div>
-            <label className="text-xs text-gray-400 block mb-2">Status</label>
-            <div className="flex gap-2">
-              {(['draft', 'publish'] as const).map(s => (
-                <button key={s} onClick={() => setBlogStatus(s)}
-                  className={`px-4 py-2 rounded-lg border text-sm font-medium transition-colors ${blogStatus === s ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-gray-800 border-gray-700 text-gray-300 hover:border-gray-600'}`}>
-                  {s === 'draft' ? '📄 Save as Draft' : '🚀 Publish Now'}
-                </button>
-              ))}
-            </div>
-          </div>
-          <button onClick={handlePublishBlog} disabled={publishingBlog || !blogArtifactId}
-            className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50">
-            {publishingBlog ? 'Publishing...' : `Publish to ${blogPlatform}`}
-          </button>
-          {blogResult && (
-            <div className={`p-4 rounded-xl border text-sm ${blogResult.error ? 'bg-red-950/50 border-red-800 text-red-300' : 'bg-green-950/50 border-green-800 text-green-300'}`}>
-              {blogResult.error || blogResult.message}
-            </div>
-          )}
         </div>
-      )}
-
-      {/* ── NEWSLETTER TAB ───────────────────────────────────────────────────────── */}
-      {mode === 'newsletter' && (
-        <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 space-y-5">
-          <h2 className="text-white font-semibold">Send Newsletter</h2>
-          <div>
-            <label className="text-xs text-gray-400 block mb-2">Select newsletter artifact</label>
-            <select value={nlArtifactId} onChange={e => setNlArtifactId(e.target.value)}
-              className="w-full bg-gray-800 border border-gray-700 text-white text-sm rounded-lg px-3 py-2 focus:outline-none">
-              <option value="">— Choose artifact —</option>
-              {nlArtifacts.map(a => <option key={a.id} value={a.id}>{a.title}</option>)}
-            </select>
-          </div>
-          <div>
-            <label className="text-xs text-gray-400 block mb-2">Recipient tag (leave blank for all)</label>
-            <input value={nlTag} onChange={e => setNlTag(e.target.value)}
-              placeholder="e.g. customers, vip, trial"
-              className="w-full bg-gray-800 border border-gray-700 text-white text-sm rounded-lg px-3 py-2 focus:outline-none" />
-          </div>
-          {nlArtifactId && (
-            <div className="bg-gray-800/50 border border-gray-700 rounded-lg p-4 text-sm text-gray-400">
-              Will send <strong className="text-white">&ldquo;{nlArtifacts.find(a => a.id === nlArtifactId)?.title}&rdquo;</strong> to{' '}
-              {nlTag ? `subscribers tagged "${nlTag}"` : 'all subscribers'} via Resend.
-            </div>
-          )}
-          <button onClick={() => setNlConfirm(true)} disabled={sendingNl || !nlArtifactId}
-            className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50">
-            {sendingNl ? 'Sending...' : '📧 Send Newsletter'}
-          </button>
-          {nlResult && (
-            <div className={`p-4 rounded-xl border text-sm ${nlResult.error ? 'bg-red-950/50 border-red-800 text-red-300' : 'bg-green-950/50 border-green-800 text-green-300'}`}>
-              {nlResult.error || nlResult.message}
-            </div>
-          )}
-          {nlConfirm && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-              <div className="absolute inset-0 bg-black/60" onClick={() => setNlConfirm(false)} />
-              <div className="relative bg-gray-900 border border-gray-700 rounded-2xl p-6 max-w-md w-full space-y-4">
-                <h3 className="text-white font-semibold">Confirm Send</h3>
-                <p className="text-gray-400 text-sm">
-                  You&apos;re about to send to <strong className="text-white">{nlTag ? `all "${nlTag}" subscribers` : 'all subscribers'}</strong>. This cannot be undone.
-                </p>
-                <div className="flex gap-3">
-                  <button onClick={handleSendNewsletter} className="flex-1 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm rounded-lg transition-colors">Yes, Send</button>
-                  <button onClick={() => setNlConfirm(false)} className="flex-1 py-2.5 bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm rounded-lg transition-colors">Cancel</button>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* ── QUEUE / HISTORY TAB ──────────────────────────────────────────────────── */}
-      {mode === 'queue' && (
-        <div className="space-y-6">
-          {/* Scheduled */}
-          <div>
-            <h2 className="text-sm font-semibold text-gray-300 mb-3">📅 Scheduled via Buffer ({scheduledPosts.length})</h2>
-            {scheduledPosts.length === 0 ? (
-              <div className="bg-gray-900 border border-gray-800 rounded-xl p-8 text-center text-gray-600 text-sm">No scheduled posts yet</div>
-            ) : (
-              <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
-                <table className="w-full">
-                  <thead>
-                    <tr className="border-b border-gray-800">
-                      {['Platform', 'Content', 'Scheduled', 'Status'].map(h => (
-                        <th key={h} className="text-left text-gray-500 text-xs font-medium px-4 py-3">{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {scheduledPosts.map(post => (
-                      <tr key={post.id} className="border-b border-gray-800/50 hover:bg-gray-800/30">
-                        <td className="px-4 py-3 text-sm text-white">
-                          {PLATFORM_META[post.platform]?.icon || '📱'} {post.platform}
-                        </td>
-                        <td className="px-4 py-3 text-sm text-gray-300 max-w-xs truncate">{post.content_json?.text || '—'}</td>
-                        <td className="px-4 py-3 text-xs text-gray-400">{new Date(post.scheduled_time).toLocaleString()}</td>
-                        <td className="px-4 py-3">
-                          <span className={`text-xs px-2 py-0.5 rounded-full ${post.status === 'published' ? 'bg-green-500/20 text-green-400' : post.status === 'failed' ? 'bg-red-500/20 text-red-400' : 'bg-yellow-500/20 text-yellow-400'}`}>
-                            {post.status}
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-
-          {/* Published */}
-          <div>
-            <h2 className="text-sm font-semibold text-gray-300 mb-3">✅ Published ({publishedPosts.length})</h2>
-            {publishedPosts.length === 0 ? (
-              <div className="bg-gray-900 border border-gray-800 rounded-xl p-8 text-center text-gray-600 text-sm">No published posts yet</div>
-            ) : (
-              <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
-                <table className="w-full">
-                  <thead>
-                    <tr className="border-b border-gray-800">
-                      {['Platform', 'Content', 'Published', 'Link'].map(h => (
-                        <th key={h} className="text-left text-gray-500 text-xs font-medium px-4 py-3">{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {publishedPosts.map(post => (
-                      <tr key={post.id} className="border-b border-gray-800/50 hover:bg-gray-800/30">
-                        <td className="px-4 py-3 text-sm text-white">
-                          {PLATFORM_META[post.platform]?.icon || '🌐'} {PLATFORM_META[post.platform]?.label || post.platform}
-                        </td>
-                        <td className="px-4 py-3 text-sm text-gray-300 max-w-xs truncate">{post.title || '—'}</td>
-                        <td className="px-4 py-3 text-xs text-gray-400">{timeAgo(post.published_at)}</td>
-                        <td className="px-4 py-3 text-xs">
-                          {post.post_url
-                            ? <a href={post.post_url} target="_blank" rel="noopener noreferrer" className="text-indigo-400 hover:underline">View →</a>
-                            : '—'}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
+      </div>
     </div>
   )
 }

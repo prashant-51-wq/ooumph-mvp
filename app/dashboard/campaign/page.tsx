@@ -1,1034 +1,982 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
-import Link from 'next/link'
+import { useState } from 'react'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-interface AdSet {
+type CampaignStatus = 'Active' | 'Draft' | 'Scheduled' | 'Completed' | 'Paused'
+type CampaignType = 'Email' | 'Social' | 'Ads' | 'Content' | 'Multi-channel'
+
+interface Channel {
   name: string
+  icon: string
+  enabled: boolean
+  budget: number
+  impressions: number
+  clicks: number
+  ctr: number
+}
+
+interface ContentPiece {
+  type: string
+  title: string
+  status: 'Draft' | 'Approved' | 'Published'
   platform: string
-  objective: string
-  audience: string
-  dailyBudget: string
-  creativeFormat: string
-  primaryCta: string
+  performance?: string
 }
 
 interface Campaign {
   id: string
-  title: string
-  approval_status: string
-  created_at: string
-  content_json: {
-    campaignName: string
-    campaignObjective: string
-    totalBudget: string
-    duration: string
-    targetAudience: string
-    keyMessage: string
-    uniqueAngle: string
-    adSets: AdSet[]
-    kpis: string[]
-  }
-}
-
-interface PlatformLink {
-  platform: string
-  platform_campaign_id: string
-  platform_adset_ids: string | string[]
-  status: string
-  last_synced_at: string | null
-}
-
-interface PlatformPerf {
-  platform: string
+  name: string
+  type: CampaignType
+  status: CampaignStatus
+  goal: string
+  description: string
+  startDate: string
+  endDate: string
+  budget: number
+  spend: number
+  roi: number
+  performanceScore: number
   impressions: number
   clicks: number
-  spend: number
-  conversions: number
   ctr: number
-  cpc: number
-  cpa: number
+  conversions: number
+  leads: number
+  cpl: number
   roas: number
+  channels: Channel[]
+  content: ContentPiece[]
+  progress: number
+  dailyData: number[]
+  funnel: { stage: string; count: number; cvr: number; drop: number }[]
 }
 
-interface OptimizationRec {
-  id: string
-  actionType: string
-  platform: string
-  adSetName: string
-  priority: 'critical' | 'high' | 'medium' | 'low'
-  reasoning: string
-  expectedImpact: string
-  currentMetric: string
-  targetMetric: string
-  confidence: number
-  status: 'pending' | 'approved' | 'rejected' | 'applied' | 'failed'
-}
+// ─── Mock Data ────────────────────────────────────────────────────────────────
 
-interface OptReport {
-  id: string
-  overallHealth: string
-  healthScore: number
-  summary: string
-  kpiStatus: Array<{ kpi: string; target: string; current: string; status: string }>
-  recommendations: OptimizationRec[]
-  learnings: string[]
-}
-
-// ─── Constants ────────────────────────────────────────────────────────────────
-
-const PLATFORM_COLORS: Record<string, string> = {
-  facebook:  'bg-blue-900/40 text-blue-400',
-  instagram: 'bg-pink-900/40 text-pink-400',
-  google:    'bg-green-900/40 text-green-400',
-  linkedin:  'bg-blue-900/40 text-blue-300',
-  youtube:   'bg-red-900/40 text-red-400',
-  meta_ads:  'bg-blue-900/40 text-blue-400',
-  google_ads:'bg-green-900/40 text-green-400',
-  dv360:     'bg-purple-900/40 text-purple-400',
-}
-
-const PLATFORM_LABELS: Record<string, { label: string; icon: string; dspKey: string }> = {
-  facebook:   { label: 'Meta Ads', icon: '📘', dspKey: 'meta_ads' },
-  instagram:  { label: 'Meta Ads', icon: '📸', dspKey: 'meta_ads' },
-  meta_ads:   { label: 'Meta Ads', icon: '📘', dspKey: 'meta_ads' },
-  google:     { label: 'Google Ads', icon: '🎯', dspKey: 'google_ads' },
-  google_ads: { label: 'Google Ads', icon: '🎯', dspKey: 'google_ads' },
-  youtube:    { label: 'Google Ads', icon: '📺', dspKey: 'google_ads' },
-  dv360:      { label: 'DV360', icon: '📡', dspKey: 'dv360' },
-  linkedin:   { label: 'LinkedIn Ads', icon: '💼', dspKey: 'linkedin_ads' },
-}
-
-const HEALTH_COLORS: Record<string, string> = {
-  excellent:        'text-green-400 bg-green-900/30',
-  good:             'text-teal-400 bg-teal-900/30',
-  needs_attention:  'text-amber-400 bg-amber-900/30',
-  critical:         'text-red-400 bg-red-900/30',
-}
-
-const PRIORITY_COLORS: Record<string, string> = {
-  critical: 'border-red-600 bg-red-900/20',
-  high:     'border-amber-600 bg-amber-900/20',
-  medium:   'border-indigo-600 bg-indigo-900/20',
-  low:      'border-gray-600 bg-gray-900',
-}
-
-const ACTION_LABELS: Record<string, string> = {
-  increase_budget:       '📈 Increase Budget',
-  decrease_budget:       '📉 Decrease Budget',
-  pause_adset:           '⏸️ Pause Ad Set',
-  resume_adset:          '▶️ Resume Ad Set',
-  pause_campaign:        '⏹️ Pause Campaign',
-  change_bid:            '💰 Change Bid',
-  update_targeting:      '🎯 Update Targeting',
-  rotate_creative:       '🎨 Rotate Creative',
-  adjust_schedule:       '📅 Adjust Schedule',
-  expand_audience:       '🔊 Expand Audience',
-  narrow_audience:       '🔍 Narrow Audience',
-  add_negative_keywords: '🚫 Negative Keywords',
-}
-
-const DSP_PLATFORMS: Array<{ id: string; label: string; icon: string; color: string }> = [
-  { id: 'meta_ads',   label: 'Meta Ads',    icon: '📘', color: 'border-blue-600 hover:bg-blue-900/20' },
-  { id: 'google_ads', label: 'Google Ads',  icon: '🎯', color: 'border-green-600 hover:bg-green-900/20' },
-  { id: 'dv360',      label: 'DV360',       icon: '📡', color: 'border-purple-600 hover:bg-purple-900/20' },
+const MOCK_CAMPAIGNS: Campaign[] = [
+  {
+    id: '1',
+    name: 'Summer Product Launch 2026',
+    type: 'Multi-channel',
+    status: 'Active',
+    goal: 'Generate 1,000 qualified leads at under $25 CPL',
+    description: 'Full-funnel launch campaign for our new product line. Targeting warm audiences via email + social + paid ads.',
+    startDate: 'May 1, 2026',
+    endDate: 'Jun 30, 2026',
+    budget: 15000,
+    spend: 7240,
+    roi: 312,
+    performanceScore: 87,
+    impressions: 284000,
+    clicks: 8520,
+    ctr: 3.0,
+    conversions: 612,
+    leads: 612,
+    cpl: 11.82,
+    roas: 4.1,
+    progress: 48,
+    dailyData: [180, 220, 310, 270, 340, 290, 380, 420, 390, 450, 410, 480, 520, 490, 540, 500, 570, 610, 580, 640, 700, 660, 720, 680, 750, 780, 810, 770],
+    channels: [
+      { name: 'Email', icon: '✉', enabled: true, budget: 30, impressions: 45000, clicks: 2700, ctr: 6.0 },
+      { name: 'Social', icon: '📱', enabled: true, budget: 25, impressions: 156000, clicks: 3120, ctr: 2.0 },
+      { name: 'Ads', icon: '🎯', enabled: true, budget: 35, impressions: 74000, clicks: 2220, ctr: 3.0 },
+      { name: 'Blog', icon: '📝', enabled: true, budget: 10, impressions: 9000, clicks: 480, ctr: 5.3 },
+    ],
+    content: [
+      { type: 'Email', title: 'Launch Announcement', status: 'Published', platform: 'Klaviyo', performance: '42% open rate' },
+      { type: 'Social', title: 'Hero Product Reel', status: 'Published', platform: 'Instagram', performance: '8.4K views' },
+      { type: 'Ad', title: 'Carousel Ad — Benefits', status: 'Approved', platform: 'Meta Ads', performance: '3.2% CTR' },
+      { type: 'Blog', title: 'Why Our Product Changes Everything', status: 'Draft', platform: 'Website' },
+    ],
+    funnel: [
+      { stage: 'Impressions', count: 284000, cvr: 100, drop: 0 },
+      { stage: 'Clicks', count: 8520, cvr: 3.0, drop: 97.0 },
+      { stage: 'Leads', count: 612, cvr: 7.2, drop: 92.8 },
+      { stage: 'Qualified', count: 204, cvr: 33.3, drop: 66.7 },
+      { stage: 'Customers', count: 41, cvr: 20.1, drop: 79.9 },
+    ],
+  },
+  {
+    id: '2',
+    name: 'Q2 Brand Awareness Push',
+    type: 'Social',
+    status: 'Active',
+    goal: 'Reach 500K unique users and grow social following by 20%',
+    description: 'Organic + paid social campaign to boost brand recognition in new markets.',
+    startDate: 'Apr 15, 2026',
+    endDate: 'Jun 15, 2026',
+    budget: 8000,
+    spend: 5100,
+    roi: 180,
+    performanceScore: 74,
+    impressions: 412000,
+    clicks: 9080,
+    ctr: 2.2,
+    conversions: 320,
+    leads: 320,
+    cpl: 15.94,
+    roas: 2.8,
+    progress: 64,
+    dailyData: [120, 140, 190, 210, 180, 240, 270, 250, 310, 290, 330, 350, 320, 380, 400, 370, 410, 430, 460, 440, 480, 500, 470, 520, 540, 510, 560, 580],
+    channels: [
+      { name: 'Social', icon: '📱', enabled: true, budget: 70, impressions: 320000, clicks: 7040, ctr: 2.2 },
+      { name: 'Ads', icon: '🎯', enabled: true, budget: 30, impressions: 92000, clicks: 2040, ctr: 2.2 },
+    ],
+    content: [
+      { type: 'Social', title: 'Behind the Brand Series Ep.1', status: 'Published', platform: 'Instagram', performance: '12.1K views' },
+      { type: 'Social', title: 'Customer Spotlight Video', status: 'Published', platform: 'LinkedIn', performance: '4.2K views' },
+      { type: 'Ad', title: 'Brand Story Ad', status: 'Approved', platform: 'Facebook' },
+    ],
+    funnel: [
+      { stage: 'Impressions', count: 412000, cvr: 100, drop: 0 },
+      { stage: 'Clicks', count: 9080, cvr: 2.2, drop: 97.8 },
+      { stage: 'Leads', count: 320, cvr: 3.5, drop: 96.5 },
+      { stage: 'Qualified', count: 96, cvr: 30.0, drop: 70.0 },
+      { stage: 'Customers', count: 18, cvr: 18.8, drop: 81.2 },
+    ],
+  },
+  {
+    id: '3',
+    name: 'Lead Gen — Enterprise Tier',
+    type: 'Email',
+    status: 'Scheduled',
+    goal: 'Book 50 enterprise demos in June',
+    description: 'Targeted outbound email + LinkedIn sequence to enterprise decision makers.',
+    startDate: 'Jun 1, 2026',
+    endDate: 'Jun 30, 2026',
+    budget: 4000,
+    spend: 0,
+    roi: 0,
+    performanceScore: 0,
+    impressions: 0,
+    clicks: 0,
+    ctr: 0,
+    conversions: 0,
+    leads: 0,
+    cpl: 0,
+    roas: 0,
+    progress: 0,
+    dailyData: Array(28).fill(0),
+    channels: [
+      { name: 'Email', icon: '✉', enabled: true, budget: 60, impressions: 0, clicks: 0, ctr: 0 },
+      { name: 'Social', icon: '📱', enabled: true, budget: 40, impressions: 0, clicks: 0, ctr: 0 },
+    ],
+    content: [
+      { type: 'Email', title: 'Cold Outreach Sequence (5 emails)', status: 'Approved', platform: 'Klaviyo' },
+      { type: 'Social', title: 'LinkedIn Thought Leadership Post', status: 'Draft', platform: 'LinkedIn' },
+    ],
+    funnel: [
+      { stage: 'Impressions', count: 0, cvr: 0, drop: 0 },
+      { stage: 'Clicks', count: 0, cvr: 0, drop: 0 },
+      { stage: 'Leads', count: 0, cvr: 0, drop: 0 },
+      { stage: 'Qualified', count: 0, cvr: 0, drop: 0 },
+      { stage: 'Customers', count: 0, cvr: 0, drop: 0 },
+    ],
+  },
+  {
+    id: '4',
+    name: 'Re-engagement — Churned Users',
+    type: 'Email',
+    status: 'Paused',
+    goal: 'Win back 15% of churned users with a special offer',
+    description: 'Automated re-engagement flow for users inactive 90+ days.',
+    startDate: 'Mar 1, 2026',
+    endDate: 'Apr 30, 2026',
+    budget: 2000,
+    spend: 1840,
+    roi: 94,
+    performanceScore: 52,
+    impressions: 18400,
+    clicks: 920,
+    ctr: 5.0,
+    conversions: 87,
+    leads: 87,
+    cpl: 21.15,
+    roas: 1.9,
+    progress: 92,
+    dailyData: [80, 90, 70, 110, 100, 95, 120, 140, 130, 150, 160, 140, 170, 190, 180, 200, 210, 195, 220, 240, 230, 0, 0, 0, 0, 0, 0, 0],
+    channels: [
+      { name: 'Email', icon: '✉', enabled: true, budget: 100, impressions: 18400, clicks: 920, ctr: 5.0 },
+    ],
+    content: [
+      { type: 'Email', title: 'We miss you! Come back offer', status: 'Published', platform: 'Klaviyo', performance: '28% open rate' },
+      { type: 'Email', title: 'Last chance — offer expires', status: 'Published', platform: 'Klaviyo', performance: '19% open rate' },
+    ],
+    funnel: [
+      { stage: 'Impressions', count: 18400, cvr: 100, drop: 0 },
+      { stage: 'Clicks', count: 920, cvr: 5.0, drop: 95.0 },
+      { stage: 'Leads', count: 87, cvr: 9.5, drop: 90.5 },
+      { stage: 'Qualified', count: 42, cvr: 48.3, drop: 51.7 },
+      { stage: 'Customers', count: 14, cvr: 33.3, drop: 66.7 },
+    ],
+  },
+  {
+    id: '5',
+    name: 'Holiday Content Blitz',
+    type: 'Content',
+    status: 'Completed',
+    goal: 'Publish 60 holiday posts across all channels in December',
+    description: 'High-volume content production and scheduling for holiday season.',
+    startDate: 'Dec 1, 2025',
+    endDate: 'Dec 31, 2025',
+    budget: 3000,
+    spend: 2980,
+    roi: 240,
+    performanceScore: 91,
+    impressions: 198000,
+    clicks: 7920,
+    ctr: 4.0,
+    conversions: 580,
+    leads: 580,
+    cpl: 5.14,
+    roas: 3.4,
+    progress: 100,
+    dailyData: [200, 240, 280, 260, 320, 350, 380, 420, 400, 450, 480, 500, 520, 560, 540, 600, 640, 680, 700, 720, 760, 800, 840, 880, 920, 960, 980, 1020],
+    channels: [
+      { name: 'Social', icon: '📱', enabled: true, budget: 50, impressions: 112000, clicks: 4480, ctr: 4.0 },
+      { name: 'Email', icon: '✉', enabled: true, budget: 30, impressions: 52000, clicks: 2600, ctr: 5.0 },
+      { name: 'Blog', icon: '📝', enabled: true, budget: 20, impressions: 34000, clicks: 840, ctr: 2.5 },
+    ],
+    content: [
+      { type: 'Social', title: '12 Days of Deals Series', status: 'Published', platform: 'Instagram', performance: '62K reach' },
+      { type: 'Email', title: 'Holiday Gift Guide Email', status: 'Published', platform: 'Klaviyo', performance: '51% open rate' },
+      { type: 'Blog', title: 'Top 10 Gifts for 2025', status: 'Published', platform: 'Website', performance: '3.2K views' },
+    ],
+    funnel: [
+      { stage: 'Impressions', count: 198000, cvr: 100, drop: 0 },
+      { stage: 'Clicks', count: 7920, cvr: 4.0, drop: 96.0 },
+      { stage: 'Leads', count: 580, cvr: 7.3, drop: 92.7 },
+      { stage: 'Qualified', count: 232, cvr: 40.0, drop: 60.0 },
+      { stage: 'Customers', count: 68, cvr: 29.3, drop: 70.7 },
+    ],
+  },
 ]
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function fmt(n: number, prefix = '') {
-  if (!n) return '—'
-  return prefix + (n >= 1000 ? `${(n / 1000).toFixed(1)}K` : n.toFixed(n < 10 ? 2 : 0))
+function fmtNum(n: number) {
+  if (!n) return '0'
+  if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}K`
+  return n.toString()
 }
 
-function pct(n: number) { return n ? `${(n * 100).toFixed(2)}%` : '—' }
+function statusStyle(s: CampaignStatus) {
+  if (s === 'Active') return 'bg-green-500/15 text-green-400 border border-green-500/20'
+  if (s === 'Draft') return 'bg-gray-700/60 text-gray-400 border border-gray-600/20'
+  if (s === 'Scheduled') return 'bg-blue-500/15 text-blue-400 border border-blue-500/20'
+  if (s === 'Completed') return 'bg-teal-500/15 text-teal-400 border border-teal-500/20'
+  return 'bg-amber-500/15 text-amber-400 border border-amber-500/20'
+}
+
+function typeStyle(t: CampaignType) {
+  if (t === 'Email') return 'bg-purple-500/15 text-purple-400'
+  if (t === 'Social') return 'bg-pink-500/15 text-pink-400'
+  if (t === 'Ads') return 'bg-orange-500/15 text-orange-400'
+  if (t === 'Content') return 'bg-cyan-500/15 text-cyan-400'
+  return 'bg-indigo-500/15 text-indigo-400'
+}
+
+function contentStatusStyle(s: string) {
+  if (s === 'Published') return 'bg-green-500/15 text-green-400'
+  if (s === 'Approved') return 'bg-blue-500/15 text-blue-400'
+  return 'bg-gray-700/60 text-gray-400'
+}
+
+// ─── New Campaign Modal ───────────────────────────────────────────────────────
+
+function NewCampaignModal({ onClose }: { onClose: () => void }) {
+  const [step, setStep] = useState(1)
+  const [form, setForm] = useState({
+    name: '', type: [] as string[], goal: '', description: '',
+    audience: '', budget: '', startDate: '', endDate: '',
+    template: '',
+    budgets: { Email: 25, Social: 35, Ads: 30, Blog: 10 } as Record<string, number>,
+  })
+  const [generating, setGenerating] = useState(false)
+  const [generated, setGenerated] = useState(false)
+
+  function f(k: string, v: unknown) { setForm(p => ({ ...p, [k]: v })) }
+  function toggleType(t: string) {
+    setForm(p => ({
+      ...p,
+      type: p.type.includes(t) ? p.type.filter(x => x !== t) : [...p.type, t],
+    }))
+  }
+
+  async function generatePlan() {
+    setGenerating(true)
+    await new Promise(r => setTimeout(r, 1800))
+    setGenerating(false)
+    setGenerated(true)
+    setStep(2)
+  }
+
+  const TEMPLATES = ['Product Launch', 'Brand Awareness', 'Lead Gen', 'Re-engagement', 'Seasonal']
+  const CHANNEL_TYPES = ['Email', 'Social', 'Ads', 'Blog', 'SMS', 'Push']
+
+  return (
+    <div className="fixed inset-0 bg-gray-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+      <div className="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+        <div className="flex items-center justify-between px-6 py-5 border-b border-gray-800">
+          <div>
+            <h2 className="text-white font-semibold text-lg">New Campaign</h2>
+            <p className="text-gray-500 text-xs mt-0.5">Step {step} of 2</p>
+          </div>
+          <button onClick={onClose} className="text-gray-500 hover:text-white text-xl leading-none">×</button>
+        </div>
+        <div className="px-6 py-5 space-y-5">
+          {step === 1 && (
+            <>
+              <div>
+                <label className="text-gray-400 text-xs mb-1 block">Campaign Name</label>
+                <input value={form.name} onChange={e => f('name', e.target.value)} placeholder="Summer Product Launch 2026"
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-indigo-500" />
+              </div>
+              <div>
+                <label className="text-gray-400 text-xs mb-2 block">Campaign Channels (multi-select)</label>
+                <div className="flex flex-wrap gap-2">
+                  {CHANNEL_TYPES.map(t => (
+                    <button key={t} onClick={() => toggleType(t)}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${form.type.includes(t) ? 'border-indigo-500 bg-indigo-500/10 text-indigo-300' : 'border-gray-700 text-gray-400 hover:border-gray-500'}`}>
+                      {t}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <label className="text-gray-400 text-xs mb-1 block">Campaign Goal</label>
+                <input value={form.goal} onChange={e => f('goal', e.target.value)} placeholder="Generate 500 qualified leads at under $25 CPL"
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-indigo-500" />
+              </div>
+              <div>
+                <label className="text-gray-400 text-xs mb-1 block">Description</label>
+                <textarea rows={3} value={form.description} onChange={e => f('description', e.target.value)} placeholder="Describe the campaign strategy and key messages..."
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-indigo-500 resize-none" />
+              </div>
+              <div>
+                <label className="text-gray-400 text-xs mb-1 block">Target Audience</label>
+                <select className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-indigo-500">
+                  <option>Select CRM segment...</option>
+                  {['All Leads', 'Warm Prospects', 'Enterprise Decision Makers', 'Churned Users', 'VIP Customers'].map(s => <option key={s}>{s}</option>)}
+                </select>
+              </div>
+              <div className="grid grid-cols-3 gap-3">
+                <div>
+                  <label className="text-gray-400 text-xs mb-1 block">Total Budget ($)</label>
+                  <input value={form.budget} onChange={e => f('budget', e.target.value)} placeholder="10000" type="number"
+                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-indigo-500" />
+                </div>
+                <div>
+                  <label className="text-gray-400 text-xs mb-1 block">Start Date</label>
+                  <input value={form.startDate} onChange={e => f('startDate', e.target.value)} type="date"
+                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-indigo-500" />
+                </div>
+                <div>
+                  <label className="text-gray-400 text-xs mb-1 block">End Date</label>
+                  <input value={form.endDate} onChange={e => f('endDate', e.target.value)} type="date"
+                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-indigo-500" />
+                </div>
+              </div>
+              <div>
+                <label className="text-gray-400 text-xs mb-2 block">Template</label>
+                <div className="grid grid-cols-3 gap-2">
+                  {TEMPLATES.map(t => (
+                    <button key={t} onClick={() => f('template', t)}
+                      className={`py-2.5 px-3 text-xs rounded-lg border transition-colors ${form.template === t ? 'border-indigo-500 bg-indigo-500/10 text-indigo-300' : 'border-gray-700 text-gray-400 hover:border-gray-500'}`}>
+                      {t}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <button onClick={generatePlan} disabled={generating || !form.name || !form.goal}
+                className="w-full py-3 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 disabled:opacity-50 text-white font-semibold text-sm rounded-xl transition-all flex items-center justify-center gap-2">
+                {generating ? (
+                  <>
+                    <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                    Generating Campaign Plan with AI...
+                  </>
+                ) : 'Generate Campaign Plan with AI'}
+              </button>
+            </>
+          )}
+          {step === 2 && generated && (
+            <>
+              <div className="bg-indigo-500/10 border border-indigo-500/20 rounded-xl p-4">
+                <p className="text-indigo-300 text-sm font-medium mb-1">AI Campaign Plan Generated</p>
+                <p className="text-gray-400 text-xs">Your campaign brief has been created with channel strategy, content plan, and budget allocation. Review and launch below.</p>
+              </div>
+              <div>
+                <label className="text-gray-400 text-xs mb-2 block">Budget Allocation by Channel</label>
+                <div className="space-y-3">
+                  {form.type.length > 0 ? form.type.map(ch => (
+                    <div key={ch} className="flex items-center gap-3">
+                      <span className="text-gray-300 text-sm w-16">{ch}</span>
+                      <input type="range" min={0} max={100}
+                        value={form.budgets[ch] || 25}
+                        onChange={e => setForm(p => ({ ...p, budgets: { ...p.budgets, [ch]: Number(e.target.value) } }))}
+                        className="flex-1 accent-indigo-500" />
+                      <span className="text-white text-sm w-10 text-right">{form.budgets[ch] || 25}%</span>
+                    </div>
+                  )) : (
+                    <p className="text-gray-500 text-xs">No channels selected</p>
+                  )}
+                </div>
+              </div>
+              <div className="bg-gray-800 rounded-xl p-4 space-y-2 text-sm">
+                <div className="flex justify-between"><span className="text-gray-400">Name</span><span className="text-white">{form.name || 'New Campaign'}</span></div>
+                <div className="flex justify-between"><span className="text-gray-400">Channels</span><span className="text-white">{form.type.length > 0 ? form.type.join(', ') : 'Multi-channel'}</span></div>
+                <div className="flex justify-between"><span className="text-gray-400">Goal</span><span className="text-white text-xs max-w-xs text-right">{form.goal || '—'}</span></div>
+                <div className="flex justify-between"><span className="text-gray-400">Budget</span><span className="text-white">{form.budget ? `$${Number(form.budget).toLocaleString()}` : '—'}</span></div>
+                <div className="flex justify-between"><span className="text-gray-400">Template</span><span className="text-white">{form.template || 'Custom'}</span></div>
+              </div>
+            </>
+          )}
+        </div>
+        <div className="flex gap-3 px-6 pb-5">
+          {step === 2 && <button onClick={() => setStep(1)} className="flex-1 py-2.5 text-sm text-gray-400 border border-gray-700 rounded-xl hover:text-white transition-colors">Back</button>}
+          <button onClick={onClose} className="flex-1 py-2.5 text-sm bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl font-medium transition-colors">
+            {step === 2 ? 'Launch Campaign' : 'Save as Draft'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Campaign Detail ──────────────────────────────────────────────────────────
+
+function CampaignDetail({ campaign, onClose }: { campaign: Campaign; onClose: () => void }) {
+  const [detailTab, setDetailTab] = useState<'overview' | 'channels' | 'content' | 'funnel' | 'analytics' | 'budget'>('overview')
+  const maxBar = Math.max(...campaign.dailyData.filter(n => n > 0), 1)
+  const totalBudget = campaign.budget
+  const spendPct = totalBudget > 0 ? Math.round((campaign.spend / totalBudget) * 100) : 0
+
+  return (
+    <div className="fixed inset-0 bg-gray-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+      <div className="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-5xl max-h-[92vh] flex flex-col">
+        {/* Header */}
+        <div className="flex items-start justify-between px-6 py-4 border-b border-gray-800">
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-3 mb-1 flex-wrap">
+              <h2 className="text-white font-bold text-xl">{campaign.name}</h2>
+              <span className={`text-xs px-2.5 py-1 rounded-full font-medium ${typeStyle(campaign.type)}`}>{campaign.type}</span>
+              <span className={`text-xs px-2.5 py-1 rounded-full font-medium ${statusStyle(campaign.status)}`}>{campaign.status}</span>
+            </div>
+            <p className="text-gray-400 text-sm">{campaign.startDate} — {campaign.endDate}</p>
+          </div>
+          <button onClick={onClose} className="text-gray-500 hover:text-white text-2xl leading-none ml-4">×</button>
+        </div>
+        {/* Tabs */}
+        <div className="flex gap-1 px-6 py-3 border-b border-gray-800 overflow-x-auto">
+          {([
+            ['overview', 'Overview'],
+            ['channels', 'Channels'],
+            ['content', 'Content'],
+            ['funnel', 'Funnel Insights'],
+            ['analytics', 'Analytics'],
+            ['budget', 'Budget'],
+          ] as const).map(([id, label]) => (
+            <button key={id} onClick={() => setDetailTab(id)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors whitespace-nowrap ${detailTab === id ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-white'}`}>
+              {label}
+            </button>
+          ))}
+        </div>
+        {/* Content */}
+        <div className="flex-1 overflow-y-auto px-6 py-5">
+          {/* Overview */}
+          {detailTab === 'overview' && (
+            <div className="space-y-4">
+              <div className="bg-gray-800 rounded-xl p-4">
+                <p className="text-gray-400 text-xs font-medium mb-1">Goal</p>
+                <p className="text-white text-sm">{campaign.goal}</p>
+              </div>
+              <div className="bg-gray-800 rounded-xl p-4">
+                <p className="text-gray-400 text-xs font-medium mb-1">Description</p>
+                <p className="text-gray-300 text-sm leading-relaxed">{campaign.description}</p>
+              </div>
+              <div>
+                <p className="text-gray-400 text-xs mb-1.5">Campaign Progress</p>
+                <div className="flex items-center gap-3">
+                  <div className="flex-1 h-2.5 bg-gray-800 rounded-full overflow-hidden">
+                    <div className={`h-full rounded-full ${campaign.progress >= 80 ? 'bg-green-500' : campaign.progress >= 40 ? 'bg-indigo-500' : 'bg-gray-600'}`}
+                      style={{ width: `${campaign.progress}%` }} />
+                  </div>
+                  <span className="text-white text-sm font-semibold w-10">{campaign.progress}%</span>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                {[
+                  { label: 'Performance Score', value: campaign.performanceScore ? `${campaign.performanceScore}/100` : '—', color: campaign.performanceScore >= 75 ? 'text-green-400' : campaign.performanceScore >= 50 ? 'text-amber-400' : 'text-gray-500' },
+                  { label: 'ROI', value: campaign.roi ? `${campaign.roi}%` : '—', color: campaign.roi >= 200 ? 'text-green-400' : campaign.roi > 0 ? 'text-amber-400' : 'text-gray-500' },
+                  { label: 'Budget Used', value: totalBudget > 0 ? `${spendPct}%` : '—', color: 'text-white' },
+                  { label: 'Leads', value: campaign.leads ? fmtNum(campaign.leads) : '—', color: 'text-indigo-400' },
+                ].map(s => (
+                  <div key={s.label} className="bg-gray-800 rounded-xl p-4 text-center">
+                    <p className={`text-2xl font-bold ${s.color}`}>{s.value}</p>
+                    <p className="text-gray-500 text-xs mt-1">{s.label}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {/* Channels */}
+          {detailTab === 'channels' && (
+            <div className="space-y-3">
+              {campaign.channels.map(ch => (
+                <div key={ch.name} className="bg-gray-800 rounded-xl p-4">
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-2">
+                      <span className="text-lg">{ch.icon}</span>
+                      <span className="text-white font-semibold">{ch.name}</span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <span className="text-gray-400 text-xs">Budget: {ch.budget}%</span>
+                      <div className={`w-2 h-2 rounded-full ${ch.enabled ? 'bg-green-400' : 'bg-gray-600'}`} />
+                      <span className="text-gray-400 text-xs">{ch.enabled ? 'Enabled' : 'Disabled'}</span>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-3 gap-3 text-sm">
+                    <div><p className="text-gray-500 text-xs mb-0.5">Impressions</p><p className="text-white font-semibold">{fmtNum(ch.impressions)}</p></div>
+                    <div><p className="text-gray-500 text-xs mb-0.5">Clicks</p><p className="text-white font-semibold">{fmtNum(ch.clicks)}</p></div>
+                    <div><p className="text-gray-500 text-xs mb-0.5">CTR</p><p className={`font-semibold ${ch.ctr >= 3 ? 'text-green-400' : ch.ctr >= 1 ? 'text-amber-400' : 'text-gray-400'}`}>{ch.ctr > 0 ? `${ch.ctr.toFixed(1)}%` : '—'}</p></div>
+                  </div>
+                  <div className="mt-3">
+                    <p className="text-gray-500 text-xs mb-1">Budget allocation</p>
+                    <div className="h-1.5 bg-gray-700 rounded-full overflow-hidden">
+                      <div className="h-full bg-indigo-500 rounded-full" style={{ width: `${ch.budget}%` }} />
+                    </div>
+                  </div>
+                </div>
+              ))}
+              <button className="w-full py-2.5 border border-dashed border-gray-700 hover:border-gray-500 text-gray-500 hover:text-gray-300 text-sm rounded-xl transition-colors">
+                + Add Channel
+              </button>
+            </div>
+          )}
+          {/* Content */}
+          {detailTab === 'content' && (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-white font-semibold">Content Pieces ({campaign.content.length})</h3>
+                <div className="flex gap-2">
+                  <button className="bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1.5 rounded-lg text-xs font-medium transition-colors">Generate Content</button>
+                  <button className="bg-gray-800 hover:bg-gray-700 text-gray-300 px-3 py-1.5 rounded-lg text-xs transition-colors">View in Approvals →</button>
+                </div>
+              </div>
+              <div className="bg-gray-800/50 rounded-xl overflow-hidden">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-gray-700">
+                      {['Type', 'Title', 'Status', 'Platform', 'Performance'].map(h => (
+                        <th key={h} className="text-left text-xs text-gray-400 font-medium px-4 py-3">{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {campaign.content.map((c, i) => (
+                      <tr key={i} className="border-b border-gray-700/50 hover:bg-gray-700/20">
+                        <td className="px-4 py-3"><span className="bg-gray-700 text-gray-300 text-xs px-2 py-0.5 rounded">{c.type}</span></td>
+                        <td className="px-4 py-3 text-white font-medium text-sm">{c.title}</td>
+                        <td className="px-4 py-3"><span className={`text-xs px-2 py-0.5 rounded-full ${contentStatusStyle(c.status)}`}>{c.status}</span></td>
+                        <td className="px-4 py-3 text-gray-400 text-xs">{c.platform}</td>
+                        <td className="px-4 py-3 text-gray-500 text-xs">{c.performance || '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+          {/* Funnel */}
+          {detailTab === 'funnel' && (
+            <div className="space-y-4">
+              <div>
+                <h3 className="text-white font-semibold mb-1">Conversion Funnel</h3>
+                <p className="text-gray-500 text-xs">Click-through at each funnel stage</p>
+              </div>
+              {campaign.funnel[0].count === 0 ? (
+                <div className="text-center py-12 text-gray-500 border border-dashed border-gray-700 rounded-xl">
+                  <p className="text-lg mb-1">No funnel data yet</p>
+                  <p className="text-sm">Launch the campaign to see funnel metrics</p>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {campaign.funnel.map((stage, i) => {
+                    const maxCount = campaign.funnel[0].count || 1
+                    const pct = (stage.count / maxCount) * 100
+                    const colors = ['bg-indigo-500', 'bg-blue-500', 'bg-cyan-500', 'bg-teal-500', 'bg-green-500']
+                    return (
+                      <div key={stage.stage} className="bg-gray-800 rounded-xl p-4">
+                        <div className="flex items-center justify-between mb-2">
+                          <div className="flex items-center gap-2">
+                            <span className="text-gray-500 text-xs w-4">{i + 1}</span>
+                            <span className="text-white font-medium text-sm">{stage.stage}</span>
+                          </div>
+                          <div className="flex items-center gap-4 text-xs">
+                            <span className="text-white font-bold">{fmtNum(stage.count)}</span>
+                            {i > 0 && <span className="text-gray-400">CVR: <span className="text-cyan-400">{stage.cvr.toFixed(1)}%</span></span>}
+                            {i > 0 && stage.drop > 0 && <span className="text-red-400">Drop: {stage.drop.toFixed(0)}%</span>}
+                          </div>
+                        </div>
+                        <div className="h-2.5 bg-gray-700 rounded-full overflow-hidden">
+                          <div className={`h-full rounded-full ${colors[i]}`} style={{ width: `${pct}%` }} />
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+              {campaign.funnel[0].count > 0 && (
+                <div className="bg-indigo-500/10 border border-indigo-500/20 rounded-xl p-4">
+                  <p className="text-indigo-300 text-xs font-medium mb-2">AI Recommendations</p>
+                  <ul className="space-y-1.5">
+                    {['Improve ad creative to boost click-through from Impressions to Clicks stage',
+                      'Add lead magnet on landing page to increase Clicks to Leads conversion',
+                      'Implement lead scoring to qualify leads faster and improve Leads to Qualified rate'].map(r => (
+                      <li key={r} className="text-gray-400 text-xs flex gap-1.5">
+                        <span className="text-indigo-400">•</span>{r}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+          {/* Analytics */}
+          {detailTab === 'analytics' && (
+            <div className="space-y-5">
+              <div className="grid grid-cols-3 gap-3">
+                {[
+                  { label: 'Impressions', value: fmtNum(campaign.impressions), color: 'text-white' },
+                  { label: 'Clicks', value: fmtNum(campaign.clicks), color: 'text-white' },
+                  { label: 'CTR', value: campaign.ctr ? `${campaign.ctr.toFixed(1)}%` : '—', color: campaign.ctr >= 3 ? 'text-green-400' : campaign.ctr >= 1 ? 'text-amber-400' : 'text-gray-500' },
+                  { label: 'Conversions', value: fmtNum(campaign.conversions), color: 'text-white' },
+                  { label: 'CPL', value: campaign.cpl ? `$${campaign.cpl.toFixed(2)}` : '—', color: campaign.cpl <= 20 ? 'text-green-400' : campaign.cpl <= 40 ? 'text-amber-400' : 'text-red-400' },
+                  { label: 'ROAS', value: campaign.roas ? `${campaign.roas.toFixed(1)}x` : '—', color: campaign.roas >= 3 ? 'text-green-400' : campaign.roas >= 1 ? 'text-amber-400' : 'text-gray-500' },
+                ].map(k => (
+                  <div key={k.label} className="bg-gray-800 rounded-xl p-4 text-center">
+                    <p className={`text-2xl font-bold ${k.color}`}>{k.value}</p>
+                    <p className="text-gray-500 text-xs mt-1">{k.label}</p>
+                  </div>
+                ))}
+              </div>
+              <div>
+                <p className="text-gray-400 text-xs font-medium mb-2">Daily Performance (last 28 days)</p>
+                {campaign.dailyData.every(n => n === 0) ? (
+                  <div className="h-24 bg-gray-800 rounded-xl flex items-center justify-center text-gray-600 text-sm">No data yet</div>
+                ) : (
+                  <div className="flex items-end gap-0.5 h-24 bg-gray-800 rounded-xl px-3 pt-3 pb-2">
+                    {campaign.dailyData.map((v, i) => (
+                      <div key={i} className="flex-1 bg-indigo-600/70 hover:bg-indigo-500 rounded-t transition-colors"
+                        style={{ height: `${(v / Math.max(...campaign.dailyData)) * 100}%` }} title={`Day ${i + 1}: ${v}`} />
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div>
+                <p className="text-gray-400 text-xs font-medium mb-2">Channel Breakdown</p>
+                <div className="space-y-2">
+                  {campaign.channels.map(ch => {
+                    const maxImp = Math.max(...campaign.channels.map(c => c.impressions), 1)
+                    return (
+                      <div key={ch.name} className="flex items-center gap-3">
+                        <span className="text-gray-300 text-xs w-14">{ch.name}</span>
+                        <div className="flex-1 h-5 bg-gray-800 rounded-full overflow-hidden">
+                          <div className="h-full bg-indigo-500/70 rounded-full" style={{ width: `${maxImp > 0 ? (ch.impressions / maxImp) * 100 : 0}%` }} />
+                        </div>
+                        <span className="text-gray-400 text-xs w-14 text-right">{fmtNum(ch.impressions)}</span>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+              <div>
+                <p className="text-gray-400 text-xs font-medium mb-2">Top Performing Content</p>
+                <div className="space-y-2">
+                  {campaign.content.filter(c => c.performance).map((c, i) => (
+                    <div key={i} className="flex items-center justify-between bg-gray-800 rounded-lg px-3 py-2.5">
+                      <div className="flex items-center gap-2">
+                        <span className="bg-gray-700 text-gray-300 text-xs px-1.5 py-0.5 rounded">{c.type}</span>
+                        <span className="text-gray-300 text-sm">{c.title}</span>
+                      </div>
+                      <span className="text-green-400 text-xs font-medium">{c.performance}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+          {/* Budget */}
+          {detailTab === 'budget' && (
+            <div className="space-y-5">
+              <div className="bg-gray-800 rounded-xl p-5">
+                <div className="flex justify-between items-center mb-2">
+                  <p className="text-gray-300 font-semibold">Total Budget</p>
+                  <p className="text-white font-bold">${campaign.budget.toLocaleString()}</p>
+                </div>
+                <div className="h-3 bg-gray-700 rounded-full overflow-hidden mb-2">
+                  <div className={`h-full rounded-full ${spendPct >= 90 ? 'bg-red-500' : spendPct >= 70 ? 'bg-amber-500' : 'bg-indigo-500'}`}
+                    style={{ width: `${spendPct}%` }} />
+                </div>
+                <div className="flex justify-between text-xs">
+                  <span className="text-gray-400">Spent: <span className="text-white font-medium">${campaign.spend.toLocaleString()}</span></span>
+                  <span className="text-gray-400">Remaining: <span className="text-green-400 font-medium">${(campaign.budget - campaign.spend).toLocaleString()}</span></span>
+                  <span className="text-gray-400">{spendPct}% used</span>
+                </div>
+              </div>
+              <div>
+                <p className="text-gray-400 text-xs font-medium mb-3">Per-Channel Spend vs Budget</p>
+                <div className="space-y-3">
+                  {campaign.channels.map(ch => {
+                    const chBudget = Math.round((ch.budget / 100) * campaign.budget)
+                    const chSpend = Math.round((ch.budget / 100) * campaign.spend)
+                    const chPct = chBudget > 0 ? Math.round((chSpend / chBudget) * 100) : 0
+                    return (
+                      <div key={ch.name} className="bg-gray-800 rounded-xl p-4">
+                        <div className="flex justify-between mb-2">
+                          <span className="text-gray-300 text-sm font-medium">{ch.icon} {ch.name}</span>
+                          <span className="text-gray-400 text-xs">${chSpend.toLocaleString()} / ${chBudget.toLocaleString()}</span>
+                        </div>
+                        <div className="h-2 bg-gray-700 rounded-full overflow-hidden">
+                          <div className="h-full bg-indigo-500 rounded-full" style={{ width: `${Math.min(chPct, 100)}%` }} />
+                        </div>
+                        <p className="text-gray-500 text-xs mt-1">{chPct}% of budget used</p>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+              <div className="bg-gray-800 rounded-xl p-4">
+                <p className="text-gray-400 text-xs font-medium mb-3">Budget Projection</p>
+                <div className="grid grid-cols-3 gap-3 text-sm text-center">
+                  <div className="bg-gray-900 rounded-lg p-3">
+                    <p className="text-white font-bold">${campaign.budget.toLocaleString()}</p>
+                    <p className="text-gray-500 text-xs">Total Budget</p>
+                  </div>
+                  <div className="bg-gray-900 rounded-lg p-3">
+                    <p className="text-amber-400 font-bold">${Math.round(campaign.budget * 1.05).toLocaleString()}</p>
+                    <p className="text-gray-500 text-xs">Projected Spend</p>
+                  </div>
+                  <div className="bg-gray-900 rounded-lg p-3">
+                    <p className="text-white font-bold">${campaign.spend.toLocaleString()}</p>
+                    <p className="text-gray-500 text-xs">Actual Spend</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Board View ───────────────────────────────────────────────────────────────
+
+function BoardView({ campaigns, onSelect }: { campaigns: Campaign[]; onSelect: (c: Campaign) => void }) {
+  const COLUMNS: { status: CampaignStatus; color: string; headerColor: string }[] = [
+    { status: 'Draft', color: 'border-t-gray-500', headerColor: 'text-gray-400' },
+    { status: 'Active', color: 'border-t-green-500', headerColor: 'text-green-400' },
+    { status: 'Scheduled', color: 'border-t-blue-500', headerColor: 'text-blue-400' },
+    { status: 'Paused', color: 'border-t-amber-500', headerColor: 'text-amber-400' },
+    { status: 'Completed', color: 'border-t-teal-500', headerColor: 'text-teal-400' },
+  ]
+  const byStatus = (s: CampaignStatus) => campaigns.filter(c => c.status === s)
+  return (
+    <div className="overflow-x-auto pb-2">
+      <div className="flex gap-4" style={{ minWidth: 'max-content' }}>
+        {COLUMNS.map(col => (
+          <div key={col.status} className={`w-56 bg-gray-900 border border-gray-800 rounded-xl flex flex-col border-t-2 ${col.color}`}>
+            <div className="flex items-center justify-between px-3 py-2.5 border-b border-gray-800">
+              <span className={`text-xs font-bold uppercase tracking-wider ${col.headerColor}`}>{col.status}</span>
+              <span className="text-xs bg-gray-800 text-gray-400 px-1.5 py-0.5 rounded-full">{byStatus(col.status).length}</span>
+            </div>
+            <div className="flex flex-col gap-2 p-2">
+              {byStatus(col.status).length === 0 ? (
+                <div className="border border-dashed border-gray-700 rounded-lg p-4 text-center">
+                  <p className="text-gray-600 text-xs">No campaigns</p>
+                </div>
+              ) : byStatus(col.status).map(c => (
+                <div key={c.id} className="bg-gray-800 border border-gray-700 rounded-xl p-3 space-y-2 cursor-pointer hover:border-gray-500 transition-colors" onClick={() => onSelect(c)}>
+                  <p className="text-white text-xs font-semibold leading-tight">{c.name}</p>
+                  <span className={`inline-block text-xs px-2 py-0.5 rounded-full ${typeStyle(c.type)}`}>{c.type}</span>
+                  <div className="text-xs text-gray-500 space-y-0.5">
+                    <div className="flex justify-between"><span>Budget</span><span className="text-gray-300">${c.budget.toLocaleString()}</span></div>
+                    {c.leads > 0 && <div className="flex justify-between"><span>Leads</span><span className="text-indigo-400">{fmtNum(c.leads)}</span></div>}
+                    {c.roi > 0 && <div className="flex justify-between"><span>ROI</span><span className={c.roi >= 200 ? 'text-green-400' : 'text-amber-400'}>{c.roi}%</span></div>}
+                  </div>
+                  {c.progress > 0 && (
+                    <div className="h-1 bg-gray-700 rounded-full overflow-hidden">
+                      <div className="h-full bg-indigo-500 rounded-full" style={{ width: `${c.progress}%` }} />
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
+type StatusFilter = 'All' | CampaignStatus
+
 export default function CampaignPage() {
-  const [workspaceId, setWorkspaceId] = useState('')
-  const [campaigns, setCampaigns] = useState<Campaign[]>([])
-  const [loading, setLoading] = useState(true)
-  const [generating, setGenerating] = useState(false)
-  const [campaignGoal, setCampaignGoal] = useState('')
-  const [budget, setBudget] = useState('')
-  const [duration, setDuration] = useState('30 days')
-  const [selected, setSelected] = useState<Campaign | null>(null)
-  const [error, setError] = useState('')
-  const [result, setResult] = useState<{ message: string; creativesGenerated: number } | null>(null)
-  const [activeTab, setActiveTab] = useState<'pipeline' | 'brief' | 'publish' | 'performance' | 'optimize'>('pipeline')
-  const [waLoading, setWaLoading] = useState(false)
-  const [waResult, setWaResult] = useState('')
-  const [waBroadcastType, setWaBroadcastType] = useState<'MARKETING' | 'UTILITY'>('MARKETING')
+  const [view, setView] = useState<'list' | 'board'>('list')
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('All')
+  const [typeFilter, setTypeFilter] = useState('All')
+  const [search, setSearch] = useState('')
+  const [showNew, setShowNew] = useState(false)
+  const [selectedCampaign, setSelectedCampaign] = useState<Campaign | null>(null)
 
-  // Performance
-  const [perfData, setPerfData] = useState<{ platforms: PlatformPerf[]; links: PlatformLink[] }>({ platforms: [], links: [] })
-  const [syncing, setSyncing] = useState(false)
-  const [perfError, setPerfError] = useState('')
+  const filtered = MOCK_CAMPAIGNS.filter(c => {
+    const matchStatus = statusFilter === 'All' || c.status === statusFilter
+    const matchType = typeFilter === 'All' || c.type === typeFilter
+    const matchSearch = !search || c.name.toLowerCase().includes(search.toLowerCase())
+    return matchStatus && matchType && matchSearch
+  })
 
-  // Publish
-  const [selectedDSPs, setSelectedDSPs] = useState<string[]>([])
-  const [publishing, setPublishing] = useState(false)
-  const [publishResult, setPublishResult] = useState<Record<string, unknown> | null>(null)
-
-  // Optimize
-  const [optimizing, setOptimizing] = useState(false)
-  const [optReport, setOptReport] = useState<OptReport | null>(null)
-  const [applyingRec, setApplyingRec] = useState<string | null>(null)
-  const [optError, setOptError] = useState('')
-
-  const load = useCallback(async (wid: string) => {
-    setLoading(true)
-    const res = await fetch(`/api/agents/campaign?workspaceId=${wid}`)
-    const data = await res.json()
-    if (Array.isArray(data)) setCampaigns(data)
-    setLoading(false)
-  }, [])
-
-  const loadPerf = useCallback(async (wid: string, campaignId: string) => {
-    const res = await fetch(`/api/campaign/sync?workspaceId=${wid}&campaignArtifactId=${campaignId}`)
-    const data = await res.json()
-    setPerfData({ platforms: data.platforms || [], links: data.links || [] })
-  }, [])
-
-  const loadOptReport = useCallback(async (wid: string, campaignId: string) => {
-    const res = await fetch(`/api/campaign/optimize?workspaceId=${wid}&campaignArtifactId=${campaignId}`)
-    const data = await res.json()
-    if (Array.isArray(data) && data.length > 0) {
-      setOptReport(data[0]?.report_json || null)
-    }
-  }, [])
-
-  useEffect(() => {
-    const wid = localStorage.getItem('workspaceId') || ''
-    setWorkspaceId(wid)
-    if (wid) load(wid)
-  }, [load])
-
-  const campaign = selected || campaigns[0]
-
-  useEffect(() => {
-    if (campaign && workspaceId && activeTab === 'performance') {
-      loadPerf(workspaceId, campaign.id)
-    }
-    if (campaign && workspaceId && activeTab === 'optimize') {
-      loadOptReport(workspaceId, campaign.id)
-    }
-  }, [activeTab, campaign, workspaceId, loadPerf, loadOptReport])
-
-  async function generate() {
-    if (!campaignGoal.trim()) { setError('Enter a campaign goal first'); return }
-    setGenerating(true); setError(''); setResult(null)
-    try {
-      const res = await fetch('/api/agents/campaign', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspaceId, campaignGoal: campaignGoal.trim(), budget, duration }),
-      })
-      const data = await res.json()
-      if (data.error) { setError(data.error); return }
-      setResult({ message: data.message, creativesGenerated: data.creativesGenerated })
-      setCampaignGoal(''); setBudget('')
-      await load(workspaceId)
-    } finally { setGenerating(false) }
-  }
-
-  async function syncPerformance() {
-    if (!campaign) return
-    setSyncing(true); setPerfError('')
-    try {
-      await fetch('/api/campaign/sync', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspaceId, campaignArtifactId: campaign.id, days: 7 }),
-      })
-      await loadPerf(workspaceId, campaign.id)
-    } catch (e) { setPerfError(String(e)) }
-    finally { setSyncing(false) }
-  }
-
-  async function publishToDSPs() {
-    if (!campaign || selectedDSPs.length === 0) return
-    setPublishing(true); setPublishResult(null)
-    try {
-      const res = await fetch('/api/campaign/publish', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspaceId, campaignArtifactId: campaign.id, platforms: selectedDSPs }),
-      })
-      const data = await res.json()
-      setPublishResult(data)
-      await loadPerf(workspaceId, campaign.id)
-    } finally { setPublishing(false) }
-  }
-
-  async function runOptimizer() {
-    if (!campaign) return
-    setOptimizing(true); setOptError(''); setOptReport(null)
-    try {
-      const res = await fetch('/api/campaign/optimize', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspaceId, campaignArtifactId: campaign.id }),
-      })
-      const data = await res.json()
-      if (data.error) { setOptError(data.error); return }
-      setOptReport(data.report)
-    } finally { setOptimizing(false) }
-  }
-
-  async function applyRecommendation(rec: OptimizationRec, decision: 'approved' | 'rejected') {
-    if (!campaign || !optReport) return
-    setApplyingRec(rec.id)
-    try {
-      const reportId = (optReport as unknown as { id?: string })?.id || ''
-      await fetch('/api/campaign/optimize', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          workspaceId,
-          campaignArtifactId: campaign.id,
-          reportId,
-          recommendationId: rec.id,
-          decision,
-        }),
-      })
-      // Update local state
-      setOptReport(prev => prev ? {
-        ...prev,
-        recommendations: prev.recommendations.map(r =>
-          r.id === rec.id ? { ...r, status: decision === 'approved' ? 'applied' : 'rejected' } : r
-        )
-      } : null)
-    } finally { setApplyingRec(null) }
-  }
-
-  function toggleDSP(id: string) {
-    setSelectedDSPs(prev => prev.includes(id) ? prev.filter(p => p !== id) : [...prev, id])
-  }
-
-  async function runWhatsApp() {
-    if (!workspaceId) return
-    setWaLoading(true); setWaResult('')
-    try {
-      const res = await fetch('/api/agents/campaign/whatsapp', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspaceId, broadcastType: waBroadcastType }),
-      })
-      const data = await res.json()
-      setWaResult(data.error ? `Error: ${data.error}` : data.message || 'WhatsApp broadcast templates generated — check Approvals')
-    } catch (e) { setWaResult(`Error: ${String(e)}`) } finally { setWaLoading(false) }
-  }
+  const activeCampaigns = MOCK_CAMPAIGNS.filter(c => c.status === 'Active').length
+  const totalReach = MOCK_CAMPAIGNS.reduce((s, c) => s + c.impressions, 0)
+  const avgEngagement = MOCK_CAMPAIGNS.filter(c => c.ctr > 0).reduce((s, c) => s + c.ctr, 0) / Math.max(MOCK_CAMPAIGNS.filter(c => c.ctr > 0).length, 1)
+  const totalLeads = MOCK_CAMPAIGNS.reduce((s, c) => s + c.leads, 0)
+  const totalRevenue = MOCK_CAMPAIGNS.reduce((s, c) => s + (c.spend * c.roi / 100), 0)
+  const bestChannel = 'Instagram'
 
   return (
-    <div className="p-8 max-w-7xl mx-auto">
+    <div className="p-6 max-w-7xl mx-auto">
+      {showNew && <NewCampaignModal onClose={() => setShowNew(false)} />}
+      {selectedCampaign && <CampaignDetail campaign={selectedCampaign} onClose={() => setSelectedCampaign(null)} />}
+
       {/* Header */}
-      <div className="mb-8">
-        <div className="flex items-center gap-3 mb-1">
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-orange-500 to-red-600 flex items-center justify-center text-white font-bold">📣</div>
-          <h1 className="text-2xl font-bold text-white">Campaign Manager</h1>
+      <div className="flex items-center justify-between mb-5">
+        <div>
+          <h1 className="text-2xl font-bold text-white mb-0.5">Campaign Manager</h1>
+          <p className="text-gray-400 text-sm">Plan, launch, and track campaigns across all channels.</p>
         </div>
-        <p className="text-gray-400 text-sm ml-11">AI campaign briefs → Meta Ads · Google Ads · DV360 · auto-optimization · continuous learning</p>
+        <button onClick={() => setShowNew(true)} className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
+          + New Campaign
+        </button>
       </div>
 
-      {/* Cross-agent notice */}
-      <div className="bg-indigo-900/20 border border-indigo-800/40 rounded-xl p-3 mb-6 flex gap-3">
-        <span className="text-indigo-400">🔗</span>
-        <p className="text-indigo-300 text-xs">
-          Campaign Manager generates briefs, creates <strong>ad creatives</strong> and <strong>landing page visuals</strong> via Creative Supervisor, publishes to <strong>Meta Ads · Google Ads · DV360</strong>, syncs performance, and runs <strong>AI optimization</strong> with human approval for every action.
-        </p>
+      {/* Stats Bar */}
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-5">
+        {[
+          { label: 'Active Campaigns', value: activeCampaigns, color: 'text-green-400' },
+          { label: 'Total Reach', value: fmtNum(totalReach), color: 'text-white' },
+          { label: 'Avg Engagement', value: `${avgEngagement.toFixed(1)}%`, color: 'text-indigo-400' },
+          { label: 'Total Leads', value: fmtNum(totalLeads), color: 'text-white' },
+          { label: 'Revenue Attr.', value: `$${Math.round(totalRevenue).toLocaleString()}`, color: 'text-green-400' },
+          { label: 'Best Channel', value: bestChannel, color: 'text-pink-400' },
+        ].map(s => (
+          <div key={s.label} className="bg-gray-900 border border-gray-800 rounded-xl p-3">
+            <p className="text-gray-400 text-xs mb-1">{s.label}</p>
+            <p className={`text-xl font-bold ${s.color}`}>{s.value}</p>
+          </div>
+        ))}
       </div>
 
-      {/* Generate form */}
-      <div data-generate-section className="bg-gray-900 border border-gray-800 rounded-2xl p-6 mb-8">
-        <h2 className="text-white font-semibold mb-4">New Campaign Brief</h2>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
-          <div className="md:col-span-3">
-            <label className="text-gray-400 text-xs mb-1.5 block">Campaign Goal</label>
-            <input value={campaignGoal} onChange={e => setCampaignGoal(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && generate()}
-              placeholder="e.g. Generate 500 qualified leads for our SaaS at under ₹200 CPL"
-              className="w-full px-4 py-2.5 rounded-xl bg-gray-800 border border-gray-700 text-white placeholder-gray-500 text-sm focus:outline-none focus:border-indigo-500" />
-          </div>
-          <div>
-            <label className="text-gray-400 text-xs mb-1.5 block">Total Budget (optional)</label>
-            <input value={budget} onChange={e => setBudget(e.target.value)}
-              placeholder="e.g. ₹50,000"
-              className="w-full px-4 py-2.5 rounded-xl bg-gray-800 border border-gray-700 text-white placeholder-gray-500 text-sm focus:outline-none focus:border-indigo-500" />
-          </div>
-          <div>
-            <label className="text-gray-400 text-xs mb-1.5 block">Duration</label>
-            <select value={duration} onChange={e => setDuration(e.target.value)}
-              className="w-full px-4 py-2.5 rounded-xl bg-gray-800 border border-gray-700 text-white text-sm focus:outline-none focus:border-indigo-500">
-              {['7 days', '14 days', '30 days', '60 days', '90 days'].map(d => <option key={d} value={d}>{d}</option>)}
-            </select>
-          </div>
-          <div className="flex items-end">
-            <button onClick={generate} disabled={generating || !workspaceId || !campaignGoal.trim()}
-              className="w-full bg-orange-600 hover:bg-orange-700 disabled:opacity-50 text-white py-2.5 px-5 rounded-xl font-semibold text-sm transition-colors flex items-center justify-center gap-2">
-              {generating
-                ? <><Spinner />Generating + Requesting Creatives...</>
-                : '📣 Generate Campaign'}
+      {/* Filters + Search + View Toggle */}
+      <div className="flex items-center gap-3 mb-5 flex-wrap">
+        <div className="flex gap-1 bg-gray-900 border border-gray-800 rounded-lg p-1">
+          {(['All', 'Active', 'Draft', 'Scheduled', 'Completed', 'Paused'] as StatusFilter[]).map(s => (
+            <button key={s} onClick={() => setStatusFilter(s)}
+              className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${statusFilter === s ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-white'}`}>
+              {s}
             </button>
-          </div>
+          ))}
         </div>
-        {error && <p className="text-red-400 text-sm">{error}</p>}
-        {result && (
-          <div className="bg-green-900/20 border border-green-800/40 rounded-xl p-3 flex gap-3">
-            <span className="text-green-400">✅</span>
-            <div>
-              <p className="text-green-300 text-sm">{result.message}</p>
-              <a href="/dashboard/approvals" className="text-indigo-400 text-xs hover:underline">Review in Approvals →</a>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Campaign list + detail */}
-      {loading ? (
-        <div className="text-gray-600 text-sm animate-pulse p-8 text-center">Loading campaigns...</div>
-      ) : campaigns.length === 0 ? (
-        <div className="border border-dashed border-gray-700 rounded-2xl p-12 text-center">
-          <div className="text-4xl mb-3">📣</div>
-          <p className="text-white font-medium mb-1">No campaigns yet</p>
-          <p className="text-gray-500 text-sm">Enter a campaign goal above to generate your first brief + ad creatives</p>
-        </div>
-      ) : (
-        <>
-          {/* Top-level tab strip */}
-          <div className="flex gap-1 bg-gray-900 border border-gray-800 rounded-xl p-1 mb-6">
-            {([
-              { id: 'pipeline',    label: '🗂️ Pipeline' },
-              { id: 'brief',       label: '📋 Brief' },
-              { id: 'publish',     label: '🚀 Publish to DSPs' },
-              { id: 'performance', label: '📊 Performance' },
-              { id: 'optimize',    label: '🤖 Optimize' },
-            ] as const).map(t => (
-              <button key={t.id} onClick={() => setActiveTab(t.id)}
-                className={`flex-1 py-2 rounded-lg text-sm font-medium transition-colors ${
-                  activeTab === t.id ? 'bg-orange-600 text-white' : 'text-gray-400 hover:text-white'
-                }`}>{t.label}</button>
-            ))}
-          </div>
-
-          {/* ── Pipeline tab (full-width) ──────────────────────────────────── */}
-          {activeTab === 'pipeline' && (
-            <PipelineBoard
-              campaigns={campaigns}
-              onViewDetails={(c) => { setSelected(c); setActiveTab('brief') }}
-            />
-          )}
-
-          {/* ── Sidebar + detail layout (all non-pipeline tabs) ─────────────── */}
-          {activeTab !== 'pipeline' && (
-        <div className="grid grid-cols-5 gap-6">
-          {/* Sidebar */}
-          <div className="col-span-1 space-y-2">
-            {campaigns.map(c => (
-              <button key={c.id} onClick={() => { setSelected(c); setActiveTab('brief') }}
-                className={`w-full text-left p-3 rounded-xl border transition-colors ${
-                  campaign?.id === c.id ? 'border-orange-600 bg-orange-900/20' : 'border-gray-800 hover:border-gray-600'
-                }`}>
-                <p className="text-white text-xs font-semibold truncate">{c.content_json.campaignName}</p>
-                <p className="text-gray-500 text-xs capitalize mt-0.5">{c.content_json.campaignObjective}</p>
-                <div className={`mt-1.5 inline-flex text-xs px-2 py-0.5 rounded-full ${
-                  c.approval_status === 'approved' ? 'bg-green-900/40 text-green-400' :
-                  c.approval_status === 'rejected' ? 'bg-red-900/40 text-red-400' :
-                  'bg-yellow-900/40 text-yellow-400'
-                }`}>{c.approval_status || 'pending'}</div>
-              </button>
-            ))}
-          </div>
-
-          {/* Detail panel */}
-          {campaign && (
-            <div className="col-span-4 space-y-4">
-              {/* Tab nav (inner — mirrors top-level strip for visual context) */}
-              <div className="flex gap-1 bg-gray-900 border border-gray-800 rounded-xl p-1">
-                {[
-                  { id: 'brief',       label: '📋 Brief', },
-                  { id: 'publish',     label: '🚀 Publish to DSPs' },
-                  { id: 'performance', label: '📊 Performance' },
-                  { id: 'optimize',    label: '🤖 Optimize' },
-                ].map(t => (
-                  <button key={t.id} onClick={() => setActiveTab(t.id as typeof activeTab)}
-                    className={`flex-1 py-2 rounded-lg text-sm font-medium transition-colors ${
-                      activeTab === t.id ? 'bg-orange-600 text-white' : 'text-gray-400 hover:text-white'
-                    }`}>{t.label}</button>
-                ))}
-              </div>
-
-              {/* ── Brief tab ───────────────────────────────────────────────── */}
-              {activeTab === 'brief' && (
-                <div className="space-y-4">
-                  <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm mb-5">
-                      <div><p className="text-gray-500 text-xs mb-1">Campaign Name</p><p className="text-white font-bold">{campaign.content_json.campaignName}</p></div>
-                      <div><p className="text-gray-500 text-xs mb-1">Objective</p><p className="text-orange-400 font-bold capitalize">{campaign.content_json.campaignObjective}</p></div>
-                      <div><p className="text-gray-500 text-xs mb-1">Budget</p><p className="text-white">{campaign.content_json.totalBudget}</p></div>
-                      <div><p className="text-gray-500 text-xs mb-1">Duration</p><p className="text-white">{campaign.content_json.duration}</p></div>
-                      <div className="col-span-2"><p className="text-gray-500 text-xs mb-1">Key Message</p><p className="text-white">{campaign.content_json.keyMessage}</p></div>
-                      <div className="col-span-2"><p className="text-gray-500 text-xs mb-1">Unique Angle</p><p className="text-gray-300 text-xs">{campaign.content_json.uniqueAngle}</p></div>
-                    </div>
-                    <div className="mb-4">
-                      <p className="text-gray-500 text-xs mb-2">KPIs</p>
-                      <div className="flex flex-wrap gap-2">
-                        {(campaign.content_json.kpis || []).map((kpi, i) => (
-                          <span key={i} className="bg-indigo-900/30 text-indigo-300 text-xs px-3 py-1 rounded-full">{kpi}</span>
-                        ))}
-                      </div>
-                    </div>
-                    <div>
-                      <p className="text-gray-500 text-xs mb-3">Ad Sets ({campaign.content_json.adSets?.length || 0})</p>
-                      <div className="space-y-2">
-                        {(campaign.content_json.adSets || []).map((adSet, i) => (
-                          <div key={i} className="bg-gray-800 rounded-xl p-4 grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
-                            <div><p className="text-gray-500 mb-0.5">Ad Set</p><p className="text-white font-semibold">{adSet.name}</p></div>
-                            <div>
-                              <p className="text-gray-500 mb-0.5">Platform</p>
-                              <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${PLATFORM_COLORS[adSet.platform] || 'bg-gray-700 text-gray-300'}`}>
-                                {PLATFORM_LABELS[adSet.platform.toLowerCase()]?.icon} {adSet.platform}
-                              </span>
-                            </div>
-                            <div><p className="text-gray-500 mb-0.5">Budget</p><p className="text-white">{adSet.dailyBudget}</p></div>
-                            <div><p className="text-gray-500 mb-0.5">CTA</p><p className="text-indigo-400">{adSet.primaryCta}</p></div>
-                            <div className="col-span-4"><p className="text-gray-500 mb-0.5">Audience</p><p className="text-gray-300">{adSet.audience}</p></div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                  <div className="flex gap-3">
-                    <a href="/dashboard/approvals" className="flex-1 flex items-center justify-center bg-indigo-600 hover:bg-indigo-700 text-white text-sm py-2.5 rounded-xl font-semibold transition-colors">Review Creatives in Approvals →</a>
-                    <button onClick={() => setActiveTab('publish')} disabled={campaign.approval_status !== 'approved'}
-                      className="flex items-center gap-2 border border-orange-600 hover:bg-orange-900/20 disabled:opacity-40 text-orange-400 text-sm py-2.5 px-5 rounded-xl transition-colors">
-                      🚀 Publish to DSPs {campaign.approval_status !== 'approved' && '(approve first)'}
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {/* ── Publish tab ─────────────────────────────────────────────── */}
-              {activeTab === 'publish' && (
-                <div className="space-y-4">
-                  {campaign.approval_status !== 'approved' ? (
-                    <div className="bg-amber-900/20 border border-amber-800/40 rounded-xl p-4 flex gap-3">
-                      <span className="text-amber-400">⚠️</span>
-                      <div>
-                        <p className="text-amber-300 font-medium text-sm">Approval required before publishing</p>
-                        <p className="text-amber-600 text-xs mt-1">This campaign brief is currently <strong>{campaign.approval_status || 'pending'}</strong>. Review and approve it in the Approvals page before publishing to any ad platform.</p>
-                        <a href="/dashboard/approvals" className="text-indigo-400 text-xs mt-2 inline-block hover:underline">Go to Approvals →</a>
-                      </div>
-                    </div>
-                  ) : (
-                    <>
-                      <div className="bg-green-900/20 border border-green-800/40 rounded-xl p-3 flex gap-3">
-                        <span className="text-green-400">✅</span>
-                        <p className="text-green-300 text-sm">Campaign approved — ready to publish to ad platforms. All campaigns start in <strong>PAUSED</strong> state for final safety review.</p>
-                      </div>
-
-                      {/* Platform selector */}
-                      <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-                        <h3 className="text-white font-semibold text-sm mb-4">Select Ad Platforms</h3>
-                        <div className="grid grid-cols-3 gap-3 mb-5">
-                          {DSP_PLATFORMS.map(dsp => (
-                            <button key={dsp.id} onClick={() => toggleDSP(dsp.id)}
-                              className={`p-4 rounded-xl border-2 text-left transition-all ${
-                                selectedDSPs.includes(dsp.id)
-                                  ? 'border-orange-500 bg-orange-900/20'
-                                  : `border-gray-700 ${dsp.color}`
-                              }`}>
-                              <div className="text-2xl mb-2">{dsp.icon}</div>
-                              <p className="text-white text-sm font-medium">{dsp.label}</p>
-                              <p className="text-gray-500 text-xs mt-1">
-                                {selectedDSPs.includes(dsp.id) ? '✓ Selected' : 'Click to select'}
-                              </p>
-                            </button>
-                          ))}
-                        </div>
-
-                        <div className="bg-gray-800 rounded-lg p-3 mb-4 text-xs text-gray-400">
-                          <p className="font-medium text-gray-300 mb-1">What happens when you publish:</p>
-                          <ul className="space-y-1 list-disc list-inside">
-                            <li>Campaign + ad sets created on each selected platform</li>
-                            <li>All campaigns start in <strong className="text-amber-300">PAUSED</strong> state — review in each platform before activating</li>
-                            <li>Platform IDs saved so performance can be synced automatically</li>
-                            <li>Make sure {selectedDSPs.join(', ') || 'platforms'} {selectedDSPs.length === 1 ? 'is' : 'are'} connected in <a href="/dashboard/integrations" className="text-indigo-400 hover:underline">Integrations</a></li>
-                          </ul>
-                        </div>
-
-                        <button onClick={publishToDSPs} disabled={publishing || selectedDSPs.length === 0}
-                          className="w-full bg-orange-600 hover:bg-orange-700 disabled:opacity-50 text-white py-3 rounded-xl font-semibold text-sm transition-colors flex items-center justify-center gap-2">
-                          {publishing ? <><Spinner />Publishing to {selectedDSPs.join(', ')}...</> : `🚀 Publish to ${selectedDSPs.length ? selectedDSPs.join(', ') : 'selected platforms'}`}
-                        </button>
-                      </div>
-
-                      {publishResult && (
-                        <div className={`rounded-xl p-4 border ${(publishResult.successCount as number) > 0 ? 'bg-green-900/20 border-green-800/40' : 'bg-red-900/20 border-red-800/40'}`}>
-                          <p className={`text-sm font-medium mb-2 ${(publishResult.successCount as number) > 0 ? 'text-green-300' : 'text-red-300'}`}>
-                            {publishResult.message as string}
-                          </p>
-                          {((publishResult.results as unknown[]) || []).map((r: unknown, i: number) => {
-                            const res = r as Record<string, unknown>
-                            return (
-                              <div key={i} className="bg-gray-800/50 rounded-lg p-3 mt-2 text-xs">
-                                <p className="text-white font-medium">{String(res.platform)} — {res.status === 'success' ? '✅ Published' : '❌ Failed'}</p>
-                                {!!res.platformCampaignId && <p className="text-gray-400 mt-1">Campaign ID: <code className="text-gray-300">{String(res.platformCampaignId)}</code></p>}
-                                {!!res.error && <p className="text-red-400 mt-1">{String(res.error)}</p>}
-                                {!!(res.details as Record<string, unknown>)?.note && <p className="text-gray-500 mt-1">{String((res.details as Record<string, unknown>).note)}</p>}
-                              </div>
-                            )
-                          })}
-                        </div>
-                      )}
-
-                      {/* Existing platform links */}
-                      {perfData.links.length > 0 && (
-                        <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-                          <p className="text-gray-500 text-xs mb-3">Published platforms</p>
-                          <div className="space-y-2">
-                            {perfData.links.map((link, i) => (
-                              <div key={i} className="flex items-center justify-between bg-gray-800 rounded-lg px-3 py-2 text-xs">
-                                <div className="flex items-center gap-2">
-                                  <span>{PLATFORM_LABELS[link.platform]?.icon || '🔗'}</span>
-                                  <span className="text-white font-medium">{PLATFORM_LABELS[link.platform]?.label || link.platform}</span>
-                                  <code className="text-gray-500">{link.platform_campaign_id}</code>
-                                </div>
-                                <div className="flex items-center gap-3">
-                                  <span className={`px-2 py-0.5 rounded-full ${link.status === 'active' ? 'bg-green-900/40 text-green-400' : 'bg-gray-700 text-gray-400'}`}>
-                                    {link.status}
-                                  </span>
-                                  {link.last_synced_at && <span className="text-gray-600">synced {new Date(link.last_synced_at).toLocaleDateString()}</span>}
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                    </>
-                  )}
-                </div>
-              )}
-
-              {/* ── Performance tab ──────────────────────────────────────────── */}
-              {activeTab === 'performance' && (
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <h3 className="text-white font-semibold">Performance Dashboard</h3>
-                      <p className="text-gray-500 text-xs mt-0.5">Last 7 days · Synced from Meta Ads, Google Ads, DV360</p>
-                    </div>
-                    <button onClick={syncPerformance} disabled={syncing}
-                      className="flex items-center gap-2 bg-gray-800 hover:bg-gray-700 text-white text-sm px-4 py-2 rounded-xl transition-colors disabled:opacity-50">
-                      {syncing ? <><Spinner />Syncing...</> : '🔄 Sync Now'}
-                    </button>
-                  </div>
-                  {perfError && <p className="text-red-400 text-sm">{perfError}</p>}
-
-                  {perfData.links.length === 0 ? (
-                    <div className="border border-dashed border-gray-700 rounded-xl p-10 text-center">
-                      <div className="text-3xl mb-3">📊</div>
-                      <p className="text-white font-medium mb-1">No performance data yet</p>
-                      <p className="text-gray-500 text-sm mb-3">Publish the campaign to a DSP first, then sync performance after 24–48 hours of running.</p>
-                      <button onClick={() => setActiveTab('publish')} className="text-orange-400 text-sm hover:underline">Go to Publish tab →</button>
-                    </div>
-                  ) : (
-                    <>
-                      {/* Platform KPI cards */}
-                      <div className="grid grid-cols-3 gap-4">
-                        {perfData.platforms.map((p) => (
-                          <div key={p.platform} className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-                            <div className="flex items-center gap-2 mb-3">
-                              <span className="text-lg">{PLATFORM_LABELS[p.platform]?.icon || '📊'}</span>
-                              <span className="text-white font-semibold text-sm">{PLATFORM_LABELS[p.platform]?.label || p.platform}</span>
-                            </div>
-                            <div className="grid grid-cols-2 gap-3 text-xs">
-                              <div><p className="text-gray-500 mb-0.5">Impressions</p><p className="text-white font-bold">{fmt(p.impressions)}</p></div>
-                              <div><p className="text-gray-500 mb-0.5">Clicks</p><p className="text-white font-bold">{fmt(p.clicks)}</p></div>
-                              <div><p className="text-gray-500 mb-0.5">CTR</p><p className={`font-bold ${p.ctr > 0.02 ? 'text-green-400' : p.ctr > 0.01 ? 'text-amber-400' : 'text-red-400'}`}>{pct(p.ctr)}</p></div>
-                              <div><p className="text-gray-500 mb-0.5">CPC</p><p className="text-white font-bold">₹{p.cpc.toFixed(2)}</p></div>
-                              <div><p className="text-gray-500 mb-0.5">Spend</p><p className="text-white font-bold">₹{fmt(p.spend)}</p></div>
-                              <div><p className="text-gray-500 mb-0.5">Conversions</p><p className={`font-bold ${p.conversions > 0 ? 'text-green-400' : 'text-gray-500'}`}>{p.conversions || '—'}</p></div>
-                              <div><p className="text-gray-500 mb-0.5">CPA</p><p className="text-white font-bold">{p.cpa ? `₹${p.cpa.toFixed(0)}` : '—'}</p></div>
-                              <div><p className="text-gray-500 mb-0.5">ROAS</p><p className={`font-bold ${p.roas >= 3 ? 'text-green-400' : p.roas >= 1 ? 'text-amber-400' : 'text-gray-500'}`}>{p.roas ? `${p.roas.toFixed(1)}x` : '—'}</p></div>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-
-                      {/* Aggregate totals */}
-                      {perfData.platforms.length > 1 && (
-                        <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-                          <p className="text-gray-500 text-xs mb-3">Total across all platforms</p>
-                          <div className="grid grid-cols-4 gap-4 text-sm">
-                            {['impressions', 'clicks', 'spend', 'conversions'].map(metric => {
-                              const total = perfData.platforms.reduce((s, p) => s + ((p as unknown as Record<string, number>)[metric] || 0), 0)
-                              return (
-                                <div key={metric}>
-                                  <p className="text-gray-500 text-xs capitalize mb-1">{metric}</p>
-                                  <p className="text-white font-bold">{metric === 'spend' ? `₹${fmt(total)}` : fmt(total)}</p>
-                                </div>
-                              )
-                            })}
-                          </div>
-                        </div>
-                      )}
-
-                      <div className="flex justify-end">
-                        <button onClick={() => setActiveTab('optimize')} className="bg-indigo-600 hover:bg-indigo-700 text-white text-sm px-5 py-2.5 rounded-xl font-semibold transition-colors">
-                          🤖 Run AI Optimization →
-                        </button>
-                      </div>
-                    </>
-                  )}
-                </div>
-              )}
-
-              {/* ── Optimize tab ─────────────────────────────────────────────── */}
-              {activeTab === 'optimize' && (
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <h3 className="text-white font-semibold">AI Campaign Optimizer</h3>
-                      <p className="text-gray-500 text-xs mt-0.5">Analyzes performance vs KPIs · generates recommendations · all actions require your approval</p>
-                    </div>
-                    <button onClick={runOptimizer} disabled={optimizing}
-                      className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-sm px-5 py-2.5 rounded-xl font-semibold transition-colors">
-                      {optimizing ? <><Spinner />Analysing...</> : '🤖 Run Optimizer'}
-                    </button>
-                  </div>
-
-                  {optError && (
-                    <div className="bg-amber-900/20 border border-amber-800/40 rounded-xl p-4 text-amber-300 text-sm">
-                      ⚠️ {optError}
-                    </div>
-                  )}
-
-                  {!optReport && !optimizing && (
-                    <div className="border border-dashed border-gray-700 rounded-xl p-10 text-center">
-                      <div className="text-3xl mb-3">🤖</div>
-                      <p className="text-white font-medium mb-1">No optimization report yet</p>
-                      <p className="text-gray-500 text-sm">Click "Run Optimizer" to analyse your campaign performance and get AI recommendations. Requires performance data from at least one DSP.</p>
-                    </div>
-                  )}
-
-                  {optReport && (
-                    <div className="space-y-4">
-                      {/* Health overview */}
-                      <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-                        <div className="flex items-center justify-between mb-4">
-                          <div>
-                            <p className="text-gray-500 text-xs mb-1">Campaign Health</p>
-                            <span className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium capitalize ${HEALTH_COLORS[optReport.overallHealth] || HEALTH_COLORS.good}`}>
-                              {optReport.overallHealth?.replace('_', ' ')}
-                            </span>
-                          </div>
-                          <div className="text-right">
-                            <p className="text-gray-500 text-xs mb-1">Health Score</p>
-                            <p className={`text-3xl font-bold ${optReport.healthScore >= 75 ? 'text-green-400' : optReport.healthScore >= 50 ? 'text-amber-400' : 'text-red-400'}`}>
-                              {optReport.healthScore}/100
-                            </p>
-                          </div>
-                        </div>
-                        <p className="text-gray-300 text-sm leading-relaxed">{optReport.summary}</p>
-
-                        {optReport.kpiStatus?.length > 0 && (
-                          <div className="mt-4 grid grid-cols-2 gap-2">
-                            {optReport.kpiStatus.map((k, i) => (
-                              <div key={i} className={`rounded-lg p-3 text-xs ${k.status === 'exceeded' ? 'bg-green-900/20' : k.status === 'on_track' ? 'bg-indigo-900/20' : 'bg-red-900/20'}`}>
-                                <p className="text-gray-400 mb-1">{k.kpi}</p>
-                                <p className="text-white font-medium">Current: {k.current}</p>
-                                <p className="text-gray-500">Target: {k.target}</p>
-                                <span className={`mt-1 inline-block px-2 py-0.5 rounded-full text-xs ${k.status === 'exceeded' ? 'bg-green-900/40 text-green-400' : k.status === 'on_track' ? 'bg-indigo-900/40 text-indigo-300' : 'bg-red-900/40 text-red-400'}`}>
-                                  {k.status.replace('_', ' ')}
-                                </span>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Recommendations */}
-                      <div>
-                        <p className="text-gray-400 text-xs font-semibold uppercase tracking-wider mb-3">
-                          Recommendations ({optReport.recommendations?.filter(r => r.status === 'pending').length || 0} pending)
-                        </p>
-                        <div className="space-y-3">
-                          {(optReport.recommendations || []).map(rec => (
-                            <div key={rec.id} className={`border rounded-xl p-4 ${PRIORITY_COLORS[rec.priority] || PRIORITY_COLORS.medium}`}>
-                              <div className="flex items-start justify-between mb-2">
-                                <div>
-                                  <div className="flex items-center gap-2 mb-1">
-                                    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
-                                      rec.priority === 'critical' ? 'bg-red-900/40 text-red-400' :
-                                      rec.priority === 'high' ? 'bg-amber-900/40 text-amber-400' :
-                                      rec.priority === 'medium' ? 'bg-indigo-900/40 text-indigo-300' :
-                                      'bg-gray-700 text-gray-400'
-                                    }`}>{rec.priority}</span>
-                                    <span className="text-gray-400 text-xs">{PLATFORM_LABELS[rec.platform]?.icon} {rec.platform}</span>
-                                    <span className="text-gray-600 text-xs">·</span>
-                                    <span className="text-gray-400 text-xs">{rec.adSetName}</span>
-                                  </div>
-                                  <p className="text-white font-semibold text-sm">{ACTION_LABELS[rec.actionType] || rec.actionType}</p>
-                                </div>
-                                <span className="text-xs text-gray-500 bg-gray-800 px-2 py-0.5 rounded ml-2 flex-shrink-0">
-                                  {Math.round(rec.confidence * 100)}% conf.
-                                </span>
-                              </div>
-                              <p className="text-gray-300 text-xs mb-2 leading-relaxed">{rec.reasoning}</p>
-                              <div className="flex items-center gap-4 text-xs mb-3">
-                                <div><span className="text-gray-500">Current: </span><span className="text-white">{rec.currentMetric}</span></div>
-                                <span className="text-gray-700">→</span>
-                                <div><span className="text-gray-500">Target: </span><span className="text-green-400">{rec.targetMetric}</span></div>
-                                <div className="ml-auto"><span className="text-gray-500">Impact: </span><span className="text-amber-300">{rec.expectedImpact}</span></div>
-                              </div>
-
-                              {rec.status === 'pending' && (
-                                <div className="flex gap-2">
-                                  <button onClick={() => applyRecommendation(rec, 'approved')} disabled={applyingRec === rec.id}
-                                    className="flex-1 bg-green-700 hover:bg-green-600 disabled:opacity-50 text-white text-xs py-2 rounded-lg font-medium transition-colors">
-                                    {applyingRec === rec.id ? 'Applying...' : '✅ Approve & Apply'}
-                                  </button>
-                                  <button onClick={() => applyRecommendation(rec, 'rejected')} disabled={applyingRec === rec.id}
-                                    className="flex-1 border border-gray-600 hover:border-gray-400 text-gray-400 hover:text-white text-xs py-2 rounded-lg transition-colors">
-                                    ❌ Reject
-                                  </button>
-                                </div>
-                              )}
-                              {rec.status !== 'pending' && (
-                                <div className={`text-xs px-3 py-1.5 rounded-lg text-center font-medium ${
-                                  rec.status === 'applied' ? 'bg-green-900/30 text-green-400' :
-                                  rec.status === 'rejected' ? 'bg-gray-800 text-gray-500' :
-                                  rec.status === 'failed' ? 'bg-red-900/30 text-red-400' :
-                                  'bg-gray-800 text-gray-400'
-                                }`}>
-                                  {rec.status === 'applied' ? '✅ Applied' : rec.status === 'rejected' ? '❌ Rejected' : rec.status === 'failed' ? '⚠️ Failed' : rec.status}
-                                </div>
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-
-                      {/* Learnings */}
-                      {optReport.learnings?.length > 0 && (
-                        <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-                          <p className="text-gray-500 text-xs font-semibold uppercase tracking-wider mb-3">🧠 What the AI Learned</p>
-                          <div className="space-y-2">
-                            {optReport.learnings.map((l, i) => (
-                              <div key={i} className="flex gap-2 text-xs">
-                                <span className="text-indigo-400 flex-shrink-0 mt-0.5">•</span>
-                                <p className="text-gray-300 leading-relaxed">{l}</p>
-                              </div>
-                            ))}
-                          </div>
-                          <p className="text-gray-600 text-xs mt-3">These learnings are saved and applied to future campaigns automatically.</p>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-          )}
-        </>
-      )}
-      {/* WhatsApp Broadcast Worker */}
-      <div className="mt-8 bg-gray-900 border border-green-800 rounded-2xl p-6">
-        <div className="flex items-center gap-3 mb-1">
-          <span className="text-2xl">💬</span>
-          <h2 className="text-white font-semibold">WhatsApp Broadcast</h2>
-          <span className="px-2 py-0.5 text-xs rounded-full bg-green-900/40 text-green-400 border border-green-800">W7</span>
-        </div>
-        <p className="text-gray-400 text-sm mb-4 ml-9">AI-written WhatsApp message templates with compliance checklist. Send via Meta Cloud API after approval.</p>
-        <div className="flex items-center gap-3 mb-4">
-          <label className="text-gray-500 text-xs">Broadcast Type</label>
-          <select value={waBroadcastType} onChange={e => setWaBroadcastType(e.target.value as 'MARKETING' | 'UTILITY')}
-            className="px-3 py-1.5 bg-gray-800 border border-gray-700 text-gray-300 text-xs rounded-lg">
-            <option value="MARKETING">MARKETING</option>
-            <option value="UTILITY">UTILITY</option>
-          </select>
-          <button onClick={runWhatsApp} disabled={waLoading || !workspaceId}
-            className="px-4 py-1.5 bg-green-700 hover:bg-green-600 disabled:opacity-50 text-white text-xs font-medium rounded-lg transition-colors flex items-center gap-2">
-            {waLoading ? <><Spinner />Generating...</> : '📲 Generate Templates'}
+        <select value={typeFilter} onChange={e => setTypeFilter(e.target.value)}
+          className="bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-gray-300 text-xs focus:outline-none focus:border-indigo-500">
+          <option>All</option>
+          {(['Email', 'Social', 'Ads', 'Content', 'Multi-channel'] as CampaignType[]).map(t => <option key={t}>{t}</option>)}
+        </select>
+        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search campaigns..."
+          className="bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-gray-300 text-xs placeholder-gray-600 focus:outline-none focus:border-indigo-500 w-48" />
+        <div className="ml-auto flex gap-1 bg-gray-900 border border-gray-800 rounded-lg p-1">
+          <button onClick={() => setView('list')}
+            className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${view === 'list' ? 'bg-gray-700 text-white' : 'text-gray-500 hover:text-white'}`}>
+            List
+          </button>
+          <button onClick={() => setView('board')}
+            className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${view === 'board' ? 'bg-gray-700 text-white' : 'text-gray-500 hover:text-white'}`}>
+            Board
           </button>
         </div>
-        {waResult && (
-          <p className={`text-xs ${waResult.startsWith('Error') ? 'text-red-400' : 'text-green-400'}`}>{waResult}</p>
-        )}
-        <p className="text-gray-600 text-xs mt-2">Templates saved as artifact → approve in Approvals → send via PUT /api/agents/campaign/whatsapp with recipient list.</p>
-      </div>
-    </div>
-  )
-}
-
-// ─── Pipeline board ───────────────────────────────────────────────────────────
-
-interface PipelineBoardProps {
-  campaigns: Campaign[]
-  onViewDetails: (c: Campaign) => void
-}
-
-interface PipelineColumn {
-  id: string
-  label: string
-  borderColor: string
-  badgeColor: string
-  headerTextColor: string
-  pulse: boolean
-}
-
-const PIPELINE_COLUMNS: PipelineColumn[] = [
-  { id: 'plan',             label: 'PLAN',              borderColor: 'border-t-gray-500',   badgeColor: 'bg-gray-700 text-gray-300',    headerTextColor: 'text-gray-400',   pulse: false },
-  { id: 'generating',       label: 'GENERATING',        borderColor: 'border-t-indigo-500', badgeColor: 'bg-indigo-900/60 text-indigo-300', headerTextColor: 'text-indigo-400', pulse: true  },
-  { id: 'awaiting_approval',label: 'AWAITING APPROVAL', borderColor: 'border-t-yellow-500', badgeColor: 'bg-yellow-900/60 text-yellow-300', headerTextColor: 'text-yellow-400', pulse: false },
-  { id: 'scheduled',        label: 'SCHEDULED',         borderColor: 'border-t-blue-500',   badgeColor: 'bg-blue-900/60 text-blue-300',    headerTextColor: 'text-blue-400',   pulse: false },
-  { id: 'tracking',         label: 'TRACKING',          borderColor: 'border-t-green-500',  badgeColor: 'bg-green-900/60 text-green-300',  headerTextColor: 'text-green-400',  pulse: false },
-]
-
-function campaignColumn(c: Campaign): string {
-  const s = c.approval_status
-  if (s === 'running')   return 'generating'
-  if (s === 'pending')   return 'awaiting_approval'
-  if (s === 'approved')  return 'scheduled'
-  if (s === 'completed') return 'tracking'
-  return 'plan' // 'draft' or not set
-}
-
-function StatusBadge({ status }: { status: string }) {
-  const cls =
-    status === 'approved'  ? 'bg-green-900/40 text-green-400' :
-    status === 'rejected'  ? 'bg-red-900/40 text-red-400' :
-    status === 'running'   ? 'bg-indigo-900/40 text-indigo-300' :
-    status === 'completed' ? 'bg-teal-900/40 text-teal-300' :
-    'bg-yellow-900/40 text-yellow-400'
-  return (
-    <span className={`inline-flex text-xs px-2 py-0.5 rounded-full capitalize ${cls}`}>
-      {status || 'draft'}
-    </span>
-  )
-}
-
-function PipelineBoard({ campaigns, onViewDetails }: PipelineBoardProps) {
-  const total     = campaigns.length
-  const pending   = campaigns.filter(c => c.approval_status === 'pending').length
-  const approved  = campaigns.filter(c => c.approval_status === 'approved').length
-  const running   = campaigns.filter(c => c.approval_status === 'running').length
-
-  const byColumn: Record<string, Campaign[]> = {}
-  for (const col of PIPELINE_COLUMNS) byColumn[col.id] = []
-  for (const c of campaigns) byColumn[campaignColumn(c)].push(c)
-
-  function scrollToGenerate() {
-    const el = document.querySelector<HTMLElement>('[data-generate-section]')
-    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' })
-  }
-
-  return (
-    <div className="space-y-5">
-      {/* Stats bar */}
-      <div className="grid grid-cols-4 gap-4">
-        {[
-          { label: 'Total Campaigns',  value: total,    color: 'text-white' },
-          { label: 'Pending Approval', value: pending,  color: 'text-yellow-400' },
-          { label: 'Approved',         value: approved, color: 'text-green-400' },
-          { label: 'Running',          value: running,  color: 'text-indigo-400' },
-        ].map(stat => (
-          <div key={stat.label} className="bg-gray-900 border border-gray-800 rounded-xl p-4 text-center">
-            <p className={`text-2xl font-bold ${stat.color}`}>{stat.value}</p>
-            <p className="text-gray-500 text-xs mt-1">{stat.label}</p>
-          </div>
-        ))}
       </div>
 
-      {/* Kanban board */}
-      <div className="overflow-x-auto pb-2">
-        <div className="flex gap-4" style={{ minWidth: 'max-content' }}>
-          {PIPELINE_COLUMNS.map((col, colIdx) => {
-            const cards = byColumn[col.id]
-            return (
-              <div
-                key={col.id}
-                className={`min-w-[12rem] w-52 bg-gray-900 border border-gray-800 rounded-xl flex flex-col border-t-2 ${col.borderColor}`}
-              >
-                {/* Column header */}
-                <div className="flex items-center justify-between px-3 py-2.5 border-b border-gray-800">
-                  <span className={`text-xs font-bold tracking-wider uppercase ${col.headerTextColor} flex items-center gap-1.5`}>
-                    {col.pulse && <span className="inline-block w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse" />}
-                    {col.label}
-                  </span>
-                  <span className={`text-xs px-1.5 py-0.5 rounded-full font-medium ${col.badgeColor}`}>{cards.length}</span>
-                </div>
-
-                {/* Cards */}
-                <div className="flex flex-col gap-2 p-2 flex-1">
-                  {cards.length === 0 && (
-                    <div className="border border-dashed border-gray-700 rounded-lg p-4 text-center">
-                      <p className="text-gray-600 text-xs">No campaigns yet</p>
-                    </div>
-                  )}
-                  {cards.map(c => (
-                    <div key={c.id} className="bg-gray-800 border border-gray-700 rounded-xl p-3 space-y-2">
-                      <p className="text-white text-xs font-semibold leading-tight line-clamp-2">
-                        {c.content_json.campaignName}
-                      </p>
-                      <p className="text-gray-500 text-xs capitalize">
-                        {c.content_json.campaignObjective}
-                      </p>
-                      <div className="flex items-center justify-between text-xs text-gray-500">
-                        <span>{c.content_json.totalBudget || '—'}</span>
-                        <span>{c.content_json.duration || '—'}</span>
+      {/* List View */}
+      {view === 'list' && (
+        <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-gray-800">
+                {['Campaign', 'Type', 'Status', 'Progress', 'Dates', 'Budget', 'Spend', 'ROI', 'Score', ''].map(h => (
+                  <th key={h} className="text-left text-xs text-gray-400 font-medium px-4 py-3 uppercase tracking-wider">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map(c => (
+                <tr key={c.id} className="border-b border-gray-800/50 hover:bg-gray-800/30 cursor-pointer" onClick={() => setSelectedCampaign(c)}>
+                  <td className="px-4 py-3">
+                    <p className="text-white font-medium text-sm">{c.name}</p>
+                    <p className="text-gray-500 text-xs mt-0.5">{c.goal.substring(0, 50)}…</p>
+                  </td>
+                  <td className="px-4 py-3"><span className={`text-xs px-2 py-0.5 rounded-full ${typeStyle(c.type)}`}>{c.type}</span></td>
+                  <td className="px-4 py-3"><span className={`text-xs px-2 py-0.5 rounded-full ${statusStyle(c.status)}`}>{c.status}</span></td>
+                  <td className="px-4 py-3">
+                    <div className="flex items-center gap-2">
+                      <div className="w-20 h-1.5 bg-gray-700 rounded-full overflow-hidden">
+                        <div className="h-full bg-indigo-500 rounded-full" style={{ width: `${c.progress}%` }} />
                       </div>
-                      <StatusBadge status={c.approval_status} />
-                      <button
-                        onClick={() => onViewDetails(c)}
-                        className="w-full text-xs text-indigo-400 hover:text-indigo-300 border border-indigo-800 hover:border-indigo-600 py-1 rounded-lg transition-colors"
-                      >
-                        View Details
-                      </button>
+                      <span className="text-gray-400 text-xs">{c.progress}%</span>
                     </div>
-                  ))}
-
-                  {/* New Campaign button at bottom of Plan column */}
-                  {colIdx === 0 && (
-                    <button
-                      onClick={scrollToGenerate}
-                      className="mt-1 w-full text-xs text-orange-400 hover:text-orange-300 border border-dashed border-orange-800 hover:border-orange-600 py-2 rounded-lg transition-colors"
-                    >
-                      + New Campaign
-                    </button>
-                  )}
-                </div>
-              </div>
-            )
-          })}
+                  </td>
+                  <td className="px-4 py-3 text-gray-400 text-xs">
+                    <p>{c.startDate}</p>
+                    <p>{c.endDate}</p>
+                  </td>
+                  <td className="px-4 py-3 text-white">${c.budget.toLocaleString()}</td>
+                  <td className="px-4 py-3 text-gray-300">${c.spend.toLocaleString()}</td>
+                  <td className="px-4 py-3">
+                    <span className={`font-semibold ${c.roi >= 200 ? 'text-green-400' : c.roi >= 100 ? 'text-amber-400' : c.roi === 0 ? 'text-gray-600' : 'text-white'}`}>
+                      {c.roi > 0 ? `${c.roi}%` : '—'}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3">
+                    {c.performanceScore > 0 ? (
+                      <span className={`font-bold ${c.performanceScore >= 80 ? 'text-green-400' : c.performanceScore >= 60 ? 'text-amber-400' : 'text-red-400'}`}>
+                        {c.performanceScore}
+                      </span>
+                    ) : <span className="text-gray-600">—</span>}
+                  </td>
+                  <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
+                    <button onClick={() => setSelectedCampaign(c)} className="text-indigo-400 hover:text-indigo-300 text-xs transition-colors">View →</button>
+                  </td>
+                </tr>
+              ))}
+              {filtered.length === 0 && (
+                <tr><td colSpan={10} className="text-center py-12 text-gray-500">No campaigns match your filters</td></tr>
+              )}
+            </tbody>
+          </table>
         </div>
-      </div>
+      )}
 
-      {/* Pipeline legend */}
-      <div className="flex items-center gap-4 text-xs text-gray-600">
-        <span>Pipeline stages:</span>
-        {PIPELINE_COLUMNS.map((col, i) => (
-          <span key={col.id} className="flex items-center gap-1">
-            <span className={col.headerTextColor}>{col.label}</span>
-            {i < PIPELINE_COLUMNS.length - 1 && <span className="text-gray-700">→</span>}
-          </span>
-        ))}
-      </div>
+      {/* Board View */}
+      {view === 'board' && (
+        <BoardView campaigns={filtered} onSelect={c => setSelectedCampaign(c)} />
+      )}
     </div>
-  )
-}
-
-function Spinner() {
-  return (
-    <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none">
-      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-    </svg>
   )
 }
