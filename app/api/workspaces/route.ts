@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
+import { seedWorkspace } from '@/lib/seed-workspace'
 
 export async function POST(req: NextRequest) {
   try {
@@ -8,6 +9,7 @@ export async function POST(req: NextRequest) {
       businessName, industry, website, tagline, offer, uniqueValue,
       targetAudience, tone, competitors, channels, goals,
       monthlyBudget, prohibitedClaims, approvalEmail, userId,
+      primaryGoal, skipSeed,
     } = body
 
     const workspaceId = newId()
@@ -31,7 +33,28 @@ export async function POST(req: NextRequest) {
       )
     `
 
-    return NextResponse.json({ workspaceId, success: true })
+    // Seed sample data so the user's first dashboard view isn't empty.
+    // Skipped only on explicit caller request (e.g. test environments).
+    let seedResult: { seeded: { type: string; count: number }[] } | undefined
+    if (!skipSeed) {
+      try {
+        seedResult = await seedWorkspace({
+          workspaceId,
+          businessName: businessName || 'Your Business',
+          industry,
+          primaryGoal,
+        })
+      } catch (err) {
+        // Seeding failure must not block workspace creation
+        console.error('[workspaces POST] seed failed (non-fatal):', err)
+      }
+    }
+
+    return NextResponse.json({
+      workspaceId,
+      success: true,
+      seeded: seedResult?.seeded || [],
+    })
   } catch (error) {
     console.error('Workspace creation error:', error)
     return NextResponse.json({ error: String(error) }, { status: 500 })

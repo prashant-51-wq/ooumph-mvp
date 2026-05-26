@@ -14,71 +14,72 @@ interface AgentRun {
 }
 
 // ── Primary nav (always visible) ─────────────────────────────────────────────
+// ── Primary nav: 8 daily-driver pages (was 14) ────────────────────────────────
+// Organized so a new user immediately understands what they can do today.
 const PRIMARY_NAV = [
-  { href: '/dashboard', label: 'CMO Dashboard', icon: '⚡' },
-  { href: '/dashboard/activity', label: 'Workspace', icon: '💡' },
+  { href: '/dashboard', label: 'CMO', icon: '⚡' },
   { href: '/dashboard/inbox', label: 'Inbox', icon: '📬' },
-  { href: '/dashboard/calendar', label: 'Calendar', icon: '📅' },
-  { href: '/dashboard/workflows', label: 'Workflows', icon: '⚡' },
-  { href: '/dashboard/reputation', label: 'Reputation', icon: '⭐' },
-  { href: '/dashboard/strategy', label: 'Strategy', icon: '🧠' },
-  { href: '/dashboard/content', label: 'Content Calendar', icon: '📅' },
   { href: '/dashboard/approvals', label: 'Approvals', icon: '✅' },
+  { href: '/dashboard/calendar', label: 'Calendar', icon: '📅' },
   { href: '/dashboard/agents', label: 'Agents', icon: '🤖' },
-  { href: '/dashboard/connections', label: 'Connections', icon: '🔗' },
-  { href: '/dashboard/billing', label: 'Billing', icon: '💳' },
-  { href: '/dashboard/agency', label: 'Agency', icon: '🏢' },
+  { href: '/dashboard/leads-crm', label: 'CRM', icon: '👥' },
+  { href: '/dashboard/analytics', label: 'Analytics', icon: '📊' },
   { href: '/dashboard/settings', label: 'Settings', icon: '⚙️' },
 ]
 
-// ── Advanced nav (behind expander) ────────────────────────────────────────────
+// ── Advanced nav: organized by job-to-be-done (Plan / Create / Engage / Convert / Operate) ──
 const ADVANCED_NAV = [
   {
-    label: 'CONTENT',
+    label: 'PLAN',
     items: [
-      { href: '/dashboard/blog', label: 'Blog & Scripts', icon: '✍️' },
-      { href: '/dashboard/creative', label: 'Creative Studio', icon: '🎨' },
-      { href: '/dashboard/image-gen', label: 'AI Image Studio', icon: '🖼️' },
-      { href: '/dashboard/voiceover', label: 'Voiceover', icon: '🎙️' },
-      { href: '/dashboard/video-gen', label: 'AI Video Studio', icon: '🎬' },
-      { href: '/dashboard/repurpose', label: 'Content Repurpose', icon: '♻️' },
-      { href: '/dashboard/pr', label: 'PR Studio', icon: '📰' },
+      { href: '/dashboard/strategy', label: 'Strategy', icon: '🧠' },
+      { href: '/dashboard/research', label: 'Market Research', icon: '🔍' },
+      { href: '/dashboard/brand-monitor', label: 'Brand Monitor', icon: '👁️' },
+      { href: '/dashboard/memory', label: 'Brand Memory', icon: '📚' },
+      { href: '/dashboard/learning', label: 'AI Learning', icon: '🧬' },
     ],
   },
   {
-    label: 'GROWTH',
+    label: 'CREATE',
     items: [
-      { href: '/dashboard/inbox', label: 'Unified Inbox', icon: '📬' },
-      { href: '/dashboard/workflows', label: 'Workflows', icon: '⚡' },
+      { href: '/dashboard/content', label: 'Content', icon: '📝' },
+      { href: '/dashboard/creative', label: 'Creative Studio', icon: '🎨' },
+      { href: '/dashboard/blog', label: 'Blog & Scripts', icon: '✍️' },
+      { href: '/dashboard/image-gen', label: 'Image Studio', icon: '🖼️' },
+      { href: '/dashboard/video-gen', label: 'Video Studio', icon: '🎬' },
+      { href: '/dashboard/voiceover', label: 'Voiceover', icon: '🎙️' },
+      { href: '/dashboard/repurpose', label: 'Repurpose', icon: '♻️' },
+      { href: '/dashboard/media', label: 'Media Library', icon: '🗂️' },
+    ],
+  },
+  {
+    label: 'ENGAGE',
+    items: [
+      { href: '/dashboard/publishing', label: 'Publishing Hub', icon: '🚀' },
+      { href: '/dashboard/email-marketing', label: 'Email Marketing', icon: '📧' },
+      { href: '/dashboard/voice-ai', label: 'Voice AI', icon: '📞' },
+      { href: '/dashboard/pr', label: 'PR Studio', icon: '📰' },
       { href: '/dashboard/reputation', label: 'Reputation', icon: '⭐' },
+    ],
+  },
+  {
+    label: 'CONVERT',
+    items: [
       { href: '/dashboard/leads', label: 'Lead Gen', icon: '🎯' },
-      { href: '/dashboard/leads-crm', label: 'CRM', icon: '👥' },
       { href: '/dashboard/funnel', label: 'Funnel Plan', icon: '🔮' },
       { href: '/dashboard/funnel/form-builder', label: 'Form Builder', icon: '📋' },
-      { href: '/dashboard/email-marketing', label: 'Email', icon: '📧' },
       { href: '/dashboard/campaign', label: 'Campaigns', icon: '📣' },
-      { href: '/dashboard/ads', label: 'Paid Ads', icon: '🎯' },
-      { href: '/dashboard/growth', label: 'Growth Engine', icon: '📈' },
+      { href: '/dashboard/ads', label: 'Paid Ads', icon: '💸' },
     ],
   },
   {
-    label: 'MEDIA & PUBLISHING',
+    label: 'OPERATE',
     items: [
-      { href: '/dashboard/media', label: 'Media Library', icon: '🖼️' },
-      { href: '/dashboard/publishing', label: 'Publishing Hub', icon: '🚀' },
-      { href: '/dashboard/voice-ai', label: 'Voice AI', icon: '📞' },
-      { href: '/dashboard/payments', label: 'Payments', icon: '💳' },
-    ],
-  },
-  {
-    label: 'INTELLIGENCE',
-    items: [
-      { href: '/dashboard/research', label: 'Research Hub', icon: '🔍' },
-      { href: '/dashboard/analytics', label: 'Analytics', icon: '📊' },
+      { href: '/dashboard/workflows', label: 'Workflows', icon: '⚡' },
       { href: '/dashboard/ab-test', label: 'A/B Testing', icon: '🧪' },
-      { href: '/dashboard/brand-monitor', label: 'Brand Monitor', icon: '👁️' },
-      { href: '/dashboard/memory', label: 'Brand Memory', icon: '🧠' },
-      { href: '/dashboard/learning', label: 'AI Learning', icon: '🧬' },
+      { href: '/dashboard/growth', label: 'Growth Engine', icon: '📈' },
+      { href: '/dashboard/export', label: 'Data Export', icon: '📤' },
+      { href: '/dashboard/assets', label: 'Assets', icon: '📦' },
     ],
   },
   {
@@ -86,16 +87,18 @@ const ADVANCED_NAV = [
     items: [
       { href: '/dashboard/billing', label: 'Billing & Plans', icon: '💳' },
       { href: '/dashboard/agency', label: 'Agency Dashboard', icon: '🏢' },
+      { href: '/dashboard/payments', label: 'Payments', icon: '💰' },
+      { href: '/dashboard/connections', label: 'Connections', icon: '🔗' },
+      { href: '/dashboard/onboarding', label: 'Workspace Setup', icon: '🚀' },
     ],
   },
   {
     label: 'SYSTEM',
     items: [
-      { href: '/dashboard/assets', label: 'Assets', icon: '📦' },
-      { href: '/dashboard/export', label: 'Export', icon: '📄' },
+      { href: '/dashboard/health', label: 'System Health', icon: '🩺' },
+      { href: '/dashboard/activity', label: 'Activity Feed', icon: '📡' },
       { href: '/dashboard/audit', label: 'Audit Log', icon: '📋' },
       { href: '/dashboard/privacy', label: 'Privacy & Trust', icon: '🔒' },
-      { href: '/dashboard/onboarding', label: 'Onboarding', icon: '🚀' },
     ],
   },
   {
@@ -109,7 +112,7 @@ const ADVANCED_NAV = [
 function getPageTitle(pathname: string): string {
   const map: Record<string, string> = {
     '/dashboard': 'CMO Dashboard',
-    '/dashboard/activity': 'Workspace',
+    '/dashboard/activity': 'Activity Feed',
     '/dashboard/strategy': 'Strategy',
     '/dashboard/content': 'Content Calendar',
     '/dashboard/approvals': 'Approvals',
@@ -121,8 +124,9 @@ function getPageTitle(pathname: string): string {
     '/dashboard/workflows': 'Workflow Engine',
     '/dashboard/reputation': 'Reputation Agent',
     '/dashboard/leads-crm': 'CRM',
+    '/dashboard/leads': 'Lead Gen',
     '/dashboard/campaign': 'Campaigns',
-    '/dashboard/email-marketing': 'Email',
+    '/dashboard/email-marketing': 'Email Marketing',
     '/dashboard/ads': 'Paid Ads',
     '/dashboard/growth': 'Growth',
     '/dashboard/analytics': 'Analytics',
@@ -130,13 +134,29 @@ function getPageTitle(pathname: string): string {
     '/dashboard/blog': 'Blog & Scripts',
     '/dashboard/creative': 'Creative Studio',
     '/dashboard/voiceover': 'Voiceover',
+    '/dashboard/voice-ai': 'Voice AI',
+    '/dashboard/video-gen': 'Video Studio',
+    '/dashboard/image-gen': 'Image Studio',
+    '/dashboard/media': 'Media Library',
+    '/dashboard/repurpose': 'Repurpose',
+    '/dashboard/pr': 'PR Studio',
     '/dashboard/publishing': 'Publishing',
     '/dashboard/billing': 'Billing & Plans',
+    '/dashboard/payments': 'Payments',
     '/dashboard/agency': 'Agency Dashboard',
     '/dashboard/audit': 'Audit Log',
     '/dashboard/privacy': 'Privacy & Trust',
+    '/dashboard/funnel': 'Funnel Plan',
     '/dashboard/funnel/form-builder': 'Form Builder',
     '/dashboard/super-admin': 'Super Admin',
+    '/dashboard/health': 'System Health',
+    '/dashboard/memory': 'Brand Memory',
+    '/dashboard/learning': 'AI Learning',
+    '/dashboard/brand-monitor': 'Brand Monitor',
+    '/dashboard/ab-test': 'A/B Testing',
+    '/dashboard/export': 'Data Export',
+    '/dashboard/assets': 'Assets',
+    '/dashboard/onboarding': 'Workspace Setup',
   }
   return map[pathname] || pathname.split('/').filter(Boolean).pop()?.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) || 'Dashboard'
 }

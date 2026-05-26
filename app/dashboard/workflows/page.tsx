@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 type NodeType = 'trigger' | 'email' | 'sms' | 'wait' | 'condition' | 'tag' | 'update_contact' | 'ai_action' | 'notification'
@@ -451,10 +451,61 @@ function AIGenerateModal({ onClose, onGenerate }: { onClose: () => void; onGener
   )
 }
 
+// Map UI node type → backend trigger node type (lib/workflow-engine.ts)
+const NODE_TYPE_MAP: Record<NodeType, string> = {
+  trigger:        'trigger',
+  email:          'send_email',
+  sms:            'send_sms',
+  wait:           'wait',
+  condition:      'condition',
+  tag:            'add_tag',
+  update_contact: 'update_contact',
+  ai_action:      'ai_action',
+  notification:   'notify',
+}
+
+// Translate UI node + config → backend node payload
+function nodeToPayload(n: WorkflowNode): Record<string, unknown> {
+  const base: Record<string, unknown> = {
+    id: n.id,
+    type: NODE_TYPE_MAP[n.type] || n.type,
+  }
+  const c = n.config || {}
+  switch (n.type) {
+    case 'email':
+      return { ...base, subject: c.subject, body: c.template || c.body }
+    case 'sms':
+      return { ...base, message: c.message }
+    case 'wait': {
+      const dur = Number(c.duration) || 0
+      const unit = c.unit || 'days'
+      return {
+        ...base,
+        delay_minutes: unit === 'minutes' ? dur : 0,
+        delay_hours: unit === 'hours' ? dur : 0,
+        delay_days: unit === 'days' ? dur : (unit === 'weeks' ? dur * 7 : 0),
+      }
+    }
+    case 'condition':
+      return { ...base, field: c.field, operator: c.operator, value: c.value }
+    case 'tag':
+      return { ...base, tag: c.tag }
+    case 'update_contact':
+      return { ...base, field_updates: c.field && c.value ? { [c.field]: c.value } : {} }
+    case 'ai_action':
+      return { ...base, prompt: c.prompt, output_field: c.output_field }
+    case 'notification':
+      return { ...base, channel: (c.channel || '').toLowerCase().includes('slack') ? 'slack' : 'in_app', body: c.message }
+    case 'trigger':
+    default:
+      return base
+  }
+}
+
 // ── Main Page ──────────────────────────────────────────────────────────────────
 export default function WorkflowsPage() {
   const [workflows, setWorkflows] = useState<WorkflowDef[]>(INITIAL_WORKFLOWS)
-  const [selectedId, setSelectedId] = useState<string>(INITIAL_WORKFLOWS[0].id)
+  const [selectedId, setSelectedId] = useState<string>(INITIAL_WORKFLOWS[0]?.id || '')
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>('workflows')
   const [filterStatus, setFilterStatus] = useState<string>('All')
   const [editingNode, setEditingNode] = useState<WorkflowNode | null>(null)
@@ -462,8 +513,102 @@ export default function WorkflowsPage() {
   const [showAIGenerate, setShowAIGenerate] = useState(false)
   const [editingName, setEditingName] = useState(false)
   const [nameVal, setNameVal] = useState('')
+  const [loadingFromApi, setLoadingFromApi] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState('')
+  const [saveSuccess, setSaveSuccess] = useState('')
+
+  // Load workflows from API on mount
+  useEffect(() => {
+    const wid = localStorage.getItem('workspaceId')
+    if (!wid) { setLoadingFromApi(false); return }
+    fetch(`/api/workflows?workspaceId=${wid}`)
+      .then(r => r.ok ? r.json() : [])
+      .then((rows: Array<{ id: string; name: string; status: string; nodes: string | unknown[]; run_count?: number; last_run_at?: string }>) => {
+        if (!Array.isArray(rows) || rows.length === 0) { setLoadingFromApi(false); return }
+        const loaded: WorkflowDef[] = rows.map(r => {
+          let parsedNodes: unknown[] = []
+          try { parsedNodes = typeof r.nodes === 'string' ? JSON.parse(r.nodes) : (r.nodes || []) } catch { parsedNodes = [] }
+          // Reverse-map backend node types back to UI types
+          const REVERSE_MAP: Record<string, NodeType> = {
+            trigger: 'trigger', send_email: 'email', send_sms: 'sms', wait: 'wait',
+            condition: 'condition', add_tag: 'tag', update_contact: 'update_contact',
+            ai_action: 'ai_action', ai_reply: 'ai_action', notify: 'notification',
+            notify_slack: 'notification', send_booking_link: 'email',
+          }
+          const uiNodes = (parsedNodes as Array<{ id?: string; type: string; [k: string]: unknown }>).map(n => {
+            const uiType = REVERSE_MAP[n.type] || 'trigger'
+            const config: Record<string, string> = {}
+            for (const [k, v] of Object.entries(n)) {
+              if (k !== 'id' && k !== 'type' && v != null) config[k] = String(v)
+            }
+            return { id: n.id || nid(), type: uiType, label: NODE_META[uiType].label, config }
+          })
+          const status: WorkflowStatus = r.status === 'active' ? 'Active' : r.status === 'paused' ? 'Paused' : 'Draft'
+          return {
+            id: r.id,
+            name: r.name,
+            triggerIcon: '⚡',
+            status,
+            enrolled: 0,
+            lastRun: r.last_run_at ? new Date(r.last_run_at).toLocaleString() : 'Never',
+            nodes: uiNodes,
+            stats: { enrolled: 0, completed: r.run_count || 0, convRate: 0, emailsSent: 0, avgTime: '—' },
+          }
+        })
+        setWorkflows(loaded)
+        setSelectedId(loaded[0]?.id || '')
+      })
+      .catch(err => console.error('[workflows] load failed:', err))
+      .finally(() => setLoadingFromApi(false))
+  }, [])
 
   const selected = workflows.find(w => w.id === selectedId) || workflows[0]
+
+  // Persist current workflow to API
+  const persistWorkflow = useCallback(async (wf: WorkflowDef) => {
+    const wid = localStorage.getItem('workspaceId')
+    if (!wid) { setSaveError('No workspace selected'); return }
+    setSaving(true); setSaveError(''); setSaveSuccess('')
+    try {
+      const nodes = wf.nodes.map(nodeToPayload)
+      const status = wf.status === 'Active' ? 'active' : wf.status === 'Paused' ? 'paused' : 'draft'
+      // If id looks like a local-only id (starts with 'wf' followed by timestamp), create new
+      const isLocalId = wf.id.startsWith('wf') && /\d+/.test(wf.id) && wf.id.length < 20
+      if (isLocalId) {
+        const res = await fetch('/api/workflows', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            workspaceId: wid,
+            name: wf.name,
+            triggerType: 'lead_captured',
+            nodes,
+            status,
+          }),
+        })
+        const data = await res.json() as { id?: string; ok?: boolean; error?: string }
+        if (!data.id) throw new Error(data.error || 'Save failed')
+        // Replace local id with server id
+        setWorkflows(ws => ws.map(w => w.id === wf.id ? { ...w, id: data.id! } : w))
+        if (selectedId === wf.id) setSelectedId(data.id)
+      } else {
+        const res = await fetch('/api/workflows', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: wf.id, name: wf.name, nodes, status }),
+        })
+        const data = await res.json() as { ok?: boolean; error?: string }
+        if (!data.ok) throw new Error(data.error || 'Save failed')
+      }
+      setSaveSuccess('✓ Saved')
+      setTimeout(() => setSaveSuccess(''), 2000)
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : 'Save failed')
+    } finally {
+      setSaving(false)
+    }
+  }, [selectedId])
 
   function updateWorkflow(id: string, patch: Partial<WorkflowDef>) {
     setWorkflows(ws => ws.map(w => w.id === id ? { ...w, ...patch } : w))
@@ -653,18 +798,53 @@ export default function WorkflowsPage() {
               <span className="text-gray-600 text-xs">{selected.nodes.length} steps</span>
               <span className="text-gray-600 text-xs">· {selected.enrolled} enrolled</span>
 
-              <div className="ml-auto flex gap-2">
+              <div className="ml-auto flex items-center gap-2">
+                {saveSuccess && <span className="text-emerald-400 text-xs">{saveSuccess}</span>}
+                {saveError && <span className="text-red-400 text-xs">{saveError}</span>}
                 <button
-                  onClick={toggleStatus}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${selected.status === 'Active' ? 'bg-yellow-950/40 border-yellow-800 text-yellow-300 hover:bg-yellow-950/60' : 'bg-emerald-950/40 border-emerald-800 text-emerald-300 hover:bg-emerald-950/60'}`}
+                  onClick={async () => {
+                    const newStatus: WorkflowStatus = selected.status === 'Active' ? 'Paused' : 'Active'
+                    updateWorkflow(selected.id, { status: newStatus })
+                    await persistWorkflow({ ...selected, status: newStatus })
+                  }}
+                  disabled={saving}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors disabled:opacity-50 ${selected.status === 'Active' ? 'bg-yellow-950/40 border-yellow-800 text-yellow-300 hover:bg-yellow-950/60' : 'bg-emerald-950/40 border-emerald-800 text-emerald-300 hover:bg-emerald-950/60'}`}
                 >
                   {selected.status === 'Active' ? '⏸ Pause' : '▶ Activate'}
                 </button>
-                <button className="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 rounded-lg text-xs font-medium transition-colors">
+                <button
+                  onClick={async () => {
+                    const wid = localStorage.getItem('workspaceId')
+                    if (!wid) { setSaveError('No workspace'); return }
+                    setSaveSuccess('Triggering test run…')
+                    try {
+                      const res = await fetch('/api/workflows/trigger', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                          workspaceId: wid,
+                          triggerType: 'lead_captured',
+                          data: { test_run: true, contact_email: 'test@example.com' },
+                        }),
+                      })
+                      const data = await res.json() as { triggered?: number; error?: string }
+                      if (data.error) throw new Error(data.error)
+                      setSaveSuccess(`✓ Test fired (${data.triggered || 0} workflows ran)`)
+                      setTimeout(() => setSaveSuccess(''), 4000)
+                    } catch (err) {
+                      setSaveError(err instanceof Error ? err.message : 'Test failed')
+                      setTimeout(() => setSaveError(''), 4000)
+                    }
+                  }}
+                  disabled={saving}
+                  className="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 rounded-lg text-xs font-medium transition-colors disabled:opacity-50">
                   ▶ Test Workflow
                 </button>
-                <button className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-medium transition-colors">
-                  💾 Save
+                <button
+                  onClick={() => persistWorkflow(selected)}
+                  disabled={saving}
+                  className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-medium transition-colors disabled:opacity-50">
+                  {saving ? '⟳ Saving…' : '💾 Save'}
                 </button>
               </div>
             </div>
