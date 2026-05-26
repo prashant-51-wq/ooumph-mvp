@@ -1,6 +1,7 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import { useRouter } from 'next/navigation'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -534,7 +535,57 @@ function PlatformSettingsTab() {
 type Tab = 'overview' | 'agencies' | 'commissions' | 'settings'
 
 export default function SuperAdminPage() {
+  const router = useRouter()
   const [activeTab, setActiveTab] = useState<Tab>('overview')
+  const [authState, setAuthState] = useState<'loading' | 'authorized' | 'denied'>('loading')
+
+  // Auth gate: only super admins may access this page.
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/auth/me', { credentials: 'include' })
+      .then(res => res.json())
+      .then(data => {
+        if (cancelled) return
+        if (data?.user?.isAdmin === true) setAuthState('authorized')
+        else setAuthState('denied')
+      })
+      .catch(() => { if (!cancelled) setAuthState('denied') })
+    return () => { cancelled = true }
+  }, [])
+
+  // While checking auth — render a minimal spinner. Never render the dashboard body.
+  if (authState === 'loading') {
+    return (
+      <div className="min-h-[60vh] flex items-center justify-center">
+        <div className="flex items-center gap-3 text-gray-400 text-sm">
+          <span className="w-4 h-4 border-2 border-gray-600 border-t-indigo-500 rounded-full animate-spin" />
+          Verifying access…
+        </div>
+      </div>
+    )
+  }
+
+  // Denied — show access denied screen with redirect link.
+  if (authState === 'denied') {
+    return (
+      <div className="min-h-[60vh] flex items-center justify-center p-6">
+        <div className="bg-gray-900 border border-red-900/50 rounded-2xl p-8 max-w-md text-center">
+          <div className="text-5xl mb-3">🛡️</div>
+          <h2 className="text-xl font-bold text-white mb-2">Access Denied</h2>
+          <p className="text-gray-400 text-sm mb-6">
+            The Super Admin dashboard is restricted to Ooumph platform owners. If you believe this is a mistake, contact{' '}
+            <a href="mailto:support@ooumph.com" className="text-indigo-400 hover:underline">support@ooumph.com</a>.
+          </p>
+          <button
+            onClick={() => router.push('/dashboard')}
+            className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-medium"
+          >
+            ← Back to Dashboard
+          </button>
+        </div>
+      </div>
+    )
+  }
 
   const tabs: Array<{ key: Tab; label: string; icon: string }> = [
     { key: 'overview', label: 'Overview', icon: '📊' },

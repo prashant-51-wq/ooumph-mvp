@@ -4,48 +4,34 @@ import { useState, useEffect, useRef } from 'react'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-type MainTab = 'generate' | 'edit' | 'export'
+type MainTab = 'generate' | 'customize' | 'export'
 type SidebarTab = 'myvideos' | 'templates' | 'stock'
-type VideoStatus = 'Ready' | 'Generating' | 'Draft'
+type VideoStatus = 'Ready' | 'Generating' | 'Draft' | 'Failed'
 
 interface VideoProject {
   id: string
   name: string
   duration: string
   status: VideoStatus
-  color: string
+  videoUrl?: string
+  thumbnail?: string
   model: string
   createdAt: string
 }
 
-interface TimelineClip {
-  id: string
-  start: number
-  width: number
-  color: string
-  label: string
-}
-
-// ─── Mock Data ────────────────────────────────────────────────────────────────
-
-const MOCK_PROJECTS: VideoProject[] = [
-  { id: '1', name: 'Product Launch Hero', duration: '0:30', status: 'Ready', color: 'bg-indigo-600', model: 'Kling 2.0', createdAt: '2h ago' },
-  { id: '2', name: 'Social Media Reel', duration: '0:15', status: 'Ready', color: 'bg-violet-600', model: 'Runway Gen-3', createdAt: '5h ago' },
-  { id: '3', name: 'Brand Intro', duration: '0:10', status: 'Generating', color: 'bg-fuchsia-600', model: 'Kling 2.0', createdAt: '12m ago' },
-  { id: '4', name: 'Tutorial Draft', duration: '1:00', status: 'Draft', color: 'bg-cyan-700', model: 'Sora', createdAt: '1d ago' },
-]
+// ─── Static config ────────────────────────────────────────────────────────────
 
 const VIDEO_MODELS = [
-  { id: 'kling', name: 'Kling 2.0', speed: 'Fast', quality: '4K', color: 'from-indigo-500 to-blue-600' },
-  { id: 'runway', name: 'Runway Gen-3', speed: 'Fast', quality: 'HD', color: 'from-emerald-500 to-teal-600' },
-  { id: 'sora', name: 'Sora', speed: 'Slow', quality: '4K', color: 'from-orange-500 to-red-600' },
-  { id: 'pika', name: 'Pika 2.0', speed: 'Fast', quality: 'HD', color: 'from-pink-500 to-rose-600' },
-  { id: 'luma', name: 'Luma Dream', speed: 'Slow', quality: 'HD', color: 'from-purple-500 to-violet-600' },
+  { id: 'runway', name: 'Runway Gen-3', speed: 'Fast', quality: 'HD', color: 'from-emerald-500 to-teal-600', avgSec: 30 },
+  { id: 'kling', name: 'Kling 2.0',     speed: 'Slow', quality: '4K', color: 'from-indigo-500 to-blue-600',  avgSec: 60 },
+  { id: 'sora',  name: 'Sora',          speed: 'Slow', quality: '4K', color: 'from-orange-500 to-red-600',   avgSec: 90 },
+  { id: 'pika',  name: 'Pika 2.0',      speed: 'Fast', quality: 'HD', color: 'from-pink-500 to-rose-600',    avgSec: 40 },
+  { id: 'luma',  name: 'Luma Dream',    speed: 'Slow', quality: 'HD', color: 'from-purple-500 to-violet-600',avgSec: 60 },
 ]
 
 const STYLE_PRESETS = ['Cinematic', 'Corporate', 'Social Media', 'Documentary', 'Animation', 'Product Demo', 'Vlog', 'Music Video']
 
-const DURATION_OPTS = ['5s', '10s', '15s', '30s', '60s']
+const DURATION_OPTS = [5, 10] as const  // Runway supports 5 and 10
 const RATIO_OPTS = ['16:9', '9:16', '1:1', '4:5']
 const RESOLUTION_OPTS = ['720p', '1080p', '4K']
 const FPS_OPTS = ['24', '30', '60']
@@ -69,12 +55,6 @@ const AI_SUGGESTIONS = [
   'Use slow-motion effect at 0:22',
 ]
 
-const VIDEO_HISTORY = [
-  { id: 'h1', color: 'bg-indigo-800', label: 'V1 · 0:30' },
-  { id: 'h2', color: 'bg-violet-800', label: 'V2 · 0:15' },
-  { id: 'h3', color: 'bg-fuchsia-800', label: 'V3 · 0:10' },
-]
-
 // ─── Sub-components ──────────────────────────────────────────────────────────
 
 function StatusBadge({ status }: { status: VideoStatus }) {
@@ -82,6 +62,7 @@ function StatusBadge({ status }: { status: VideoStatus }) {
     Ready: 'bg-emerald-900/50 text-emerald-400 border-emerald-800/50',
     Generating: 'bg-amber-900/50 text-amber-400 border-amber-800/50',
     Draft: 'bg-gray-800 text-gray-400 border-gray-700',
+    Failed: 'bg-red-900/50 text-red-400 border-red-800/50',
   }
   return (
     <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium border ${map[status]}`}>
@@ -100,23 +81,25 @@ function Spinner({ size = 4 }: { size?: number }) {
   )
 }
 
+function relativeTime(iso: string): string {
+  const t = new Date(iso).getTime()
+  if (Number.isNaN(t)) return ''
+  const diff = (Date.now() - t) / 1000
+  if (diff < 60) return 'just now'
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`
+  return `${Math.floor(diff / 86400)}d ago`
+}
+
+function safeParse<T = unknown>(s: string): T | undefined {
+  try { return JSON.parse(s) as T } catch { return undefined }
+}
+
 // ─── API Settings Slide-over ──────────────────────────────────────────────────
 
 function ApiSettingsPanel({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const [provider, setProvider] = useState('Kling')
+  const [provider, setProvider] = useState('Runway')
   const [apiKey, setApiKey] = useState('')
-  const [testing, setTesting] = useState(false)
-  const [testResult, setTestResult] = useState<'idle' | 'ok' | 'fail'>('idle')
-
-  function testConnection() {
-    setTesting(true)
-    setTestResult('idle')
-    setTimeout(() => {
-      setTesting(false)
-      setTestResult(apiKey.length > 10 ? 'ok' : 'fail')
-    }, 1500)
-  }
-
   if (!open) return null
   return (
     <div className="fixed inset-0 z-50 flex">
@@ -128,6 +111,9 @@ function ApiSettingsPanel({ open, onClose }: { open: boolean; onClose: () => voi
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
           </button>
         </div>
+        <p className="text-amber-300 text-xs bg-amber-900/20 border border-amber-800/40 rounded-lg p-3">
+          API keys are configured in Settings → AI Assistants. Currently only Runway is wired up for actual generation — other models will route through Runway.
+        </p>
         <div>
           <label className="text-gray-400 text-xs mb-1.5 block">API Provider</label>
           <select
@@ -135,7 +121,7 @@ function ApiSettingsPanel({ open, onClose }: { open: boolean; onClose: () => voi
             onChange={e => setProvider(e.target.value)}
             className="w-full px-3 py-2.5 rounded-lg bg-gray-800 border border-gray-700 text-white text-sm focus:outline-none focus:border-indigo-500"
           >
-            {['Kling', 'Runway', 'Pika', 'Replicate', 'Luma'].map(p => (
+            {['Runway', 'Kling', 'Pika', 'Replicate', 'Luma'].map(p => (
               <option key={p} value={p}>{p}</option>
             ))}
           </select>
@@ -151,15 +137,6 @@ function ApiSettingsPanel({ open, onClose }: { open: boolean; onClose: () => voi
           />
         </div>
         <button
-          onClick={testConnection}
-          disabled={testing}
-          className="flex items-center justify-center gap-2 w-full py-2.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm transition-colors disabled:opacity-50"
-        >
-          {testing ? <><Spinner size={4} /> Testing...</> : 'Test Connection'}
-        </button>
-        {testResult === 'ok' && <p className="text-emerald-400 text-xs text-center">Connection successful</p>}
-        {testResult === 'fail' && <p className="text-red-400 text-xs text-center">Connection failed — check your API key</p>}
-        <button
           className="w-full py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium transition-colors"
           onClick={onClose}
         >
@@ -170,91 +147,49 @@ function ApiSettingsPanel({ open, onClose }: { open: boolean; onClose: () => voi
   )
 }
 
-// ─── Music Library Modal ───────────────────────────────────────────────────────
-
-function MusicModal({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const tracks = [
-    { id: 'm1', name: 'Corporate Uplift', duration: '2:34', genre: 'Corporate' },
-    { id: 'm2', name: 'Epic Cinematic', duration: '3:12', genre: 'Cinematic' },
-    { id: 'm3', name: 'Social Bounce', duration: '1:45', genre: 'Upbeat' },
-    { id: 'm4', name: 'Ambient Flow', duration: '4:00', genre: 'Ambient' },
-    { id: 'm5', name: 'Tech Pulse', duration: '2:55', genre: 'Electronic' },
-  ]
-  const [selected, setSelected] = useState('')
-  if (!open) return null
-  return (
-    <div className="fixed inset-0 bg-gray-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-      <div className="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-md">
-        <div className="flex items-center justify-between p-5 border-b border-gray-800">
-          <h3 className="text-white font-semibold">Music Library</h3>
-          <button onClick={onClose} className="text-gray-500 hover:text-white">
-            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
-          </button>
-        </div>
-        <div className="p-4 space-y-2">
-          {tracks.map(t => (
-            <button
-              key={t.id}
-              onClick={() => setSelected(t.id)}
-              className={`w-full flex items-center justify-between px-4 py-3 rounded-xl text-left transition-colors ${selected === t.id ? 'bg-indigo-600/20 border border-indigo-500/50' : 'bg-gray-800 hover:bg-gray-750 border border-transparent'}`}
-            >
-              <div className="flex items-center gap-3">
-                <div className="w-8 h-8 rounded-lg bg-indigo-900/50 flex items-center justify-center text-indigo-400">
-                  <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>
-                </div>
-                <div>
-                  <p className="text-white text-sm font-medium">{t.name}</p>
-                  <p className="text-gray-500 text-xs">{t.genre}</p>
-                </div>
-              </div>
-              <span className="text-gray-500 text-xs">{t.duration}</span>
-            </button>
-          ))}
-        </div>
-        <div className="p-4 border-t border-gray-800 flex gap-3">
-          <button onClick={onClose} className="flex-1 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm transition-colors">Cancel</button>
-          <button
-            onClick={onClose}
-            disabled={!selected}
-            className="flex-1 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-medium transition-colors"
-          >Add Track</button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
 export default function VideoGenPage() {
+  const [workspaceId, setWorkspaceId] = useState<string | null>(null)
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>('myvideos')
   const [mainTab, setMainTab] = useState<MainTab>('generate')
-  const [selectedProject, setSelectedProject] = useState<string>('1')
+  const [selectedProject, setSelectedProject] = useState<string | null>(null)
   const [apiPanelOpen, setApiPanelOpen] = useState(false)
-  const [musicModalOpen, setMusicModalOpen] = useState(false)
+
+  // Past projects
+  const [projects, setProjects] = useState<VideoProject[]>([])
+  const [projectsLoading, setProjectsLoading] = useState(false)
+  const [projectsError, setProjectsError] = useState<string | null>(null)
+
+  // Stats
+  const [stats, setStats] = useState({ videos: 0, durationSec: 0, cost: 0 })
 
   // Generate tab state
   const [prompt, setPrompt] = useState('')
-  const [selectedModel, setSelectedModel] = useState('kling')
+  const [selectedModel, setSelectedModel] = useState('runway')
   const [selectedStyle, setSelectedStyle] = useState('Cinematic')
-  const [duration, setDuration] = useState('15s')
+  const [duration, setDuration] = useState<5 | 10>(5)
   const [aspectRatio, setAspectRatio] = useState('16:9')
   const [resolution, setResolution] = useState('1080p')
   const [fps, setFps] = useState('24')
   const [scriptMode, setScriptMode] = useState(false)
   const [scriptText, setScriptText] = useState('')
   const [generating, setGenerating] = useState(false)
-  const [genProgress, setGenProgress] = useState(0)
-  const [genFrame, setGenFrame] = useState(0)
-  const genTimerRef = useRef<NodeJS.Timeout | null>(null)
+  const [generationStatus, setGenerationStatus] = useState<string>('')
+  const [generationError, setGenerationError] = useState<string | null>(null)
+  const [latestVideoUrl, setLatestVideoUrl] = useState<string | null>(null)
+  const [currentTaskId, setCurrentTaskId] = useState<string | null>(null)
+  const pollRef = useRef<NodeJS.Timeout | null>(null)
+  const elapsedRef = useRef(0)
+  const [elapsed, setElapsed] = useState(0)
 
-  // Edit tab state
+  // Customize tab state (visual only)
   const [overlayText, setOverlayText] = useState('')
   const [fontSize, setFontSize] = useState('32')
   const [textAnim, setTextAnim] = useState('Fade')
   const [colorGrade, setColorGrade] = useState('natural')
   const [trimStart, setTrimStart] = useState('0.0')
-  const [trimEnd, setTrimEnd] = useState('15.0')
+  const [trimEnd, setTrimEnd] = useState('5.0')
   const [playbackSpeed, setPlaybackSpeed] = useState('1x')
 
   // Export tab state
@@ -264,86 +199,218 @@ export default function VideoGenPage() {
   const [watermark, setWatermark] = useState(false)
   const [watermarkText, setWatermarkText] = useState('')
 
-  // Timeline / playback state
-  const [isPlaying, setIsPlaying] = useState(false)
-  const [playheadPos, setPlayheadPos] = useState(0)
-  const [timelineZoom, setTimelineZoom] = useState(1)
-  const playTimerRef = useRef<NodeJS.Timeout | null>(null)
-
   // Right panel
   const [charLock, setCharLock] = useState(false)
   const [applyBrand, setApplyBrand] = useState(true)
 
   useEffect(() => {
+    if (typeof window !== 'undefined') {
+      setWorkspaceId(localStorage.getItem('workspaceId'))
+    }
     return () => {
-      if (genTimerRef.current) clearInterval(genTimerRef.current)
-      if (playTimerRef.current) clearInterval(playTimerRef.current)
+      if (pollRef.current) clearInterval(pollRef.current)
     }
   }, [])
 
-  // Playhead animation
   useEffect(() => {
-    if (isPlaying) {
-      playTimerRef.current = setInterval(() => {
-        setPlayheadPos(p => {
-          if (p >= 100) { setIsPlaying(false); return 0 }
-          return p + 0.5
-        })
-      }, 50)
-    } else {
-      if (playTimerRef.current) clearInterval(playTimerRef.current)
+    if (workspaceId) {
+      void fetchProjects()
+      void fetchStats()
     }
-    return () => { if (playTimerRef.current) clearInterval(playTimerRef.current) }
-  }, [isPlaying])
+  }, [workspaceId])
 
-  function startGeneration() {
-    if (!prompt.trim() && !scriptMode) return
-    setGenerating(true)
-    setGenProgress(0)
-    setGenFrame(0)
-    const total = 480
-    genTimerRef.current = setInterval(() => {
-      setGenFrame(f => {
-        const next = f + Math.floor(Math.random() * 8) + 3
-        if (next >= total) {
-          clearInterval(genTimerRef.current!)
-          setGenerating(false)
-          setGenProgress(100)
-          return total
-        }
-        setGenProgress(Math.round((next / total) * 100))
-        return next
-      })
-    }, 200)
+  async function fetchProjects() {
+    if (!workspaceId) return
+    setProjectsLoading(true)
+    setProjectsError(null)
+    try {
+      const res = await fetch(`/api/artifacts?workspaceId=${workspaceId}&type=video`)
+      if (!res.ok) throw new Error(`Failed (${res.status})`)
+      const data = await res.json() as Array<{
+        id: string
+        type: string
+        title: string
+        content_json: { videoUrl?: string; taskId?: string; status?: string; prompt?: string; duration?: number } | string
+        status: string
+        created_at: string
+      }>
+      const items: VideoProject[] = data
+        .filter(d => d.type === 'video_task' || d.type === 'avatar_video')
+        .map((d) => {
+          const cj = typeof d.content_json === 'string' ? safeParse<Record<string, unknown>>(d.content_json) : d.content_json
+          const videoUrl = (cj as { videoUrl?: string } | undefined)?.videoUrl
+          const status: VideoStatus =
+            d.status === 'approved' || videoUrl ? 'Ready' :
+            d.status === 'failed' ? 'Failed' :
+            d.status === 'pending_approval' ? 'Generating' : 'Draft'
+          const dur = (cj as { duration?: number } | undefined)?.duration
+          return {
+            id: d.id,
+            name: d.title || 'Untitled video',
+            duration: dur ? `0:${String(dur).padStart(2, '0')}` : '—',
+            status,
+            videoUrl,
+            model: 'Runway Gen-3',
+            createdAt: relativeTime(d.created_at),
+          }
+        })
+      setProjects(items)
+      if (!selectedProject && items.length > 0) setSelectedProject(items[0].id)
+    } catch (err) {
+      setProjectsError(err instanceof Error ? err.message : 'Failed to load videos')
+    } finally {
+      setProjectsLoading(false)
+    }
   }
 
-  const currentModel = VIDEO_MODELS.find(m => m.id === selectedModel)!
+  async function fetchStats() {
+    if (!workspaceId) return
+    try {
+      // Best-effort: count completed video artifacts. Cost is approximate.
+      const res = await fetch(`/api/artifacts?workspaceId=${workspaceId}&type=video`)
+      if (!res.ok) return
+      const data = await res.json() as Array<{ content_json: unknown; created_at: string }>
+      const monthStart = new Date()
+      monthStart.setDate(1)
+      monthStart.setHours(0, 0, 0, 0)
+      let videos = 0
+      let durationSec = 0
+      for (const d of data) {
+        if (new Date(d.created_at) < monthStart) continue
+        const cj = typeof d.content_json === 'string' ? safeParse<{ duration?: number; videoUrl?: string }>(d.content_json) : d.content_json as { duration?: number; videoUrl?: string }
+        if (cj?.videoUrl) videos++
+        if (cj?.duration) durationSec += cj.duration
+      }
+      const cost = videos * 0.5  // Approximate $0.50 per Runway gen
+      setStats({ videos, durationSec, cost })
+    } catch {
+      // Silent fail — stats are non-critical
+    }
+  }
 
-  // Timeline clips mock
-  const videoClips: TimelineClip[] = [
-    { id: 'v1', start: 0, width: 30, color: 'bg-indigo-600', label: 'Scene 1' },
-    { id: 'v2', start: 32, width: 20, color: 'bg-violet-600', label: 'Scene 2' },
-    { id: 'v3', start: 55, width: 25, color: 'bg-fuchsia-700', label: 'Scene 3' },
-  ]
-  const audioClips: TimelineClip[] = [
-    { id: 'a1', start: 0, width: 80, color: 'bg-emerald-700', label: 'BGM' },
-    { id: 'a2', start: 0, width: 55, color: 'bg-teal-700', label: 'Voiceover' },
-  ]
-  const captionClips: TimelineClip[] = [
-    { id: 'c1', start: 5, width: 25, color: 'bg-amber-700', label: 'Title' },
-    { id: 'c2', start: 35, width: 20, color: 'bg-yellow-700', label: 'Subtitle' },
-  ]
+  function stopPolling() {
+    if (pollRef.current) {
+      clearInterval(pollRef.current)
+      pollRef.current = null
+    }
+  }
+
+  async function pollTask(taskId: string) {
+    stopPolling()
+    elapsedRef.current = 0
+    setElapsed(0)
+    setGenerationStatus('Generation queued...')
+    pollRef.current = setInterval(async () => {
+      elapsedRef.current += 3
+      setElapsed(elapsedRef.current)
+      try {
+        const res = await fetch('/api/agents/video/runway', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ workspaceId, action: 'status', taskId }),
+        })
+        const data = await res.json() as {
+          ok?: boolean
+          task?: { id: string; status: string; progress?: number; videoUrl?: string | null }
+          error?: string
+        }
+        if (!data.ok) {
+          setGenerationStatus(`Status check error: ${data.error || 'unknown'}`)
+          return
+        }
+        const status = data.task?.status || 'UNKNOWN'
+        const progress = data.task?.progress
+        setGenerationStatus(`${status}${progress != null ? ` · ${Math.round(progress * 100)}%` : ''}`)
+        if (status === 'SUCCEEDED' && data.task?.videoUrl) {
+          stopPolling()
+          setLatestVideoUrl(data.task.videoUrl)
+          setGenerating(false)
+          setGenerationStatus('Ready')
+          void fetchProjects()
+          void fetchStats()
+        }
+        if (status === 'FAILED' || status === 'CANCELLED') {
+          stopPolling()
+          setGenerationError(`Generation ${status.toLowerCase()}`)
+          setGenerating(false)
+        }
+        if (elapsedRef.current > 300) {
+          // Safety timeout — 5 minutes
+          stopPolling()
+          setGenerationError('Timed out waiting for video. Check the gallery later.')
+          setGenerating(false)
+        }
+      } catch (err) {
+        setGenerationStatus(`Poll error: ${err instanceof Error ? err.message : 'network'}`)
+      }
+    }, 3000)
+  }
+
+  async function startGeneration() {
+    if (!prompt.trim() || !workspaceId) return
+    setGenerationError(null)
+    setLatestVideoUrl(null)
+    setCurrentTaskId(null)
+    setGenerating(true)
+    const avgSec = VIDEO_MODELS.find(m => m.id === selectedModel)?.avgSec || 30
+    setGenerationStatus(`Submitting to ${VIDEO_MODELS.find(m => m.id === selectedModel)?.name}... est ~${avgSec}s`)
+
+    try {
+      const res = await fetch('/api/agents/video/runway', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          workspaceId,
+          action: 'text_to_video',
+          prompt,
+          duration,
+          ratio: aspectRatio === '16:9' ? '1280:768' :
+                 aspectRatio === '9:16' ? '768:1280' :
+                 aspectRatio === '1:1' ? '960:960' : '1280:768',
+        }),
+      })
+      const data = await res.json() as {
+        ok?: boolean
+        taskId?: string
+        artifactId?: string
+        error?: string
+        requiresSetup?: boolean
+      }
+      if (!data.ok || !data.taskId) {
+        setGenerationError(data.error || 'Failed to start video generation')
+        setGenerating(false)
+        return
+      }
+      setCurrentTaskId(data.taskId)
+      void pollTask(data.taskId)
+    } catch (err) {
+      setGenerationError(err instanceof Error ? err.message : 'Network error')
+      setGenerating(false)
+    }
+  }
+
+  const currentModel = VIDEO_MODELS.find(m => m.id === selectedModel) || VIDEO_MODELS[0]
+  const selectedProjectObj = projects.find(p => p.id === selectedProject)
+  const displayVideoUrl = latestVideoUrl || selectedProjectObj?.videoUrl
+
+  function formatDurationMin(seconds: number) {
+    const m = Math.floor(seconds / 60)
+    const s = seconds % 60
+    return `${m}:${String(s).padStart(2, '0')}`
+  }
 
   return (
     <div className="flex h-screen bg-gray-950 overflow-hidden">
       <ApiSettingsPanel open={apiPanelOpen} onClose={() => setApiPanelOpen(false)} />
-      <MusicModal open={musicModalOpen} onClose={() => setMusicModalOpen(false)} />
 
       {/* ── LEFT SIDEBAR ── */}
       <div className="w-64 border-r border-gray-800 flex flex-col bg-gray-900 shrink-0">
         {/* Sidebar header */}
         <div className="p-4 border-b border-gray-800">
-          <button className="w-full flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
+          <button
+            onClick={() => { setMainTab('generate'); setLatestVideoUrl(null); setPrompt('') }}
+            className="w-full flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+          >
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
             New Video
           </button>
@@ -364,32 +431,49 @@ export default function VideoGenPage() {
 
         {/* Project list */}
         <div className="flex-1 overflow-y-auto p-2 space-y-1">
-          {sidebarTab === 'myvideos' && MOCK_PROJECTS.map(proj => (
-            <button
-              key={proj.id}
-              onClick={() => setSelectedProject(proj.id)}
-              className={`w-full flex items-start gap-3 p-2.5 rounded-xl text-left transition-colors ${selectedProject === proj.id ? 'bg-indigo-900/30 border border-indigo-700/40' : 'hover:bg-gray-800 border border-transparent'}`}
-            >
-              {/* Thumbnail */}
-              <div className={`w-12 h-9 rounded-lg ${proj.color} shrink-0 flex items-center justify-center`}>
-                <svg className="w-4 h-4 text-white/70" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-white text-xs font-medium truncate">{proj.name}</p>
-                <div className="flex items-center gap-1.5 mt-1">
-                  <span className="text-gray-500 text-[10px]">{proj.duration}</span>
-                  <span className="text-gray-700">·</span>
-                  <StatusBadge status={proj.status} />
+          {sidebarTab === 'myvideos' && (
+            <>
+              {projectsLoading && (
+                <div className="flex items-center justify-center py-6 text-gray-500 text-xs gap-2">
+                  <Spinner size={3} /> Loading...
                 </div>
-                <p className="text-gray-600 text-[10px] mt-0.5">{proj.createdAt}</p>
-              </div>
-            </button>
-          ))}
+              )}
+              {projectsError && (
+                <div className="p-3 rounded-lg bg-red-900/30 border border-red-700/50">
+                  <p className="text-red-300 text-xs">{projectsError}</p>
+                  <button onClick={() => void fetchProjects()} className="mt-1 text-red-200 hover:text-white text-[10px] underline">Retry</button>
+                </div>
+              )}
+              {!projectsLoading && !projectsError && projects.length === 0 && (
+                <p className="text-gray-500 text-xs p-3">No videos yet — generate your first one</p>
+              )}
+              {projects.map(proj => (
+                <button
+                  key={proj.id}
+                  onClick={() => setSelectedProject(proj.id)}
+                  className={`w-full flex items-start gap-3 p-2.5 rounded-xl text-left transition-colors ${selectedProject === proj.id ? 'bg-indigo-900/30 border border-indigo-700/40' : 'hover:bg-gray-800 border border-transparent'}`}
+                >
+                  <div className="w-12 h-9 rounded-lg bg-gradient-to-br from-indigo-700 to-violet-800 shrink-0 flex items-center justify-center">
+                    <svg className="w-4 h-4 text-white/70" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-white text-xs font-medium truncate">{proj.name}</p>
+                    <div className="flex items-center gap-1.5 mt-1">
+                      <span className="text-gray-500 text-[10px]">{proj.duration}</span>
+                      <span className="text-gray-700">·</span>
+                      <StatusBadge status={proj.status} />
+                    </div>
+                    <p className="text-gray-600 text-[10px] mt-0.5">{proj.createdAt}</p>
+                  </div>
+                </button>
+              ))}
+            </>
+          )}
 
           {sidebarTab === 'templates' && (
             <div className="p-2 space-y-2">
               {['Product Launch', 'Brand Story', 'Tutorial', 'Testimonial', 'Ad Campaign', 'Event Recap'].map(t => (
-                <button key={t} className="w-full flex items-center gap-3 p-2.5 rounded-xl bg-gray-800 hover:bg-gray-750 text-left transition-colors border border-gray-700/50">
+                <button key={t} onClick={() => setPrompt(`Create a ${t.toLowerCase()} video...`)} className="w-full flex items-center gap-3 p-2.5 rounded-xl bg-gray-800 hover:bg-gray-700 text-left transition-colors border border-gray-700/50">
                   <div className="w-10 h-8 rounded-lg bg-gradient-to-br from-indigo-800 to-violet-800 flex items-center justify-center">
                     <svg className="w-3 h-3 text-white/70" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
                   </div>
@@ -401,17 +485,7 @@ export default function VideoGenPage() {
 
           {sidebarTab === 'stock' && (
             <div className="p-2 space-y-2">
-              {['Office Aerial', 'City Timelapse', 'Nature B-Roll', 'Tech Abstract', 'People Walking'].map((t, i) => (
-                <button key={t} className="w-full flex items-center gap-3 p-2.5 rounded-xl bg-gray-800 hover:bg-gray-750 text-left transition-colors border border-gray-700/50">
-                  <div className={`w-10 h-8 rounded-lg flex items-center justify-center ${['bg-blue-800', 'bg-purple-800', 'bg-emerald-800', 'bg-cyan-800', 'bg-rose-800'][i]}`}>
-                    <svg className="w-3 h-3 text-white/70" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
-                  </div>
-                  <div>
-                    <p className="text-gray-300 text-xs">{t}</p>
-                    <p className="text-gray-600 text-[10px]">Free · HD</p>
-                  </div>
-                </button>
-              ))}
+              <p className="text-gray-600 text-xs px-2">Stock footage library — connect your stock provider in Settings</p>
             </div>
           )}
         </div>
@@ -442,7 +516,7 @@ export default function VideoGenPage() {
         <div className="flex-1 flex flex-col overflow-hidden">
           {/* Tab bar */}
           <div className="flex border-b border-gray-800 px-4 bg-gray-950 shrink-0">
-            {(['generate', 'edit', 'export'] as MainTab[]).map(t => (
+            {(['generate', 'customize', 'export'] as MainTab[]).map(t => (
               <button
                 key={t}
                 onClick={() => setMainTab(t)}
@@ -454,96 +528,48 @@ export default function VideoGenPage() {
           </div>
 
           <div className="flex-1 overflow-y-auto">
-            {/* ─── VIDEO PREVIEW + TIMELINE ─── */}
+            {/* ─── VIDEO PREVIEW ─── */}
             <div className="bg-gray-950 border-b border-gray-800">
-              {/* Preview */}
-              <div className="relative bg-black mx-4 mt-4 rounded-xl overflow-hidden" style={{ aspectRatio: '16/9', maxHeight: '260px' }}>
-                <div className="absolute inset-0 flex items-center justify-center">
-                  {generating ? (
+              <div className="relative bg-black mx-4 mt-4 rounded-xl overflow-hidden" style={{ aspectRatio: '16/9', maxHeight: '320px' }}>
+                {generating && !displayVideoUrl ? (
+                  <div className="absolute inset-0 flex items-center justify-center">
                     <div className="text-center">
                       <Spinner size={8} />
-                      <p className="text-gray-400 text-xs mt-3">Generating...</p>
+                      <p className="text-gray-400 text-xs mt-3">{generationStatus}</p>
+                      <p className="text-gray-600 text-[10px] mt-1">{elapsed}s elapsed</p>
                     </div>
-                  ) : (
+                  </div>
+                ) : displayVideoUrl ? (
+                  // eslint-disable-next-line jsx-a11y/media-has-caption
+                  <video
+                    key={displayVideoUrl}
+                    src={displayVideoUrl}
+                    controls
+                    playsInline
+                    className="absolute inset-0 w-full h-full"
+                  />
+                ) : (
+                  <div className="absolute inset-0 flex items-center justify-center">
                     <div className="text-center">
-                      <div className="w-16 h-16 rounded-full bg-white/10 flex items-center justify-center mb-2">
+                      <div className="w-16 h-16 rounded-full bg-white/10 flex items-center justify-center mb-2 mx-auto">
                         <svg className="w-8 h-8 text-white/60" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
                       </div>
-                      <p className="text-gray-500 text-xs">Preview</p>
+                      <p className="text-gray-500 text-xs">No video yet — describe what you want and click Generate</p>
                     </div>
-                  )}
-                </div>
-                {/* Play/Pause overlay */}
-                <button
-                  onClick={() => setIsPlaying(p => !p)}
-                  className="absolute bottom-3 left-3 w-9 h-9 rounded-full bg-black/60 hover:bg-black/80 flex items-center justify-center transition-colors"
-                >
-                  {isPlaying ? (
-                    <svg className="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
-                  ) : (
-                    <svg className="w-4 h-4 text-white ml-0.5" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
-                  )}
-                </button>
-                {/* Timecode */}
-                <div className="absolute bottom-3 left-14 bg-black/60 rounded px-2 py-0.5">
-                  <span className="text-white text-xs font-mono">
-                    {String(Math.floor(playheadPos * 0.15)).padStart(2, '0')}:{String(Math.round((playheadPos * 0.15 % 1) * 60)).padStart(2, '0')} / 0:15
-                  </span>
-                </div>
-                {/* Fullscreen */}
-                <button className="absolute bottom-3 right-3 w-8 h-8 rounded-lg bg-black/60 hover:bg-black/80 flex items-center justify-center transition-colors">
-                  <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" /></svg>
-                </button>
+                  </div>
+                )}
               </div>
 
-              {/* Timeline */}
+              {/* Visual timeline (preview only) */}
               <div className="mx-4 mb-4 mt-3">
                 <div className="flex items-center justify-between mb-2">
-                  <span className="text-gray-500 text-xs font-medium">Timeline</span>
-                  <div className="flex items-center gap-2">
-                    <button onClick={() => setTimelineZoom(z => Math.max(0.5, z - 0.25))} className="w-6 h-6 rounded bg-gray-800 hover:bg-gray-700 text-gray-400 flex items-center justify-center text-sm transition-colors">−</button>
-                    <span className="text-gray-500 text-xs w-8 text-center">{Math.round(timelineZoom * 100)}%</span>
-                    <button onClick={() => setTimelineZoom(z => Math.min(2, z + 0.25))} className="w-6 h-6 rounded bg-gray-800 hover:bg-gray-700 text-gray-400 flex items-center justify-center text-sm transition-colors">+</button>
-                  </div>
+                  <span className="text-gray-500 text-xs font-medium">Timeline (visual preview only)</span>
+                  <span className="text-amber-400 text-[10px] bg-amber-900/20 px-2 py-0.5 rounded">Editing coming soon</span>
                 </div>
-
-                <div className="bg-gray-900 rounded-xl border border-gray-800 overflow-hidden">
-                  {/* Ruler */}
-                  <div className="flex border-b border-gray-800 bg-gray-950 pl-16">
-                    {[0, 5, 10, 15].map(s => (
-                      <div key={s} className="flex-1 text-gray-600 text-[10px] py-1 pl-1 border-l border-gray-800 first:border-l-0">{s}s</div>
-                    ))}
-                  </div>
-
-                  {/* Tracks */}
-                  {[
-                    { label: 'Video', clips: videoClips, color: 'text-indigo-400' },
-                    { label: 'Audio', clips: audioClips, color: 'text-emerald-400' },
-                    { label: 'Captions', clips: captionClips, color: 'text-amber-400' },
-                  ].map(track => (
-                    <div key={track.label} className="flex items-center border-b border-gray-800 last:border-b-0 h-9">
-                      <div className="w-16 px-2 shrink-0">
-                        <span className={`text-[10px] font-medium ${track.color}`}>{track.label}</span>
-                      </div>
-                      <div className="flex-1 relative h-full overflow-hidden">
-                        {/* Playhead */}
-                        <div
-                          className="absolute top-0 bottom-0 w-px bg-red-500 z-10 pointer-events-none"
-                          style={{ left: `${playheadPos}%` }}
-                        />
-                        {track.clips.map(clip => (
-                          <div
-                            key={clip.id}
-                            className={`absolute top-1.5 bottom-1.5 rounded ${clip.color} opacity-80 hover:opacity-100 cursor-pointer flex items-center px-1.5`}
-                            style={{ left: `${clip.start * timelineZoom}%`, width: `${clip.width * timelineZoom}%` }}
-                          >
-                            <span className="text-white text-[9px] font-medium truncate">{clip.label}</span>
-                          </div>
-                        ))}
-                        <button className="absolute right-1 top-1/2 -translate-y-1/2 text-[10px] text-gray-600 hover:text-gray-400 px-1 py-0.5 rounded bg-gray-800/50 hover:bg-gray-700/80 transition-colors">+ Add</button>
-                      </div>
-                    </div>
-                  ))}
+                <div className="bg-gray-900 rounded-xl border border-gray-800 overflow-hidden p-4 text-center">
+                  <p className="text-gray-600 text-xs">
+                    Video generation is single-clip only today. Multi-clip editing, captions, and BGM mixing are not yet wired to a real engine.
+                  </p>
                 </div>
               </div>
             </div>
@@ -579,10 +605,14 @@ export default function VideoGenPage() {
                         <div className="flex gap-1.5 mt-1">
                           <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${model.speed === 'Fast' ? 'bg-emerald-900/50 text-emerald-400' : 'bg-amber-900/50 text-amber-400'}`}>{model.speed}</span>
                           <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-900/50 text-indigo-400 font-medium">{model.quality}</span>
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-700 text-gray-400">~{model.avgSec}s</span>
                         </div>
                       </button>
                     ))}
                   </div>
+                  {selectedModel !== 'runway' && (
+                    <p className="text-amber-400 text-[10px] mt-2">Note: only Runway Gen-3 is wired to a live API. Other models will route through Runway.</p>
+                  )}
                 </div>
 
                 {/* Style Presets */}
@@ -611,9 +641,10 @@ export default function VideoGenPage() {
                           key={d}
                           onClick={() => setDuration(d)}
                           className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors ${duration === d ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'}`}
-                        >{d}</button>
+                        >{d}s</button>
                       ))}
                     </div>
+                    <p className="text-gray-600 text-[10px] mt-1">Runway supports 5s or 10s clips</p>
                   </div>
                   <div>
                     <label className="text-gray-400 text-xs mb-1.5 block">Aspect Ratio</label>
@@ -653,12 +684,12 @@ export default function VideoGenPage() {
                   </div>
                 </div>
 
-                {/* Script-to-Video toggle */}
+                {/* Script-to-Video toggle (visual stub) */}
                 <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
                   <div className="flex items-center justify-between">
                     <div>
                       <p className="text-white text-sm font-medium">Script-to-Video</p>
-                      <p className="text-gray-500 text-xs mt-0.5">Write a script and auto-generate scenes</p>
+                      <p className="text-gray-500 text-xs mt-0.5">Multi-scene scripts will be supported in a later release</p>
                     </div>
                     <button
                       onClick={() => setScriptMode(s => !s)}
@@ -668,69 +699,78 @@ export default function VideoGenPage() {
                     </button>
                   </div>
                   {scriptMode && (
-                    <div className="mt-4 space-y-3">
-                      <textarea
-                        value={scriptText}
-                        onChange={e => setScriptText(e.target.value)}
-                        rows={4}
-                        placeholder="Scene 1: Open on a sleek product on a studio surface...\nScene 2: Close-up reveal of the product logo..."
-                        className="w-full px-3 py-2.5 rounded-lg bg-gray-800 border border-gray-700 text-white placeholder-gray-600 text-xs focus:outline-none focus:border-indigo-500 resize-none"
-                      />
-                      <div className="bg-gray-800 rounded-lg p-3 space-y-1.5">
-                        <p className="text-gray-400 text-xs font-medium">Scene Breakdown</p>
-                        {['Scene 1 · 0:00–0:05 · Studio shot', 'Scene 2 · 0:05–0:10 · Product close-up', 'Scene 3 · 0:10–0:15 · CTA overlay'].map(scene => (
-                          <div key={scene} className="flex items-center gap-2 text-xs text-gray-400">
-                            <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 shrink-0" />
-                            {scene}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
+                    <textarea
+                      value={scriptText}
+                      onChange={e => setScriptText(e.target.value)}
+                      rows={4}
+                      placeholder="Scene 1: ..."
+                      className="mt-3 w-full px-3 py-2.5 rounded-lg bg-gray-800 border border-gray-700 text-white placeholder-gray-600 text-xs focus:outline-none focus:border-indigo-500 resize-none"
+                    />
                   )}
                 </div>
 
                 {/* Generate button */}
                 <button
                   onClick={startGeneration}
-                  disabled={generating}
+                  disabled={generating || !prompt.trim() || !workspaceId}
                   className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 disabled:cursor-not-allowed text-white py-3 rounded-xl font-semibold text-sm transition-colors flex items-center justify-center gap-2"
                 >
-                  {generating ? <><Spinner size={4} /> Generating video...</> : (
+                  {generating ? (
+                    <><Spinner size={4} /> Generating with {currentModel.name}... ~{currentModel.avgSec}s</>
+                  ) : (
                     <>
                       <span>Generate Video</span>
-                      <span className="text-indigo-300 font-normal text-xs">~$0.45</span>
+                      <span className="text-indigo-300 font-normal text-xs">~$0.50</span>
                     </>
                   )}
                 </button>
 
+                {!workspaceId && (
+                  <p className="text-amber-400 text-[10px] text-center">Open a workspace first</p>
+                )}
+
+                {generationError && (
+                  <div className="p-3 rounded-lg bg-red-900/30 border border-red-700/50">
+                    <p className="text-red-300 text-xs leading-relaxed">{generationError}</p>
+                    <button
+                      onClick={() => { setGenerationError(null); void startGeneration() }}
+                      className="mt-2 text-red-200 hover:text-white text-[10px] underline"
+                    >
+                      Retry
+                    </button>
+                  </div>
+                )}
+
                 {/* Generation progress */}
                 {generating && (
-                  <div className="bg-gray-900 border border-indigo-800/40 rounded-xl p-4 animate-pulse-subtle">
-                    <div className="flex items-center gap-2 mb-3">
+                  <div className="bg-gray-900 border border-indigo-800/40 rounded-xl p-4">
+                    <div className="flex items-center gap-2 mb-2">
                       <Spinner size={4} />
-                      <span className="text-white text-sm font-medium">Generating...</span>
+                      <span className="text-white text-sm font-medium">{generationStatus}</span>
                     </div>
-                    <p className="text-indigo-300 text-xs mb-2">
-                      Frame {genFrame}/480 · Model: {currentModel.name} · ETA: {Math.max(0, Math.round(45 - (genProgress * 0.45)))}s
+                    <p className="text-indigo-300 text-xs mb-1">
+                      Model: {currentModel.name} · {elapsed}s elapsed · est ~{currentModel.avgSec}s
                     </p>
-                    <div className="w-full bg-gray-800 rounded-full h-1.5">
-                      <div
-                        className="bg-indigo-500 h-1.5 rounded-full transition-all duration-200"
-                        style={{ width: `${genProgress}%` }}
-                      />
-                    </div>
-                    <p className="text-gray-600 text-[10px] mt-2">{genProgress}% complete · {resolution} · {aspectRatio} · {fps} FPS</p>
+                    {currentTaskId && (
+                      <p className="text-gray-600 text-[10px] mt-1 font-mono">Task: {currentTaskId.slice(0, 16)}...</p>
+                    )}
                   </div>
                 )}
               </div>
             )}
 
-            {/* ─── EDIT TAB ─── */}
-            {mainTab === 'edit' && (
+            {/* ─── CUSTOMIZE TAB ─── */}
+            {mainTab === 'customize' && (
               <div className="p-4 space-y-5">
+                <div className="bg-amber-900/20 border border-amber-800/40 rounded-xl p-3">
+                  <p className="text-amber-300 text-xs">
+                    These controls are visual settings only — actual video editing (overlays, color grading, trim) is not yet wired up. We currently generate single clips end-to-end.
+                  </p>
+                </div>
+
                 {/* Text Overlay */}
                 <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 space-y-3">
-                  <p className="text-white text-sm font-medium">Text Overlay</p>
+                  <p className="text-white text-sm font-medium">Text Overlay (preview)</p>
                   <input
                     value={overlayText}
                     onChange={e => setOverlayText(e.target.value)}
@@ -764,7 +804,7 @@ export default function VideoGenPage() {
 
                 {/* Color Grading */}
                 <div>
-                  <label className="text-gray-400 text-xs mb-2 block">Color Grading</label>
+                  <label className="text-gray-400 text-xs mb-2 block">Color Grading (preview)</label>
                   <div className="flex gap-2 flex-wrap">
                     {COLOR_GRADES.map(g => (
                       <button
@@ -781,7 +821,7 @@ export default function VideoGenPage() {
 
                 {/* Trim Controls */}
                 <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 space-y-3">
-                  <p className="text-white text-sm font-medium">Trim</p>
+                  <p className="text-white text-sm font-medium">Trim (preview)</p>
                   <div className="grid grid-cols-2 gap-3">
                     <div>
                       <label className="text-gray-500 text-xs mb-1 block">Start (s)</label>
@@ -807,28 +847,12 @@ export default function VideoGenPage() {
                     ))}
                   </div>
                 </div>
-
-                {/* B-Roll + Music */}
-                <div className="flex gap-3">
-                  <button className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs font-medium transition-colors border border-gray-700">
-                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.069A1 1 0 0121 8.87v6.26a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
-                    Add B-Roll
-                  </button>
-                  <button
-                    onClick={() => setMusicModalOpen(true)}
-                    className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs font-medium transition-colors border border-gray-700"
-                  >
-                    <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>
-                    Add Music
-                  </button>
-                </div>
               </div>
             )}
 
             {/* ─── EXPORT TAB ─── */}
             {mainTab === 'export' && (
               <div className="p-4 space-y-5">
-                {/* Format */}
                 <div>
                   <label className="text-gray-400 text-xs mb-2 block">Format</label>
                   <div className="flex gap-2">
@@ -842,7 +866,6 @@ export default function VideoGenPage() {
                   </div>
                 </div>
 
-                {/* Quality */}
                 <div>
                   <label className="text-gray-400 text-xs mb-2 block">Quality</label>
                   <div className="flex flex-col gap-2">
@@ -856,7 +879,6 @@ export default function VideoGenPage() {
                   </div>
                 </div>
 
-                {/* Compression */}
                 <div>
                   <div className="flex items-center justify-between mb-2">
                     <label className="text-gray-400 text-xs">Compression</label>
@@ -872,7 +894,6 @@ export default function VideoGenPage() {
                   />
                 </div>
 
-                {/* Watermark */}
                 <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 space-y-3">
                   <div className="flex items-center justify-between">
                     <div>
@@ -896,16 +917,23 @@ export default function VideoGenPage() {
                   )}
                 </div>
 
-                {/* Export actions */}
                 <div className="flex gap-3">
-                  <button className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium transition-colors">
-                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
-                    Download
-                  </button>
-                  <button className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm font-medium transition-colors border border-gray-700">
-                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" /></svg>
-                    Publish to Hub
-                  </button>
+                  {displayVideoUrl ? (
+                    <a
+                      href={displayVideoUrl}
+                      download
+                      target="_blank"
+                      rel="noreferrer"
+                      className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium transition-colors"
+                    >
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+                      Download
+                    </a>
+                  ) : (
+                    <button disabled className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl bg-gray-800 text-gray-500 text-sm font-medium cursor-not-allowed">
+                      No video ready
+                    </button>
+                  )}
                 </div>
               </div>
             )}
@@ -972,7 +1000,7 @@ export default function VideoGenPage() {
               {AI_SUGGESTIONS.map(s => (
                 <button
                   key={s}
-                  className="w-full flex items-start gap-2 px-3 py-2.5 rounded-xl bg-gray-800 hover:bg-gray-750 text-left transition-colors border border-gray-700/50 group"
+                  className="w-full flex items-start gap-2 px-3 py-2.5 rounded-xl bg-gray-800 hover:bg-gray-700 text-left transition-colors border border-gray-700/50 group"
                 >
                   <span className="text-indigo-400 mt-0.5 text-xs">✦</span>
                   <span className="text-gray-300 text-xs group-hover:text-white transition-colors">{s}</span>
@@ -981,35 +1009,20 @@ export default function VideoGenPage() {
             </div>
           </div>
 
-          {/* Video History */}
-          <div>
-            <p className="text-white text-sm font-medium mb-2">Version History</p>
-            <div className="flex gap-2">
-              {VIDEO_HISTORY.map(h => (
-                <button
-                  key={h.id}
-                  className={`flex-1 aspect-video rounded-lg ${h.color} flex items-end p-1.5 hover:ring-2 ring-indigo-500 transition-all group`}
-                >
-                  <span className="text-white/70 text-[9px] bg-black/40 rounded px-1 py-0.5 group-hover:text-white transition-colors">{h.label}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Stats */}
+          {/* Stats — real */}
           <div className="bg-gray-800/60 rounded-xl p-4 space-y-2">
             <p className="text-white text-sm font-medium">This Month</p>
             <div className="grid grid-cols-3 gap-2 text-center">
               <div>
-                <p className="text-white font-bold text-lg">24</p>
+                <p className="text-white font-bold text-lg">{stats.videos}</p>
                 <p className="text-gray-500 text-[10px]">Videos</p>
               </div>
               <div>
-                <p className="text-white font-bold text-lg">8.4m</p>
+                <p className="text-white font-bold text-lg">{formatDurationMin(stats.durationSec)}</p>
                 <p className="text-gray-500 text-[10px]">Duration</p>
               </div>
               <div>
-                <p className="text-white font-bold text-lg">$12.80</p>
+                <p className="text-white font-bold text-lg">${stats.cost.toFixed(2)}</p>
                 <p className="text-gray-500 text-[10px]">Cost</p>
               </div>
             </div>

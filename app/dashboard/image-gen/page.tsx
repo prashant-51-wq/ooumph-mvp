@@ -13,24 +13,18 @@ interface GalleryImage {
   style: string
   size: string
   date: string
-  color: string
+  imageUrl: string
   selected?: boolean
 }
 
-// ─── Mock Data ─────────────────────────────────────────────────────────────────
+interface GeneratedImage {
+  imageUrl: string
+  prompt: string
+  artifactId?: string
+  revisedPrompt?: string
+}
 
-const MOCK_GALLERY: GalleryImage[] = [
-  { id: 'g1', prompt: 'Corporate executive portrait, soft studio lighting, shallow depth of field', model: 'DALL-E 3', style: 'Photorealistic', size: '1024×1024', date: '2h ago', color: 'bg-gradient-to-br from-blue-800 to-indigo-900' },
-  { id: 'g2', prompt: 'Minimalist product shot of wireless headphones on white surface, dramatic shadows', model: 'Midjourney v6', style: 'Product Photography', size: '1792×1024', date: '3h ago', color: 'bg-gradient-to-br from-gray-700 to-gray-900' },
-  { id: 'g3', prompt: 'Vibrant brand identity logo mark, geometric abstract, indigo and violet palette', model: 'Ideogram v2', style: 'Logo Design', size: '1024×1024', date: '5h ago', color: 'bg-gradient-to-br from-indigo-700 to-violet-900' },
-  { id: 'g4', prompt: 'Neon cyberpunk city at night, rain-slicked streets, holographic billboards', model: 'Flux Pro', style: 'Neon Cyberpunk', size: '1792×1024', date: '8h ago', color: 'bg-gradient-to-br from-purple-900 to-fuchsia-900' },
-  { id: 'g5', prompt: 'Watercolor illustration of a coffee shop interior, warm tones, loose strokes', model: 'DALL-E 3', style: 'Watercolor', size: '1024×1024', date: '12h ago', color: 'bg-gradient-to-br from-amber-800 to-orange-900' },
-  { id: 'g6', prompt: 'Clean infographic layout with data visualization elements, corporate style', model: 'Adobe Firefly', style: 'Infographic', size: '1024×1792', date: '1d ago', color: 'bg-gradient-to-br from-cyan-800 to-teal-900' },
-  { id: 'g7', prompt: 'Luxury fashion editorial, model in avant-garde outfit, high contrast black and white', model: 'Midjourney v6', style: 'B&W', size: '1024×1792', date: '1d ago', color: 'bg-gradient-to-br from-gray-800 to-black' },
-  { id: 'g8', prompt: '3D render of futuristic smartphone floating in space, product render style', model: 'Stable Diffusion XL', style: '3D Render', size: '1024×1024', date: '2d ago', color: 'bg-gradient-to-br from-blue-900 to-cyan-900' },
-  { id: 'g9', prompt: 'Social media banner for tech startup, modern gradient, bold typography', model: 'Flux Pro', style: 'Social Media', size: '1792×1024', date: '2d ago', color: 'bg-gradient-to-br from-emerald-800 to-green-900' },
-  { id: 'g10', prompt: 'Oil painting style portrait of a business executive, rich textures, gallery quality', model: 'Adobe Firefly', style: 'Oil Painting', size: '1024×1024', date: '3d ago', color: 'bg-gradient-to-br from-rose-900 to-pink-900' },
-]
+// ─── Static config ───────────────────────────────────────────────────────────
 
 const IMAGE_MODELS = [
   { id: 'dalle3', name: 'DALL-E 3', specialty: 'Photorealistic', speedDot: 'bg-emerald-500' },
@@ -47,15 +41,17 @@ const STYLE_PRESETS = [
   'Product Photography', 'Infographic',
 ]
 
+// UI size label → API size value (OpenAI supports 1024x1024 / 1792x1024 / 1024x1792).
 const SIZE_OPTIONS = [
-  { label: '512×512', value: '512×512', ratio: '1:1' },
-  { label: '1024×1024', value: '1024×1024', ratio: '1:1' },
-  { label: '1024×1792', value: '1024×1792', ratio: '9:16' },
-  { label: '1792×1024', value: '1792×1024', ratio: '16:9' },
-  { label: '2048×2048', value: '2048×2048', ratio: '1:1' },
-]
+  { label: '1024×1024', value: '1024×1024', api: '1024x1024', ratio: '1:1' },
+  { label: '1024×1792', value: '1024×1792', api: '1024x1792', ratio: '9:16' },
+  { label: '1792×1024', value: '1792×1024', api: '1792x1024', ratio: '16:9' },
+] as const
 
-const QUALITY_OPTIONS = ['Standard', 'HD', 'Ultra']
+const QUALITY_OPTIONS: Array<{ label: string; api: 'standard' | 'hd' }> = [
+  { label: 'Standard', api: 'standard' },
+  { label: 'HD', api: 'hd' },
+]
 const LIGHTING_OPTIONS = ['Natural', 'Studio', 'Dramatic', 'Soft', 'Neon']
 const COUNT_OPTIONS = ['1', '2', '4']
 
@@ -110,6 +106,9 @@ function ApiSettingsPanel({ open, onClose }: { open: boolean; onClose: () => voi
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
           </button>
         </div>
+        <p className="text-amber-300 text-xs bg-amber-900/20 border border-amber-800/40 rounded-lg p-3">
+          API keys are configured in Settings → AI Assistants. Currently only DALL-E 3 (OpenAI) is wired up for actual generation — other models are visual placeholders.
+        </p>
         <div>
           <label className="text-gray-400 text-xs mb-1.5 block">API Provider</label>
           <select
@@ -149,11 +148,24 @@ function ApiSettingsPanel({ open, onClose }: { open: boolean; onClose: () => voi
   )
 }
 
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function relativeTime(iso: string): string {
+  const t = new Date(iso).getTime()
+  if (Number.isNaN(t)) return ''
+  const diff = (Date.now() - t) / 1000
+  if (diff < 60) return 'just now'
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`
+  return `${Math.floor(diff / 86400)}d ago`
+}
+
 // ─── Main Page ─────────────────────────────────────────────────────────────────
 
 export default function ImageGenPage() {
   const [studioTab, setStudioTab] = useState<StudioTab>('studio')
   const [apiPanelOpen, setApiPanelOpen] = useState(false)
+  const [workspaceId, setWorkspaceId] = useState<string | null>(null)
 
   // Left panel state
   const [prompt, setPrompt] = useState('')
@@ -172,20 +184,17 @@ export default function ImageGenPage() {
   const [safeMode, setSafeMode] = useState(true)
   const [promptLibOpen, setPromptLibOpen] = useState(false)
   const [generating, setGenerating] = useState(false)
-  const [genProgress, setGenProgress] = useState(0)
+  const [generationError, setGenerationError] = useState<string | null>(null)
 
   // Studio tab state
-  const [generatedImages, setGeneratedImages] = useState<{ color: string; prompt: string }[]>([])
-  const [upscaling, setUpscaling] = useState<number | null>(null)
-  const [upscaleProgress, setUpscaleProgress] = useState(0)
-  const [showComparison, setShowComparison] = useState(false)
-  const [compareSlider, setCompareSlider] = useState(50)
-  const [editMode, setEditMode] = useState(false)
-  const [brushSize, setBrushSize] = useState(20)
+  const [generatedImages, setGeneratedImages] = useState<GeneratedImage[]>([])
   const [hoveredImage, setHoveredImage] = useState<number | null>(null)
+  const [mediaLibStatus, setMediaLibStatus] = useState<Record<number, 'idle' | 'saving' | 'saved' | 'error'>>({})
 
   // Gallery tab state
-  const [galleryImages, setGalleryImages] = useState<GalleryImage[]>(MOCK_GALLERY)
+  const [galleryImages, setGalleryImages] = useState<GalleryImage[]>([])
+  const [galleryLoading, setGalleryLoading] = useState(false)
+  const [galleryError, setGalleryError] = useState<string | null>(null)
   const [galleryFilter, setGalleryFilter] = useState<string>('All')
   const [gallerySearch, setGallerySearch] = useState('')
   const [selectedGalleryIds, setSelectedGalleryIds] = useState<Set<string>>(new Set())
@@ -195,57 +204,123 @@ export default function ImageGenPage() {
   const [batchRunning, setBatchRunning] = useState(false)
   const [batchProgress, setBatchProgress] = useState(0)
   const [batchCurrentItem, setBatchCurrentItem] = useState(0)
+  const [batchResults, setBatchResults] = useState<Array<{ prompt: string; imageUrl?: string; error?: string }>>([])
 
-  const COLORS = [
-    'bg-gradient-to-br from-indigo-800 to-violet-900',
-    'bg-gradient-to-br from-blue-800 to-cyan-900',
-    'bg-gradient-to-br from-rose-800 to-pink-900',
-    'bg-gradient-to-br from-amber-700 to-orange-900',
-  ]
+  // Load workspaceId on mount
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      setWorkspaceId(localStorage.getItem('workspaceId'))
+    }
+  }, [])
 
-  function startGeneration() {
-    if (!prompt.trim()) return
-    setGenerating(true)
-    setGenProgress(0)
-    const count = parseInt(imageCount)
-    let prog = 0
-    const interval = setInterval(() => {
-      prog += Math.random() * 12 + 5
-      if (prog >= 100) {
-        prog = 100
-        setGenProgress(100)
-        clearInterval(interval)
-        setGenerating(false)
-        setGeneratedImages(Array.from({ length: count }, (_, i) => ({
-          color: COLORS[i % COLORS.length],
-          prompt,
-        })))
-        setStudioTab('studio')
-      } else {
-        setGenProgress(Math.round(prog))
+  // Fetch gallery whenever the gallery tab opens or workspace changes
+  useEffect(() => {
+    if (studioTab !== 'gallery' || !workspaceId) return
+    void fetchGallery()
+  }, [studioTab, workspaceId]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function fetchGallery() {
+    if (!workspaceId) return
+    setGalleryLoading(true)
+    setGalleryError(null)
+    try {
+      const res = await fetch(`/api/artifacts?workspaceId=${workspaceId}&type=image`)
+      if (!res.ok) throw new Error(`Failed (${res.status})`)
+      const data = await res.json() as Array<{
+        id: string
+        title: string
+        content_json: { imageUrl?: string; prompt?: string; revisedPrompt?: string; size?: string; cloudinaryUrl?: string } | string
+        created_at: string
+      }>
+      type CJ = { imageUrl?: string; prompt?: string; revisedPrompt?: string; size?: string; cloudinaryUrl?: string }
+      const items: GalleryImage[] = data
+        .map((row) => {
+          const cj: CJ | undefined =
+            typeof row.content_json === 'string'
+              ? safeParse<CJ>(row.content_json)
+              : (row.content_json as CJ | undefined)
+          const url = cj?.cloudinaryUrl || cj?.imageUrl || ''
+          if (!url) return null
+          return {
+            id: row.id,
+            prompt: cj?.prompt || row.title || '',
+            model: 'DALL-E 3',
+            style: '',
+            size: cj?.size || '',
+            date: relativeTime(row.created_at),
+            imageUrl: url,
+          }
+        })
+        .filter((x): x is GalleryImage => x !== null)
+      setGalleryImages(items)
+    } catch (err) {
+      setGalleryError(err instanceof Error ? err.message : 'Failed to load gallery')
+    } finally {
+      setGalleryLoading(false)
+    }
+  }
+
+  async function generateOne(promptText: string): Promise<{ imageUrl: string; artifactId?: string; revisedPrompt?: string } | { error: string }> {
+    if (!workspaceId) return { error: 'No workspace selected. Open a workspace and try again.' }
+    const sizeApi = SIZE_OPTIONS.find(s => s.value === selectedSize)?.api || '1024x1024'
+    const qualityApi = QUALITY_OPTIONS.find(q => q.label === quality)?.api || 'standard'
+    try {
+      const res = await fetch('/api/agents/creative/image-gen', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          workspaceId,
+          prompt: promptText,
+          size: sizeApi,
+          quality: qualityApi,
+          style: 'vivid',
+        }),
+      })
+      const data = await res.json() as {
+        ok?: boolean
+        imageUrl?: string
+        artifactId?: string
+        revisedPrompt?: string
+        error?: string
       }
-    }, 200)
+      if (!data.ok || !data.imageUrl) {
+        return { error: data.error || 'Image generation failed' }
+      }
+      return { imageUrl: data.imageUrl, artifactId: data.artifactId, revisedPrompt: data.revisedPrompt }
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : 'Network error' }
+    }
+  }
+
+  async function startGeneration() {
+    if (!prompt.trim()) return
+    setGenerationError(null)
+    setGenerating(true)
+    setGeneratedImages([])
+    setMediaLibStatus({})
+    const count = parseInt(imageCount)
+    const results: GeneratedImage[] = []
+    for (let i = 0; i < count; i++) {
+      const result = await generateOne(prompt)
+      if ('error' in result) {
+        setGenerationError(result.error)
+        break
+      }
+      results.push({
+        imageUrl: result.imageUrl,
+        prompt,
+        artifactId: result.artifactId,
+        revisedPrompt: result.revisedPrompt,
+      })
+      setGeneratedImages([...results])
+    }
+    setGenerating(false)
+    setStudioTab('studio')
   }
 
   function enhancePrompt() {
     if (!prompt.trim()) return
     setPrompt(prompt + ', ultra-detailed, professional photography, 8k resolution, award-winning composition, dramatic lighting, sharp focus, high contrast')
-  }
-
-  function startUpscale(idx: number) {
-    setUpscaling(idx)
-    setUpscaleProgress(0)
-    const interval = setInterval(() => {
-      setUpscaleProgress(p => {
-        if (p >= 100) {
-          clearInterval(interval)
-          setUpscaling(null)
-          setShowComparison(true)
-          return 100
-        }
-        return p + 8
-      })
-    }, 150)
   }
 
   function toggleGallerySelect(id: string) {
@@ -257,26 +332,54 @@ export default function ImageGenPage() {
     })
   }
 
-  function startBatch() {
+  async function addToMediaLibrary(idx: number) {
+    const img = generatedImages[idx]
+    if (!img || !workspaceId) return
+    setMediaLibStatus(s => ({ ...s, [idx]: 'saving' }))
+    try {
+      // The image-gen agent already creates an artifact; this endpoint creates
+      // an explicit media_library artifact for organized library views.
+      const res = await fetch('/api/artifacts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          workspaceId,
+          type: 'media_library_image',
+          title: img.prompt.slice(0, 200) || 'Generated image',
+          content_json: { imageUrl: img.imageUrl, prompt: img.prompt, source: 'image-gen-studio' },
+        }),
+      })
+      const data = await res.json()
+      setMediaLibStatus(s => ({ ...s, [idx]: data.ok ? 'saved' : 'error' }))
+    } catch {
+      setMediaLibStatus(s => ({ ...s, [idx]: 'error' }))
+    }
+  }
+
+  async function startBatch() {
     const lines = batchPrompts.split('\n').filter(l => l.trim())
-    if (!lines.length) return
+    if (!lines.length || !workspaceId) return
     setBatchRunning(true)
     setBatchProgress(0)
     setBatchCurrentItem(0)
-    let item = 0
-    const interval = setInterval(() => {
-      item += 1
-      setBatchCurrentItem(item)
-      setBatchProgress(Math.round((item / lines.length) * 100))
-      if (item >= lines.length) {
-        clearInterval(interval)
-        setBatchRunning(false)
-      }
-    }, 800)
+    setBatchResults(lines.map(p => ({ prompt: p })))
+
+    for (let i = 0; i < lines.length; i++) {
+      setBatchCurrentItem(i)
+      const r = await generateOne(lines[i])
+      setBatchResults(prev => {
+        const next = [...prev]
+        if ('error' in r) next[i] = { prompt: lines[i], error: r.error }
+        else next[i] = { prompt: lines[i], imageUrl: r.imageUrl }
+        return next
+      })
+      setBatchProgress(Math.round(((i + 1) / lines.length) * 100))
+    }
+    setBatchRunning(false)
   }
 
   const filteredGallery = galleryImages.filter(img => {
-    const matchesFilter = galleryFilter === 'All' || img.model === galleryFilter || img.style === galleryFilter
+    const matchesFilter = galleryFilter === 'All' || img.model === galleryFilter
     const matchesSearch = !gallerySearch || img.prompt.toLowerCase().includes(gallerySearch.toLowerCase())
     return matchesFilter && matchesSearch
   })
@@ -299,10 +402,6 @@ export default function ImageGenPage() {
             <h1 className="text-white font-bold text-lg">AI Image Studio</h1>
           </div>
           <div className="flex items-center gap-2">
-            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-900/40 border border-emerald-800/50">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-              <span className="text-emerald-400 text-xs font-medium">847 credits</span>
-            </div>
             <button
               onClick={() => setApiPanelOpen(true)}
               className="w-8 h-8 rounded-lg bg-gray-800 hover:bg-gray-700 flex items-center justify-center text-gray-400 hover:text-white transition-colors"
@@ -367,6 +466,9 @@ export default function ImageGenPage() {
                 </button>
               ))}
             </div>
+            {selectedModel !== 'dalle3' && (
+              <p className="text-amber-400 text-[10px] mt-2">Note: only DALL-E 3 is wired to a live API. Other models will route to DALL-E 3.</p>
+            )}
           </div>
 
           {/* Style Presets */}
@@ -410,10 +512,10 @@ export default function ImageGenPage() {
               <div className="flex gap-1.5">
                 {QUALITY_OPTIONS.map(q => (
                   <button
-                    key={q}
-                    onClick={() => setQuality(q)}
-                    className={`flex-1 py-2 rounded-lg text-xs font-medium transition-colors ${quality === q ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'}`}
-                  >{q}</button>
+                    key={q.label}
+                    onClick={() => setQuality(q.label)}
+                    className={`flex-1 py-2 rounded-lg text-xs font-medium transition-colors ${quality === q.label ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'}`}
+                  >{q.label}</button>
                 ))}
               </div>
             </div>
@@ -550,11 +652,11 @@ export default function ImageGenPage() {
           <div className="pb-4">
             <button
               onClick={startGeneration}
-              disabled={generating || !prompt.trim()}
+              disabled={generating || !prompt.trim() || !workspaceId}
               className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white py-3 rounded-xl font-semibold text-sm transition-colors flex items-center justify-center gap-2"
             >
               {generating ? (
-                <><Spinner size={4} /> Generating...</>
+                <><Spinner size={4} /> Generating with DALL-E 3... ~5s</>
               ) : (
                 <>
                   <span>Generate</span>
@@ -562,18 +664,18 @@ export default function ImageGenPage() {
                 </>
               )}
             </button>
-            {generating && (
-              <div className="mt-3">
-                <div className="flex items-center justify-between mb-1">
-                  <span className="text-gray-400 text-xs">Generating image{parseInt(imageCount) > 1 ? 's' : ''}...</span>
-                  <span className="text-gray-400 text-xs">{genProgress}%</span>
-                </div>
-                <div className="w-full bg-gray-800 rounded-full h-1.5">
-                  <div
-                    className="bg-indigo-500 h-1.5 rounded-full transition-all duration-200"
-                    style={{ width: `${genProgress}%` }}
-                  />
-                </div>
+            {!workspaceId && (
+              <p className="text-amber-400 text-[10px] mt-2 text-center">Open a workspace first</p>
+            )}
+            {generationError && (
+              <div className="mt-3 p-3 rounded-lg bg-red-900/30 border border-red-700/50">
+                <p className="text-red-300 text-xs leading-relaxed">{generationError}</p>
+                <button
+                  onClick={() => { setGenerationError(null); startGeneration() }}
+                  className="mt-2 text-red-200 hover:text-white text-[10px] underline"
+                >
+                  Retry
+                </button>
               </div>
             )}
           </div>
@@ -591,7 +693,7 @@ export default function ImageGenPage() {
               className={`px-5 py-3 text-sm font-medium capitalize border-b-2 transition-colors -mb-px ${studioTab === t ? 'border-indigo-500 text-indigo-300' : 'border-transparent text-gray-500 hover:text-gray-300'}`}
             >
               {t}
-              {t === 'gallery' && <span className="ml-1.5 px-1.5 py-0.5 rounded-full bg-gray-800 text-gray-400 text-[10px]">{galleryImages.length}</span>}
+              {t === 'gallery' && galleryImages.length > 0 && <span className="ml-1.5 px-1.5 py-0.5 rounded-full bg-gray-800 text-gray-400 text-[10px]">{galleryImages.length}</span>}
             </button>
           ))}
         </div>
@@ -609,126 +711,57 @@ export default function ImageGenPage() {
               </div>
             ) : (
               <div className="space-y-4">
-                {/* Generated images grid */}
-                <div className={`grid gap-4 ${generatedImages.length === 1 ? 'grid-cols-1 max-w-xl' : generatedImages.length === 2 ? 'grid-cols-2' : 'grid-cols-2'}`}>
+                <div className={`grid gap-4 ${generatedImages.length === 1 ? 'grid-cols-1 max-w-xl' : 'grid-cols-2'}`}>
                   {generatedImages.map((img, idx) => (
                     <div
                       key={idx}
-                      className="relative rounded-2xl overflow-hidden group cursor-pointer"
+                      className="relative rounded-2xl overflow-hidden group cursor-pointer bg-gray-900"
                       style={{ aspectRatio: '1' }}
                       onMouseEnter={() => setHoveredImage(idx)}
                       onMouseLeave={() => setHoveredImage(null)}
                     >
-                      <div className={`absolute inset-0 ${img.color}`} />
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={img.imageUrl} alt={img.prompt} className="absolute inset-0 w-full h-full object-cover" />
+
                       {/* Prompt overlay at bottom */}
-                      <div className="absolute bottom-0 left-0 right-0 p-3 bg-gradient-to-t from-black/80 to-transparent">
-                        <p className="text-white text-xs line-clamp-2 leading-relaxed">{img.prompt}</p>
+                      <div className="absolute bottom-0 left-0 right-0 p-3 bg-gradient-to-t from-black/80 to-transparent pointer-events-none">
+                        <p className="text-white text-xs line-clamp-2 leading-relaxed">{img.revisedPrompt || img.prompt}</p>
                       </div>
+
                       {/* Hover actions */}
                       {hoveredImage === idx && (
                         <div className="absolute inset-0 bg-black/50 flex items-center justify-center gap-2 flex-wrap p-4">
-                          <button className="px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white text-xs font-medium backdrop-blur-sm transition-colors flex items-center gap-1">
+                          <a
+                            href={img.imageUrl}
+                            download
+                            target="_blank"
+                            rel="noreferrer"
+                            className="px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white text-xs font-medium backdrop-blur-sm transition-colors flex items-center gap-1"
+                          >
                             <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
                             Download
-                          </button>
-                          <button className="px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white text-xs font-medium backdrop-blur-sm transition-colors flex items-center gap-1">
-                            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>
-                            Edit
-                          </button>
+                          </a>
                           <button
-                            onClick={() => startUpscale(idx)}
-                            className="px-2.5 py-1.5 rounded-lg bg-indigo-600/80 hover:bg-indigo-600 text-white text-xs font-medium backdrop-blur-sm transition-colors flex items-center gap-1"
+                            onClick={() => navigator.clipboard.writeText(img.prompt)}
+                            className="px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white text-xs font-medium backdrop-blur-sm transition-colors"
                           >
-                            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5" /></svg>
-                            Upscale 4×
-                          </button>
-                          <button className="px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white text-xs font-medium backdrop-blur-sm transition-colors flex items-center gap-1">
-                            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
-                            Variations
-                          </button>
-                          <button className="px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white text-xs font-medium backdrop-blur-sm transition-colors">
                             Copy Prompt
                           </button>
-                          <button className="px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white text-xs font-medium backdrop-blur-sm transition-colors">
-                            + Library
+                          <button
+                            onClick={() => addToMediaLibrary(idx)}
+                            disabled={mediaLibStatus[idx] === 'saving' || mediaLibStatus[idx] === 'saved'}
+                            className="px-2.5 py-1.5 rounded-lg bg-indigo-600/80 hover:bg-indigo-600 disabled:opacity-70 text-white text-xs font-medium backdrop-blur-sm transition-colors flex items-center gap-1"
+                          >
+                            {mediaLibStatus[idx] === 'saving' && <Spinner size={3} />}
+                            {mediaLibStatus[idx] === 'saved' ? '✓ Added to Media Library' :
+                             mediaLibStatus[idx] === 'error' ? 'Save failed — retry' :
+                             '+ Add to Media Library'}
                           </button>
-                        </div>
-                      )}
-                      {/* Upscale progress */}
-                      {upscaling === idx && (
-                        <div className="absolute inset-0 bg-black/70 flex flex-col items-center justify-center gap-2">
-                          <Spinner size={8} />
-                          <p className="text-white text-xs">Upscaling... {upscaleProgress}%</p>
-                          <div className="w-32 bg-gray-800 rounded-full h-1">
-                            <div className="bg-indigo-500 h-1 rounded-full transition-all" style={{ width: `${upscaleProgress}%` }} />
-                          </div>
                         </div>
                       )}
                     </div>
                   ))}
                 </div>
-
-                {/* Before/After comparison */}
-                {showComparison && (
-                  <div className="bg-gray-900 border border-gray-800 rounded-2xl p-5 space-y-3">
-                    <div className="flex items-center justify-between">
-                      <p className="text-white text-sm font-medium">Before / After Upscale</p>
-                      <button onClick={() => setShowComparison(false)} className="text-gray-500 hover:text-white text-xs">Dismiss</button>
-                    </div>
-                    <div className="relative rounded-xl overflow-hidden h-48 bg-gray-800">
-                      <div className={`absolute inset-0 ${generatedImages[0]?.color}`} />
-                      <div
-                        className="absolute inset-y-0 right-0 bg-gradient-to-br from-indigo-900 to-violet-900"
-                        style={{ left: `${compareSlider}%` }}
-                      />
-                      <div className="absolute inset-y-0 flex items-center" style={{ left: `calc(${compareSlider}% - 1px)` }}>
-                        <div className="w-0.5 h-full bg-white" />
-                        <div className="absolute w-6 h-6 rounded-full bg-white shadow-lg flex items-center justify-center -translate-x-3 cursor-col-resize">
-                          <svg className="w-3 h-3 text-gray-700" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 9l4-4 4 4m0 6l-4 4-4-4" /></svg>
-                        </div>
-                      </div>
-                      <div className="absolute top-2 left-2 bg-black/60 rounded px-1.5 py-0.5 text-[10px] text-white">Original</div>
-                      <div className="absolute top-2 right-2 bg-black/60 rounded px-1.5 py-0.5 text-[10px] text-white">4× Upscaled</div>
-                    </div>
-                    <input type="range" min={5} max={95} value={compareSlider} onChange={e => setCompareSlider(Number(e.target.value))} className="w-full accent-indigo-500" />
-                  </div>
-                )}
-
-                {/* Edit overlay */}
-                {editMode && (
-                  <div className="bg-gray-900 border border-gray-800 rounded-2xl p-5 space-y-3">
-                    <div className="flex items-center justify-between">
-                      <p className="text-white text-sm font-medium">Edit Canvas</p>
-                      <button onClick={() => setEditMode(false)} className="text-gray-500 hover:text-white text-xs">Close</button>
-                    </div>
-                    <div className="flex gap-2">
-                      {['Erase', 'Inpaint', 'Outpaint'].map(tool => (
-                        <button key={tool} className="px-3 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs transition-colors">{tool}</button>
-                      ))}
-                    </div>
-                    <div>
-                      <div className="flex items-center justify-between mb-1">
-                        <label className="text-gray-500 text-xs">Brush Size</label>
-                        <span className="text-gray-500 text-xs">{brushSize}px</span>
-                      </div>
-                      <input type="range" min={5} max={100} value={brushSize} onChange={e => setBrushSize(Number(e.target.value))} className="w-full accent-indigo-500" />
-                    </div>
-                    <div className="h-40 rounded-xl bg-gray-800 border border-dashed border-gray-700 flex items-center justify-center">
-                      <p className="text-gray-600 text-xs">Canvas — paint to mask area for regeneration</p>
-                    </div>
-                    <button className="w-full py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium transition-colors">
-                      Regenerate Selection
-                    </button>
-                  </div>
-                )}
-
-                <button
-                  onClick={() => setEditMode(e => !e)}
-                  className="flex items-center gap-2 px-4 py-2 rounded-xl bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs font-medium transition-colors"
-                >
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>
-                  {editMode ? 'Close Editor' : 'Open Edit Canvas'}
-                </button>
               </div>
             )}
           </div>
@@ -748,16 +781,38 @@ export default function ImageGenPage() {
                   className="w-full pl-9 pr-4 py-2 rounded-xl bg-gray-900 border border-gray-800 text-white placeholder-gray-600 text-sm focus:outline-none focus:border-indigo-500"
                 />
               </div>
-              <div className="flex gap-1.5 flex-wrap">
-                {['All', 'DALL-E 3', 'Midjourney v6', 'Flux Pro'].map(f => (
-                  <button
-                    key={f}
-                    onClick={() => setGalleryFilter(f)}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${galleryFilter === f ? 'bg-indigo-600 text-white' : 'bg-gray-900 text-gray-400 hover:text-white border border-gray-800'}`}
-                  >{f}</button>
-                ))}
-              </div>
+              <button
+                onClick={() => void fetchGallery()}
+                disabled={galleryLoading}
+                className="px-3 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs flex items-center gap-2 transition-colors disabled:opacity-50"
+              >
+                {galleryLoading ? <><Spinner size={3} /> Loading</> : 'Refresh'}
+              </button>
             </div>
+
+            {/* Loading / Error / Empty */}
+            {galleryLoading && galleryImages.length === 0 && (
+              <div className="flex items-center justify-center py-20 text-gray-500 text-sm gap-2">
+                <Spinner size={4} /> Loading your gallery...
+              </div>
+            )}
+
+            {galleryError && (
+              <div className="p-4 rounded-xl bg-red-900/30 border border-red-700/50 flex items-center justify-between">
+                <p className="text-red-300 text-sm">{galleryError}</p>
+                <button onClick={() => void fetchGallery()} className="text-red-200 hover:text-white text-xs underline">Retry</button>
+              </div>
+            )}
+
+            {!galleryLoading && !galleryError && filteredGallery.length === 0 && (
+              <div className="flex flex-col items-center justify-center py-20 text-center">
+                <div className="w-16 h-16 rounded-2xl bg-gray-900 border border-gray-800 flex items-center justify-center mb-3">
+                  <svg className="w-8 h-8 text-gray-700" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
+                </div>
+                <p className="text-gray-400 text-sm font-medium">No images yet — generate your first one</p>
+                <p className="text-gray-600 text-xs mt-1">Images you generate here will show up in this gallery</p>
+              </div>
+            )}
 
             {/* Multi-select actions */}
             {selectedGalleryIds.size > 0 && (
@@ -765,42 +820,41 @@ export default function ImageGenPage() {
                 <span className="text-indigo-300 text-xs font-medium">{selectedGalleryIds.size} selected</span>
                 <div className="flex gap-2 ml-auto">
                   <button className="px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs transition-colors">Batch Download</button>
-                  <button className="px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs transition-colors">Add to Library</button>
-                  <button className="px-3 py-1.5 rounded-lg bg-red-900/50 hover:bg-red-900 text-red-400 text-xs transition-colors">Delete</button>
                 </div>
               </div>
             )}
 
-            {/* Masonry grid */}
-            <div className="columns-2 md:columns-3 gap-3 space-y-3">
-              {filteredGallery.map((img, idx) => (
-                <div
-                  key={img.id}
-                  className="break-inside-avoid relative rounded-xl overflow-hidden group cursor-pointer"
-                  style={{ aspectRatio: idx % 3 === 0 ? '1' : idx % 3 === 1 ? '16/9' : '9/16' }}
-                >
-                  <div className={`absolute inset-0 ${img.color}`} />
-                  {/* Checkbox */}
+            {/* Grid */}
+            {filteredGallery.length > 0 && (
+              <div className="columns-2 md:columns-3 gap-3 space-y-3">
+                {filteredGallery.map((img) => (
                   <div
-                    className={`absolute top-2 left-2 w-5 h-5 rounded border-2 transition-all cursor-pointer z-10 flex items-center justify-center ${selectedGalleryIds.has(img.id) ? 'border-indigo-500 bg-indigo-600' : 'border-white/40 bg-black/20 opacity-0 group-hover:opacity-100'}`}
-                    onClick={e => { e.stopPropagation(); toggleGallerySelect(img.id) }}
+                    key={img.id}
+                    className="break-inside-avoid relative rounded-xl overflow-hidden group cursor-pointer bg-gray-900"
                   >
-                    {selectedGalleryIds.has(img.id) && (
-                      <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>
-                    )}
-                  </div>
-                  {/* Hover info */}
-                  <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity bg-black/60 flex flex-col justify-end p-3">
-                    <p className="text-white text-xs line-clamp-2 leading-relaxed">{img.prompt}</p>
-                    <div className="flex items-center gap-1.5 mt-1.5">
-                      <span className="text-[10px] text-gray-300">{img.model}</span>
-                      <span className="text-gray-600">·</span>
-                      <span className="text-[10px] text-gray-400">{img.date}</span>
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={img.imageUrl} alt={img.prompt} className="w-full h-auto block" />
+                    {/* Checkbox */}
+                    <div
+                      className={`absolute top-2 left-2 w-5 h-5 rounded border-2 transition-all cursor-pointer z-10 flex items-center justify-center ${selectedGalleryIds.has(img.id) ? 'border-indigo-500 bg-indigo-600' : 'border-white/40 bg-black/20 opacity-0 group-hover:opacity-100'}`}
+                      onClick={e => { e.stopPropagation(); toggleGallerySelect(img.id) }}
+                    >
+                      {selectedGalleryIds.has(img.id) && (
+                        <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>
+                      )}
+                    </div>
+                    <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity bg-black/60 flex flex-col justify-end p-3">
+                      <p className="text-white text-xs line-clamp-2 leading-relaxed">{img.prompt}</p>
+                      <div className="flex items-center gap-1.5 mt-1.5">
+                        <span className="text-[10px] text-gray-300">{img.model}</span>
+                        <span className="text-gray-600">·</span>
+                        <span className="text-[10px] text-gray-400">{img.date}</span>
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
@@ -817,29 +871,42 @@ export default function ImageGenPage() {
                   placeholder={BATCH_PROMPTS_PLACEHOLDER}
                   className="w-full px-4 py-3 rounded-xl bg-gray-900 border border-gray-800 text-white placeholder-gray-600 text-sm focus:outline-none focus:border-indigo-500 resize-none font-mono"
                 />
-                <p className="text-gray-600 text-xs mt-1">Or upload a CSV file</p>
+                <p className="text-gray-600 text-xs mt-1">Each prompt is generated sequentially (5-10s each)</p>
               </div>
 
-              {/* Preview */}
+              {/* Preview & per-item progress */}
               {batchLines.length > 0 && (
                 <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 space-y-2">
                   <div className="flex items-center justify-between">
-                    <p className="text-white text-sm font-medium">Batch Preview</p>
+                    <p className="text-white text-sm font-medium">Batch Queue</p>
                     <span className="text-gray-400 text-xs">{batchLines.length} prompts · ~${batchCost}</span>
                   </div>
-                  <div className="space-y-1.5 max-h-40 overflow-y-auto">
-                    {batchLines.map((line, idx) => (
-                      <div key={idx} className="flex items-center gap-2.5 py-1.5 px-3 rounded-lg bg-gray-800">
-                        <span className="text-gray-600 text-[10px] font-mono w-5 shrink-0">{idx + 1}</span>
-                        <p className="text-gray-300 text-xs truncate">{line}</p>
-                        {batchRunning && batchCurrentItem > idx && (
-                          <svg className="w-3 h-3 text-emerald-400 ml-auto shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>
-                        )}
-                        {batchRunning && batchCurrentItem === idx && (
-                          <Spinner size={3} />
-                        )}
-                      </div>
-                    ))}
+                  <div className="space-y-1.5 max-h-72 overflow-y-auto">
+                    {(batchRunning || batchResults.length ? batchResults : batchLines.map(p => ({ prompt: p } as { prompt: string; imageUrl?: string; error?: string }))).map((item, idx) => {
+                      const imageUrl = typeof item.imageUrl === 'string' ? item.imageUrl : ''
+                      const errorMsg = typeof item.error === 'string' ? item.error : ''
+                      const isDone = !!imageUrl
+                      const isError = !!errorMsg
+                      return (
+                        <div key={idx} className="flex items-center gap-2.5 py-1.5 px-3 rounded-lg bg-gray-800">
+                          <span className="text-gray-600 text-[10px] font-mono w-5 shrink-0">{idx + 1}</span>
+                          {isDone && (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img src={imageUrl} alt="" className="w-8 h-8 object-cover rounded shrink-0" />
+                          )}
+                          <p className="text-gray-300 text-xs truncate flex-1">{item.prompt}</p>
+                          {isDone && (
+                            <svg className="w-3 h-3 text-emerald-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>
+                          )}
+                          {isError && (
+                            <span className="text-red-400 text-[10px] shrink-0" title={errorMsg}>Failed</span>
+                          )}
+                          {batchRunning && batchCurrentItem === idx && !isDone && !isError && (
+                            <Spinner size={3} />
+                          )}
+                        </div>
+                      )
+                    })}
                   </div>
                 </div>
               )}
@@ -850,7 +917,7 @@ export default function ImageGenPage() {
                   <div className="flex items-center gap-2">
                     <Spinner size={4} />
                     <span className="text-white text-sm font-medium">
-                      Generating {batchCurrentItem}/{batchLines.length}...
+                      Generating {batchCurrentItem + 1}/{batchLines.length}...
                     </span>
                   </div>
                   <div className="w-full bg-gray-800 rounded-full h-2">
@@ -859,13 +926,13 @@ export default function ImageGenPage() {
                       style={{ width: `${batchProgress}%` }}
                     />
                   </div>
-                  <p className="text-gray-500 text-xs">{batchProgress}% complete</p>
+                  <p className="text-gray-500 text-xs">{batchProgress}% complete · sequential to avoid rate limits</p>
                 </div>
               )}
 
               <button
                 onClick={startBatch}
-                disabled={batchRunning || batchLines.length === 0}
+                disabled={batchRunning || batchLines.length === 0 || !workspaceId}
                 className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white py-3 rounded-xl font-semibold text-sm transition-colors flex items-center justify-center gap-2"
               >
                 {batchRunning ? (
@@ -880,4 +947,8 @@ export default function ImageGenPage() {
       </div>
     </div>
   )
+}
+
+function safeParse<T = unknown>(s: string): T | undefined {
+  try { return JSON.parse(s) as T } catch { return undefined }
 }

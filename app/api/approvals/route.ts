@@ -21,7 +21,15 @@ export async function GET(req: NextRequest) {
     WHERE ap.workspace_id = ${workspaceId}
     ORDER BY ap.created_at DESC
   `
-  return NextResponse.json(result.rows)
+  // Parse content_json strings into objects for the UI
+  const rows = result.rows.map((r) => {
+    const row = r as Record<string, unknown>
+    if (typeof row.content_json === 'string') {
+      try { row.content_json = JSON.parse(row.content_json as string) } catch { /* keep raw */ }
+    }
+    return row
+  })
+  return NextResponse.json(rows)
 }
 
 export async function PATCH(req: NextRequest) {

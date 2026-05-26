@@ -727,6 +727,80 @@ export default function AgentsPage() {
   const [search, setSearch] = useState('')
   const [categoryFilter, setCategoryFilter] = useState<'all' | 'supervisor' | 'worker'>('all')
 
+  // Hydrate the static agent catalog with real run data from /api/agent-runs.
+  // The static AGENTS list is the registry of available agents; we layer
+  // live "tasksToday", "costToday", "status", and "currentTask" on top.
+  useEffect(() => {
+    const wid = typeof window !== 'undefined' ? localStorage.getItem('workspaceId') : null
+    if (!wid) return
+    let cancelled = false
+
+    const hydrate = async () => {
+      try {
+        const res = await fetch(`/api/agent-runs?workspaceId=${wid}&limit=200`)
+        if (!res.ok) return
+        const runs = await res.json() as Array<{
+          id: string
+          agent_name: string
+          status: string
+          cost_estimate?: number
+          input_json?: string
+          output_json?: string
+          error_message?: string
+          created_at: string
+          completed_at?: string
+        }>
+        if (cancelled) return
+        const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0)
+        const aggregates = new Map<string, { tasks: number; cost: number; running: number; latest: string | null }>()
+        for (const r of runs) {
+          // Match runs to agents by name/slug (case-insensitive, partial)
+          const key = (r.agent_name || '').toLowerCase()
+          if (!key) continue
+          const existing = aggregates.get(key) || { tasks: 0, cost: 0, running: 0, latest: null }
+          if (new Date(r.created_at) >= todayStart) {
+            existing.tasks += 1
+            existing.cost += Number(r.cost_estimate || 0)
+          }
+          if (r.status === 'running') existing.running += 1
+          if (!existing.latest || new Date(r.created_at) > new Date(existing.latest)) {
+            existing.latest = r.created_at
+          }
+          aggregates.set(key, existing)
+        }
+
+        // Merge into static catalog
+        setAgents(prev => prev.map(a => {
+          // Try several matching strategies against the run agent_name
+          const candidates = [a.id, a.name.toLowerCase().replace(/\s+/g, '_'), a.role.toLowerCase()]
+          let agg: { tasks: number; cost: number; running: number; latest: string | null } | undefined
+          for (const c of candidates) {
+            if (aggregates.has(c)) { agg = aggregates.get(c); break }
+            // Try fuzzy: any aggregate key contains the candidate
+            for (const [k, v] of aggregates) {
+              if (k.includes(c) || c.includes(k)) { agg = v; break }
+            }
+            if (agg) break
+          }
+          if (!agg) return a
+          const newStatus: AgentStatus = agg.running > 0 ? 'active' : a.status === 'paused' ? 'paused' : 'idle'
+          return {
+            ...a,
+            tasksToday: agg.tasks,
+            costToday: parseFloat(agg.cost.toFixed(3)),
+            status: newStatus,
+          }
+        }))
+      } catch (err) {
+        console.error('[agents] hydrate failed', err)
+      }
+    }
+
+    hydrate()
+    const interval = setInterval(hydrate, 15000) // refresh every 15s
+    return () => { cancelled = true; clearInterval(interval) }
+  }, [])
+
   const togglePause = (id: string) => {
     setAgents(prev => prev.map(a => a.id === id
       ? { ...a, status: (a.status === 'paused' ? 'idle' : 'paused') as AgentStatus }

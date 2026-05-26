@@ -92,6 +92,7 @@ export default function BrandMemoryPage() {
   const [uploadText, setUploadText] = useState('')
   const [uploadFiles, setUploadFiles] = useState<File[]>([])
   const [uploading, setUploading] = useState(false)
+  const [uploadStatus, setUploadStatus] = useState<string>('')
   const [uploadResult, setUploadResult] = useState<{ success: boolean; message: string } | null>(null)
   const uploadFileRef = useRef<HTMLInputElement>(null)
   const [isDragging, setIsDragging] = useState(false)
@@ -161,41 +162,109 @@ export default function BrandMemoryPage() {
     if (!wid) return
     setUploading(true)
     setUploadResult(null)
+    setUploadStatus('')
 
-    const items: Array<{ type: 'pdf' | 'docx' | 'url' | 'text'; content: string; filename?: string }> = []
-    uploadFiles.forEach(f => items.push({ type: f.name.endsWith('.pdf') ? 'pdf' : 'docx', content: `[File: ${f.name}]`, filename: f.name }))
-    if (uploadUrl.trim()) items.push({ type: 'url', content: uploadUrl.trim(), filename: uploadUrl.trim() })
-    if (uploadText.trim()) items.push({ type: 'text', content: uploadText.trim(), filename: 'Pasted brand guidelines' })
+    type IngestItem = { type: 'pdf' | 'docx' | 'url' | 'text'; content: string; filename?: string }
+    const items: IngestItem[] = []
+    const errors: string[] = []
 
-    if (items.length === 0) { setUploading(false); return }
+    // 1) Parse files via /api/parse-document
+    for (const f of uploadFiles) {
+      const lower = f.name.toLowerCase()
+      const ext: 'pdf' | 'docx' | 'text' =
+        lower.endsWith('.pdf') ? 'pdf' :
+        lower.endsWith('.docx') ? 'docx' :
+        'text'
+      try {
+        setUploadStatus(`📄 Parsing ${ext.toUpperCase()}: ${f.name}...`)
+        if (ext === 'text') {
+          const text = await f.text()
+          if (text.trim()) items.push({ type: 'text', content: text, filename: f.name })
+          continue
+        }
+        const fd = new FormData()
+        fd.append('file', f)
+        const parseRes = await fetch('/api/parse-document', { method: 'POST', body: fd })
+        const parsed = await parseRes.json() as { text?: string; error?: string; type?: 'pdf' | 'docx' | 'txt' }
+        if (!parseRes.ok || !parsed.text) {
+          errors.push(`${f.name}: ${parsed.error || 'parse failed'}`)
+          continue
+        }
+        items.push({
+          type: parsed.type === 'txt' ? 'text' : (parsed.type as 'pdf' | 'docx'),
+          content: parsed.text,
+          filename: f.name,
+        })
+      } catch (e) {
+        errors.push(`${f.name}: ${e instanceof Error ? e.message : 'parse error'}`)
+      }
+    }
 
+    // 2) Scrape URL via /api/parse-document?url=...
+    if (uploadUrl.trim()) {
+      try {
+        setUploadStatus(`🌐 Fetching ${uploadUrl}...`)
+        const r = await fetch(`/api/parse-document?url=${encodeURIComponent(uploadUrl.trim())}`)
+        const parsed = await r.json() as { text?: string; error?: string }
+        if (!r.ok || !parsed.text) {
+          errors.push(`URL fetch failed: ${parsed.error || r.statusText}`)
+        } else {
+          items.push({ type: 'url', content: parsed.text, filename: uploadUrl.trim() })
+        }
+      } catch (e) {
+        errors.push(`URL fetch failed: ${e instanceof Error ? e.message : 'network error'}`)
+      }
+    }
+
+    // 3) Pasted text
+    if (uploadText.trim()) {
+      items.push({ type: 'text', content: uploadText.trim(), filename: 'Pasted brand guidelines' })
+    }
+
+    if (items.length === 0) {
+      setUploadResult({
+        success: false,
+        message: errors.length ? errors.join(' • ') : 'Nothing to upload — add a file, URL, or paste text.',
+      })
+      setUploading(false)
+      setUploadStatus('')
+      return
+    }
+
+    // 4) Ingest each item
     let totalNodes = 0
-    let hasError = false
-
     for (const item of items) {
       try {
+        setUploadStatus(`🤖 Extracting knowledge from ${item.filename || item.type}...`)
         const res = await fetch('/api/learning/ingest', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ workspaceId: wid, type: item.type, content: item.content, filename: item.filename }),
+          body: JSON.stringify({
+            workspaceId: wid,
+            type: item.type,
+            content: item.content,
+            filename: item.filename,
+          }),
         })
         const data = await res.json()
         if (data.success) {
           totalNodes += data.nodesCreated || 0
         } else {
-          hasError = true
+          errors.push(`${item.filename || item.type}: ${data.error || 'ingest failed'}`)
         }
-      } catch {
-        hasError = true
+      } catch (e) {
+        errors.push(`${item.filename || item.type}: ${e instanceof Error ? e.message : 'ingest error'}`)
       }
     }
 
+    const hasError = errors.length > 0
     setUploadResult({
-      success: !hasError,
+      success: !hasError && totalNodes > 0,
       message: hasError
-        ? 'Some items failed. Please try again.'
-        : `${totalNodes} knowledge nodes extracted and added to Brand Memory.`,
+        ? `${totalNodes} knowledge node${totalNodes === 1 ? '' : 's'} added, but some items failed: ${errors.slice(0, 3).join(' • ')}`
+        : `✅ ${totalNodes} knowledge node${totalNodes === 1 ? '' : 's'} added to Brand Memory.`,
     })
+    setUploadStatus('')
     setUploading(false)
     if (!hasError) {
       setUploadFiles([])
@@ -420,13 +489,13 @@ export default function BrandMemoryPage() {
                 }`}
               >
                 <div className="text-3xl mb-2">📄</div>
-                <p className="text-white text-sm font-medium">Drop PDF or DOCX files here</p>
+                <p className="text-white text-sm font-medium">Drop PDF, DOCX, or TXT files here</p>
                 <p className="text-gray-500 text-xs mt-0.5">or click to browse</p>
                 <input
                   ref={uploadFileRef}
                   type="file"
                   multiple
-                  accept=".pdf,.docx"
+                  accept=".pdf,.docx,.txt"
                   className="hidden"
                   onChange={e => { if (e.target.files) setUploadFiles(prev => [...prev, ...Array.from(e.target.files!)]) }}
                 />
@@ -466,6 +535,13 @@ export default function BrandMemoryPage() {
                 />
               </div>
 
+              {uploading && uploadStatus && (
+                <div className="p-3 rounded-lg text-sm bg-indigo-950 border border-indigo-800 text-indigo-300 flex items-center gap-2">
+                  <span className="w-3 h-3 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin" />
+                  {uploadStatus}
+                </div>
+              )}
+
               {uploadResult && (
                 <div className={`p-3 rounded-lg text-sm ${uploadResult.success ? 'bg-green-950 border border-green-800 text-green-300' : 'bg-red-950 border border-red-800 text-red-300'}`}>
                   {uploadResult.success ? '✓ ' : '✕ '}{uploadResult.message}
@@ -483,9 +559,16 @@ export default function BrandMemoryPage() {
               <button
                 onClick={handleUploadBrandDocs}
                 disabled={uploading || (uploadFiles.length === 0 && !uploadUrl.trim() && !uploadText.trim())}
-                className="flex-1 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-sm font-medium transition-colors"
+                className="flex-1 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-sm font-medium transition-colors flex items-center justify-center gap-2"
               >
-                {uploading ? 'Extracting...' : 'Extract & Save to Memory'}
+                {uploading ? (
+                  <>
+                    <span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    Working…
+                  </>
+                ) : (
+                  'Extract & Save to Memory'
+                )}
               </button>
             </div>
           </div>

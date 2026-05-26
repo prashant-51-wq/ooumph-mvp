@@ -162,12 +162,26 @@ export default function OnboardingPage() {
     setLoading(true)
     setError('')
     try {
+      // 1. Resolve the authenticated user (for workspace ownership)
       let userId: string | null = null
+      let approvalEmail: string | null = null
       try {
         const me = await fetch('/api/auth/me')
         const d = await me.json()
         userId = d.user?.id || null
-      } catch { /* allow demo */ }
+        approvalEmail = d.user?.email || null
+      } catch { /* allow demo flow */ }
+
+      // 2. Map the 7-step wizard state → full workspace + brand_profile payload
+      const goalsArray: string[] = []
+      if (form.primaryGoal) goalsArray.push(form.primaryGoal)
+      if (form.contentTopics.length) goalsArray.push(...form.contentTopics)
+      const tone = form.voiceAdjectives.join(', ') || ''
+      const targetAudience = [
+        form.painPoints ? `Pain points: ${form.painPoints}` : null,
+        form.jobTitles.length ? `Job titles: ${form.jobTitles.join(', ')}` : null,
+        form.ageMin && form.ageMax ? `Age: ${form.ageMin}-${form.ageMax}` : null,
+      ].filter(Boolean).join(' | ')
 
       const res = await fetch('/api/workspaces', {
         method: 'POST',
@@ -176,24 +190,118 @@ export default function OnboardingPage() {
           businessName: form.businessName,
           industry: form.industry,
           website: form.website,
-          businessType: form.businessType,
-          description: form.description,
-          primaryGoal: form.primaryGoal,
-          channels: form.connectedChannels,
-          contentTypes: form.contentTypes,
+          // brand_profile fields
+          tagline: form.toneExampleCTA || '',
+          offer: form.description || '',
+          uniqueValue: form.description || '',
+          targetAudience,
+          tone,
+          competitors: '',
+          channels: form.connectedChannels.join(','),
+          goals: goalsArray.join(', '),
+          monthlyBudget: form.aiBudget || '',
+          prohibitedClaims: '',
+          approvalEmail: approvalEmail || '',
           userId,
         }),
       })
       const data = await res.json()
-      if (data.workspaceId) {
-        localStorage.setItem('workspaceId', data.workspaceId)
-        localStorage.setItem('businessName', form.businessName)
-        localStorage.removeItem('onboarding_progress')
-        router.push('/dashboard')
-      } else {
+      if (!data.workspaceId) {
         setError(data.error || 'Workspace creation failed. Please try again.')
+        return
       }
-    } catch {
+      const workspaceId = data.workspaceId as string
+      localStorage.setItem('workspaceId', workspaceId)
+      localStorage.setItem('businessName', form.businessName)
+
+      // 3. Persist BYOK keys (if user opted out of shared keys)
+      if (!form.useSharedKeys) {
+        const byokKeys: Array<{ provider: string; key: string }> = []
+        if (form.openaiKey?.trim()) byokKeys.push({ provider: 'openai', key: form.openaiKey.trim() })
+        if (form.anthropicKey?.trim()) byokKeys.push({ provider: 'anthropic', key: form.anthropicKey.trim() })
+        if (form.elevenlabsKey?.trim()) byokKeys.push({ provider: 'elevenlabs', key: form.elevenlabsKey.trim() })
+        await Promise.allSettled(
+          byokKeys.map(b =>
+            fetch('/api/workspace-secrets', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ workspaceId, provider: b.provider, key: b.key }),
+            })
+          )
+        )
+      }
+
+      // 4. Persist extra settings (model preferences, content prefs) into workspace
+      try {
+        await fetch('/api/workspaces', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            workspaceId,
+            businessName: form.businessName,
+            industry: form.industry,
+            website: form.website,
+            tagline: form.toneExampleCTA || '',
+            offer: form.description || '',
+            uniqueValue: form.description || '',
+            targetAudience,
+            tone,
+            competitors: '',
+            channels: form.connectedChannels.join(','),
+            goals: goalsArray.join(', '),
+            monthlyBudget: form.aiBudget || '',
+            prohibitedClaims: '',
+            approvalEmail: approvalEmail || '',
+            modelSettings: {
+              defaultModel: form.modelQuality > 60 ? 'claude-sonnet-4-6' : 'claude-3-5-haiku-20241022',
+            },
+            extraSettings: {
+              businessType: form.businessType,
+              primaryGoal: form.primaryGoal,
+              brandColors: {
+                primary: form.colorPrimary,
+                secondary: form.colorSecondary,
+                accent: form.colorAccent,
+              },
+              voiceAdjectives: form.voiceAdjectives,
+              toneExamples: {
+                social: form.toneExampleSocial,
+                email: form.toneExampleEmail,
+                cta: form.toneExampleCTA,
+              },
+              contentTypes: form.contentTypes,
+              postingFreq: form.postingFreq,
+              contentTopics: form.contentTopics,
+              brandKeywords: form.brandKeywords,
+              avoidKeywords: form.avoidKeywords || [],
+              aiBudget: form.aiBudget,
+              modelQuality: form.modelQuality,
+              useSharedKeys: form.useSharedKeys,
+              onboardedAt: new Date().toISOString(),
+            },
+          }),
+        })
+      } catch { /* non-blocking — workspace is already created */ }
+
+      // 5. Send team invites (if user added any)
+      if (form.teamMembers && form.teamMembers.length > 0) {
+        await Promise.allSettled(
+          form.teamMembers
+            .filter(m => m.email?.trim())
+            .map(m =>
+              fetch('/api/team/invite', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ workspaceId, email: m.email.trim(), role: m.role.toLowerCase() }),
+              })
+            )
+        )
+      }
+
+      localStorage.removeItem('onboarding_progress')
+      router.push('/dashboard')
+    } catch (err) {
+      console.error('[onboarding] launch failed:', err)
       setError('Network error. Please check your connection and try again.')
     } finally {
       setLoading(false)

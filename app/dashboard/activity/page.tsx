@@ -445,8 +445,38 @@ const MAX_HEAT = Math.max(...HEATMAP)
 
 // ── Component ──────────────────────────────────────────────────────────────────
 
+// Map agent name → emoji icon
+const AGENT_ICONS: Record<string, string> = {
+  cmo: '🤖', strategy: '📊', content: '✍', branding: '🎨', creative: '🖼',
+  growth: '📈', sales: '💼', research: '🔍', email: '📧', publish: '📤',
+  funnel: '🔻', leads: '👥', scheduling: '📅', voiceover: '🎙', video: '🎬',
+  brand_monitor: '👁', reputation: '⭐', inbox: '💬', analytics: '📉',
+  workflow: '⚙', notify: '🔔', pr: '📰', ads: '📢', repurpose: '♻',
+}
+
+function pickAgentIcon(name: string): string {
+  const key = name.toLowerCase().replace(/_/g, '_')
+  for (const k of Object.keys(AGENT_ICONS)) {
+    if (key.includes(k)) return AGENT_ICONS[k]
+  }
+  return '🤖'
+}
+
+function pickAgentColor(name: string): string {
+  const colors = ['bg-indigo-600', 'bg-purple-600', 'bg-pink-600', 'bg-blue-600', 'bg-teal-600', 'bg-green-600', 'bg-orange-600', 'bg-red-600']
+  let hash = 0
+  for (let i = 0; i < name.length; i++) hash = (hash * 31 + name.charCodeAt(i)) | 0
+  return colors[Math.abs(hash) % colors.length]
+}
+
+function timeFromIso(iso: string | Date): Date {
+  if (iso instanceof Date) return iso
+  return new Date(iso)
+}
+
 export default function ActivityPage() {
-  const [events, setEvents] = useState<ActivityEvent[]>(MOCK_EVENTS)
+  const [events, setEvents] = useState<ActivityEvent[]>([])
+  const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [selectedTypes, setSelectedTypes] = useState<EventType[]>([])
   const [selectedSeverity, setSelectedSeverity] = useState<Severity | 'all'>('all')
@@ -454,13 +484,147 @@ export default function ActivityPage() {
   const [actorFilter, setActorFilter] = useState('all')
   const [autoRefresh, setAutoRefresh] = useState(true)
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set())
-  const [flaggedIds, setFlaggedIds] = useState<Set<string>>(
-    new Set(MOCK_EVENTS.filter(e => e.flagged).map(e => e.id))
-  )
+  const [flaggedIds, setFlaggedIds] = useState<Set<string>>(new Set())
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [visibleCount, setVisibleCount] = useState(15)
   const [tick, setTick] = useState(0)
   const refreshRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // Fetch real activity events from multiple sources
+  const loadActivity = useCallback(async () => {
+    const wid = typeof window !== 'undefined' ? localStorage.getItem('workspaceId') : null
+    if (!wid) { setLoading(false); return }
+    try {
+      const [runsRes, approvalsRes, notifsRes] = await Promise.all([
+        fetch(`/api/agent-runs?workspaceId=${wid}&limit=50`),
+        fetch(`/api/approvals?workspaceId=${wid}`),
+        fetch(`/api/notifications?workspaceId=${wid}`),
+      ])
+
+      const merged: ActivityEvent[] = []
+
+      // Agent runs → events
+      if (runsRes.ok) {
+        const runs = await runsRes.json() as Array<{
+          id: string
+          workspace_id: string
+          agent_name: string
+          status: string
+          cost_estimate?: number
+          input_json?: string
+          output_json?: string
+          error_message?: string
+          created_at: string
+          completed_at?: string
+        }>
+        for (const r of (Array.isArray(runs) ? runs : [])) {
+          const sev: Severity = r.status === 'failed' ? 'error' : r.status === 'running' ? 'info' : 'success'
+          const title =
+            r.status === 'running' ? `${r.agent_name} is running`
+            : r.status === 'failed' ? `${r.agent_name} failed`
+            : `${r.agent_name} completed task`
+          let duration: number | undefined
+          if (r.completed_at && r.created_at) {
+            duration = (new Date(r.completed_at).getTime() - new Date(r.created_at).getTime()) / 1000
+          }
+          merged.push({
+            id: `run-${r.id}`,
+            timestamp: timeFromIso(r.created_at),
+            actor: r.agent_name,
+            actorType: 'agent',
+            actorInitials: 'AI',
+            actorColor: pickAgentColor(r.agent_name),
+            eventType: r.status === 'failed' ? 'error' : 'agent',
+            severity: sev,
+            icon: pickAgentIcon(r.agent_name),
+            title,
+            description: r.error_message || undefined,
+            cost: r.cost_estimate || undefined,
+            duration,
+            details: r.error_message
+              ? `Error: ${r.error_message}`
+              : r.output_json
+                ? `Output:\n${String(r.output_json).slice(0, 600)}`
+                : undefined,
+          })
+        }
+      }
+
+      // Approvals → events
+      if (approvalsRes.ok) {
+        const approvals = await approvalsRes.json() as Array<{
+          id: string
+          status: string
+          notes?: string
+          title?: string
+          artifact_type?: string
+          created_at: string
+          updated_at?: string
+        }>
+        for (const a of (Array.isArray(approvals) ? approvals : [])) {
+          const sev: Severity = a.status === 'rejected' ? 'warning' : a.status === 'approved' ? 'success' : 'info'
+          const title =
+            a.status === 'pending' ? `Approval needed: ${a.title || a.artifact_type || 'artifact'}`
+            : a.status === 'approved' ? `Approved: ${a.title || a.artifact_type || 'artifact'}`
+            : a.status === 'rejected' ? `Rejected: ${a.title || a.artifact_type || 'artifact'}`
+            : `${a.status}: ${a.title || a.artifact_type || 'artifact'}`
+          merged.push({
+            id: `apv-${a.id}`,
+            timestamp: timeFromIso(a.updated_at || a.created_at),
+            actor: 'Approvals',
+            actorType: 'user',
+            actorInitials: 'AP',
+            actorColor: 'bg-yellow-600',
+            eventType: 'approval',
+            severity: sev,
+            icon: a.status === 'approved' ? '✅' : a.status === 'rejected' ? '❌' : '⏳',
+            title,
+            description: a.notes || undefined,
+          })
+        }
+      }
+
+      // Notifications → events
+      if (notifsRes.ok) {
+        const data = await notifsRes.json()
+        const notifs = (data?.items || []) as Array<{
+          id: string
+          type: string
+          title: string
+          body?: string
+          severity: string
+          created_at: string
+        }>
+        for (const n of notifs) {
+          if (n.id.startsWith('run-') || n.id.startsWith('apv-')) continue // already added
+          merged.push({
+            id: `notif-${n.id}`,
+            timestamp: timeFromIso(n.created_at),
+            actor: 'System',
+            actorType: 'user',
+            actorInitials: 'SY',
+            actorColor: 'bg-gray-600',
+            eventType: 'system',
+            severity: (n.severity as Severity) || 'info',
+            icon: n.severity === 'error' ? '⚠' : n.severity === 'success' ? '✅' : 'ℹ',
+            title: n.title,
+            description: n.body,
+          })
+        }
+      }
+
+      // Sort by timestamp DESC
+      merged.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())
+      setEvents(merged)
+    } catch (err) {
+      console.error('[activity] load failed', err)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  // Initial + on-tick refresh
+  useEffect(() => { loadActivity() }, [loadActivity, tick])
 
   // Auto-refresh ticker
   useEffect(() => {
@@ -897,7 +1061,22 @@ export default function ActivityPage() {
             </div>
           )}
 
-          {filteredEvents.length === 0 && (
+          {loading && events.length === 0 && (
+            <div className="text-center py-16 bg-gray-900 border border-gray-800 rounded-xl">
+              <div className="w-6 h-6 border-2 border-gray-700 border-t-indigo-500 rounded-full animate-spin mx-auto mb-3" />
+              <p className="text-gray-500 text-sm">Loading activity…</p>
+            </div>
+          )}
+          {!loading && events.length === 0 && (
+            <div className="text-center py-16 bg-gray-900 border border-gray-800 rounded-xl">
+              <div className="text-4xl mb-2">🌙</div>
+              <p className="text-gray-300 text-sm font-medium">No activity yet</p>
+              <p className="text-gray-500 text-xs mt-1 max-w-sm mx-auto">
+                Your workspace is brand new. When agents run, approvals happen, or content gets published, you&apos;ll see it here.
+              </p>
+            </div>
+          )}
+          {!loading && events.length > 0 && filteredEvents.length === 0 && (
             <div className="text-center py-16 bg-gray-900 border border-gray-800 rounded-xl">
               <p className="text-gray-500 text-sm">No events match your filters</p>
               <button

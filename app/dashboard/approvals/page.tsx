@@ -12,6 +12,8 @@ interface ApprovalItem {
   status: 'pending' | 'approved' | 'rejected'
   notes: string
   created_at: string
+  brand_voice_score?: number | null
+  brand_voice_reasoning?: string | null
 }
 
 const TYPE_LABELS: Record<string, string> = {
@@ -47,9 +49,8 @@ const REGENERATABLE = ['carousel', 'reelScript', 'adCopy', 'emailDraft', 'linked
 
 const BASE_URL = process.env.NEXT_PUBLIC_BASE_URL || ''
 
-// ── Mock brand voice scores ───────────────────────────────────────────────────
-function getBrandVoiceScore(id: string): number {
-  // Deterministic pseudo-random based on id
+// ── Fallback brand voice score (used while waiting for real score) ────────────
+function getBrandVoiceScoreFallback(id: string): number {
   let hash = 0
   for (let i = 0; i < id.length; i++) hash = ((hash << 5) - hash) + id.charCodeAt(i)
   return 55 + Math.abs(hash % 45)
@@ -140,11 +141,25 @@ export default function ApprovalsPage() {
   const [bulkMode, setBulkMode] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [bulkActing, setBulkActing] = useState(false)
+  const [bulkProgress, setBulkProgress] = useState<{ done: number; total: number } | null>(null)
 
   // ── Auto-approve settings ────────────────────────────────────────────────────
-  const [autoApproveDelay, setAutoApproveDelay] = useState<AutoApproveDelay>('off')
+  const [autoApproveDelay, setAutoApproveDelay] = useState<AutoApproveDelay>(() => {
+    if (typeof window === 'undefined') return 'off'
+    const stored = localStorage.getItem('approvals_auto_approve_delay')
+    if (stored === '24h' || stored === '48h' || stored === '72h' || stored === 'off') return stored
+    return 'off'
+  })
   const [autoSettingsOpen, setAutoSettingsOpen] = useState(false)
   const autoSettingsRef = useRef<HTMLDivElement>(null)
+
+  // ── Brand voice scores: id → { score, reasoning[] } ──────────────────────────
+  const [bvScores, setBvScores] = useState<Record<string, { score: number; reasoning: string[] }>>({})
+
+  // Persist auto-approve delay
+  useEffect(() => {
+    if (typeof window !== 'undefined') localStorage.setItem('approvals_auto_approve_delay', autoApproveDelay)
+  }, [autoApproveDelay])
 
   // ── Inline edit ───────────────────────────────────────────────────────────────
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -175,13 +190,88 @@ export default function ApprovalsPage() {
   const load = useCallback(async () => {
     const workspaceId = localStorage.getItem('workspaceId')
     if (!workspaceId) { router.push('/dashboard/onboarding'); return }
-    const res = await fetch(`/api/approvals?workspaceId=${workspaceId}`)
-    const data = await res.json()
-    setItems(data)
-    setLoading(false)
+    try {
+      const res = await fetch(`/api/approvals?workspaceId=${workspaceId}`)
+      const data = await res.json() as ApprovalItem[]
+      setItems(data)
+      // Seed brand-voice scores from cached column values
+      const seeded: Record<string, { score: number; reasoning: string[] }> = {}
+      if (Array.isArray(data)) {
+        data.forEach(item => {
+          if (typeof item.brand_voice_score === 'number') {
+            let reasoning: string[] = []
+            try {
+              reasoning = item.brand_voice_reasoning ? JSON.parse(item.brand_voice_reasoning) as string[] : []
+            } catch { reasoning = [] }
+            seeded[item.id] = { score: item.brand_voice_score, reasoning }
+          }
+        })
+      }
+      setBvScores(prev => ({ ...prev, ...seeded }))
+    } finally {
+      setLoading(false)
+    }
   }, [router])
 
   useEffect(() => { load() }, [load])
+
+  // ── Fetch real brand-voice scores for visible items (one at a time, lazily) ─
+  useEffect(() => {
+    const workspaceId = typeof window !== 'undefined' ? localStorage.getItem('workspaceId') : null
+    if (!workspaceId) return
+    const itemsNeedingScore = items.filter(i => !(i.id in bvScores)).slice(0, 5)
+    if (itemsNeedingScore.length === 0) return
+    let cancelled = false
+    ;(async () => {
+      for (const item of itemsNeedingScore) {
+        if (cancelled) break
+        try {
+          const res = await fetch('/api/agents/brand-voice-score', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ approvalId: item.id, workspaceId, content: item.content_json }),
+          })
+          if (!res.ok) continue
+          const data = await res.json() as { score?: number; reasoning?: string[] }
+          if (typeof data.score === 'number' && !cancelled) {
+            setBvScores(prev => ({ ...prev, [item.id]: { score: data.score!, reasoning: Array.isArray(data.reasoning) ? data.reasoning : [] } }))
+          }
+        } catch { /* skip */ }
+      }
+    })()
+    return () => { cancelled = true }
+  }, [items, bvScores])
+
+  // ── Auto-approve client-side: every minute, approve items past threshold ───
+  useEffect(() => {
+    if (autoApproveDelay === 'off') return
+    const workspaceId = typeof window !== 'undefined' ? localStorage.getItem('workspaceId') : null
+    if (!workspaceId) return
+    let cancelled = false
+
+    const check = async () => {
+      const now = Date.now()
+      const threshold = DELAY_MS[autoApproveDelay]
+      const overdue = items.filter(i =>
+        i.status === 'pending' && (now - new Date(i.created_at).getTime()) >= threshold
+      )
+      for (const item of overdue) {
+        if (cancelled) return
+        try {
+          await fetch('/api/approvals', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ approvalId: item.id, action: 'approve', notes: 'Auto-approved by timer', workspaceId }),
+          })
+        } catch { /* skip */ }
+      }
+      if (overdue.length > 0 && !cancelled) load()
+    }
+
+    check()
+    const interval = setInterval(check, 60000)
+    return () => { cancelled = true; clearInterval(interval) }
+  }, [autoApproveDelay, items, load])
 
   useEffect(() => {
     if (selected) { setNotes(''); setFeedbackText(''); setRegenResult(null) }
@@ -208,17 +298,26 @@ export default function ApprovalsPage() {
 
   const bulkAct = async (action: 'approve' | 'reject') => {
     const workspaceId = localStorage.getItem('workspaceId')
+    const ids = Array.from(selectedIds)
     setBulkActing(true)
+    setBulkProgress({ done: 0, total: ids.length })
+
+    let done = 0
     await Promise.all(
-      Array.from(selectedIds).map(id =>
+      ids.map(id =>
         fetch('/api/approvals', {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ approvalId: id, action, workspaceId }),
+        }).finally(() => {
+          done++
+          setBulkProgress({ done, total: ids.length })
         })
       )
     )
+
     setBulkActing(false)
+    setBulkProgress(null)
     setSelectedIds(new Set())
     setBulkMode(false)
     load()
@@ -238,10 +337,21 @@ export default function ApprovalsPage() {
   const saveEdit = async (item: ApprovalItem) => {
     setSavingEdit(true)
     try {
-      await fetch(`/api/approvals?id=${item.id}`, {
+      // Parse edited content (the editor shows pretty-printed JSON)
+      let parsed: unknown = editContent
+      try { parsed = JSON.parse(editContent) } catch { /* keep as string */ }
+
+      // Update the underlying artifact (the approval references it)
+      await fetch('/api/artifacts', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: editContent }),
+        body: JSON.stringify({ artifactId: item.artifact_id, content_json: parsed }),
+      })
+      // Invalidate any cached brand-voice score so it re-computes
+      setBvScores(prev => {
+        const next = { ...prev }
+        delete next[item.id]
+        return next
       })
       setEditingId(null)
       load()
@@ -399,7 +509,10 @@ export default function ApprovalsPage() {
 
       <div className="grid grid-cols-1 gap-4">
         {filtered.map(item => {
-          const bvScore = getBrandVoiceScore(item.id)
+          const bvCached = bvScores[item.id]
+          const bvScore = bvCached?.score ?? getBrandVoiceScoreFallback(item.id)
+          const bvLoaded = !!bvCached
+          const bvReasoning = bvCached?.reasoning || []
           const autoCountdown = item.status === 'pending' ? getAutoApproveCountdown(item.created_at, autoApproveDelay) : null
           const isEditing = editingId === item.id
 
@@ -472,35 +585,27 @@ export default function ApprovalsPage() {
                           : bvScore >= 60
                           ? 'bg-yellow-900/40 border-yellow-800 text-yellow-300'
                           : 'bg-red-900/40 border-red-800 text-red-300'
-                      }`}
+                      } ${!bvLoaded ? 'opacity-60' : ''}`}
                     >
-                      Brand Voice: {bvScore}%
+                      Brand Voice: {bvScore}%{!bvLoaded && '…'}
                     </button>
                     {bvTooltipId === item.id && (
                       <div className="absolute right-0 top-7 bg-gray-900 border border-gray-700 rounded-xl shadow-xl px-4 py-3 z-30 min-w-[240px]"
                         onClick={e => e.stopPropagation()}>
                         <p className="text-white text-xs font-semibold mb-2">Brand Voice Analysis</p>
-                        <ul className="space-y-1.5">
-                          {bvScore >= 80 ? (
-                            <>
-                              <li className="text-green-400 text-xs">✓ Strong tone alignment</li>
-                              <li className="text-green-400 text-xs">✓ Consistent terminology</li>
-                              <li className="text-green-400 text-xs">✓ On-brand CTA</li>
-                            </>
-                          ) : bvScore >= 60 ? (
-                            <>
-                              <li className="text-yellow-400 text-xs">~ Tone mostly aligned</li>
-                              <li className="text-yellow-400 text-xs">~ Minor terminology drift</li>
-                              <li className="text-gray-400 text-xs">✗ CTA could be stronger</li>
-                            </>
-                          ) : (
-                            <>
-                              <li className="text-red-400 text-xs">✗ Tone mismatch detected</li>
-                              <li className="text-red-400 text-xs">✗ Off-brand phrasing used</li>
-                              <li className="text-red-400 text-xs">✗ CTA doesn't match voice</li>
-                            </>
-                          )}
-                        </ul>
+                        {!bvLoaded ? (
+                          <p className="text-gray-500 text-xs">Computing score…</p>
+                        ) : bvReasoning.length > 0 ? (
+                          <ul className="space-y-1.5">
+                            {bvReasoning.map((reason, i) => (
+                              <li key={i} className={`text-xs ${
+                                bvScore >= 80 ? 'text-green-400' : bvScore >= 60 ? 'text-yellow-400' : 'text-red-400'
+                              }`}>{reason}</li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <p className="text-gray-400 text-xs">No analysis details available</p>
+                        )}
                       </div>
                     )}
                   </div>
@@ -659,14 +764,14 @@ export default function ApprovalsPage() {
             className="px-4 py-2 rounded-lg bg-green-700 hover:bg-green-600 text-white text-sm font-medium transition-colors disabled:opacity-50 flex items-center gap-1.5"
           >
             {bulkActing ? <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" /> : '✓'}
-            Approve Selected ({selectedIds.size})
+            {bulkActing && bulkProgress ? `Approving ${bulkProgress.done} of ${bulkProgress.total}…` : `Approve Selected (${selectedIds.size})`}
           </button>
           <button
             onClick={() => bulkAct('reject')}
             disabled={bulkActing}
             className="px-4 py-2 rounded-lg bg-red-900 hover:bg-red-800 text-white text-sm font-medium transition-colors disabled:opacity-50"
           >
-            ✕ Reject Selected ({selectedIds.size})
+            {bulkActing && bulkProgress ? `Rejecting ${bulkProgress.done} of ${bulkProgress.total}…` : `✕ Reject Selected (${selectedIds.size})`}
           </button>
           <button
             onClick={exportSelected}

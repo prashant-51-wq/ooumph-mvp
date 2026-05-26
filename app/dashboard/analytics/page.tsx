@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 
 // ── Mock data ──────────────────────────────────────────────────────────────────
 
@@ -498,6 +498,27 @@ function ReportBuilderModal({
 type TabId = 'overview' | 'content' | 'leads' | 'revenue' | 'reports'
 type RangeId = '7d' | '30d' | '90d' | '12mo'
 
+// ── Analytics API response types ──────────────────────────────────────────────
+interface AnalyticsData {
+  range: string
+  days: number
+  published: number
+  leads: number
+  leadsByStatus: { status: string; count: number }[]
+  leadsBySource: { source: string; count: number }[]
+  agentRuns: { agent_name: string; run_count: number; total_cost: number }[]
+  totalRuns: number
+  totalCost: number
+  campaignByPlatform: { platform: string; impressions: number; clicks: number; spend: number; conversions: number; revenue: number }[]
+  campTotals: { impressions: number; clicks: number; spend: number; conversions: number; revenue: number }
+  reach: number
+  revenue: number
+  engagementRate: number
+  topArtifacts: { id: string; title: string; type: string; created_at: string }[]
+  contentByType: { type: string; count: number }[]
+  publishByPlatform: { platform: string; count: number }[]
+}
+
 export default function AnalyticsPage() {
   const [activeTab, setActiveTab] = useState<TabId>('overview')
   const [range, setRange] = useState<RangeId>('30d')
@@ -508,6 +529,77 @@ export default function AnalyticsPage() {
   )
   const [roisPend, setRoiSpend] = useState(5000)
   const [roiRoas] = useState(14)
+
+  // ── Real data ─────────────────────────────────────────────────────────────
+  const [workspaceId, setWorkspaceId] = useState<string | null>(null)
+  const [data, setData] = useState<AnalyticsData | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  const loadAnalytics = useCallback(async (wsId: string, r: RangeId) => {
+    setLoading(true); setError(null)
+    try {
+      const res = await fetch(`/api/stats?workspaceId=${wsId}&view=analytics&range=${r}`)
+      if (!res.ok) throw new Error('Failed to load analytics')
+      const json = await res.json() as AnalyticsData | { error: string }
+      if ('error' in json) throw new Error(json.error)
+      setData(json)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    const wsId = typeof window !== 'undefined' ? localStorage.getItem('workspaceId') : null
+    setWorkspaceId(wsId)
+    if (wsId) loadAnalytics(wsId, range)
+    else setLoading(false)
+  }, [loadAnalytics])
+
+  // Refetch when range changes
+  useEffect(() => {
+    if (workspaceId) loadAnalytics(workspaceId, range)
+  }, [range, workspaceId, loadAnalytics])
+
+  // ── Computed values from real data (with mock fallback when zero) ─────────
+  const hasData = !!data && (data.leads > 0 || data.published > 0 || data.totalRuns > 0 || data.reach > 0)
+
+  // Build real STAT_BAR values
+  const realStatBar = data ? [
+    { label: 'Content Published', value: String(data.published), delta: data.published > 0 ? `${data.published} this period` : 'No content yet', up: true },
+    { label: 'Total Reach', value: data.reach >= 1000 ? `${(data.reach / 1000).toFixed(1)}K` : String(data.reach), delta: data.reach > 0 ? 'From paid campaigns' : 'No ad data yet', up: true },
+    { label: 'Avg Engagement', value: `${data.engagementRate}%`, delta: data.engagementRate > 0 ? 'CTR from ads' : 'No campaigns yet', up: true },
+    { label: 'Total Leads', value: String(data.leads), delta: data.leads > 0 ? `${data.leads} captured` : 'No leads yet', up: true },
+    { label: 'Revenue Attributed', value: `$${data.revenue.toLocaleString()}`, delta: data.revenue > 0 ? 'From tracked campaigns' : 'No revenue yet', up: true },
+    { label: 'AI Cost This Month', value: `$${data.totalCost.toFixed(2)}`, delta: `${data.totalRuns} runs`, up: false },
+  ] : STAT_BAR
+
+  // Build channel breakdown from real publish data + lead sources
+  const realChannels = data && (data.publishByPlatform.length > 0 || data.leadsBySource.length > 0)
+    ? (() => {
+        const merged = new Map<string, { name: string; reach: number; eng: number; leads: number; cpl: string; icon: string }>()
+        data.publishByPlatform.forEach(p => {
+          const camp = data.campaignByPlatform.find(c => c.platform.toLowerCase() === p.platform.toLowerCase())
+          merged.set(p.platform.toLowerCase(), {
+            name: p.platform,
+            reach: camp?.impressions || p.count,
+            eng: camp && camp.impressions > 0 ? Number(((camp.clicks / camp.impressions) * 100).toFixed(1)) : 0,
+            leads: 0,
+            cpl: camp && camp.conversions > 0 ? `$${(camp.spend / camp.conversions).toFixed(2)}` : '—',
+            icon: '📡',
+          })
+        })
+        data.leadsBySource.forEach(s => {
+          const key = (s.source || 'other').toLowerCase()
+          const existing = merged.get(key)
+          if (existing) existing.leads += s.count
+          else merged.set(key, { name: s.source || 'Other', reach: 0, eng: 0, leads: s.count, cpl: '—', icon: '🔗' })
+        })
+        return Array.from(merged.values())
+      })()
+    : CHANNELS
 
   const TABS: { id: TabId; label: string }[] = [
     { id: 'overview', label: 'Overview' },
@@ -557,25 +649,85 @@ export default function AnalyticsPage() {
             Compare to previous period
           </button>
 
-          <button className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2">
+          <button
+            onClick={() => {
+              const payload = {
+                generatedAt: new Date().toISOString(),
+                workspaceId,
+                range,
+                data,
+              }
+              const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
+              const url = URL.createObjectURL(blob)
+              const a = document.createElement('a')
+              a.href = url; a.download = `analytics-report-${range}-${Date.now()}.json`; a.click()
+              URL.revokeObjectURL(url)
+            }}
+            className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
+          >
             Generate Report
           </button>
-          <button className="bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2">
+          <button
+            onClick={() => {
+              if (!data) return
+              const lines: string[] = []
+              lines.push('metric,value')
+              lines.push(`published,${data.published}`)
+              lines.push(`leads,${data.leads}`)
+              lines.push(`reach,${data.reach}`)
+              lines.push(`revenue,${data.revenue}`)
+              lines.push(`engagement_rate,${data.engagementRate}`)
+              lines.push(`ai_runs,${data.totalRuns}`)
+              lines.push(`ai_cost,${data.totalCost}`)
+              const csv = lines.join('\n')
+              const blob = new Blob([csv], { type: 'text/csv' })
+              const url = URL.createObjectURL(blob)
+              const a = document.createElement('a')
+              a.href = url; a.download = `analytics-${range}.csv`; a.click()
+              URL.revokeObjectURL(url)
+            }}
+            disabled={!data}
+            className="bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 disabled:opacity-50 px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
+          >
             Export Data
           </button>
         </div>
       </div>
 
+      {/* ── Loading & error states ── */}
+      {loading && (
+        <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 text-center text-gray-500">
+          <div className="inline-block w-6 h-6 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin mb-2" />
+          <p>Loading analytics…</p>
+        </div>
+      )}
+      {!loading && error && (
+        <div className="bg-red-950/40 border border-red-800 rounded-xl p-6 text-center">
+          <p className="text-red-400 font-medium">Failed to load analytics</p>
+          <p className="text-red-300/70 text-sm mt-1">{error}</p>
+          <button onClick={() => workspaceId && loadAnalytics(workspaceId, range)} className="mt-3 px-4 py-1.5 bg-red-900 hover:bg-red-800 text-white rounded-lg text-sm">Retry</button>
+        </div>
+      )}
+      {!loading && !error && data && !hasData && (
+        <div className="bg-gray-900 border border-gray-800 rounded-xl p-8 text-center">
+          <div className="text-5xl mb-3">📊</div>
+          <p className="text-white font-medium text-lg">No analytics yet</p>
+          <p className="text-gray-500 text-sm mt-1">Your data will appear here once your agents start running.</p>
+        </div>
+      )}
+
       {/* ── Stats Bar ── */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-        {STAT_BAR.map(s => (
-          <div key={s.label} className="bg-gray-900 border border-gray-800 rounded-xl p-3">
-            <p className="text-gray-500 text-xs mb-1">{s.label}</p>
-            <p className="text-white font-bold text-lg">{s.value}</p>
-            <p className={`text-xs mt-0.5 ${s.up ? 'text-emerald-400' : 'text-red-400'}`}>{s.delta}</p>
-          </div>
-        ))}
-      </div>
+      {!loading && (
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+          {realStatBar.map(s => (
+            <div key={s.label} className="bg-gray-900 border border-gray-800 rounded-xl p-3">
+              <p className="text-gray-500 text-xs mb-1">{s.label}</p>
+              <p className="text-white font-bold text-lg">{s.value}</p>
+              <p className={`text-xs mt-0.5 ${s.up ? 'text-emerald-400' : 'text-red-400'}`}>{s.delta}</p>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* ── Tabs ── */}
       <div className="flex gap-1 bg-gray-900/50 border border-gray-800 rounded-lg p-1 w-fit flex-wrap">
@@ -600,7 +752,20 @@ export default function AnalyticsPage() {
           <div>
             <h2 className="text-white font-semibold mb-3">Performance KPIs</h2>
             <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
-              {[
+              {(data ? [
+                { label: 'Content Published', value: String(data.published), sub: `Last ${data.days}d` },
+                { label: 'Total Reach', value: data.reach >= 1000 ? `${(data.reach / 1000).toFixed(1)}K` : String(data.reach), sub: 'From paid campaigns' },
+                { label: 'Avg Engagement', value: `${data.engagementRate}%`, sub: 'CTR' },
+                { label: 'Total Clicks', value: String(data.campTotals.clicks.toLocaleString()), sub: `${data.campTotals.conversions} conversions` },
+                { label: 'Total Leads', value: String(data.leads), sub: `Last ${data.days}d` },
+                { label: 'Revenue Attr.', value: `$${data.revenue.toLocaleString()}`, sub: 'Tracked campaigns' },
+                { label: 'AI Cost', value: `$${data.totalCost.toFixed(2)}`, sub: data.totalRuns > 0 ? `$${(data.totalCost / data.totalRuns).toFixed(3)} / run` : '—' },
+                { label: 'Agent Runs', value: String(data.totalRuns), sub: `${data.agentRuns.length} agents` },
+                { label: 'Top Source', value: (data.leadsBySource[0]?.source || '—'), sub: data.leadsBySource[0] ? `${data.leadsBySource[0].count} leads` : 'No data' },
+                { label: 'Top Platform', value: (data.publishByPlatform[0]?.platform || '—'), sub: data.publishByPlatform[0] ? `${data.publishByPlatform[0].count} posts` : 'No data' },
+                { label: 'Top Content Type', value: (data.contentByType[0]?.type || '—'), sub: data.contentByType[0] ? `${data.contentByType[0].count} items` : 'No data' },
+                { label: 'Pending Approvals', value: String(data.leadsByStatus.find(s => s.status === 'pending')?.count || 0), sub: 'Leads awaiting review' },
+              ] : [
                 { label: 'Content Published', value: '142', sub: '+18 this period' },
                 { label: 'Total Reach', value: '2.4M', sub: '+340K vs prev' },
                 { label: 'Avg Engagement', value: '4.7%', sub: 'Industry avg: 2.1%' },
@@ -613,7 +778,7 @@ export default function AnalyticsPage() {
                 { label: 'Brand Voice Score', value: '94/100', sub: '+2 pts vs prev' },
                 { label: 'Top Channel', value: 'LinkedIn', sub: '312 leads this period' },
                 { label: 'Best Content Type', value: 'Long-form', sub: '8.9% avg engagement' },
-              ].map(k => (
+              ]).map(k => (
                 <div key={k.label} className="bg-gray-900 border border-gray-800 rounded-xl p-3">
                   <p className="text-gray-500 text-xs mb-1">{k.label}</p>
                   <p className="text-white font-bold">{k.value}</p>
@@ -649,26 +814,32 @@ export default function AnalyticsPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {CHANNELS.map(ch => (
-                    <tr key={ch.name} className="border-b border-gray-800/40 hover:bg-gray-800/30 transition-colors">
-                      <td className="px-3 py-3 text-sm text-white">
-                        <span className="mr-2">{ch.icon}</span>{ch.name}
-                      </td>
-                      <td className="px-3 py-3">
-                        <div className="flex items-center gap-2">
-                          <div className="w-20 h-1.5 bg-gray-800 rounded-full overflow-hidden">
-                            <div className="h-full bg-indigo-500 rounded-full" style={{ width: `${(ch.reach / 820000) * 100}%` }} />
+                  {(() => {
+                    const maxReach = Math.max(...realChannels.map(c => c.reach), 1)
+                    return realChannels.map(ch => (
+                      <tr key={ch.name} className="border-b border-gray-800/40 hover:bg-gray-800/30 transition-colors">
+                        <td className="px-3 py-3 text-sm text-white">
+                          <span className="mr-2">{ch.icon}</span>{ch.name}
+                        </td>
+                        <td className="px-3 py-3">
+                          <div className="flex items-center gap-2">
+                            <div className="w-20 h-1.5 bg-gray-800 rounded-full overflow-hidden">
+                              <div className="h-full bg-indigo-500 rounded-full" style={{ width: `${(ch.reach / maxReach) * 100}%` }} />
+                            </div>
+                            <span className="text-gray-300 text-xs">{ch.reach >= 1000 ? `${(ch.reach / 1000).toFixed(0)}K` : ch.reach}</span>
                           </div>
-                          <span className="text-gray-300 text-xs">{(ch.reach / 1000).toFixed(0)}K</span>
-                        </div>
-                      </td>
-                      <td className={`px-3 py-3 text-sm font-medium ${ch.eng >= 5 ? 'text-emerald-400' : ch.eng >= 3 ? 'text-amber-400' : 'text-gray-400'}`}>
-                        {ch.eng}%
-                      </td>
-                      <td className="px-3 py-3 text-sm text-gray-300">{ch.leads}</td>
-                      <td className="px-3 py-3 text-sm text-gray-300">{ch.cpl}</td>
-                    </tr>
-                  ))}
+                        </td>
+                        <td className={`px-3 py-3 text-sm font-medium ${ch.eng >= 5 ? 'text-emerald-400' : ch.eng >= 3 ? 'text-amber-400' : 'text-gray-400'}`}>
+                          {ch.eng}%
+                        </td>
+                        <td className="px-3 py-3 text-sm text-gray-300">{ch.leads}</td>
+                        <td className="px-3 py-3 text-sm text-gray-300">{ch.cpl}</td>
+                      </tr>
+                    ))
+                  })()}
+                  {realChannels.length === 0 && (
+                    <tr><td colSpan={5} className="text-center py-8 text-gray-500 text-sm">No channel data yet</td></tr>
+                  )}
                 </tbody>
               </table>
             </div>
@@ -676,7 +847,29 @@ export default function AnalyticsPage() {
 
           {/* Top Performing Content */}
           <div>
-            <h2 className="text-white font-semibold mb-3">Top Performing Content</h2>
+            <h2 className="text-white font-semibold mb-3">Top Recent Content</h2>
+            {data && data.topArtifacts.length > 0 ? (
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                {data.topArtifacts.slice(0, 3).map(art => (
+                  <div key={art.id} className="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden">
+                    <div className="h-24 bg-gradient-to-br from-indigo-700 to-purple-900 flex items-center justify-center">
+                      <span className="text-4xl">📝</span>
+                    </div>
+                    <div className="p-4">
+                      <div className="flex items-center gap-2 mb-2">
+                        <span className="text-gray-400 text-xs bg-gray-800 px-2 py-0.5 rounded">{art.type}</span>
+                      </div>
+                      <p className="text-white text-sm font-medium mb-2 line-clamp-2">{art.title}</p>
+                      <p className="text-gray-500 text-xs">{new Date(art.created_at).toLocaleDateString()}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : data ? (
+              <div className="bg-gray-900 border border-gray-800 rounded-2xl p-8 text-center text-gray-500 text-sm">
+                No content published yet in this date range
+              </div>
+            ) : (
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               {TOP_POSTS.map(post => (
                 <div key={post.title} className="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden">
@@ -699,6 +892,7 @@ export default function AnalyticsPage() {
                 </div>
               ))}
             </div>
+            )}
           </div>
 
           {/* AI Agent Activity */}
@@ -714,7 +908,21 @@ export default function AnalyticsPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {AI_AGENTS.map(agent => (
+                  {(data && data.agentRuns.length > 0 ? data.agentRuns : []).map(agent => (
+                    <tr key={agent.agent_name} className="border-b border-gray-800/40 hover:bg-gray-800/30 transition-colors">
+                      <td className="px-3 py-3 text-sm text-white flex items-center gap-2">
+                        <span className="w-2 h-2 rounded-full bg-emerald-400 flex-shrink-0" />
+                        {agent.agent_name}
+                      </td>
+                      <td className="px-3 py-3 text-sm text-gray-300">{agent.run_count}</td>
+                      <td className="px-3 py-3 text-sm text-gray-300">{agent.run_count}</td>
+                      <td className="px-3 py-3 text-sm text-gray-400">${agent.total_cost.toFixed(2)}</td>
+                    </tr>
+                  ))}
+                  {data && data.agentRuns.length === 0 && (
+                    <tr><td colSpan={4} className="text-center py-6 text-gray-500 text-sm">No agent runs in this date range</td></tr>
+                  )}
+                  {!data && AI_AGENTS.map(agent => (
                     <tr key={agent.name} className="border-b border-gray-800/40 hover:bg-gray-800/30 transition-colors">
                       <td className="px-3 py-3 text-sm text-white flex items-center gap-2">
                         <span className="w-2 h-2 rounded-full bg-emerald-400 flex-shrink-0" />
@@ -836,34 +1044,53 @@ export default function AnalyticsPage() {
       {activeTab === 'leads' && (
         <div className="space-y-6">
 
-          {/* Funnel */}
+          {/* Funnel — real lead status breakdown */}
           <div className="bg-gray-900 border border-gray-800 rounded-2xl p-5">
             <h2 className="text-white font-semibold mb-5">Lead Funnel</h2>
-            <div className="space-y-3">
-              {LEAD_FUNNEL.map((stage, i) => (
-                <div key={stage.stage}>
-                  <div className="flex items-center justify-between text-sm mb-1.5">
-                    <span className="text-gray-300">{stage.stage}</span>
-                    <span className="text-white font-bold">{stage.count} <span className="text-gray-500 font-normal text-xs">({stage.pct}%)</span></span>
-                  </div>
-                  <div className="h-8 bg-gray-800 rounded-lg overflow-hidden">
-                    <div
-                      className={`h-full rounded-lg flex items-center px-3 ${
-                        i === 0 ? 'bg-indigo-600' : i === 1 ? 'bg-indigo-500' : i === 2 ? 'bg-purple-500' : 'bg-emerald-600'
-                      }`}
-                      style={{ width: `${stage.pct}%` }}
-                    >
-                      <span className="text-white text-xs font-medium whitespace-nowrap">{stage.count}</span>
-                    </div>
-                  </div>
-                  {i < LEAD_FUNNEL.length - 1 && (
-                    <div className="flex justify-end text-xs text-gray-600 mt-0.5">
-                      {Math.round((LEAD_FUNNEL[i + 1].count / stage.count) * 100)}% conversion
-                    </div>
-                  )}
+            {(() => {
+              if (!data) return null
+              const byStatus = new Map(data.leadsByStatus.map(s => [s.status, s.count]))
+              const total = Array.from(byStatus.values()).reduce((s, v) => s + v, 0)
+              const funnel = [
+                { stage: 'Total Leads', count: total },
+                { stage: 'Contacted', count: (byStatus.get('contacted') || 0) + (byStatus.get('qualified') || 0) + (byStatus.get('proposal') || 0) + (byStatus.get('customer') || 0) },
+                { stage: 'Qualified', count: (byStatus.get('qualified') || 0) + (byStatus.get('proposal') || 0) + (byStatus.get('customer') || 0) },
+                { stage: 'Customers Won', count: byStatus.get('customer') || 0 },
+              ]
+              if (total === 0) {
+                return <p className="text-gray-500 text-sm text-center py-8">No leads captured yet</p>
+              }
+              return (
+                <div className="space-y-3">
+                  {funnel.map((stage, i) => {
+                    const pct = total > 0 ? Math.round((stage.count / total) * 100) : 0
+                    return (
+                      <div key={stage.stage}>
+                        <div className="flex items-center justify-between text-sm mb-1.5">
+                          <span className="text-gray-300">{stage.stage}</span>
+                          <span className="text-white font-bold">{stage.count} <span className="text-gray-500 font-normal text-xs">({pct}%)</span></span>
+                        </div>
+                        <div className="h-8 bg-gray-800 rounded-lg overflow-hidden">
+                          <div
+                            className={`h-full rounded-lg flex items-center px-3 ${
+                              i === 0 ? 'bg-indigo-600' : i === 1 ? 'bg-indigo-500' : i === 2 ? 'bg-purple-500' : 'bg-emerald-600'
+                            }`}
+                            style={{ width: `${Math.max(2, pct)}%` }}
+                          >
+                            <span className="text-white text-xs font-medium whitespace-nowrap">{stage.count}</span>
+                          </div>
+                        </div>
+                        {i < funnel.length - 1 && (
+                          <div className="flex justify-end text-xs text-gray-600 mt-0.5">
+                            {stage.count > 0 ? Math.round((funnel[i + 1].count / stage.count) * 100) : 0}% conversion
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
                 </div>
-              ))}
-            </div>
+              )
+            })()}
           </div>
 
           {/* Highlight + sources */}
@@ -887,22 +1114,35 @@ export default function AnalyticsPage() {
               </div>
             </div>
 
-            {/* Lead sources */}
+            {/* Lead sources — real */}
             <div className="bg-gray-900 border border-gray-800 rounded-2xl p-5">
               <h2 className="text-white font-semibold mb-4">Lead Sources</h2>
-              <div className="space-y-3">
-                {LEAD_SOURCES.map(src => (
-                  <div key={src.source}>
-                    <div className="flex items-center justify-between text-xs mb-1">
-                      <span className="text-gray-400">{src.source}</span>
-                      <span className="text-gray-300 font-medium">{src.leads} ({src.pct}%)</span>
-                    </div>
-                    <div className="h-2 bg-gray-800 rounded-full overflow-hidden">
-                      <div className={`h-full ${src.color} rounded-full`} style={{ width: `${src.pct}%` }} />
-                    </div>
+              {(() => {
+                const sources = data ? data.leadsBySource : []
+                const palette = ['bg-emerald-500', 'bg-blue-500', 'bg-indigo-500', 'bg-purple-500', 'bg-pink-500', 'bg-amber-500']
+                const total = sources.reduce((s, v) => s + v.count, 0)
+                if (!data || sources.length === 0) {
+                  return <p className="text-gray-500 text-sm">No lead source data yet</p>
+                }
+                return (
+                  <div className="space-y-3">
+                    {sources.map((src, i) => {
+                      const pct = total > 0 ? Math.round((src.count / total) * 100) : 0
+                      return (
+                        <div key={src.source}>
+                          <div className="flex items-center justify-between text-xs mb-1">
+                            <span className="text-gray-400">{src.source || 'Unknown'}</span>
+                            <span className="text-gray-300 font-medium">{src.count} ({pct}%)</span>
+                          </div>
+                          <div className="h-2 bg-gray-800 rounded-full overflow-hidden">
+                            <div className={`h-full ${palette[i % palette.length]} rounded-full`} style={{ width: `${pct}%` }} />
+                          </div>
+                        </div>
+                      )
+                    })}
                   </div>
-                ))}
-              </div>
+                )
+              })()}
             </div>
           </div>
 

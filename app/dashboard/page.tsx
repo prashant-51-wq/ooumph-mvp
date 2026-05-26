@@ -40,6 +40,7 @@ interface AgentRun {
   created_at: string
   completed_at?: string
   error_message?: string
+  cost_estimate?: number | string | null
 }
 
 interface Stats {
@@ -47,6 +48,26 @@ interface Stats {
   pendingApprovals: number
   learningNotes: number
   completedTypes: string[]
+}
+
+interface NotificationItem {
+  id: string
+  type: string
+  title: string
+  body?: string
+  link?: string
+  severity: 'info' | 'success' | 'warning' | 'error'
+  read: boolean
+  created_at: string
+}
+
+interface PendingApproval {
+  id: string
+  artifact_id: string
+  artifact_type: string
+  artifact_title: string
+  content_json: unknown
+  created_at: string
 }
 
 // ─── Campaign Templates (carousel) ───────────────────────────────────────────
@@ -171,22 +192,15 @@ const MARKET_PULSE = [
   },
 ]
 
-// ─── Mock pending approvals ───────────────────────────────────────────────────
+// ─── Notification severity → icon ─────────────────────────────────────────────
 
-const MOCK_APPROVALS = [
-  { id: 'a1', type: 'Blog Post', preview: "'Top 10 AI Marketing Tools in 2025' — 1,200 words, SEO optimized" },
-  { id: 'a2', type: 'Email', preview: 'Weekly newsletter: Subject "Your growth report is ready"' },
-  { id: 'a3', type: 'Ad Copy', preview: 'Facebook ad: "Transform your marketing with AI..."' },
-]
-
-// ─── Notification data ────────────────────────────────────────────────────────
-
-const NOTIFICATIONS = [
-  { id: 'n1', icon: '🔔', text: '3 approvals waiting', link: '/approvals', unread: true },
-  { id: 'n2', icon: '⚠', text: 'Brand Monitor: Negative spike detected', link: '/dashboard/brand', unread: true },
-  { id: 'n3', icon: '✅', text: "Blog post 'Top 10 Tools' was published", link: '/dashboard/activity', unread: true },
-  { id: 'n4', icon: '🤖', text: 'Strategy update ready for review', link: '/dashboard/strategy', unread: false },
-]
+function notifIcon(severity: string, type: string): string {
+  if (type === 'approval') return '🔔'
+  if (severity === 'error') return '⚠'
+  if (severity === 'success') return '✅'
+  if (severity === 'warning') return '⚠'
+  return '🤖'
+}
 
 // ─── Agent status data ─────────────────────────────────────────────────────────
 
@@ -735,33 +749,70 @@ function CMOContextModal({
 
 // ─── Notification Dropdown ─────────────────────────────────────────────────────
 
-function NotificationDropdown({ onClose }: { onClose: () => void }) {
+function NotificationDropdown({
+  notifications,
+  loading,
+  onClose,
+  onMarkAllRead,
+}: {
+  notifications: NotificationItem[]
+  loading: boolean
+  onClose: () => void
+  onMarkAllRead: () => void
+}) {
   const router = useRouter()
-  const unreadCount = NOTIFICATIONS.filter((n) => n.unread).length
+  const unreadCount = notifications.filter((n) => !n.read).length
+
+  function handleClick(n: NotificationItem) {
+    onClose()
+    if (n.link) {
+      if (n.link.startsWith('http')) {
+        window.open(n.link, '_blank', 'noopener,noreferrer')
+      } else {
+        router.push(n.link)
+      }
+    }
+  }
 
   return (
-    <div className="absolute right-0 top-full mt-2 w-72 bg-gray-900 border border-gray-800 rounded-xl shadow-2xl z-50 overflow-hidden">
+    <div className="absolute right-0 top-full mt-2 w-80 bg-gray-900 border border-gray-800 rounded-xl shadow-2xl z-50 overflow-hidden">
       <div className="flex items-center justify-between px-4 py-3 border-b border-gray-800">
         <p className="text-sm font-semibold text-white">Notifications</p>
         {unreadCount > 0 && (
           <span className="text-xs bg-red-600 text-white px-1.5 py-0.5 rounded-full font-medium">{unreadCount} new</span>
         )}
       </div>
-      <div className="divide-y divide-gray-800">
-        {NOTIFICATIONS.map((n) => (
-          <button
-            key={n.id}
-            onClick={() => { onClose(); router.push(n.link) }}
-            className={`w-full flex items-start gap-3 px-4 py-3 text-left hover:bg-gray-800 transition-colors ${n.unread ? 'bg-gray-900' : 'opacity-70'}`}
-          >
-            <span className="text-base flex-shrink-0 mt-0.5">{n.icon}</span>
-            <p className={`text-xs flex-1 leading-snug ${n.unread ? 'text-gray-200' : 'text-gray-500'}`}>{n.text}</p>
-            {n.unread && <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 flex-shrink-0 mt-1" />}
-          </button>
-        ))}
+      <div className="divide-y divide-gray-800 max-h-96 overflow-y-auto">
+        {loading ? (
+          <div className="px-4 py-6 flex items-center justify-center gap-2 text-gray-500 text-xs">
+            <span className="w-3 h-3 border-2 border-gray-600 border-t-transparent rounded-full animate-spin" />
+            Loading notifications…
+          </div>
+        ) : notifications.length === 0 ? (
+          <p className="px-4 py-6 text-center text-xs text-gray-600">No notifications yet</p>
+        ) : (
+          notifications.map((n) => (
+            <button
+              key={n.id}
+              onClick={() => handleClick(n)}
+              className={`w-full flex items-start gap-3 px-4 py-3 text-left hover:bg-gray-800 transition-colors ${!n.read ? 'bg-gray-900' : 'opacity-70'}`}
+            >
+              <span className="text-base flex-shrink-0 mt-0.5">{notifIcon(n.severity, n.type)}</span>
+              <div className="flex-1 min-w-0">
+                <p className={`text-xs leading-snug ${!n.read ? 'text-gray-200' : 'text-gray-500'}`}>{n.title}</p>
+                {n.body && <p className="text-[10px] text-gray-600 mt-0.5 truncate">{n.body}</p>}
+                <p className="text-[10px] text-gray-700 mt-0.5">{timeAgo(n.created_at)}</p>
+              </div>
+              {!n.read && <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 flex-shrink-0 mt-1" />}
+            </button>
+          ))
+        )}
       </div>
       <div className="px-4 py-3 border-t border-gray-800">
-        <button onClick={onClose} className="text-xs text-gray-600 hover:text-gray-400 transition-colors w-full text-center">
+        <button
+          onClick={() => { onMarkAllRead(); onClose() }}
+          className="text-xs text-gray-600 hover:text-gray-400 transition-colors w-full text-center"
+        >
           Mark all as read
         </button>
       </div>
@@ -802,8 +853,6 @@ const GREETING: Message = {
   timestamp: new Date(),
 }
 
-const COST_TODAY = 2.47
-
 export default function DashboardPage() {
   const router = useRouter()
 
@@ -821,7 +870,20 @@ export default function DashboardPage() {
   // Right panel state
   const [runs, setRuns] = useState<AgentRun[]>([])
   const [runsLoading, setRunsLoading] = useState(true)
-  const [stats, setStats] = useState<Stats>({ artifacts: 14, pendingApprovals: 3, learningNotes: 24, completedTypes: [] })
+  const [stats, setStats] = useState<Stats>({ artifacts: 0, pendingApprovals: 0, learningNotes: 0, completedTypes: [] })
+  const [costToday, setCostToday] = useState(0)
+  const [activeCampaigns, setActiveCampaigns] = useState(0)
+  const [brandVoiceScore, setBrandVoiceScore] = useState(0)
+  const [leadsThisWeek, setLeadsThisWeek] = useState(0)
+  const [healthScore, setHealthScore] = useState(0)
+
+  // Notification state
+  const [notifications, setNotifications] = useState<NotificationItem[]>([])
+  const [notificationsLoading, setNotificationsLoading] = useState(true)
+
+  // Pending approvals (inline panel)
+  const [pendingApprovals, setPendingApprovals] = useState<PendingApproval[]>([])
+  const [approvingId, setApprovingId] = useState<string | null>(null)
 
   // UI state
   const [showNotifications, setShowNotifications] = useState(false)
@@ -876,10 +938,24 @@ export default function DashboardPage() {
   const loadRuns = useCallback(async () => {
     if (!workspaceId) return
     try {
-      const res = await fetch(`/api/agent-runs?workspaceId=${workspaceId}&limit=10`)
+      // Larger limit so we can compute "cost today" client-side
+      const res = await fetch(`/api/agent-runs?workspaceId=${workspaceId}&limit=100`)
       const data: AgentRun[] = await res.json()
-      setRuns(data)
+      setRuns(data.slice(0, 10))
       setRunsLoading(false)
+
+      // Compute today's cost (UTC day boundary based on local time)
+      const startOfDay = new Date()
+      startOfDay.setHours(0, 0, 0, 0)
+      const todaysTotal = data.reduce((acc, r) => {
+        if (!r.created_at) return acc
+        const t = new Date(r.created_at).getTime()
+        if (t < startOfDay.getTime()) return acc
+        const c = typeof r.cost_estimate === 'string' ? parseFloat(r.cost_estimate) : (r.cost_estimate ?? 0)
+        return acc + (isFinite(c) ? c : 0)
+      }, 0)
+      setCostToday(todaysTotal)
+
       if (data.some((r) => r.status === 'completed')) {
         fetch(`/api/stats?workspaceId=${workspaceId}`)
           .then((r) => r.json())
@@ -897,6 +973,143 @@ export default function DashboardPage() {
     const interval = setInterval(loadRuns, 5000)
     return () => clearInterval(interval)
   }, [workspaceId, loadRuns])
+
+  // ── Notifications polling ─────────────────────────────────────────────────────
+
+  const loadNotifications = useCallback(async () => {
+    if (!workspaceId) return
+    try {
+      const res = await fetch(`/api/notifications?workspaceId=${workspaceId}`)
+      const data = await res.json() as { items?: NotificationItem[]; unreadCount?: number }
+      setNotifications(Array.isArray(data.items) ? data.items : [])
+    } catch {
+      // Keep prior list
+    } finally {
+      setNotificationsLoading(false)
+    }
+  }, [workspaceId])
+
+  useEffect(() => {
+    if (!workspaceId) return
+    loadNotifications()
+    const interval = setInterval(loadNotifications, 30000)
+    return () => clearInterval(interval)
+  }, [workspaceId, loadNotifications])
+
+  async function markAllNotificationsRead() {
+    if (!workspaceId) return
+    try {
+      await fetch(`/api/notifications?workspaceId=${workspaceId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ markAllRead: true }),
+      })
+      setNotifications(prev => prev.map(n => ({ ...n, read: true })))
+    } catch { /* ignore */ }
+  }
+
+  // ── Pending approvals (inline panel) ──────────────────────────────────────────
+
+  const loadPendingApprovals = useCallback(async () => {
+    if (!workspaceId) return
+    try {
+      const res = await fetch(`/api/approvals?workspaceId=${workspaceId}`)
+      const rows = await res.json() as Array<Record<string, unknown>>
+      const pending: PendingApproval[] = rows
+        .filter(r => r.status === 'pending')
+        .slice(0, 3)
+        .map(r => ({
+          id: String(r.id),
+          artifact_id: String(r.artifact_id),
+          artifact_type: String(r.artifact_type || 'artifact'),
+          artifact_title: String(r.artifact_title || ''),
+          content_json: r.content_json,
+          created_at: String(r.created_at),
+        }))
+      setPendingApprovals(pending)
+
+      // Workspace health score: approved / total artifacts
+      const total = rows.length
+      const approved = rows.filter(r => r.status === 'approved').length
+      const score = total === 0 ? 100 : Math.min(100, Math.round((approved / total) * 100))
+      setHealthScore(score)
+    } catch { /* ignore */ }
+  }, [workspaceId])
+
+  useEffect(() => {
+    if (!workspaceId) return
+    loadPendingApprovals()
+    const interval = setInterval(loadPendingApprovals, 15000)
+    return () => clearInterval(interval)
+  }, [workspaceId, loadPendingApprovals])
+
+  async function handleInlineApprove(approvalId: string) {
+    if (!workspaceId || approvingId) return
+    setApprovingId(approvalId)
+    try {
+      const res = await fetch('/api/approvals', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ approvalId, action: 'approve', workspaceId }),
+      })
+      if (res.ok) {
+        setPendingApprovals(prev => prev.filter(p => p.id !== approvalId))
+        loadPendingApprovals()
+        fetch(`/api/stats?workspaceId=${workspaceId}`)
+          .then(r => r.json())
+          .then((s: Stats) => setStats(s))
+          .catch(() => {})
+      }
+    } catch { /* ignore */ }
+    finally {
+      setApprovingId(null)
+    }
+  }
+
+  // ── Workspace metrics (campaigns, leads, brand score) ─────────────────────────
+
+  useEffect(() => {
+    if (!workspaceId) return
+
+    // Active campaigns
+    fetch(`/api/artifacts?workspaceId=${workspaceId}&type=campaign&limit=100`)
+      .then(r => r.ok ? r.json() : [])
+      .then((rows: Array<{ status: string }>) => {
+        const active = rows.filter(r => r.status === 'approved' || r.status === 'active').length
+        setActiveCampaigns(active)
+      })
+      .catch(() => {})
+
+    // Leads this week
+    fetch(`/api/leads-captured?workspaceId=${workspaceId}`)
+      .then(r => r.ok ? r.json() : { leads: [] })
+      .then((data: { leads?: Array<{ created_at: string }>; rows?: Array<{ created_at: string }> }) => {
+        const list = data.leads || data.rows || []
+        const weekAgo = Date.now() - 7 * 24 * 3600_000
+        const recent = list.filter(l => new Date(l.created_at).getTime() > weekAgo).length
+        setLeadsThisWeek(recent)
+      })
+      .catch(() => {})
+
+    // Brand voice score — derived from memory entries with performance_score (if any)
+    fetch(`/api/agents/memory?workspaceId=${workspaceId}`)
+      .then(r => r.ok ? r.json() : { results: [] })
+      .then((data: { results?: Array<{ performance_score?: number }> }) => {
+        const list = data.results || []
+        if (list.length === 0) {
+          setBrandVoiceScore(0)
+          return
+        }
+        const scored = list.filter(m => typeof m.performance_score === 'number' && m.performance_score! > 0)
+        if (scored.length === 0) {
+          setBrandVoiceScore(0)
+          return
+        }
+        const avg = scored.reduce((a, m) => a + (m.performance_score || 0), 0) / scored.length
+        setBrandVoiceScore(Math.round(avg))
+      })
+      .catch(() => {})
+  }, [workspaceId])
 
   // ── Auto-scroll ───────────────────────────────────────────────────────────────
 
@@ -1121,7 +1334,7 @@ export default function DashboardPage() {
 
   const showTemplates = messages.length === 1 && !loading
   const userLetter = (businessName || 'U')[0].toUpperCase()
-  const unreadNotifCount = NOTIFICATIONS.filter((n) => n.unread).length
+  const unreadNotifCount = notifications.filter((n) => !n.read).length
 
   return (
     <>
@@ -1159,14 +1372,14 @@ export default function DashboardPage() {
           </div>
 
           {/* Cost badge */}
-          <span className={`hidden sm:inline-flex items-center gap-1 text-xs font-medium border rounded-full px-2.5 py-1 ${costBadgeClass(COST_TODAY)}`}>
-            💰 Cost today: ${COST_TODAY.toFixed(2)}
+          <span className={`hidden sm:inline-flex items-center gap-1 text-xs font-medium border rounded-full px-2.5 py-1 ${costBadgeClass(costToday)}`}>
+            💰 Cost today: ${costToday.toFixed(2)}
           </span>
 
           {/* Health score */}
           <span className="hidden sm:inline-flex items-center gap-1.5 text-xs font-medium text-gray-300 bg-gray-900 border border-gray-800 rounded-full px-2.5 py-1">
-            <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
-            Health: 87/100
+            <span className={`w-1.5 h-1.5 rounded-full ${healthScore >= 80 ? 'bg-green-500' : healthScore >= 60 ? 'bg-yellow-500' : 'bg-red-500'}`} />
+            Health: {healthScore}/100
           </span>
 
           <div className="ml-auto flex items-center gap-3">
@@ -1190,7 +1403,12 @@ export default function DashboardPage() {
                 )}
               </button>
               {showNotifications && (
-                <NotificationDropdown onClose={() => setShowNotifications(false)} />
+                <NotificationDropdown
+                  notifications={notifications}
+                  loading={notificationsLoading}
+                  onClose={() => setShowNotifications(false)}
+                  onMarkAllRead={markAllNotificationsRead}
+                />
               )}
             </div>
           </div>
@@ -1364,24 +1582,24 @@ export default function DashboardPage() {
                 </Link>
                 <div className="bg-gray-900 border border-gray-800 rounded-xl p-3">
                   <p className="text-gray-500 text-[11px] mb-1">Campaigns</p>
-                  <p className="text-white text-xl font-bold">2</p>
+                  <p className="text-white text-xl font-bold">{activeCampaigns}</p>
                   <p className="text-gray-700 text-[11px]">active</p>
                 </div>
-                <div className={`bg-gray-900 border rounded-xl p-3 ${costBadgeClass(COST_TODAY).includes('green') ? 'border-green-900/50' : 'border-gray-800'}`}>
+                <div className={`bg-gray-900 border rounded-xl p-3 ${costBadgeClass(costToday).includes('green') ? 'border-green-900/50' : 'border-gray-800'}`}>
                   <p className="text-gray-500 text-[11px] mb-1">AI Cost</p>
-                  <p className={`text-xl font-bold ${COST_TODAY < 5 ? 'text-green-400' : COST_TODAY <= 10 ? 'text-yellow-400' : 'text-red-400'}`}>
-                    ${COST_TODAY.toFixed(2)}
+                  <p className={`text-xl font-bold ${costToday < 5 ? 'text-green-400' : costToday <= 10 ? 'text-yellow-400' : 'text-red-400'}`}>
+                    ${costToday.toFixed(2)}
                   </p>
                   <p className="text-gray-700 text-[11px]">today</p>
                 </div>
                 <div className="bg-gray-900 border border-gray-800 rounded-xl p-3">
                   <p className="text-gray-500 text-[11px] mb-1">Brand Score</p>
-                  <p className="text-white text-xl font-bold">91%</p>
+                  <p className="text-white text-xl font-bold">{brandVoiceScore || '—'}{brandVoiceScore ? '%' : ''}</p>
                   <p className="text-gray-700 text-[11px]">voice match</p>
                 </div>
                 <div className="bg-gray-900 border border-gray-800 rounded-xl p-3">
                   <p className="text-gray-500 text-[11px] mb-1">Leads</p>
-                  <p className="text-white text-xl font-bold">23</p>
+                  <p className="text-white text-xl font-bold">{leadsThisWeek}</p>
                   <p className="text-gray-700 text-[11px]">this week</p>
                 </div>
               </div>
@@ -1420,21 +1638,25 @@ export default function DashboardPage() {
                   View All ({stats.pendingApprovals}) →
                 </Link>
               </div>
-              {MOCK_APPROVALS.length === 0 ? (
+              {pendingApprovals.length === 0 ? (
                 <p className="text-gray-600 text-xs text-center py-2">No pending approvals</p>
               ) : (
                 <div className="space-y-2">
-                  {MOCK_APPROVALS.map((a) => (
+                  {pendingApprovals.map((a) => (
                     <div key={a.id} className="bg-gray-900 border border-gray-800 rounded-xl p-3">
                       <div className="flex items-center gap-2 mb-1.5">
-                        <span className="text-[10px] font-medium text-indigo-400 bg-indigo-950/60 border border-indigo-900/50 rounded px-1.5 py-0.5">
-                          {a.type}
+                        <span className="text-[10px] font-medium text-indigo-400 bg-indigo-950/60 border border-indigo-900/50 rounded px-1.5 py-0.5 capitalize">
+                          {a.artifact_type.replace(/_/g, ' ')}
                         </span>
                       </div>
-                      <p className="text-gray-400 text-[11px] leading-snug mb-2">{a.preview}</p>
+                      <p className="text-gray-400 text-[11px] leading-snug mb-2 line-clamp-2">{a.artifact_title || 'Untitled artifact'}</p>
                       <div className="flex items-center gap-1.5">
-                        <button className="flex-1 text-center text-[10px] font-medium text-white bg-green-700 hover:bg-green-600 rounded py-1 transition-colors">
-                          Approve
+                        <button
+                          onClick={() => handleInlineApprove(a.id)}
+                          disabled={approvingId === a.id}
+                          className="flex-1 text-center text-[10px] font-medium text-white bg-green-700 hover:bg-green-600 disabled:opacity-50 rounded py-1 transition-colors"
+                        >
+                          {approvingId === a.id ? 'Approving…' : 'Approve'}
                         </button>
                         <Link
                           href="/dashboard/approvals"
@@ -1449,7 +1671,7 @@ export default function DashboardPage() {
               )}
             </div>
 
-            {/* Market Pulse */}
+            {/* Market Pulse — TODO: wire to real /api/market-pulse endpoint once available */}
             <div className="p-4 border-b border-gray-800">
               <div className="flex items-center justify-between mb-3">
                 <p className="text-xs text-gray-500 uppercase tracking-wider font-medium">Market Pulse</p>

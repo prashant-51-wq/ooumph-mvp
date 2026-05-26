@@ -34,40 +34,29 @@ interface GenerationRecord {
   id: string
   scriptPreview: string
   voiceName: string
-  duration: string
+  charCount: number
   date: string
 }
 
-// ─── Mock data ────────────────────────────────────────────────────────────────
+// ─── Voice catalog (ElevenLabs preset voices) ─────────────────────────────────
+// These names map to common preset voice_ids on ElevenLabs. If you want exact
+// preset IDs, configure them in workspace.model_settings.elevenLabsVoiceId.
 
 const AI_VOICES: VoiceModel[] = [
-  { id: 'v1', name: 'Aria', language: 'English', accent: 'US', gender: 'Female', provider: 'ElevenLabs', quality: 5 },
-  { id: 'v2', name: 'Marcus', language: 'English', accent: 'UK', gender: 'Male', provider: 'OpenAI', quality: 4 },
-  { id: 'v3', name: 'Luna', language: 'English', accent: 'Australian', gender: 'Female', provider: 'PlayHT', quality: 5 },
-  { id: 'v4', name: 'Kai', language: 'English', accent: 'US', gender: 'Male', provider: 'ElevenLabs', quality: 4 },
-  { id: 'v5', name: 'Sofia', language: 'Spanish', accent: 'Castilian', gender: 'Female', provider: 'Murf', quality: 4 },
-  { id: 'v6', name: 'Jin', language: 'Korean', accent: 'Seoul', gender: 'Male', provider: 'PlayHT', quality: 3 },
-  { id: 'v7', name: 'Zara', language: 'English', accent: 'Nigerian', gender: 'Female', provider: 'ElevenLabs', quality: 4 },
-  { id: 'v8', name: 'David', language: 'English', accent: 'British Formal', gender: 'Male', provider: 'OpenAI', quality: 5 },
+  { id: '21m00Tcm4TlvDq8ikWAM', name: 'Rachel',  language: 'English', accent: 'US',        gender: 'Female', provider: 'ElevenLabs', quality: 5 },
+  { id: 'AZnzlk1XvdvUeBnXmlld', name: 'Domi',    language: 'English', accent: 'US',        gender: 'Female', provider: 'ElevenLabs', quality: 4 },
+  { id: 'EXAVITQu4vr4xnSDxMaL', name: 'Bella',   language: 'English', accent: 'US',        gender: 'Female', provider: 'ElevenLabs', quality: 5 },
+  { id: 'ErXwobaYiN019PkySvjV', name: 'Antoni',  language: 'English', accent: 'US',        gender: 'Male',   provider: 'ElevenLabs', quality: 4 },
+  { id: 'MF3mGyEYCl7XYWbV9V6O', name: 'Elli',    language: 'English', accent: 'US',        gender: 'Female', provider: 'ElevenLabs', quality: 4 },
+  { id: 'TxGEqnHWrfWFTfGW9XjX', name: 'Josh',    language: 'English', accent: 'US',        gender: 'Male',   provider: 'ElevenLabs', quality: 5 },
+  { id: 'VR6AewLTigWG4xSOukaG', name: 'Arnold',  language: 'English', accent: 'US',        gender: 'Male',   provider: 'ElevenLabs', quality: 4 },
+  { id: 'pNInz6obpgDQGcFmaJgB', name: 'Adam',    language: 'English', accent: 'US',        gender: 'Male',   provider: 'ElevenLabs', quality: 5 },
 ]
 
-const CLONED_VOICES: VoiceModel[] = [
-  { id: 'c1', name: 'My Voice Clone', language: 'English', accent: 'US', gender: 'Male', provider: 'ElevenLabs', quality: 5 },
-]
-
-const STOCK_VOICES: VoiceModel[] = [
-  { id: 's1', name: 'Narrator Classic', language: 'English', accent: 'US', gender: 'Neutral', provider: 'Murf', quality: 3 },
-  { id: 's2', name: 'News Reader', language: 'English', accent: 'US', gender: 'Male', provider: 'OpenAI', quality: 3 },
-]
+const CLONED_VOICES: VoiceModel[] = []
+const STOCK_VOICES: VoiceModel[] = []
 
 const MUSIC_CATEGORIES = ['Corporate', 'Energetic', 'Calm', 'Podcast', 'Cinematic']
-
-const MOCK_HISTORY: GenerationRecord[] = [
-  { id: 'h1', scriptPreview: 'Welcome to Ooumph, the AI-powered marketing platform...', voiceName: 'Aria', duration: '0:42', date: '2026-05-25' },
-  { id: 'h2', scriptPreview: 'This quarter our team achieved record-breaking results in...', voiceName: 'David', duration: '1:15', date: '2026-05-24' },
-  { id: 'h3', scriptPreview: 'Introducing the all-new feature set that will transform...', voiceName: 'Marcus', duration: '2:08', date: '2026-05-23' },
-  { id: 'h4', scriptPreview: 'Thank you for joining us today. In this tutorial we will...', voiceName: 'Luna', duration: '3:21', date: '2026-05-22' },
-]
 
 const PROVIDER_COLORS: Record<string, string> = {
   ElevenLabs: 'bg-purple-900/60 text-purple-300 border-purple-800/60',
@@ -75,6 +64,10 @@ const PROVIDER_COLORS: Record<string, string> = {
   PlayHT: 'bg-blue-900/60 text-blue-300 border-blue-800/60',
   Murf: 'bg-orange-900/60 text-orange-300 border-orange-800/60',
 }
+
+// Public sample MP3 used for "Preview" buttons when ElevenLabs preview is unavailable.
+// We use a short public-domain WAV from W3C; falling back means the preview button always plays *something*.
+const PREVIEW_SAMPLE_URL = 'https://www.w3.org/2010/05/sound/sound_90.mp3'
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
@@ -109,39 +102,39 @@ function SliderRow({
   )
 }
 
-// ─── Waveform visualization ───────────────────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function Waveform({ playing }: { playing: boolean }) {
-  const bars = Array.from({ length: 80 }, (_, i) => {
-    const base = 20 + Math.sin(i * 0.4) * 15 + Math.cos(i * 0.7) * 10 + Math.random() * 20
-    return Math.max(4, Math.min(80, base))
-  })
-  return (
-    <div className="flex items-center gap-px h-16 overflow-hidden">
-      {bars.map((h, i) => (
-        <div
-          key={i}
-          style={{ height: `${h}%` }}
-          className={`flex-1 rounded-sm transition-all ${
-            playing ? 'bg-indigo-500 animate-pulse' : 'bg-indigo-600/60'
-          } ${i < 30 ? 'bg-emerald-500/70' : ''}`}
-        />
-      ))}
-    </div>
-  )
+function base64ToBlobUrl(base64: string, mime = 'audio/mpeg'): string {
+  const byteChars = atob(base64)
+  const byteArr = new Uint8Array(byteChars.length)
+  for (let i = 0; i < byteChars.length; i++) byteArr[i] = byteChars.charCodeAt(i)
+  const blob = new Blob([byteArr], { type: mime })
+  return URL.createObjectURL(blob)
+}
+
+function relativeDate(iso: string): string {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  return d.toLocaleDateString()
+}
+
+function safeParse<T = unknown>(s: string): T | undefined {
+  try { return JSON.parse(s) as T } catch { return undefined }
 }
 
 // ─── Main page ────────────────────────────────────────────────────────────────
 
 export default function VoiceoverStudioPage() {
+  const [workspaceId, setWorkspaceId] = useState<string | null>(null)
   const [voiceTab, setVoiceTab] = useState<VoiceTab>('ai')
   const [rightTab, setRightTab] = useState<RightTab>('editor')
   const [script, setScript] = useState('')
   const [autoSplit, setAutoSplit] = useState(false)
-  const [selectedVoiceId, setSelectedVoiceId] = useState('v1')
+  const [selectedVoiceId, setSelectedVoiceId] = useState(AI_VOICES[0].id)
   const [voiceSearch, setVoiceSearch] = useState('')
   const [previewingId, setPreviewingId] = useState<string | null>(null)
-  const [previewing, setPreviewing] = useState(false)
+  const previewAudioRef = useRef<HTMLAudioElement | null>(null)
+  const mainAudioRef = useRef<HTMLAudioElement | null>(null)
 
   // Voice settings
   const [speed, setSpeed] = useState(1.0)
@@ -159,15 +152,9 @@ export default function VoiceoverStudioPage() {
   const [fadeIn, setFadeIn] = useState(true)
   const [fadeOut, setFadeOut] = useState(true)
 
-  // Transport / waveform
-  const [playing, setPlaying] = useState(false)
-  const [currentTime, setCurrentTime] = useState(0)
-  const [totalTime] = useState(134) // 2m14s mock
-  const timerRef = useRef<NodeJS.Timeout | null>(null)
-
-  // Tracks
+  // Tracks (visual only)
   const [tracks, setTracks] = useState<Track[]>([
-    { id: 't1', label: 'Voiceover', color: 'bg-indigo-500', volume: 80, muted: false, solo: false, hasContent: true },
+    { id: 't1', label: 'Voiceover', color: 'bg-indigo-500', volume: 80, muted: false, solo: false, hasContent: false },
     { id: 't2', label: 'Background Music', color: 'bg-emerald-500', volume: 20, muted: false, solo: false, hasContent: false },
     { id: 't3', label: 'SFX / Sounds', color: 'bg-amber-500', volume: 60, muted: false, solo: false, hasContent: false },
   ])
@@ -180,16 +167,20 @@ export default function VoiceoverStudioPage() {
   // EQ
   const [eqPreset, setEqPreset] = useState<EQPreset>('Voice Clarity')
 
-  // Generating state
+  // Generation
   const [generating, setGenerating] = useState(false)
-  const [generated, setGenerated] = useState(false)
+  const [generationError, setGenerationError] = useState<string | null>(null)
+  const [generatedAudioUrl, setGeneratedAudioUrl] = useState<string | null>(null)
+
+  // History
+  const [history, setHistory] = useState<GenerationRecord[]>([])
+  const [historyLoading, setHistoryLoading] = useState(false)
+  const [historyError, setHistoryError] = useState<string | null>(null)
 
   // API slide-over
   const [showApiPanel, setShowApiPanel] = useState(false)
   const [apiProvider, setApiProvider] = useState('ElevenLabs')
   const [apiKey, setApiKey] = useState('')
-  const [apiTesting, setApiTesting] = useState(false)
-  const [apiTestResult, setApiTestResult] = useState<'ok' | 'fail' | null>(null)
 
   // Clone modal
   const [showCloneModal, setShowCloneModal] = useState(false)
@@ -219,42 +210,145 @@ export default function VoiceoverStudioPage() {
     setScript(s => s + snippets[tag])
   }
 
-  // Transport play/pause
+  // Mount → load workspace + history
   useEffect(() => {
-    if (playing) {
-      timerRef.current = setInterval(() => {
-        setCurrentTime(t => {
-          if (t >= totalTime) { setPlaying(false); return 0 }
-          return t + 1
-        })
-      }, 1000)
-    } else {
-      if (timerRef.current) clearInterval(timerRef.current)
+    if (typeof window !== 'undefined') {
+      setWorkspaceId(localStorage.getItem('workspaceId'))
     }
-    return () => { if (timerRef.current) clearInterval(timerRef.current) }
-  }, [playing, totalTime])
+  }, [])
 
-  function formatTime(s: number) {
-    const m = Math.floor(s / 60)
-    const sec = s % 60
-    return `${m}:${String(sec).padStart(2, '0')}`
+  useEffect(() => {
+    if (workspaceId && rightTab === 'history') {
+      void fetchHistory()
+    }
+  }, [workspaceId, rightTab])  // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Cleanup blob URLs on unmount
+  useEffect(() => {
+    return () => {
+      if (generatedAudioUrl) URL.revokeObjectURL(generatedAudioUrl)
+    }
+  }, [generatedAudioUrl])
+
+  async function fetchHistory() {
+    if (!workspaceId) return
+    setHistoryLoading(true)
+    setHistoryError(null)
+    try {
+      const res = await fetch(`/api/artifacts?workspaceId=${workspaceId}&type=voiceover`)
+      if (!res.ok) throw new Error(`Failed (${res.status})`)
+      const data = await res.json() as Array<{
+        id: string
+        title: string
+        content_json: { text?: string; voiceId?: string; charCount?: number } | string
+        created_at: string
+      }>
+      const items: GenerationRecord[] = data.map((row) => {
+        const cj = typeof row.content_json === 'string' ? safeParse<{ text?: string; voiceId?: string; charCount?: number }>(row.content_json) : row.content_json
+        const voiceMatch = AI_VOICES.find(v => v.id === cj?.voiceId)
+        return {
+          id: row.id,
+          scriptPreview: cj?.text || row.title || '',
+          voiceName: voiceMatch?.name || 'Voice',
+          charCount: cj?.charCount || 0,
+          date: relativeDate(row.created_at),
+        }
+      })
+      setHistory(items)
+    } catch (err) {
+      setHistoryError(err instanceof Error ? err.message : 'Failed to load history')
+    } finally {
+      setHistoryLoading(false)
+    }
   }
 
   async function handlePreview(voiceId: string) {
+    // Stop existing preview
+    if (previewAudioRef.current) {
+      previewAudioRef.current.pause()
+      previewAudioRef.current = null
+    }
     setPreviewingId(voiceId)
-    setPreviewing(true)
-    await new Promise(r => setTimeout(r, 1200))
-    setPreviewing(false)
-    setPreviewingId(null)
+    // Try to use the same generation API with a tiny sample text. If a workspace
+    // exists, we get a real voice sample. Otherwise fall back to a placeholder mp3.
+    try {
+      if (workspaceId) {
+        const res = await fetch('/api/agents/creative/voiceover', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            workspaceId,
+            text: 'Hello, this is a quick voice preview.',
+            voiceId,
+          }),
+        })
+        const data = await res.json() as { ok?: boolean; audioBase64?: string; mimeType?: string; error?: string }
+        if (data.ok && data.audioBase64) {
+          const url = base64ToBlobUrl(data.audioBase64, data.mimeType || 'audio/mpeg')
+          const audio = new Audio(url)
+          previewAudioRef.current = audio
+          audio.onended = () => { setPreviewingId(null); URL.revokeObjectURL(url) }
+          await audio.play()
+          return
+        }
+      }
+      // Fallback
+      const audio = new Audio(PREVIEW_SAMPLE_URL)
+      previewAudioRef.current = audio
+      audio.onended = () => setPreviewingId(null)
+      await audio.play()
+    } catch {
+      setPreviewingId(null)
+    }
   }
 
   async function handleGenerate() {
-    if (!script.trim()) return
+    if (!script.trim() || !workspaceId) return
+    setGenerationError(null)
     setGenerating(true)
-    await new Promise(r => setTimeout(r, 2200))
-    setGenerating(false)
-    setGenerated(true)
-    setTracks(prev => prev.map(t => t.id === 't1' ? { ...t, hasContent: true } : t))
+    if (generatedAudioUrl) {
+      URL.revokeObjectURL(generatedAudioUrl)
+      setGeneratedAudioUrl(null)
+    }
+    try {
+      const res = await fetch('/api/agents/creative/voiceover', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          workspaceId,
+          text: script,
+          voiceId: selectedVoiceId,
+          stability: stability / 100,
+          similarityBoost: clarity / 100,
+        }),
+      })
+      const data = await res.json() as {
+        ok?: boolean
+        audioBase64?: string
+        mimeType?: string
+        charCount?: number
+        artifactId?: string
+        error?: string
+      }
+      if (!data.ok || !data.audioBase64) {
+        setGenerationError(data.error || 'Voiceover generation failed')
+        return
+      }
+      const url = base64ToBlobUrl(data.audioBase64, data.mimeType || 'audio/mpeg')
+      setGeneratedAudioUrl(url)
+      setTracks(prev => prev.map(t => t.id === 't1' ? { ...t, hasContent: true } : t))
+      // Auto-play
+      setTimeout(() => {
+        if (mainAudioRef.current) {
+          mainAudioRef.current.load()
+          void mainAudioRef.current.play().catch(() => {/* user gesture may be required */})
+        }
+      }, 50)
+    } catch (err) {
+      setGenerationError(err instanceof Error ? err.message : 'Network error')
+    } finally {
+      setGenerating(false)
+    }
   }
 
   function toggleMute(id: string) {
@@ -282,13 +376,10 @@ export default function VoiceoverStudioPage() {
           </div>
           <div>
             <h1 className="text-white font-bold text-lg leading-none">Voiceover Studio</h1>
-            <p className="text-gray-500 text-xs mt-0.5">Professional AI voice production</p>
+            <p className="text-gray-500 text-xs mt-0.5">Single-track generation — multi-track editing coming soon</p>
           </div>
         </div>
         <div className="flex items-center gap-3">
-          <span className="px-3 py-1 rounded-full bg-emerald-900/40 border border-emerald-800/50 text-emerald-400 text-xs font-medium">
-            2,840 credits remaining
-          </span>
           <button
             onClick={() => setShowApiPanel(true)}
             className="p-2 rounded-lg bg-gray-900 border border-gray-800 text-gray-400 hover:text-white hover:border-gray-700 transition-colors"
@@ -319,7 +410,6 @@ export default function VoiceoverStudioPage() {
               </div>
             </div>
 
-            {/* SSML toolbar */}
             <div className="flex flex-wrap gap-1 mb-2">
               {['Pause', 'Emphasis', 'Speed', 'Pitch', 'Break'].map(tag => (
                 <button
@@ -367,7 +457,6 @@ export default function VoiceoverStudioPage() {
               className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-white text-xs placeholder-gray-600 focus:outline-none focus:border-indigo-500 mb-3"
             />
 
-            {/* Voice tabs */}
             <div className="flex gap-1 mb-3">
               {(['ai', 'cloned', 'stock'] as VoiceTab[]).map(t => (
                 <button
@@ -380,7 +469,6 @@ export default function VoiceoverStudioPage() {
               ))}
             </div>
 
-            {/* Voice cards */}
             <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1">
               {filteredVoices.map(voice => (
                 <div
@@ -409,16 +497,20 @@ export default function VoiceoverStudioPage() {
                     </div>
                   </div>
                   <button
-                    onClick={e => { e.stopPropagation(); handlePreview(voice.id) }}
-                    disabled={previewing}
+                    onClick={e => { e.stopPropagation(); void handlePreview(voice.id) }}
+                    disabled={previewingId === voice.id}
                     className="px-1.5 py-1 rounded bg-gray-700 hover:bg-indigo-600 text-gray-400 hover:text-white text-xs transition-colors flex-shrink-0"
                   >
-                    {previewingId === voice.id && previewing ? '...' : '▶'}
+                    {previewingId === voice.id ? '...' : '▶'}
                   </button>
                 </div>
               ))}
               {filteredVoices.length === 0 && (
-                <p className="text-gray-600 text-xs text-center py-3">No voices match your search</p>
+                <p className="text-gray-600 text-xs text-center py-3">
+                  {voiceTab === 'cloned' ? 'No cloned voices yet' :
+                   voiceTab === 'stock' ? 'No stock voices configured' :
+                   'No voices match your search'}
+                </p>
               )}
             </div>
 
@@ -436,7 +528,6 @@ export default function VoiceoverStudioPage() {
           <div className="p-4 border-b border-gray-800 space-y-3">
             <h2 className="text-white text-sm font-semibold">Voice Settings</h2>
 
-            {/* Speed with presets */}
             <div>
               <div className="flex items-center justify-between mb-1">
                 <span className="text-gray-400 text-xs">Speed</span>
@@ -459,10 +550,9 @@ export default function VoiceoverStudioPage() {
             <SliderRow label="Pitch" value={pitch} min={-50} max={50} step={1} onChange={setPitch} displayValue={`${pitch > 0 ? '+' : ''}${pitch}%`} />
             <SliderRow label="Volume" value={volume} min={0} max={100} step={1} onChange={setVolume} displayValue={`${volume}%`} />
             <SliderRow label="Stability" value={stability} min={0} max={100} step={1} onChange={setStability} displayValue={`${stability}%`} />
-            <SliderRow label="Clarity" value={clarity} min={0} max={100} step={1} onChange={setClarity} displayValue={`${clarity}%`} />
+            <SliderRow label="Similarity" value={clarity} min={0} max={100} step={1} onChange={setClarity} displayValue={`${clarity}%`} />
             <SliderRow label="Style exaggeration" value={styleExag} min={0} max={100} step={1} onChange={setStyleExag} displayValue={`${styleExag}%`} />
 
-            {/* Emotion presets */}
             <div>
               <span className="text-gray-400 text-xs block mb-1.5">Emotion</span>
               <div className="flex flex-wrap gap-1">
@@ -493,6 +583,7 @@ export default function VoiceoverStudioPage() {
 
             {addMusic && (
               <>
+                <p className="text-amber-400 text-[10px]">Music mixing is a visual preview — not yet wired to a real mixer.</p>
                 <div className="flex flex-wrap gap-1">
                   {MUSIC_CATEGORIES.map(cat => (
                     <button
@@ -533,7 +624,7 @@ export default function VoiceoverStudioPage() {
           <div className="p-4">
             <button
               onClick={handleGenerate}
-              disabled={generating || !script.trim()}
+              disabled={generating || !script.trim() || !workspaceId}
               className="w-full py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold text-sm transition-colors flex items-center justify-center gap-2"
             >
               {generating ? (
@@ -542,7 +633,7 @@ export default function VoiceoverStudioPage() {
                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                   </svg>
-                  Generating...
+                  🎙 Synthesizing with {selectedVoice?.name || 'voice'}... ~3s
                 </>
               ) : (
                 <>
@@ -551,13 +642,26 @@ export default function VoiceoverStudioPage() {
                 </>
               )}
             </button>
+            {!workspaceId && (
+              <p className="text-amber-400 text-[10px] text-center mt-2">Open a workspace first</p>
+            )}
+            {generationError && (
+              <div className="mt-3 p-3 rounded-lg bg-red-900/30 border border-red-700/50">
+                <p className="text-red-300 text-xs leading-relaxed">{generationError}</p>
+                <button
+                  onClick={() => { setGenerationError(null); void handleGenerate() }}
+                  className="mt-2 text-red-200 hover:text-white text-[10px] underline"
+                >
+                  Retry
+                </button>
+              </div>
+            )}
           </div>
         </div>
 
         {/* ── RIGHT PANEL ─────────────────────────────────────────────────────── */}
         <div className="flex-1 flex flex-col min-w-0">
 
-          {/* Right tab bar */}
           <div className="flex border-b border-gray-800 flex-shrink-0 px-4">
             {(['editor', 'history'] as RightTab[]).map(tab => (
               <button
@@ -573,80 +677,44 @@ export default function VoiceoverStudioPage() {
           {rightTab === 'editor' && (
             <div className="flex-1 overflow-y-auto p-5 space-y-5">
 
-              {/* Waveform Section */}
+              {/* Real audio playback */}
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
                 <div className="flex items-center justify-between mb-3">
-                  <span className="text-white text-sm font-semibold">Waveform</span>
-                  <div className="flex items-center gap-2">
-                    {/* Volume meter */}
-                    <div className="flex items-end gap-px h-5">
-                      {Array.from({ length: 8 }).map((_, i) => (
-                        <div
-                          key={i}
-                          style={{ height: `${playing ? 20 + Math.random() * 80 : 30}%` }}
-                          className={`w-1.5 rounded-sm transition-all ${playing ? 'bg-emerald-400 animate-pulse' : 'bg-gray-700'}`}
-                        />
-                      ))}
-                    </div>
-                    <span className="text-gray-500 text-xs font-mono">{formatTime(currentTime)} / {formatTime(totalTime)}</span>
-                  </div>
+                  <span className="text-white text-sm font-semibold">Generated Audio</span>
+                  {generatedAudioUrl && selectedVoice && (
+                    <span className="text-gray-500 text-xs">{selectedVoice.name} · {emotion} · {speed.toFixed(1)}×</span>
+                  )}
                 </div>
 
-                {/* Timeline ruler */}
-                <div className="flex justify-between mb-1 px-1">
-                  {Array.from({ length: 9 }).map((_, i) => (
-                    <span key={i} className="text-gray-700 text-xs font-mono">{formatTime(Math.round(i * totalTime / 8))}</span>
-                  ))}
-                </div>
-
-                {/* Waveform visual */}
-                <div className="relative bg-gray-800 rounded-lg p-3 mb-3">
-                  <Waveform playing={playing} />
-                  {/* Playhead */}
-                  <div
-                    className="absolute top-2 bottom-2 w-0.5 bg-white/80 pointer-events-none"
-                    style={{ left: `${(currentTime / totalTime) * 100}%` }}
-                  />
-                </div>
-
-                {/* Transport controls */}
-                <div className="flex items-center justify-center gap-3">
-                  <button onClick={() => setCurrentTime(0)} className="w-8 h-8 flex items-center justify-center rounded-full bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-white text-sm transition-colors">⏮</button>
-                  <button onClick={() => setCurrentTime(t => Math.max(0, t - 10))} className="w-8 h-8 flex items-center justify-center rounded-full bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-white text-sm transition-colors">⏪</button>
-                  <button onClick={() => setPlaying(v => !v)} className="w-10 h-10 flex items-center justify-center rounded-full bg-indigo-600 hover:bg-indigo-500 text-white text-base transition-colors">
-                    {playing ? '⏸' : '▶'}
-                  </button>
-                  <button onClick={() => setCurrentTime(t => Math.min(totalTime, t + 10))} className="w-8 h-8 flex items-center justify-center rounded-full bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-white text-sm transition-colors">⏩</button>
-                  <button onClick={() => setCurrentTime(totalTime)} className="w-8 h-8 flex items-center justify-center rounded-full bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-white text-sm transition-colors">⏭</button>
-                </div>
-
-                {generated && (
-                  <div className="mt-3 p-2 rounded-lg bg-emerald-950/30 border border-emerald-800/40 flex items-center gap-2">
-                    <span className="text-emerald-400 text-xs">Voiceover generated</span>
-                    <span className="text-gray-600 text-xs">·</span>
-                    <span className="text-gray-500 text-xs">{selectedVoice?.name} · {emotion} · {speed.toFixed(1)}×</span>
+                {generatedAudioUrl ? (
+                  <audio
+                    ref={mainAudioRef}
+                    src={generatedAudioUrl}
+                    controls
+                    autoPlay
+                    className="w-full"
+                  >
+                    <track kind="captions" />
+                  </audio>
+                ) : (
+                  <div className="bg-gray-800 rounded-lg p-6 text-center">
+                    <p className="text-gray-500 text-sm">No voiceover yet — write a script and click Generate</p>
                   </div>
                 )}
               </div>
 
-              {/* Audio Tracks */}
+              {/* Audio Tracks (visual mockup) */}
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-                <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center justify-between mb-2">
                   <h3 className="text-white text-sm font-semibold">Audio Tracks</h3>
-                  <button
-                    onClick={() => setTracks(prev => [...prev, { id: `t${Date.now()}`, label: 'New Track', color: 'bg-pink-500', volume: 60, muted: false, solo: false, hasContent: false }])}
-                    className="px-3 py-1 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-white text-xs transition-colors"
-                  >
-                    + Add Track
-                  </button>
+                  <span className="text-amber-400 text-[10px] bg-amber-900/20 px-2 py-0.5 rounded">Visual preview only</span>
                 </div>
+                <p className="text-gray-600 text-xs mb-3">Multi-track mixing isn&apos;t wired to an audio engine yet. Currently we generate a single voiceover track.</p>
                 <div className="space-y-2">
                   {tracks.map(track => (
                     <div key={track.id} className={`flex items-center gap-3 p-2.5 rounded-lg border ${track.muted ? 'border-gray-800 opacity-50' : 'border-gray-700/50'} bg-gray-800/30`}>
                       <div className={`w-2 h-10 rounded-full flex-shrink-0 ${track.color}`} />
                       <span className="text-gray-300 text-xs font-medium w-28 flex-shrink-0 truncate">{track.label}</span>
-
-                      {/* Mini waveform clip */}
                       <div className="flex-1 h-8 rounded bg-gray-800 flex items-center px-2 overflow-hidden">
                         {track.hasContent ? (
                           <div className="flex items-center gap-px w-full h-full">
@@ -659,14 +727,11 @@ export default function VoiceoverStudioPage() {
                           <span className="text-gray-700 text-xs">Empty</span>
                         )}
                       </div>
-
-                      {/* Volume */}
                       <input type="range" min={0} max={100} step={5} value={track.volume}
                         onChange={e => setTrackVolume(track.id, Number(e.target.value))}
                         className="w-16 accent-indigo-500 h-1 flex-shrink-0"
                       />
                       <span className="text-gray-600 text-xs w-6 text-right">{track.volume}</span>
-
                       <button onClick={() => toggleMute(track.id)}
                         className={`px-1.5 py-0.5 rounded text-xs font-bold transition-colors ${track.muted ? 'bg-red-900/60 text-red-400' : 'bg-gray-700 text-gray-500 hover:text-white'}`}>
                         M
@@ -680,9 +745,10 @@ export default function VoiceoverStudioPage() {
                 </div>
               </div>
 
-              {/* Edit Tools */}
+              {/* Edit Tools (visual) */}
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-                <h3 className="text-white text-sm font-semibold mb-3">Edit Tools</h3>
+                <h3 className="text-white text-sm font-semibold mb-2">Edit Tools</h3>
+                <p className="text-gray-600 text-xs mb-3">Coming soon — currently a visual preview.</p>
                 <div className="grid grid-cols-2 gap-3 mb-3">
                   <button className="flex items-center gap-2 p-2.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs transition-colors">
                     <span>✂</span> Trim clip
@@ -752,15 +818,19 @@ export default function VoiceoverStudioPage() {
                   </div>
                 </div>
                 <div className="flex gap-2">
-                  <button className="flex-1 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium transition-colors">
-                    Download {exportFormat}
-                  </button>
-                  <button className="px-3 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs transition-colors">
-                    Add to Video
-                  </button>
-                  <button className="px-3 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs transition-colors">
-                    Publishing Hub
-                  </button>
+                  {generatedAudioUrl ? (
+                    <a
+                      href={generatedAudioUrl}
+                      download={`voiceover.${exportFormat.toLowerCase()}`}
+                      className="flex-1 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium transition-colors text-center"
+                    >
+                      Download {exportFormat}
+                    </a>
+                  ) : (
+                    <button disabled className="flex-1 py-2 rounded-lg bg-gray-800 text-gray-500 text-xs cursor-not-allowed">
+                      No audio yet
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
@@ -768,28 +838,52 @@ export default function VoiceoverStudioPage() {
 
           {rightTab === 'history' && (
             <div className="flex-1 overflow-y-auto p-5">
-              <div className="space-y-3">
-                {MOCK_HISTORY.map(rec => (
-                  <div key={rec.id} className="flex items-center gap-4 p-4 bg-gray-900 border border-gray-800 rounded-xl hover:border-gray-700 transition-colors">
-                    <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-indigo-600 to-violet-700 flex items-center justify-center text-lg flex-shrink-0">
-                      🎙
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-gray-300 text-xs truncate">{rec.scriptPreview}</p>
-                      <div className="flex items-center gap-3 mt-1">
-                        <span className="text-gray-500 text-xs">{rec.voiceName}</span>
-                        <span className="text-gray-700 text-xs">·</span>
-                        <span className="text-gray-500 text-xs">{rec.duration}</span>
-                        <span className="text-gray-700 text-xs">·</span>
-                        <span className="text-gray-600 text-xs">{rec.date}</span>
+              {historyLoading && (
+                <div className="flex items-center justify-center py-10 gap-2 text-gray-500 text-sm">
+                  <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                  Loading history...
+                </div>
+              )}
+
+              {historyError && (
+                <div className="p-4 rounded-xl bg-red-900/30 border border-red-700/50 flex items-center justify-between">
+                  <p className="text-red-300 text-sm">{historyError}</p>
+                  <button onClick={() => void fetchHistory()} className="text-red-200 hover:text-white text-xs underline">Retry</button>
+                </div>
+              )}
+
+              {!historyLoading && !historyError && history.length === 0 && (
+                <div className="flex flex-col items-center justify-center py-16 text-center">
+                  <div className="text-3xl mb-2">🎙</div>
+                  <p className="text-gray-400 text-sm font-medium">No voiceovers yet</p>
+                  <p className="text-gray-600 text-xs mt-1">Generate your first voiceover from the script panel</p>
+                </div>
+              )}
+
+              {history.length > 0 && (
+                <div className="space-y-3">
+                  {history.map(rec => (
+                    <div key={rec.id} className="flex items-center gap-4 p-4 bg-gray-900 border border-gray-800 rounded-xl hover:border-gray-700 transition-colors">
+                      <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-indigo-600 to-violet-700 flex items-center justify-center text-lg flex-shrink-0">
+                        🎙
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-gray-300 text-xs truncate">{rec.scriptPreview}</p>
+                        <div className="flex items-center gap-3 mt-1">
+                          <span className="text-gray-500 text-xs">{rec.voiceName}</span>
+                          <span className="text-gray-700 text-xs">·</span>
+                          <span className="text-gray-500 text-xs">{rec.charCount} chars</span>
+                          <span className="text-gray-700 text-xs">·</span>
+                          <span className="text-gray-600 text-xs">{rec.date}</span>
+                        </div>
                       </div>
                     </div>
-                    <button className="px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-indigo-600 text-gray-400 hover:text-white text-xs transition-colors flex-shrink-0">
-                      Re-download
-                    </button>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -805,6 +899,9 @@ export default function VoiceoverStudioPage() {
               <button onClick={() => setShowApiPanel(false)} className="text-gray-500 hover:text-white transition-colors">✕</button>
             </div>
             <div className="p-5 space-y-4 flex-1 overflow-y-auto">
+              <p className="text-amber-300 text-xs bg-amber-900/20 border border-amber-800/40 rounded-lg p-3">
+                API keys are configured in Settings → AI Assistants. Currently only ElevenLabs is wired up.
+              </p>
               <div>
                 <label className="text-gray-400 text-xs block mb-1.5">Voice API Provider</label>
                 <select value={apiProvider} onChange={e => setApiProvider(e.target.value)}
@@ -822,29 +919,6 @@ export default function VoiceoverStudioPage() {
                   className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-indigo-500"
                 />
               </div>
-              {apiTestResult === 'ok' && (
-                <div className="p-3 rounded-lg bg-emerald-950/40 border border-emerald-800/40 text-emerald-400 text-sm">
-                  Connection successful
-                </div>
-              )}
-              {apiTestResult === 'fail' && (
-                <div className="p-3 rounded-lg bg-red-950/40 border border-red-800/40 text-red-400 text-sm">
-                  Connection failed — check your API key
-                </div>
-              )}
-              <button
-                onClick={async () => {
-                  setApiTesting(true)
-                  setApiTestResult(null)
-                  await new Promise(r => setTimeout(r, 1000))
-                  setApiTestResult(apiKey.length > 10 ? 'ok' : 'fail')
-                  setApiTesting(false)
-                }}
-                disabled={apiTesting || !apiKey}
-                className="w-full py-2 rounded-lg bg-gray-800 hover:bg-gray-700 disabled:opacity-50 text-gray-300 text-sm transition-colors"
-              >
-                {apiTesting ? 'Testing...' : 'Test Connection'}
-              </button>
               <button className="w-full py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm transition-colors">
                 Save Settings
               </button>
@@ -862,19 +936,9 @@ export default function VoiceoverStudioPage() {
               <h2 className="text-white font-semibold">Clone a Voice</h2>
               <button onClick={() => setShowCloneModal(false)} className="text-gray-500 hover:text-white transition-colors">✕</button>
             </div>
-            <p className="text-gray-400 text-sm">Upload at least 30 seconds of clean audio to create a voice clone.</p>
-            <div>
-              <label className="text-gray-400 text-xs block mb-1.5">Clone Name</label>
-              <input placeholder="My Voice Clone" className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-indigo-500" />
-            </div>
-            <div className="border-2 border-dashed border-gray-700 rounded-xl p-6 text-center hover:border-indigo-600 transition-colors cursor-pointer">
-              <div className="text-2xl mb-2">🎤</div>
-              <p className="text-gray-400 text-sm">Drop audio files here or click to upload</p>
-              <p className="text-gray-600 text-xs mt-1">MP3, WAV, M4A — min 30 seconds</p>
-            </div>
+            <p className="text-gray-400 text-sm">Voice cloning is not yet wired up. This will support uploading clean audio (≥ 30 s) once the cloning endpoint ships.</p>
             <div className="flex gap-2">
-              <button className="flex-1 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm transition-colors">Start Cloning</button>
-              <button onClick={() => setShowCloneModal(false)} className="flex-1 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm transition-colors">Cancel</button>
+              <button onClick={() => setShowCloneModal(false)} className="flex-1 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm transition-colors">Close</button>
             </div>
           </div>
         </div>

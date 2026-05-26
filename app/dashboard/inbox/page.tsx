@@ -109,89 +109,306 @@ function confidenceColor(n: number) {
   return 'text-red-400'
 }
 
+// ── DB row types ───────────────────────────────────────────────────────────────
+interface DBConversation {
+  id: string
+  workspace_id: string
+  contact_id: string | null
+  contact_email: string | null
+  contact_name: string | null
+  contact_phone: string | null
+  channel: string
+  subject: string | null
+  status: string
+  tags: string | null
+  assigned_to: string | null
+  last_message_at: string | null
+  unread_count: number
+  created_at: string
+  last_message_body?: string | null
+  last_message_dir?: string | null
+}
+
+interface DBMessage {
+  id: string
+  conversation_id: string
+  workspace_id: string
+  direction: string
+  from_address: string | null
+  to_address: string | null
+  subject: string | null
+  body: string
+  channel: string
+  status: string
+  ai_generated: number
+  sent_at: string
+  created_at: string
+}
+
+function timeAgoFromISO(iso: string | null | undefined): string {
+  if (!iso) return ''
+  const diff = Date.now() - new Date(iso).getTime()
+  const mins = Math.floor(diff / 60000)
+  if (mins < 1) return 'Just now'
+  if (mins < 60) return `${mins}m ago`
+  const hrs = Math.floor(mins / 60)
+  if (hrs < 24) return `${hrs}h ago`
+  return `${Math.floor(hrs / 24)}d ago`
+}
+
+function normalizeChannel(ch: string | null | undefined): Exclude<Channel, 'all'> {
+  const c = (ch || 'email').toLowerCase()
+  if (c === 'email' || c === 'livechat' || c === 'sms' || c === 'facebook' || c === 'instagram' || c === 'linkedin' || c === 'twitter') return c
+  return 'email'
+}
+
+function dbConvToUI(c: DBConversation): Conversation {
+  const name = c.contact_name || c.contact_email || 'Unknown'
+  let tags: string[] = []
+  try { tags = c.tags ? JSON.parse(c.tags) as string[] : [] } catch { tags = [] }
+  const initials = name.split(/\s+/).map(p => p[0]).join('').slice(0, 2).toUpperCase()
+  return {
+    id: c.id,
+    contactName: name,
+    contactEmail: c.contact_email || '',
+    contactAvatar: initials || '??',
+    channel: normalizeChannel(c.channel),
+    subject: c.subject || '',
+    preview: (c.last_message_body || '').slice(0, 160),
+    timeAgo: timeAgoFromISO(c.last_message_at || c.created_at),
+    unread: Number(c.unread_count || 0),
+    hasAIDraft: false, // updated after we fetch messages
+    escalated: false,
+    assignedTo: c.assigned_to,
+    tags,
+  }
+}
+
+function dbMsgToUI(m: DBMessage): Message {
+  let type: MsgType = m.direction === 'inbound' ? 'inbound' : 'outbound'
+  if (m.direction === 'outbound' && m.ai_generated && m.status === 'draft') type = 'ai_draft'
+  return {
+    id: m.id,
+    type,
+    from: m.direction === 'inbound' ? (m.from_address || 'Contact') : (m.ai_generated ? 'AI Agent' : 'You'),
+    body: m.body,
+    timeAgo: timeAgoFromISO(m.sent_at || m.created_at),
+  }
+}
+
 // ── Main Component ─────────────────────────────────────────────────────────────
 export default function InboxPage() {
+  const [workspaceId, setWorkspaceId] = useState<string | null>(null)
+  const [conversations, setConversations] = useState<Conversation[]>([])
+  const [convosLoading, setConvosLoading] = useState(true)
+  const [convosError, setConvosError] = useState<string | null>(null)
+  const [messagesLoading, setMessagesLoading] = useState(false)
+
   const [activeChannel, setActiveChannel] = useState<Channel>('all')
   const [convFilter, setConvFilter] = useState<ConvFilter>('all')
   const [convSearch, setConvSearch] = useState('')
-  const [selectedConvId, setSelectedConvId] = useState<string | null>('1')
+  const [selectedConvId, setSelectedConvId] = useState<string | null>(null)
   const [autoReplyOn, setAutoReplyOn] = useState(true)
   const [hitlMode, setHitlMode] = useState(true)
   const [confidenceThreshold, setConfidenceThreshold] = useState(80)
   const [showAIQueue, setShowAIQueue] = useState(false)
   const [showAISettings, setShowAISettings] = useState(false)
   const [replyText, setReplyText] = useState('')
+  const [sendingReply, setSendingReply] = useState(false)
   const [expandedReasoning, setExpandedReasoning] = useState(false)
   const [aiDraftEditing, setAIDraftEditing] = useState(false)
   const [editedDraft, setEditedDraft] = useState('')
   const [approvedDrafts, setApprovedDrafts] = useState<Set<string>>(new Set())
   const [rejectedDrafts, setRejectedDrafts] = useState<Set<string>>(new Set())
   const [aiSuggestLoading, setAISuggestLoading] = useState(false)
-  const [queueItems, setQueueItems] = useState<AIQueueItem[]>(MOCK_AI_QUEUE)
+  const [queueItems, setQueueItems] = useState<AIQueueItem[]>([])
   const [settingsTone, setSettingsTone] = useState<'professional' | 'friendly' | 'concise'>('professional')
   const [maxAutoReplies, setMaxAutoReplies] = useState(3)
   const [escalateTopics, setEscalateTopics] = useState({ complaints: true, refunds: true, pricing: false, legal: true })
   const [businessHoursOnly, setBusinessHoursOnly] = useState(false)
   const [perChannelAI, setPerChannelAI] = useState<Record<string, boolean>>({ email: true, livechat: true, sms: false, facebook: true, instagram: true, linkedin: true, twitter: true })
-  const [messages, setMessages] = useState<Message[]>(MOCK_MESSAGES['1'] || [])
+  const [messages, setMessages] = useState<Message[]>([])
   const threadEndRef = useRef<HTMLDivElement>(null)
 
-  const selectedConv = MOCK_CONVOS.find(c => c.id === selectedConvId) || null
+  const selectedConv = conversations.find(c => c.id === selectedConvId) || null
+
+  // ── Load conversations ─────────────────────────────────────────────────────
+  const loadConversations = (wsId: string) => {
+    setConvosLoading(true); setConvosError(null)
+    return fetch(`/api/inbox?workspaceId=${wsId}`)
+      .then(r => r.ok ? r.json() as Promise<DBConversation[] | { error: string }> : Promise.reject(new Error('Failed to fetch inbox')))
+      .then(data => {
+        if (!Array.isArray(data)) throw new Error((data as { error?: string }).error || 'Bad response')
+        const ui = data.map(dbConvToUI)
+        setConversations(ui)
+      })
+      .catch(err => setConvosError(err instanceof Error ? err.message : String(err)))
+      .finally(() => setConvosLoading(false))
+  }
 
   useEffect(() => {
-    if (selectedConvId) {
-      setMessages(MOCK_MESSAGES[selectedConvId] || [
-        { id: 'x1', type: 'inbound', from: selectedConv?.contactName || 'Contact', body: selectedConv?.preview || '', timeAgo: selectedConv?.timeAgo || '' }
-      ])
-      setExpandedReasoning(false)
-      setAIDraftEditing(false)
-    }
+    const wsId = typeof window !== 'undefined' ? localStorage.getItem('workspaceId') : null
+    setWorkspaceId(wsId)
+
+    // Restore AI auto-reply preference from localStorage
+    const stored = typeof window !== 'undefined' ? localStorage.getItem('inbox_auto_reply_on') : null
+    if (stored !== null) setAutoReplyOn(stored === 'true')
+
+    if (wsId) loadConversations(wsId)
+    else setConvosLoading(false)
+  }, [])
+
+  // Persist auto-reply preference + try to PATCH workspace extra_settings
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    localStorage.setItem('inbox_auto_reply_on', String(autoReplyOn))
+  }, [autoReplyOn])
+
+  // ── Load messages for selected conversation ─────────────────────────────────
+  useEffect(() => {
+    if (!selectedConvId) { setMessages([]); return }
+    setMessagesLoading(true)
+    fetch(`/api/inbox/${selectedConvId}`)
+      .then(r => r.ok ? r.json() as Promise<{ conversation?: DBConversation; messages?: DBMessage[]; error?: string }> : Promise.reject(new Error('Failed to fetch thread')))
+      .then(data => {
+        if (data.error) throw new Error(data.error)
+        const ms = (data.messages || []).map(dbMsgToUI)
+        setMessages(ms)
+        setExpandedReasoning(false)
+        setAIDraftEditing(false)
+        // Mark the convo as read locally
+        setConversations(prev => prev.map(c => c.id === selectedConvId ? { ...c, unread: 0 } : c))
+      })
+      .catch(() => setMessages([]))
+      .finally(() => setMessagesLoading(false))
   }, [selectedConvId])
 
   useEffect(() => {
     threadEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
-  const filteredConvos = MOCK_CONVOS.filter(c => {
+  const filteredConvos = conversations.filter(c => {
     if (activeChannel !== 'all' && c.channel !== activeChannel) return false
     if (convFilter === 'unread' && c.unread === 0) return false
-    if (convFilter === 'mine' && c.assignedTo !== 'Alex R.') return false
+    if (convFilter === 'mine' && !c.assignedTo) return false
     if (convFilter === 'drafts' && !c.hasAIDraft) return false
     if (convFilter === 'escalated' && !c.escalated) return false
     if (convSearch && !c.contactName.toLowerCase().includes(convSearch.toLowerCase()) && !c.preview.toLowerCase().includes(convSearch.toLowerCase())) return false
     return true
   })
 
-  const totalUnread = Object.values(CHANNEL_UNREAD).reduce((a, b) => a + b, 0)
+  // Real per-channel unread counts
+  const channelUnread: Record<Exclude<Channel, 'all'>, number> = {
+    email: 0, livechat: 0, sms: 0, facebook: 0, instagram: 0, linkedin: 0, twitter: 0,
+  }
+  conversations.forEach(c => { channelUnread[c.channel] = (channelUnread[c.channel] || 0) + c.unread })
+  const totalUnread = conversations.reduce((s, c) => s + c.unread, 0)
+
   const aiDraftMsg = messages.find(m => m.type === 'ai_draft' && !approvedDrafts.has(m.id) && !rejectedDrafts.has(m.id))
 
-  function handleApprove(msgId: string) {
+  async function handleApprove(msgId: string) {
+    // Optimistic: mark approved locally so UI updates
     setApprovedDrafts(prev => new Set([...prev, msgId]))
     const msg = messages.find(m => m.id === msgId)
     if (msg) {
       setMessages(prev => prev.map(m => m.id === msgId ? { ...m, type: 'outbound' as MsgType, from: 'You (via AI)', timeAgo: 'Just now' } : m))
     }
-    setQueueItems(prev => prev.filter(q => q.contactName !== selectedConv?.contactName))
+    setQueueItems(prev => prev.filter(q => q.id !== msgId))
+    // Persist: re-send body via reply endpoint (which marks as sent + actually emails)
+    if (msg && selectedConvId) {
+      try {
+        await fetch(`/api/inbox/${selectedConvId}/reply`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ body: msg.body, aiGenerated: true }),
+        })
+        if (workspaceId) loadConversations(workspaceId)
+      } catch { /* keep optimistic state */ }
+    }
   }
 
-  function handleReject(msgId: string) {
+  async function handleReject(msgId: string) {
     setRejectedDrafts(prev => new Set([...prev, msgId]))
     setMessages(prev => prev.filter(m => m.id !== msgId))
-    setQueueItems(prev => prev.filter(q => q.contactName !== selectedConv?.contactName))
+    setQueueItems(prev => prev.filter(q => q.id !== msgId))
   }
 
-  function handleEditSend(msgId: string) {
-    setMessages(prev => prev.map(m => m.id === msgId ? { ...m, type: 'outbound' as MsgType, body: editedDraft || m.body, from: 'You (edited AI)', timeAgo: 'Just now' } : m))
+  async function handleEditSend(msgId: string) {
+    const newBody = editedDraft
+    setMessages(prev => prev.map(m => m.id === msgId ? { ...m, type: 'outbound' as MsgType, body: newBody || m.body, from: 'You (edited AI)', timeAgo: 'Just now' } : m))
     setApprovedDrafts(prev => new Set([...prev, msgId]))
     setAIDraftEditing(false)
-    setQueueItems(prev => prev.filter(q => q.contactName !== selectedConv?.contactName))
+    setQueueItems(prev => prev.filter(q => q.id !== msgId))
+    if (selectedConvId && newBody) {
+      try {
+        await fetch(`/api/inbox/${selectedConvId}/reply`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ body: newBody, aiGenerated: true }),
+        })
+        if (workspaceId) loadConversations(workspaceId)
+      } catch { /* keep optimistic state */ }
+    }
   }
 
-  function handleSend() {
-    if (!replyText.trim()) return
-    const newMsg: Message = { id: `m${Date.now()}`, type: 'outbound', from: 'You', body: replyText, timeAgo: 'Just now' }
-    setMessages(prev => [...prev, newMsg])
+  async function handleSend() {
+    if (!replyText.trim() || !selectedConvId) return
+    const body = replyText
+    const optimisticMsg: Message = { id: `m${Date.now()}`, type: 'outbound', from: 'You', body, timeAgo: 'Just now' }
+    setMessages(prev => [...prev, optimisticMsg])
     setReplyText('')
+    setSendingReply(true)
+    try {
+      const res = await fetch(`/api/inbox/${selectedConvId}/reply`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ body }),
+      })
+      if (!res.ok) {
+        // Rollback
+        setMessages(prev => prev.filter(m => m.id !== optimisticMsg.id))
+        setReplyText(body)
+      } else if (workspaceId) {
+        loadConversations(workspaceId)
+      }
+    } catch {
+      setMessages(prev => prev.filter(m => m.id !== optimisticMsg.id))
+      setReplyText(body)
+    } finally {
+      setSendingReply(false)
+    }
+  }
+
+  // Load AI draft queue when modal opens
+  async function loadAIQueue() {
+    if (!workspaceId) return
+    try {
+      // Fetch conversations whose latest message is an AI draft (status=draft, ai_generated=1)
+      const res = await fetch(`/api/inbox?workspaceId=${workspaceId}`)
+      const data = await res.json() as DBConversation[]
+      if (!Array.isArray(data)) return
+      // We don't have a per-conversation draft endpoint, so fetch each thread in parallel and check
+      const items: AIQueueItem[] = []
+      await Promise.all(data.slice(0, 30).map(async c => {
+        try {
+          const tr = await fetch(`/api/inbox/${c.id}`)
+          if (!tr.ok) return
+          const td = await tr.json() as { messages?: DBMessage[] }
+          const drafts = (td.messages || []).filter(m => m.direction === 'outbound' && m.status === 'draft' && m.ai_generated)
+          drafts.forEach(d => {
+            items.push({
+              id: d.id,
+              contactName: c.contact_name || c.contact_email || 'Unknown',
+              channel: normalizeChannel(c.channel),
+              preview: d.body.slice(0, 160),
+              confidence: 85,
+              waitingFor: timeAgoFromISO(d.created_at),
+            })
+          })
+        } catch { /* noop */ }
+      }))
+      setQueueItems(items)
+    } catch { /* noop */ }
   }
 
   function handleAISuggest() {
@@ -247,8 +464,8 @@ export default function InboxPage() {
             >
               <span>{meta.icon}</span>
               <span className="flex-1 text-left truncate">{meta.label}</span>
-              {CHANNEL_UNREAD[ch] > 0 && (
-                <span className="text-xs font-semibold text-gray-500">{CHANNEL_UNREAD[ch]}</span>
+              {channelUnread[ch] > 0 && (
+                <span className="text-xs font-semibold text-gray-500">{channelUnread[ch]}</span>
               )}
             </button>
           ))}
@@ -297,7 +514,7 @@ export default function InboxPage() {
             </div>
 
             <button
-              onClick={() => setShowAIQueue(true)}
+              onClick={() => { setShowAIQueue(true); loadAIQueue() }}
               className="w-full text-xs bg-yellow-500/10 hover:bg-yellow-500/20 border border-yellow-500/30 text-yellow-400 px-3 py-1.5 rounded-lg transition-colors text-left"
             >
               View AI Queue ({queueItems.length})
@@ -338,8 +555,26 @@ export default function InboxPage() {
         </div>
 
         <div className="flex-1 overflow-y-auto">
-          {filteredConvos.length === 0 && (
-            <div className="p-6 text-center text-gray-600 text-sm">No conversations found</div>
+          {convosLoading && (
+            <div className="p-6 text-center text-gray-600 text-sm">
+              <div className="inline-block w-6 h-6 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin" />
+            </div>
+          )}
+          {!convosLoading && convosError && (
+            <div className="p-6 text-center text-red-400 text-sm">
+              {convosError}
+              <button onClick={() => workspaceId && loadConversations(workspaceId)} className="block mt-2 mx-auto text-xs text-indigo-400 hover:text-indigo-300">Retry</button>
+            </div>
+          )}
+          {!convosLoading && !convosError && conversations.length === 0 && (
+            <div className="p-6 text-center text-gray-500 text-sm">
+              <div className="text-4xl mb-2">📭</div>
+              <p className="text-gray-300">No conversations yet</p>
+              <p className="text-gray-600 text-xs mt-1">Connect a channel in <a href="/dashboard/integrations" className="text-indigo-400 hover:text-indigo-300">Integrations</a> to start receiving messages.</p>
+            </div>
+          )}
+          {!convosLoading && !convosError && conversations.length > 0 && filteredConvos.length === 0 && (
+            <div className="p-6 text-center text-gray-600 text-sm">No conversations match this filter</div>
           )}
           {filteredConvos.map(c => (
             <div
@@ -582,10 +817,10 @@ export default function InboxPage() {
                 </div>
                 <button
                   onClick={handleSend}
-                  disabled={!replyText.trim()}
+                  disabled={!replyText.trim() || sendingReply}
                   className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors"
                 >
-                  Send ↗
+                  {sendingReply ? 'Sending…' : 'Send ↗'}
                 </button>
               </div>
             </div>

@@ -327,6 +327,10 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const [notifTooltip, setNotifTooltip] = useState(false)
   const [userMenuOpen, setUserMenuOpen] = useState(false)
   const [cmdPaletteOpen, setCmdPaletteOpen] = useState(false)
+  const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false)
+  const [workspaces, setWorkspaces] = useState<Array<{ id: string; name: string }>>([])
+  const [notifications, setNotifications] = useState<Array<{ id: string; type: string; title: string; body?: string; link?: string; severity: string; read: boolean; created_at: string }>>([])
+  const [unreadCount, setUnreadCount] = useState(0)
 
   // Cmd-K / Ctrl-K shortcut
   useEffect(() => {
@@ -349,6 +353,66 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     setBusinessName(localStorage.getItem('businessName') || '')
     setUserName(localStorage.getItem('userName') || '')
   }, [])
+
+  // Load list of workspaces this user owns (for the switcher)
+  const loadWorkspaces = useCallback(async () => {
+    try {
+      const me = await fetch('/api/auth/me').then(r => r.json())
+      if (!me?.user?.id) return
+      const res = await fetch('/api/workspaces')
+      const list = await res.json() as Array<{ id: string; name: string; user_id?: string }>
+      // Filter to workspaces owned by current user
+      const mine = list.filter(w => !w.user_id || w.user_id === me.user.id)
+      setWorkspaces(mine.length ? mine : list)
+    } catch { /* ignore */ }
+  }, [])
+
+  useEffect(() => { loadWorkspaces() }, [loadWorkspaces])
+
+  // Switch active workspace
+  const switchWorkspace = (id: string, name: string) => {
+    localStorage.setItem('workspaceId', id)
+    localStorage.setItem('businessName', name)
+    setBusinessName(name)
+    setWorkspaceMenuOpen(false)
+    // Force-refresh data on the current page
+    router.refresh()
+    // Hard reload to clear in-memory state cleanly across pages
+    window.location.reload()
+  }
+
+  // Notification bell — poll /api/notifications every 30s
+  const loadNotifications = useCallback(async () => {
+    const wid = localStorage.getItem('workspaceId')
+    if (!wid) return
+    try {
+      const res = await fetch(`/api/notifications?workspaceId=${wid}`)
+      if (!res.ok) return
+      const data = await res.json()
+      setNotifications(data.items || [])
+      setUnreadCount(data.unreadCount || 0)
+    } catch { /* ignore */ }
+  }, [])
+
+  useEffect(() => {
+    loadNotifications()
+    const interval = setInterval(loadNotifications, 30000)
+    return () => clearInterval(interval)
+  }, [loadNotifications])
+
+  const markAllNotifsRead = async () => {
+    const wid = localStorage.getItem('workspaceId')
+    if (!wid) return
+    try {
+      await fetch(`/api/notifications?workspaceId=${wid}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ markAllRead: true }),
+      })
+      setUnreadCount(0)
+      setNotifications(prev => prev.map(n => ({ ...n, read: true })))
+    } catch { /* ignore */ }
+  }
 
   const loadRuns = useCallback(async () => {
     const wid = localStorage.getItem('workspaceId')
@@ -418,13 +482,56 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
           {/* Sticky desktop top header */}
           <header className="hidden lg:flex bg-gray-950 border-b border-gray-800 sticky top-0 z-10 h-12 px-6 items-center justify-between">
-            {/* Left: page title + workspace chip */}
+            {/* Left: page title + workspace switcher */}
             <div className="flex items-center gap-3 min-w-0">
               <h2 className="text-white font-semibold text-sm">{getPageTitle(pathname)}</h2>
               {businessName && (
-                <span className="px-2 py-0.5 rounded-full bg-gray-800 border border-gray-700 text-gray-300 text-xs truncate max-w-[140px]">
-                  {businessName}
-                </span>
+                <div className="relative">
+                  <button
+                    onClick={() => { setWorkspaceMenuOpen(v => !v); setUserMenuOpen(false); setNotifTooltip(false) }}
+                    className="px-2 py-0.5 rounded-full bg-gray-800 border border-gray-700 text-gray-300 hover:text-white hover:border-gray-600 text-xs truncate max-w-[180px] flex items-center gap-1"
+                    aria-label="Switch workspace">
+                    <span className="truncate">{businessName}</span>
+                    <svg className="w-3 h-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" /></svg>
+                  </button>
+                  {workspaceMenuOpen && (
+                    <div className="absolute left-0 top-8 bg-gray-900 border border-gray-700 rounded-xl shadow-xl py-1 min-w-[240px] z-30">
+                      <div className="px-3 py-2 border-b border-gray-800">
+                        <p className="text-gray-500 text-[10px] uppercase tracking-wider">Your Workspaces</p>
+                      </div>
+                      <div className="max-h-60 overflow-y-auto py-1">
+                        {workspaces.length === 0 ? (
+                          <div className="px-3 py-2 text-gray-500 text-xs">No workspaces found</div>
+                        ) : workspaces.map(w => (
+                          <button
+                            key={w.id}
+                            onClick={() => switchWorkspace(w.id, w.name)}
+                            className={`w-full text-left px-3 py-2 text-xs hover:bg-gray-800 flex items-center gap-2 ${
+                              localStorage.getItem('workspaceId') === w.id ? 'bg-indigo-950 text-indigo-300' : 'text-gray-300'
+                            }`}>
+                            <div className={`w-2 h-2 rounded-full ${localStorage.getItem('workspaceId') === w.id ? 'bg-indigo-400' : 'bg-gray-600'}`} />
+                            <span className="truncate flex-1">{w.name}</span>
+                            {localStorage.getItem('workspaceId') === w.id && <span className="text-[10px] text-indigo-400">Current</span>}
+                          </button>
+                        ))}
+                      </div>
+                      <div className="border-t border-gray-800 py-1">
+                        <Link
+                          href="/dashboard/onboarding"
+                          onClick={() => setWorkspaceMenuOpen(false)}
+                          className="block px-3 py-2 text-xs text-gray-300 hover:text-white hover:bg-gray-800">
+                          + Create new workspace
+                        </Link>
+                        <Link
+                          href="/dashboard/agency"
+                          onClick={() => setWorkspaceMenuOpen(false)}
+                          className="block px-3 py-2 text-xs text-gray-400 hover:text-white hover:bg-gray-800">
+                          Manage all clients →
+                        </Link>
+                      </div>
+                    </div>
+                  )}
+                </div>
               )}
             </div>
 
@@ -442,14 +549,89 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               {/* Notification bell */}
               <div className="relative">
                 <button
-                  onClick={() => { setNotifTooltip(v => !v); setUserMenuOpen(false) }}
-                  className="w-8 h-8 flex items-center justify-center rounded-lg text-gray-400 hover:text-white hover:bg-gray-800 transition-colors text-base"
+                  onClick={() => { setNotifTooltip(v => !v); setUserMenuOpen(false); setWorkspaceMenuOpen(false) }}
+                  className="w-8 h-8 flex items-center justify-center rounded-lg text-gray-400 hover:text-white hover:bg-gray-800 transition-colors text-base relative"
                   aria-label="Notifications">
                   🔔
+                  {unreadCount > 0 && (
+                    <span className="absolute -top-0.5 -right-0.5 min-w-[16px] h-[16px] px-1 rounded-full bg-red-500 text-white text-[10px] font-bold flex items-center justify-center leading-none">
+                      {unreadCount > 9 ? '9+' : unreadCount}
+                    </span>
+                  )}
                 </button>
                 {notifTooltip && (
-                  <div className="absolute right-0 top-10 bg-gray-900 border border-gray-700 rounded-xl shadow-xl px-4 py-3 text-sm text-gray-300 whitespace-nowrap z-20">
-                    No new notifications
+                  <div className="absolute right-0 top-10 bg-gray-900 border border-gray-700 rounded-xl shadow-xl w-80 z-30">
+                    <div className="flex items-center justify-between px-4 py-2 border-b border-gray-800">
+                      <p className="text-white text-xs font-medium">Notifications</p>
+                      {unreadCount > 0 && (
+                        <button
+                          onClick={markAllNotifsRead}
+                          className="text-[10px] text-indigo-400 hover:text-indigo-300">
+                          Mark all read
+                        </button>
+                      )}
+                    </div>
+                    <div className="max-h-96 overflow-y-auto">
+                      {notifications.length === 0 ? (
+                        <div className="px-4 py-8 text-center text-gray-500 text-xs">
+                          <div className="text-2xl mb-1">🌙</div>
+                          All caught up
+                        </div>
+                      ) : notifications.map(n => {
+                        const sevColors: Record<string, string> = {
+                          info: 'border-l-indigo-500',
+                          success: 'border-l-green-500',
+                          warning: 'border-l-yellow-500',
+                          error: 'border-l-red-500',
+                        }
+                        const sevIcons: Record<string, string> = {
+                          info: 'ℹ️', success: '✅', warning: '⚠️', error: '❌',
+                        }
+                        const ago = (iso: string) => {
+                          const diff = Date.now() - new Date(iso).getTime()
+                          if (diff < 60_000) return 'just now'
+                          if (diff < 3600_000) return `${Math.floor(diff / 60_000)}m ago`
+                          if (diff < 86400_000) return `${Math.floor(diff / 3600_000)}h ago`
+                          return `${Math.floor(diff / 86400_000)}d ago`
+                        }
+                        const Content = (
+                          <>
+                            <div className="flex items-start gap-2">
+                              <span className="text-sm flex-shrink-0">{sevIcons[n.severity] || 'ℹ️'}</span>
+                              <div className="flex-1 min-w-0">
+                                <p className={`text-xs leading-snug ${n.read ? 'text-gray-400' : 'text-white font-medium'}`}>{n.title}</p>
+                                {n.body && <p className="text-[11px] text-gray-500 mt-0.5 line-clamp-2">{n.body}</p>}
+                                <p className="text-[10px] text-gray-600 mt-1">{ago(n.created_at)}</p>
+                              </div>
+                              {!n.read && <span className="w-2 h-2 rounded-full bg-indigo-500 mt-1 flex-shrink-0" />}
+                            </div>
+                          </>
+                        )
+                        return n.link ? (
+                          <Link
+                            key={n.id}
+                            href={n.link}
+                            onClick={() => setNotifTooltip(false)}
+                            className={`block px-4 py-3 hover:bg-gray-800 border-l-2 ${sevColors[n.severity] || sevColors.info}`}>
+                            {Content}
+                          </Link>
+                        ) : (
+                          <div
+                            key={n.id}
+                            className={`px-4 py-3 border-l-2 ${sevColors[n.severity] || sevColors.info}`}>
+                            {Content}
+                          </div>
+                        )
+                      })}
+                    </div>
+                    {notifications.length > 0 && (
+                      <Link
+                        href="/dashboard/activity"
+                        onClick={() => setNotifTooltip(false)}
+                        className="block px-4 py-2 border-t border-gray-800 text-xs text-indigo-400 hover:text-indigo-300 text-center">
+                        View all activity →
+                      </Link>
+                    )}
                   </div>
                 )}
               </div>

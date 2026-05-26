@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -48,79 +48,111 @@ interface StrategyCard {
   channels: string[]
 }
 
-// ─── Mock Data ────────────────────────────────────────────────────────────────
-
-const MOCK_STRATEGY_CARDS: Record<Timeframe, StrategyCard> = {
-  daily: {
-    id: 'strat-d-1',
-    timeframe: 'daily',
-    version: 4,
-    generatedAt: '2026-05-26T08:00:00Z',
-    performanceScore: 82,
-    positioning: 'Focus on quick-win engagement tactics — respond to comments within 2h, post one story, send one DM follow-up sequence.',
-    objective: 'Generate 3 qualified leads today by engaging top-of-funnel content and activating the email nurture sequence for this morning\'s webinar sign-ups.',
-    kpis: [
-      { metric: 'New Leads', target: 3, actual: 2, unit: '' },
-      { metric: 'Story Views', target: 500, actual: 612, unit: '' },
-      { metric: 'Email Opens', target: 35, actual: 41, unit: '%' },
-      { metric: 'DM Replies', target: 10, actual: 7, unit: '' },
-    ],
-    tactics: [
-      'Post 1 educational carousel on Instagram by 10 AM',
-      'Send follow-up DM to 20 webinar registrants',
-      'Reply to all LinkedIn comments within 2 hours',
-      'Publish one short-form video (Reels/TikTok) at 12 PM',
-      'Send a promotional email to warm leads at 3 PM',
-    ],
-    channels: ['Instagram', 'LinkedIn', 'Email', 'TikTok'],
-  },
-  weekly: {
-    id: 'strat-w-1',
-    timeframe: 'weekly',
-    version: 7,
-    generatedAt: '2026-05-20T09:00:00Z',
-    performanceScore: 74,
-    positioning: 'Establish thought leadership this week with two long-form posts, one live session, and a feature spotlight campaign driving free trial sign-ups.',
-    objective: 'Add 50 newsletter subscribers and 15 trial activations this week through content + retargeting ads running Mon-Fri.',
-    kpis: [
-      { metric: 'Newsletter Subs', target: 50, actual: 38, unit: '' },
-      { metric: 'Trial Activations', target: 15, actual: 9, unit: '' },
-      { metric: 'Ad Spend ROI', target: 3.5, actual: 2.8, unit: 'x' },
-      { metric: 'Content Reach', target: 25000, actual: 31200, unit: '' },
-    ],
-    tactics: [
-      'Publish 2 long-form LinkedIn articles (Mon + Thu)',
-      'Run retargeting ads to website visitors (budget $500)',
-      'Host a 30-min live Q&A on Instagram Thursday 6 PM',
-      'Send 3-email nurture sequence to cold leads',
-      'Publish 4 short-form videos across platforms',
-    ],
-    channels: ['LinkedIn', 'Instagram', 'Paid Ads', 'Email'],
-  },
-  monthly: {
-    id: 'strat-m-1',
-    timeframe: 'monthly',
-    version: 2,
-    generatedAt: '2026-05-01T09:00:00Z',
-    performanceScore: 91,
-    positioning: 'June is acquisition month — push the annual plan promotion, double ad spend on highest-converting audiences, and launch the partner referral program.',
-    objective: 'Achieve $28K MRR by June 30 through 120 new paid subscriptions and a 15% reduction in churn via the new onboarding sequence.',
-    kpis: [
-      { metric: 'New Paid Subs', target: 120, actual: 87, unit: '' },
-      { metric: 'MRR Growth', target: 28000, actual: 22400, unit: '$' },
-      { metric: 'Churn Rate', target: 3.5, actual: 4.1, unit: '%' },
-      { metric: 'CAC', target: 45, actual: 38, unit: '$' },
-    ],
-    tactics: [
-      'Launch annual plan promo (40% off for 72 hours) on June 3',
-      'Onboard 5 new affiliate partners this month',
-      'Run full-funnel paid campaign ($3K budget) June 1–15',
-      'Deploy new in-app onboarding flow on June 1',
-      'Publish 1 case study and 1 detailed guide per week',
-    ],
-    channels: ['Paid Ads', 'Email', 'Partnerships', 'In-App', 'Content'],
-  },
+interface ArtifactRow {
+  id: string
+  workspace_id: string
+  type: string
+  title: string
+  content_json: unknown
+  status: string
+  created_at: string
 }
+
+// ─── AI shape returned by /api/agents/strategy ─────────────────────────────────
+
+interface AIStrategy {
+  positioning?: string
+  uniqueValueProposition?: string
+  thirtyDayObjective?: string
+  icp?: {
+    demographics?: string
+    psychographics?: string
+    painPoints?: string[]
+    buyingTriggers?: string[]
+    objections?: string[]
+  }
+  contentPillars?: Array<{ name?: string; description?: string; topics?: string[] }>
+  kpis?: Array<{ metric: string; target: string; timeframe: string }>
+  channelStrategy?: Array<{ channel: string; frequency?: string; contentType?: string }>
+  // Optional metadata (we set this when saving locally)
+  _timeframe?: Timeframe
+}
+
+// ─── Default empty card ───────────────────────────────────────────────────────
+
+const EMPTY_CARD = (tf: Timeframe): StrategyCard => ({
+  id: `empty-${tf}`,
+  timeframe: tf,
+  version: 0,
+  generatedAt: new Date().toISOString(),
+  performanceScore: 0,
+  positioning: '',
+  objective: '',
+  kpis: [],
+  tactics: [],
+  channels: [],
+})
+
+// ─── Convert AI shape → display card ──────────────────────────────────────────
+
+function parseTargetNumber(target: string): { value: number; unit: string } {
+  if (!target) return { value: 0, unit: '' }
+  const trimmed = String(target).trim()
+  const m = trimmed.match(/^([$₹€£]?)\s*([0-9.,]+)\s*([a-zA-Z%]*)/)
+  if (!m) return { value: 0, unit: '' }
+  const prefix = m[1] || ''
+  const numStr = m[2].replace(/,/g, '')
+  const suffix = m[3] || ''
+  const value = parseFloat(numStr)
+  const unit = prefix || (suffix === '%' ? '%' : suffix === 'x' ? 'x' : suffix)
+  return { value: isNaN(value) ? 0 : value, unit }
+}
+
+function aiToCard(
+  artifact: ArtifactRow,
+  timeframe: Timeframe,
+  version: number,
+): StrategyCard {
+  const ai: AIStrategy =
+    typeof artifact.content_json === 'string'
+      ? JSON.parse(artifact.content_json)
+      : (artifact.content_json as AIStrategy) || {}
+
+  const kpis: KPI[] = (ai.kpis || []).slice(0, 6).map(k => {
+    const parsed = parseTargetNumber(k.target)
+    return {
+      metric: k.metric || '—',
+      target: parsed.value,
+      actual: 0,
+      unit: parsed.unit,
+    }
+  })
+
+  const tactics: string[] = []
+  ;(ai.contentPillars || []).forEach(p => {
+    if (p?.topics) tactics.push(...p.topics.slice(0, 2))
+  })
+  ;(ai.channelStrategy || []).forEach(c => {
+    if (c.channel) tactics.push(`${c.channel}: ${c.frequency || 'regular cadence'} ${c.contentType || ''}`.trim())
+  })
+
+  const channels = (ai.channelStrategy || []).map(c => c.channel).filter(Boolean)
+
+  return {
+    id: artifact.id,
+    timeframe,
+    version,
+    generatedAt: artifact.created_at,
+    performanceScore: 0,
+    positioning: ai.positioning || '',
+    objective: ai.thirtyDayObjective || ai.uniqueValueProposition || '',
+    kpis,
+    tactics: tactics.slice(0, 5),
+    channels: channels.slice(0, 6),
+  }
+}
+
+// ─── Mock projects (kept for now — no projects API exists) ────────────────────
 
 const MOCK_PROJECTS: StrategyProject[] = [
   {
@@ -166,45 +198,6 @@ const MOCK_PROJECTS: StrategyProject[] = [
       { metric: 'Revenue Recovered', target: 4000, actual: 0, unit: '$' },
     ],
   },
-  {
-    id: 'proj-4',
-    name: 'LinkedIn Thought Leadership',
-    description: 'Establish CEO as top voice in AI marketing niche.',
-    timeframe: 'monthly',
-    status: 'completed',
-    performanceScore: 95,
-    startDate: '2026-03-01',
-    team: ['James W.', 'Sarah K.'],
-    kpis: [
-      { metric: 'Post Impressions', target: 50000, actual: 73200, unit: '' },
-      { metric: 'Profile Views', target: 5000, actual: 6800, unit: '' },
-      { metric: 'Inbound Leads', target: 25, actual: 31, unit: '' },
-    ],
-  },
-  {
-    id: 'proj-5',
-    name: 'Daily Engagement System',
-    description: 'Build a repeatable daily content + reply system.',
-    timeframe: 'daily',
-    status: 'completed',
-    performanceScore: 89,
-    startDate: '2026-04-15',
-    team: ['Ava M.'],
-    kpis: [
-      { metric: 'Avg Daily Reach', target: 3000, actual: 3820, unit: '' },
-      { metric: 'Engagement Rate', target: 5, actual: 6.2, unit: '%' },
-    ],
-  },
-]
-
-const MOCK_HISTORY: StrategyVersion[] = [
-  { id: 'h-1', version: 7, timeframe: 'weekly', generatedAt: '2026-05-20T09:00:00Z', performanceScore: 74, summary: 'Thought leadership + trial activation push' },
-  { id: 'h-2', version: 6, timeframe: 'weekly', generatedAt: '2026-05-13T09:00:00Z', performanceScore: 68, summary: 'Content volume sprint, 4 posts/day' },
-  { id: 'h-3', version: 4, timeframe: 'daily', generatedAt: '2026-05-26T08:00:00Z', performanceScore: 82, summary: 'Lead gen focus, DM sequences' },
-  { id: 'h-4', version: 3, timeframe: 'daily', generatedAt: '2026-05-25T08:00:00Z', performanceScore: 77, summary: 'Story engagement + email opens' },
-  { id: 'h-5', version: 2, timeframe: 'monthly', generatedAt: '2026-05-01T09:00:00Z', performanceScore: 91, summary: 'Annual plan promo, acquisition month' },
-  { id: 'h-6', version: 1, timeframe: 'monthly', generatedAt: '2026-04-01T09:00:00Z', performanceScore: 83, summary: 'Q2 foundation — brand + SEO' },
-  { id: 'h-7', version: 5, timeframe: 'weekly', generatedAt: '2026-05-06T09:00:00Z', performanceScore: 71, summary: 'Ad spend ramp-up, retargeting focus' },
 ]
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -226,8 +219,8 @@ function scoreBg(score: number) {
 }
 
 function kpiStatus(kpi: KPI): 'green' | 'yellow' | 'red' {
+  if (!kpi.target) return 'yellow'
   const pct = kpi.actual / kpi.target
-  // For churn rate: lower is better
   const lowerIsBetter = kpi.metric.toLowerCase().includes('churn') || kpi.metric.toLowerCase().includes('cac')
   if (lowerIsBetter) {
     if (pct <= 1.05) return 'green'
@@ -257,6 +250,31 @@ const TF_LABELS: Record<Timeframe, string> = {
   monthly: 'Monthly',
 }
 
+function summarizeArtifact(artifact: ArtifactRow): string {
+  try {
+    const ai: AIStrategy =
+      typeof artifact.content_json === 'string'
+        ? JSON.parse(artifact.content_json)
+        : (artifact.content_json as AIStrategy)
+    return ai?.positioning?.slice(0, 80) || ai?.thirtyDayObjective?.slice(0, 80) || artifact.title || 'Marketing strategy'
+  } catch {
+    return artifact.title || 'Marketing strategy'
+  }
+}
+
+function detectTimeframe(artifact: ArtifactRow): Timeframe {
+  try {
+    const ai: AIStrategy =
+      typeof artifact.content_json === 'string'
+        ? JSON.parse(artifact.content_json)
+        : (artifact.content_json as AIStrategy)
+    if (ai?._timeframe && ['daily', 'weekly', 'monthly'].includes(ai._timeframe)) {
+      return ai._timeframe
+    }
+  } catch { /* ignore */ }
+  return 'weekly'
+}
+
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
 function SparkBar({ value, max, color }: { value: number; max: number; color: string }) {
@@ -277,10 +295,10 @@ function SparkBar({ value, max, color }: { value: number; max: number; color: st
 
 function KPICard({ kpi }: { kpi: KPI }) {
   const status = kpiStatus(kpi)
-  const pct = Math.min(Math.round((kpi.actual / kpi.target) * 100), 150)
+  const pct = kpi.target ? Math.min(Math.round((kpi.actual / kpi.target) * 100), 150) : 0
   const colorMap = {
     green: { bar: 'bg-green-500', text: 'text-green-400', badge: 'bg-green-900/40 border-green-800 text-green-300', label: 'On Track' },
-    yellow: { bar: 'bg-yellow-500', text: 'text-yellow-400', badge: 'bg-yellow-900/40 border-yellow-800 text-yellow-300', label: 'Lagging' },
+    yellow: { bar: 'bg-yellow-500', text: 'text-yellow-400', badge: 'bg-yellow-900/40 border-yellow-800 text-yellow-300', label: 'Pending' },
     red: { bar: 'bg-red-500', text: 'text-red-400', badge: 'bg-red-900/40 border-red-800 text-red-300', label: 'Missing' },
   }
   const c = colorMap[status]
@@ -300,7 +318,7 @@ function KPICard({ kpi }: { kpi: KPI }) {
           / {kpi.unit === '$' ? `$${kpi.target.toLocaleString()}` : `${kpi.target.toLocaleString()}${kpi.unit}`} target
         </span>
       </div>
-      <SparkBar value={kpi.actual} max={Math.max(kpi.target * 1.2, kpi.actual)} color={c.bar} />
+      <SparkBar value={kpi.actual} max={Math.max(kpi.target * 1.2, kpi.actual || 1)} color={c.bar} />
       <div className="flex items-center justify-between mt-2">
         <div className="w-full bg-gray-800 rounded-full h-1.5 mr-2">
           <div
@@ -434,9 +452,18 @@ function NewProjectModal({ onClose, onCreate }: { onClose: () => void; onCreate:
 
 export default function StrategyPage() {
   const router = useRouter()
+  const [workspaceId, setWorkspaceId] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState<Timeframe>('daily')
-  const [cards, setCards] = useState<Record<Timeframe, StrategyCard>>(MOCK_STRATEGY_CARDS)
+  const [cards, setCards] = useState<Record<Timeframe, StrategyCard | null>>({
+    daily: null,
+    weekly: null,
+    monthly: null,
+  })
+  const [allArtifacts, setAllArtifacts] = useState<ArtifactRow[]>([])
+  const [history, setHistory] = useState<StrategyVersion[]>([])
+  const [loading, setLoading] = useState(true)
   const [generating, setGenerating] = useState<Timeframe | null>(null)
+  const [genError, setGenError] = useState<string | null>(null)
   const [projects, setProjects] = useState<StrategyProject[]>(MOCK_PROJECTS)
   const [historyOpen, setHistoryOpen] = useState(false)
   const [showNewProject, setShowNewProject] = useState(false)
@@ -445,28 +472,105 @@ export default function StrategyPage() {
 
   useEffect(() => {
     const wid = localStorage.getItem('workspaceId')
-    if (!wid) router.push('/dashboard/onboarding')
+    if (!wid) {
+      router.push('/dashboard/onboarding')
+      return
+    }
+    setWorkspaceId(wid)
   }, [router])
 
+  // Load existing strategies on mount
+  const loadStrategies = useCallback(async (wid: string) => {
+    setLoading(true)
+    try {
+      const res = await fetch(`/api/artifacts?workspaceId=${wid}&type=strategy&limit=50`)
+      const rows: ArtifactRow[] = await res.json()
+      setAllArtifacts(rows)
+
+      // Build version history (most-recent first)
+      const tfCounters: Record<Timeframe, number> = { daily: 0, weekly: 0, monthly: 0 }
+      // Walk oldest→newest to assign incrementing version numbers
+      const reversed = [...rows].reverse()
+      const versionMap = new Map<string, number>()
+      const tfMap = new Map<string, Timeframe>()
+      for (const a of reversed) {
+        const tf = detectTimeframe(a)
+        tfMap.set(a.id, tf)
+        tfCounters[tf] += 1
+        versionMap.set(a.id, tfCounters[tf])
+      }
+
+      const newCards: Record<Timeframe, StrategyCard | null> = {
+        daily: null,
+        weekly: null,
+        monthly: null,
+      }
+      // Find latest per timeframe
+      for (const a of rows) {
+        const tf = tfMap.get(a.id) || 'weekly'
+        if (!newCards[tf]) {
+          newCards[tf] = aiToCard(a, tf, versionMap.get(a.id) || 1)
+        }
+      }
+      setCards(newCards)
+
+      // Build history list
+      const hist: StrategyVersion[] = rows.slice(0, 20).map(a => ({
+        id: a.id,
+        version: versionMap.get(a.id) || 1,
+        timeframe: tfMap.get(a.id) || 'weekly',
+        generatedAt: a.created_at,
+        performanceScore: 0,
+        summary: summarizeArtifact(a),
+      }))
+      setHistory(hist)
+    } catch (e) {
+      console.error('Failed to load strategies:', e)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (workspaceId) loadStrategies(workspaceId)
+  }, [workspaceId, loadStrategies])
+
   const generateStrategy = async (timeframe: Timeframe) => {
+    if (!workspaceId) return
     setGenerating(timeframe)
-    await new Promise(r => setTimeout(r, 1800))
-    setCards(prev => ({
-      ...prev,
-      [timeframe]: {
-        ...prev[timeframe],
-        version: prev[timeframe].version + 1,
-        generatedAt: new Date().toISOString(),
-        performanceScore: Math.floor(Math.random() * 20) + 75,
-      },
-    }))
-    setGenerating(null)
+    setGenError(null)
+    try {
+      const res = await fetch('/api/agents/strategy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspaceId, timeframe }),
+      })
+      const data = await res.json() as { strategy?: AIStrategy; artifactId?: string; error?: string }
+      if (data.error) {
+        setGenError(data.error)
+        return
+      }
+      // Reload everything to capture the new artifact + version numbering
+      await loadStrategies(workspaceId)
+      setActiveTab(timeframe)
+    } catch (e) {
+      setGenError(e instanceof Error ? e.message : 'Generation failed')
+    } finally {
+      setGenerating(null)
+    }
   }
 
   const restoreVersion = async (version: StrategyVersion) => {
     setRestoringId(version.id)
-    await new Promise(r => setTimeout(r, 800))
-    setRestoringId(null)
+    try {
+      const artifact = allArtifacts.find(a => a.id === version.id)
+      if (!artifact) return
+      const card = aiToCard(artifact, version.timeframe, version.version)
+      setCards(prev => ({ ...prev, [version.timeframe]: card }))
+      setActiveTab(version.timeframe)
+    } finally {
+      setRestoringId(null)
+    }
   }
 
   const kanbanCols: Array<{ key: StrategyProject['status']; label: string; color: string }> = [
@@ -483,8 +587,8 @@ export default function StrategyPage() {
     projects.filter(p => p.performanceScore > 0).reduce((a, p) => a + p.performanceScore, 0) /
     Math.max(projects.filter(p => p.performanceScore > 0).length, 1)
   )
-  const totalGenerated = Object.values(cards).reduce((a, c) => a + c.version, 0)
-  const roiTracked = '$142K'
+  const totalGenerated = allArtifacts.length
+  const roiTracked = '—'
 
   return (
     <div className="p-6 max-w-screen-xl mx-auto">
@@ -510,12 +614,20 @@ export default function StrategyPage() {
         </div>
       </div>
 
+      {/* Error banner */}
+      {genError && (
+        <div className="mb-4 px-4 py-3 rounded-lg bg-red-950 border border-red-800 text-red-300 text-sm flex items-center justify-between">
+          <span>⚠ {genError}</span>
+          <button onClick={() => setGenError(null)} className="text-red-400 hover:text-red-200">✕</button>
+        </div>
+      )}
+
       {/* Stats bar */}
       <div className="grid grid-cols-4 gap-4 mb-6">
         {[
           { label: 'Active Projects', value: activeCount, sub: 'in progress' },
-          { label: 'Avg Performance', value: `${avgScore}%`, sub: 'across projects' },
-          { label: 'Strategies Generated', value: totalGenerated, sub: 'this month' },
+          { label: 'Avg Performance', value: `${avgScore || 0}%`, sub: 'across projects' },
+          { label: 'Strategies Generated', value: totalGenerated, sub: 'all-time' },
           { label: 'ROI Tracked', value: roiTracked, sub: 'attributed revenue' },
         ].map(stat => (
           <div key={stat.label} className="bg-gray-900 border border-gray-800 rounded-xl p-4">
@@ -542,75 +654,111 @@ export default function StrategyPage() {
             ))}
           </div>
 
-          {/* Strategy card */}
-          <div className="bg-gray-900 border border-indigo-800 rounded-xl p-6 mb-6">
-            <div className="flex items-start justify-between mb-4">
-              <div>
-                <div className="flex items-center gap-2 mb-1">
-                  <h2 className="text-white font-semibold text-lg capitalize">{TF_LABELS[activeTab]} Strategy</h2>
-                  <span className="px-2 py-0.5 rounded bg-gray-800 text-gray-400 text-xs">v{activeCard.version}</span>
-                  <span className={`px-2.5 py-0.5 rounded-full text-xs font-semibold border ${scoreBg(activeCard.performanceScore)}`}>
-                    {activeCard.performanceScore}% score
-                  </span>
-                </div>
-                <p className="text-gray-500 text-xs">Last generated {formatDate(activeCard.generatedAt)}</p>
-              </div>
+          {/* Strategy card / loading / empty */}
+          {loading ? (
+            <div className="bg-gray-900 border border-gray-800 rounded-xl p-12 flex items-center justify-center gap-3 mb-6">
+              <div className="w-5 h-5 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+              <p className="text-gray-400 text-sm">Loading strategies...</p>
+            </div>
+          ) : !activeCard ? (
+            <div className="bg-gray-900 border border-indigo-800/40 rounded-xl p-10 text-center mb-6">
+              <div className="text-5xl mb-3">🧠</div>
+              <p className="text-white font-medium mb-2">No strategies yet — generate your first one</p>
+              <p className="text-gray-500 text-sm mb-5">Click below to have the AI Strategy Agent analyze your brand and build a {TF_LABELS[activeTab].toLowerCase()} marketing strategy.</p>
               <button
                 onClick={() => generateStrategy(activeTab)}
                 disabled={generating === activeTab}
-                className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-medium transition-colors flex items-center gap-2"
+                className="px-5 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-medium transition-colors inline-flex items-center gap-2"
               >
                 {generating === activeTab ? (
-                  <><div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" /> Generating...</>
+                  <><div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" /> Generating with Claude...</>
                 ) : (
                   `⚡ Generate ${TF_LABELS[activeTab]} Strategy`
                 )}
               </button>
             </div>
+          ) : (
+            <div className="bg-gray-900 border border-indigo-800 rounded-xl p-6 mb-6">
+              <div className="flex items-start justify-between mb-4">
+                <div>
+                  <div className="flex items-center gap-2 mb-1">
+                    <h2 className="text-white font-semibold text-lg capitalize">{TF_LABELS[activeTab]} Strategy</h2>
+                    <span className="px-2 py-0.5 rounded bg-gray-800 text-gray-400 text-xs">v{activeCard.version}</span>
+                    {activeCard.performanceScore > 0 && (
+                      <span className={`px-2.5 py-0.5 rounded-full text-xs font-semibold border ${scoreBg(activeCard.performanceScore)}`}>
+                        {activeCard.performanceScore}% score
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-gray-500 text-xs">Last generated {formatDate(activeCard.generatedAt)}</p>
+                </div>
+                <button
+                  onClick={() => generateStrategy(activeTab)}
+                  disabled={generating === activeTab}
+                  className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-medium transition-colors flex items-center gap-2"
+                >
+                  {generating === activeTab ? (
+                    <><div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" /> Generating with Claude...</>
+                  ) : (
+                    `⚡ Generate ${TF_LABELS[activeTab]} Strategy`
+                  )}
+                </button>
+              </div>
 
-            <div className="grid grid-cols-2 gap-4 mb-4">
-              <div>
-                <p className="text-gray-500 text-xs uppercase tracking-wide mb-1.5">Positioning</p>
-                <p className="text-gray-200 text-sm leading-relaxed">{activeCard.positioning}</p>
+              <div className="grid grid-cols-2 gap-4 mb-4">
+                <div>
+                  <p className="text-gray-500 text-xs uppercase tracking-wide mb-1.5">Positioning</p>
+                  <p className="text-gray-200 text-sm leading-relaxed">{activeCard.positioning || '—'}</p>
+                </div>
+                <div>
+                  <p className="text-gray-500 text-xs uppercase tracking-wide mb-1.5">Objective</p>
+                  <p className="text-gray-200 text-sm leading-relaxed">{activeCard.objective || '—'}</p>
+                </div>
               </div>
-              <div>
-                <p className="text-gray-500 text-xs uppercase tracking-wide mb-1.5">Objective</p>
-                <p className="text-gray-200 text-sm leading-relaxed">{activeCard.objective}</p>
-              </div>
-            </div>
 
-            <div className="grid grid-cols-2 gap-4 mb-4">
-              <div>
-                <p className="text-gray-500 text-xs uppercase tracking-wide mb-2">Key Tactics</p>
-                <ul className="space-y-1.5">
-                  {activeCard.tactics.map((t, i) => (
-                    <li key={i} className="flex items-start gap-2 text-sm text-gray-300">
-                      <span className="text-indigo-400 mt-0.5 flex-shrink-0">•</span>
-                      {t}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-              <div>
-                <p className="text-gray-500 text-xs uppercase tracking-wide mb-2">Channels</p>
-                <div className="flex flex-wrap gap-2">
-                  {activeCard.channels.map(ch => (
-                    <span key={ch} className="px-2.5 py-1 rounded-lg bg-gray-800 border border-gray-700 text-gray-300 text-xs">{ch}</span>
-                  ))}
+              <div className="grid grid-cols-2 gap-4 mb-4">
+                <div>
+                  <p className="text-gray-500 text-xs uppercase tracking-wide mb-2">Key Tactics</p>
+                  {activeCard.tactics.length === 0 ? (
+                    <p className="text-gray-600 text-xs italic">No tactics extracted</p>
+                  ) : (
+                    <ul className="space-y-1.5">
+                      {activeCard.tactics.map((t, i) => (
+                        <li key={i} className="flex items-start gap-2 text-sm text-gray-300">
+                          <span className="text-indigo-400 mt-0.5 flex-shrink-0">•</span>
+                          {t}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+                <div>
+                  <p className="text-gray-500 text-xs uppercase tracking-wide mb-2">Channels</p>
+                  <div className="flex flex-wrap gap-2">
+                    {activeCard.channels.length === 0 ? (
+                      <p className="text-gray-600 text-xs italic">No channels listed</p>
+                    ) : (
+                      activeCard.channels.map(ch => (
+                        <span key={ch} className="px-2.5 py-1 rounded-lg bg-gray-800 border border-gray-700 text-gray-300 text-xs">{ch}</span>
+                      ))
+                    )}
+                  </div>
                 </div>
               </div>
             </div>
-          </div>
+          )}
 
           {/* KPI Performance Metrics */}
-          <div className="mb-6">
-            <h3 className="text-white font-semibold mb-3">📊 KPI Performance Tracker</h3>
-            <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
-              {activeCard.kpis.map((kpi, i) => (
-                <KPICard key={i} kpi={kpi} />
-              ))}
+          {activeCard && activeCard.kpis.length > 0 && (
+            <div className="mb-6">
+              <h3 className="text-white font-semibold mb-3">📊 KPI Performance Tracker</h3>
+              <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
+                {activeCard.kpis.map((kpi, i) => (
+                  <KPICard key={i} kpi={kpi} />
+                ))}
+              </div>
             </div>
-          </div>
+          )}
 
           {/* Strategy Projects Board */}
           <div>
@@ -675,30 +823,36 @@ export default function StrategyPage() {
                 <h3 className="text-white font-semibold text-sm">Version History</h3>
                 <button onClick={() => setHistoryOpen(false)} className="text-gray-600 hover:text-gray-400 transition-colors text-sm">✕</button>
               </div>
-              <div className="space-y-3">
-                {MOCK_HISTORY.map(version => (
-                  <div key={version.id} className="bg-gray-950 border border-gray-800 rounded-lg p-3">
-                    <div className="flex items-start justify-between mb-1">
-                      <div>
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-white text-xs font-semibold capitalize">{version.timeframe}</span>
-                          <span className="text-gray-600 text-xs">v{version.version}</span>
+              {history.length === 0 ? (
+                <p className="text-gray-600 text-xs text-center py-6">No history yet — generate a strategy to start.</p>
+              ) : (
+                <div className="space-y-3">
+                  {history.map(version => (
+                    <div key={version.id} className="bg-gray-950 border border-gray-800 rounded-lg p-3">
+                      <div className="flex items-start justify-between mb-1">
+                        <div>
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-white text-xs font-semibold capitalize">{version.timeframe}</span>
+                            <span className="text-gray-600 text-xs">v{version.version}</span>
+                          </div>
+                          <p className="text-gray-500 text-xs mt-0.5">{formatDate(version.generatedAt)}</p>
                         </div>
-                        <p className="text-gray-500 text-xs mt-0.5">{formatDate(version.generatedAt)}</p>
+                        {version.performanceScore > 0 && (
+                          <span className={`text-xs font-bold ${scoreColor(version.performanceScore)}`}>{version.performanceScore}%</span>
+                        )}
                       </div>
-                      <span className={`text-xs font-bold ${scoreColor(version.performanceScore)}`}>{version.performanceScore}%</span>
+                      <p className="text-gray-400 text-xs mb-2 line-clamp-2">{version.summary}</p>
+                      <button
+                        onClick={() => restoreVersion(version)}
+                        disabled={restoringId === version.id}
+                        className="w-full py-1 rounded text-xs text-indigo-400 border border-indigo-800 hover:bg-indigo-950 transition-colors disabled:opacity-50"
+                      >
+                        {restoringId === version.id ? 'Restoring...' : '↩ Restore'}
+                      </button>
                     </div>
-                    <p className="text-gray-400 text-xs mb-2 line-clamp-2">{version.summary}</p>
-                    <button
-                      onClick={() => restoreVersion(version)}
-                      disabled={restoringId === version.id}
-                      className="w-full py-1 rounded text-xs text-indigo-400 border border-indigo-800 hover:bg-indigo-950 transition-colors disabled:opacity-50"
-                    >
-                      {restoringId === version.id ? 'Restoring...' : '↩ Restore'}
-                    </button>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         )}

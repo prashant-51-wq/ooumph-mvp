@@ -8,7 +8,7 @@ export async function GET(req: NextRequest) {
   if (!workspaceId) return NextResponse.json([])
 
   const result = await sql`
-    SELECT id, agent_name, status, created_at, completed_at, error_message
+    SELECT id, agent_name, status, created_at, completed_at, error_message, cost_estimate
     FROM agent_runs
     WHERE workspace_id = ${workspaceId}
     ORDER BY created_at DESC

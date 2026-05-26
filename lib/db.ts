@@ -105,6 +105,8 @@ async function postgresQuery(strings: TemplateStringsArray, ...values: unknown[]
     await pgSql`ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS model_settings TEXT DEFAULT '{}'`
     await pgSql`ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS extra_settings TEXT DEFAULT '{}'`
     await pgSql`ALTER TABLE leads_captured ADD COLUMN IF NOT EXISTS hubspot_id TEXT`
+    await pgSql`ALTER TABLE approvals ADD COLUMN IF NOT EXISTS brand_voice_score INTEGER`
+    await pgSql`ALTER TABLE approvals ADD COLUMN IF NOT EXISTS brand_voice_reasoning TEXT`
     await pgSql`CREATE TABLE IF NOT EXISTS brand_memory (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, content TEXT NOT NULL, content_type TEXT NOT NULL DEFAULT 'learning_note', platform TEXT, performance_score INTEGER DEFAULT 0, metadata_json TEXT DEFAULT '{}', created_at TIMESTAMPTZ DEFAULT NOW())`
     await pgSql`CREATE INDEX IF NOT EXISTS idx_brand_memory_workspace ON brand_memory(workspace_id)`
     await pgSql`CREATE TABLE IF NOT EXISTS scheduled_content (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, platform TEXT NOT NULL, content TEXT NOT NULL, media_urls TEXT DEFAULT '[]', artifact_id TEXT, scheduled_for TEXT, buffer_update_id TEXT, status TEXT NOT NULL DEFAULT 'pending', error_message TEXT, published_at TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`
@@ -143,6 +145,17 @@ async function postgresQuery(strings: TemplateStringsArray, ...values: unknown[]
     await pgSql`CREATE INDEX IF NOT EXISTS idx_workspace_invites_workspace ON workspace_invites(workspace_id)`
     await pgSql`CREATE TABLE IF NOT EXISTS sales_deals (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, lead_id TEXT, contact_name TEXT NOT NULL, contact_email TEXT, company TEXT, title TEXT NOT NULL, value REAL DEFAULT 0, currency VARCHAR(10) DEFAULT 'USD', stage VARCHAR(50) DEFAULT 'prospect', probability INTEGER DEFAULT 10, expected_close TEXT, actual_close TEXT, notes TEXT, source TEXT, custom_fields TEXT DEFAULT '{}', created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
     await pgSql`CREATE INDEX IF NOT EXISTS idx_sales_deals_workspace ON sales_deals(workspace_id, stage)`
+    // === Phase Remediation tables (Postgres first-call init) ===
+    await pgSql`CREATE TABLE IF NOT EXISTS workspace_secrets (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, provider VARCHAR(50) NOT NULL, encrypted_value TEXT NOT NULL, label TEXT, status TEXT DEFAULT 'active', last_tested_at TIMESTAMPTZ, test_result TEXT, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_secrets_unique ON workspace_secrets(workspace_id, provider)`
+    await pgSql`CREATE TABLE IF NOT EXISTS notifications (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, user_id TEXT, type VARCHAR(50) NOT NULL, title TEXT NOT NULL, body TEXT, link TEXT, severity TEXT DEFAULT 'info', read_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_notifications_workspace ON notifications(workspace_id, read_at, created_at DESC)`
+    await pgSql`CREATE TABLE IF NOT EXISTS agent_configs (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, agent_slug VARCHAR(100) NOT NULL, model TEXT, instructions TEXT, tone TEXT, max_tasks_per_day INTEGER DEFAULT 100, priority TEXT DEFAULT 'normal', allowed_tools TEXT DEFAULT '[]', use_byok INTEGER DEFAULT 1, schedule TEXT DEFAULT 'always', daily_cost_cap DECIMAL(10,2) DEFAULT 50, escalate_to TEXT, status TEXT DEFAULT 'active', updated_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_configs_unique ON agent_configs(workspace_id, agent_slug)`
+    await pgSql`CREATE TABLE IF NOT EXISTS ab_tests (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, name TEXT NOT NULL, hypothesis TEXT, content_type TEXT, goal_metric TEXT, duration INTEGER DEFAULT 7, status TEXT DEFAULT 'Running', variant_a TEXT NOT NULL, variant_b TEXT NOT NULL, variant_a_stats TEXT DEFAULT '{}', variant_b_stats TEXT DEFAULT '{}', winner TEXT, confidence INTEGER DEFAULT 0, ai_insight TEXT, started_at TIMESTAMPTZ, completed_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_ab_tests_workspace ON ab_tests(workspace_id, status)`
+    await pgSql`CREATE TABLE IF NOT EXISTS ab_test_insights (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, source_test_id TEXT, text TEXT NOT NULL, lift REAL DEFAULT 0, deployed INTEGER DEFAULT 0, created_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_ab_test_insights_workspace ON ab_test_insights(workspace_id, created_at DESC)`
   }
 
   const rows = await pgSql(strings, ...values) as Record<string, unknown>[]
@@ -662,6 +675,8 @@ function initSQLiteSync(db: import('better-sqlite3').Database) {
     'ALTER TABLE integrations ADD COLUMN metadata TEXT',
     'ALTER TABLE workspaces ADD COLUMN extra_settings TEXT DEFAULT \'{}\'',
     'ALTER TABLE leads_captured ADD COLUMN hubspot_id TEXT',
+    'ALTER TABLE approvals ADD COLUMN brand_voice_score INTEGER',
+    'ALTER TABLE approvals ADD COLUMN brand_voice_reasoning TEXT',
     'CREATE TABLE IF NOT EXISTS inbox_conversations (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, contact_id TEXT, contact_email TEXT, contact_name TEXT, contact_phone TEXT, channel TEXT NOT NULL DEFAULT \'email\', subject TEXT, status TEXT DEFAULT \'open\', tags TEXT DEFAULT \'[]\', assigned_to TEXT, last_message_at TEXT, unread_count INTEGER DEFAULT 0, created_at TEXT DEFAULT (datetime(\'now\')))',
     'CREATE TABLE IF NOT EXISTS inbox_messages (id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, workspace_id TEXT NOT NULL, direction TEXT NOT NULL, from_address TEXT, to_address TEXT, subject TEXT, body TEXT NOT NULL, html_body TEXT, channel TEXT DEFAULT \'email\', status TEXT DEFAULT \'sent\', external_id TEXT, ai_generated INTEGER DEFAULT 0, sent_at TEXT DEFAULT (datetime(\'now\')), created_at TEXT DEFAULT (datetime(\'now\')))',
     'CREATE TABLE IF NOT EXISTS bookings (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, contact_id TEXT, contact_name TEXT, contact_email TEXT, contact_phone TEXT, title TEXT NOT NULL, description TEXT, start_time TEXT NOT NULL, end_time TEXT NOT NULL, timezone TEXT DEFAULT \'UTC\', status TEXT DEFAULT \'confirmed\', meeting_url TEXT, calendar_event_id TEXT, reminder_sent INTEGER DEFAULT 0, notes TEXT, source TEXT DEFAULT \'manual\', created_at TEXT DEFAULT (datetime(\'now\')))',
@@ -696,6 +711,17 @@ function initSQLiteSync(db: import('better-sqlite3').Database) {
     'CREATE INDEX IF NOT EXISTS idx_workspace_invites_workspace ON workspace_invites(workspace_id)',
     'CREATE TABLE IF NOT EXISTS sales_deals (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, lead_id TEXT, contact_name TEXT NOT NULL, contact_email TEXT, company TEXT, title TEXT NOT NULL, value REAL DEFAULT 0, currency TEXT DEFAULT \'USD\', stage TEXT DEFAULT \'prospect\', probability INTEGER DEFAULT 10, expected_close TEXT, actual_close TEXT, notes TEXT, source TEXT, custom_fields TEXT DEFAULT \'{}\', created_at TEXT DEFAULT (datetime(\'now\')), updated_at TEXT DEFAULT (datetime(\'now\')))',
     'CREATE INDEX IF NOT EXISTS idx_sales_deals_workspace ON sales_deals(workspace_id, stage)',
+    // === Phase Remediation: BYOK secrets + notifications + agent configs ===
+    'CREATE TABLE IF NOT EXISTS workspace_secrets (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, provider TEXT NOT NULL, encrypted_value TEXT NOT NULL, label TEXT, status TEXT DEFAULT \'active\', last_tested_at TEXT, test_result TEXT, created_at TEXT DEFAULT (datetime(\'now\')), updated_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_secrets_unique ON workspace_secrets(workspace_id, provider)',
+    'CREATE TABLE IF NOT EXISTS notifications (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, user_id TEXT, type TEXT NOT NULL, title TEXT NOT NULL, body TEXT, link TEXT, severity TEXT DEFAULT \'info\', read_at TEXT, created_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE INDEX IF NOT EXISTS idx_notifications_workspace ON notifications(workspace_id, read_at, created_at DESC)',
+    'CREATE TABLE IF NOT EXISTS agent_configs (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, agent_slug TEXT NOT NULL, model TEXT, instructions TEXT, tone TEXT, max_tasks_per_day INTEGER DEFAULT 100, priority TEXT DEFAULT \'normal\', allowed_tools TEXT DEFAULT \'[]\', use_byok INTEGER DEFAULT 1, schedule TEXT DEFAULT \'always\', daily_cost_cap REAL DEFAULT 50, escalate_to TEXT, status TEXT DEFAULT \'active\', updated_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_configs_unique ON agent_configs(workspace_id, agent_slug)',
+    'CREATE TABLE IF NOT EXISTS ab_tests (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, name TEXT NOT NULL, hypothesis TEXT, content_type TEXT, goal_metric TEXT, duration INTEGER DEFAULT 7, status TEXT DEFAULT \'Running\', variant_a TEXT NOT NULL, variant_b TEXT NOT NULL, variant_a_stats TEXT DEFAULT \'{}\', variant_b_stats TEXT DEFAULT \'{}\', winner TEXT, confidence INTEGER DEFAULT 0, ai_insight TEXT, started_at TEXT, completed_at TEXT, created_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE INDEX IF NOT EXISTS idx_ab_tests_workspace ON ab_tests(workspace_id, status)',
+    'CREATE TABLE IF NOT EXISTS ab_test_insights (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, source_test_id TEXT, text TEXT NOT NULL, lift REAL DEFAULT 0, deployed INTEGER DEFAULT 0, created_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE INDEX IF NOT EXISTS idx_ab_test_insights_workspace ON ab_test_insights(workspace_id, created_at DESC)',
   ]
   for (const m of migrations) {
     try { db.exec(m) } catch { /* column already exists */ }
@@ -734,6 +760,8 @@ export async function initializeDatabase() {
   await pgSql`ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS model_settings TEXT DEFAULT '{}'`
   await pgSql`ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS extra_settings TEXT DEFAULT '{}'`
   await pgSql`ALTER TABLE leads_captured ADD COLUMN IF NOT EXISTS hubspot_id TEXT`
+  await pgSql`ALTER TABLE approvals ADD COLUMN IF NOT EXISTS brand_voice_score INTEGER`
+  await pgSql`ALTER TABLE approvals ADD COLUMN IF NOT EXISTS brand_voice_reasoning TEXT`
   await pgSql`CREATE TABLE IF NOT EXISTS brand_memory (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, content TEXT NOT NULL, content_type TEXT NOT NULL DEFAULT 'learning_note', platform TEXT, performance_score INTEGER DEFAULT 0, metadata_json TEXT DEFAULT '{}', created_at TIMESTAMPTZ DEFAULT NOW())`
   await pgSql`CREATE INDEX IF NOT EXISTS idx_brand_memory_workspace ON brand_memory(workspace_id)`
   await pgSql`CREATE TABLE IF NOT EXISTS scheduled_content (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, platform TEXT NOT NULL, content TEXT NOT NULL, media_urls TEXT DEFAULT '[]', artifact_id TEXT, scheduled_for TEXT, buffer_update_id TEXT, status TEXT NOT NULL DEFAULT 'pending', error_message TEXT, published_at TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`
@@ -772,5 +800,16 @@ export async function initializeDatabase() {
   await pgSql`CREATE INDEX IF NOT EXISTS idx_workspace_invites_workspace ON workspace_invites(workspace_id)`
   await pgSql`CREATE TABLE IF NOT EXISTS sales_deals (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, lead_id TEXT, contact_name TEXT NOT NULL, contact_email TEXT, company TEXT, title TEXT NOT NULL, value REAL DEFAULT 0, currency VARCHAR(10) DEFAULT 'USD', stage VARCHAR(50) DEFAULT 'prospect', probability INTEGER DEFAULT 10, expected_close TEXT, actual_close TEXT, notes TEXT, source TEXT, custom_fields TEXT DEFAULT '{}', created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
   await pgSql`CREATE INDEX IF NOT EXISTS idx_sales_deals_workspace ON sales_deals(workspace_id, stage)`
+  // === Phase Remediation tables ===
+  await pgSql`CREATE TABLE IF NOT EXISTS workspace_secrets (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, provider VARCHAR(50) NOT NULL, encrypted_value TEXT NOT NULL, label TEXT, status TEXT DEFAULT 'active', last_tested_at TIMESTAMPTZ, test_result TEXT, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_secrets_unique ON workspace_secrets(workspace_id, provider)`
+  await pgSql`CREATE TABLE IF NOT EXISTS notifications (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, user_id TEXT, type VARCHAR(50) NOT NULL, title TEXT NOT NULL, body TEXT, link TEXT, severity TEXT DEFAULT 'info', read_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_notifications_workspace ON notifications(workspace_id, read_at, created_at DESC)`
+  await pgSql`CREATE TABLE IF NOT EXISTS agent_configs (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, agent_slug VARCHAR(100) NOT NULL, model TEXT, instructions TEXT, tone TEXT, max_tasks_per_day INTEGER DEFAULT 100, priority TEXT DEFAULT 'normal', allowed_tools TEXT DEFAULT '[]', use_byok INTEGER DEFAULT 1, schedule TEXT DEFAULT 'always', daily_cost_cap DECIMAL(10,2) DEFAULT 50, escalate_to TEXT, status TEXT DEFAULT 'active', updated_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_configs_unique ON agent_configs(workspace_id, agent_slug)`
+  await pgSql`CREATE TABLE IF NOT EXISTS ab_tests (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, name TEXT NOT NULL, hypothesis TEXT, content_type TEXT, goal_metric TEXT, duration INTEGER DEFAULT 7, status TEXT DEFAULT 'Running', variant_a TEXT NOT NULL, variant_b TEXT NOT NULL, variant_a_stats TEXT DEFAULT '{}', variant_b_stats TEXT DEFAULT '{}', winner TEXT, confidence INTEGER DEFAULT 0, ai_insight TEXT, started_at TIMESTAMPTZ, completed_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_ab_tests_workspace ON ab_tests(workspace_id, status)`
+  await pgSql`CREATE TABLE IF NOT EXISTS ab_test_insights (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, source_test_id TEXT, text TEXT NOT NULL, lift REAL DEFAULT 0, deployed INTEGER DEFAULT 0, created_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_ab_test_insights_workspace ON ab_test_insights(workspace_id, created_at DESC)`
   console.log('✅ Neon Postgres DB initialized')
 }

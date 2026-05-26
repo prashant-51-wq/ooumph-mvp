@@ -62,10 +62,166 @@ interface Segment {
   type: 'builtin' | 'custom'
 }
 
-// ── Mock data ──────────────────────────────────────────────────────────────────
+// ── Constants ──────────────────────────────────────────────────────────────────
 const AVATAR_COLORS = ['bg-indigo-600','bg-purple-600','bg-pink-600','bg-blue-600','bg-emerald-600','bg-orange-600','bg-rose-600','bg-cyan-600']
 const STAGES: Stage[] = ['Lead','Prospect','Qualified','Proposal','Customer','Churned']
 const RFM_TIERS: RFMTier[] = ['Champion','Loyal','At Risk','Lost','New Customer','Potential Loyalist']
+
+// ── API row mappers ────────────────────────────────────────────────────────────
+interface LeadRow {
+  id: string
+  name: string | null
+  email: string | null
+  phone: string | null
+  source: string | null
+  campaign: string | null
+  status: string | null
+  score: number | null
+  notes: string | null
+  custom_fields: string | Record<string, unknown> | null
+  created_at: string
+}
+
+interface ActivityRow {
+  id: string
+  lead_id: string
+  type: string
+  title: string
+  description: string | null
+  metadata_json: string | null
+  created_at: string
+}
+
+interface DealRow {
+  id: string
+  workspace_id: string
+  lead_id: string | null
+  contact_name: string
+  contact_email: string | null
+  company: string | null
+  title: string
+  value: number
+  currency: string
+  stage: string
+  probability: number
+  expected_close: string | null
+  actual_close: string | null
+  notes: string | null
+  source: string | null
+  created_at: string
+  updated_at: string
+}
+
+function statusToStage(status: string | null | undefined): Stage {
+  if (!status) return 'Lead'
+  const s = status.toLowerCase()
+  if (s === 'new' || s === 'lead') return 'Lead'
+  if (s === 'contacted' || s === 'prospect') return 'Prospect'
+  if (s === 'qualified') return 'Qualified'
+  if (s === 'proposal') return 'Proposal'
+  if (s === 'customer' || s === 'won' || s === 'closed_won') return 'Customer'
+  if (s === 'churned' || s === 'lost' || s === 'closed_lost') return 'Churned'
+  return 'Lead'
+}
+
+function stageToStatus(stage: Stage): string {
+  switch (stage) {
+    case 'Lead': return 'new'
+    case 'Prospect': return 'contacted'
+    case 'Qualified': return 'qualified'
+    case 'Proposal': return 'proposal'
+    case 'Customer': return 'customer'
+    case 'Churned': return 'churned'
+  }
+}
+
+function parseCustomFields(cf: unknown): Record<string, unknown> {
+  if (!cf) return {}
+  if (typeof cf === 'string') {
+    try { return JSON.parse(cf) as Record<string, unknown> } catch { return {} }
+  }
+  if (typeof cf === 'object') return cf as Record<string, unknown>
+  return {}
+}
+
+function leadToContact(lead: LeadRow, activitiesByLead: Map<string, ActivityRow[]>, dealsByEmail: Map<string, DealRow[]>): Contact {
+  const cf = parseCustomFields(lead.custom_fields)
+  const tags = Array.isArray(cf.tags) ? cf.tags as string[] : []
+  const company = (cf.company as string) || ''
+  const acts = activitiesByLead.get(lead.id) || []
+  const lastActivity = acts[0]?.created_at || lead.created_at
+  const email = lead.email || ''
+  const deals = (email ? dealsByEmail.get(email) : undefined) || []
+  const dealValue = deals.reduce((s, d) => s + (Number(d.value) || 0), 0)
+  const stage = statusToStage(lead.status)
+
+  // Compute RFM tier heuristically from available data
+  const daysSinceActivity = (Date.now() - new Date(lastActivity).getTime()) / 86400000
+  const recency = daysSinceActivity < 7 ? 5 : daysSinceActivity < 30 ? 4 : daysSinceActivity < 60 ? 3 : daysSinceActivity < 90 ? 2 : 1
+  const frequency = Math.min(5, Math.max(1, acts.length))
+  const monetary = dealValue >= 10000 ? 5 : dealValue >= 5000 ? 4 : dealValue >= 1000 ? 3 : dealValue >= 100 ? 2 : 1
+  let rfmTier: RFMTier = 'New Customer'
+  if (recency >= 4 && frequency >= 4 && monetary >= 4) rfmTier = 'Champion'
+  else if (recency >= 4 && frequency >= 3) rfmTier = 'Loyal'
+  else if (recency >= 3 && frequency >= 2) rfmTier = 'Potential Loyalist'
+  else if (recency <= 2 && frequency >= 3) rfmTier = 'At Risk'
+  else if (recency <= 2) rfmTier = 'Lost'
+  else if (frequency <= 1) rfmTier = 'New Customer'
+
+  const avatarColor = AVATAR_COLORS[lead.id.charCodeAt(0) % AVATAR_COLORS.length] || AVATAR_COLORS[0]
+
+  return {
+    id: lead.id,
+    name: lead.name || '—',
+    email,
+    phone: lead.phone || '',
+    company,
+    stage,
+    score: Number(lead.score || 0),
+    rfm_tier: rfmTier,
+    rfm_r: recency,
+    rfm_f: frequency,
+    rfm_m: monetary,
+    last_activity: lastActivity,
+    tags,
+    avatar_color: avatarColor,
+    deal_value: dealValue,
+    notes: lead.notes || '',
+    created_at: lead.created_at,
+  }
+}
+
+function dealRowToDeal(row: DealRow): Deal {
+  // Map our DB stage values into the legacy Deal stage strings the UI expects
+  const stageMap: Record<string, string> = {
+    prospect: 'Prospecting', prospecting: 'Prospecting',
+    qualified: 'Qualification', qualification: 'Qualification',
+    proposal: 'Proposal',
+    negotiation: 'Negotiation',
+    won: 'Closed Won', closed_won: 'Closed Won',
+    lost: 'Closed Lost', closed_lost: 'Closed Lost',
+  }
+  return {
+    id: row.id,
+    name: row.title,
+    contact: row.contact_name,
+    value: Number(row.value) || 0,
+    probability: Number(row.probability) || 0,
+    stage: stageMap[row.stage] || row.stage,
+    close_date: row.expected_close || '',
+    owner: 'You',
+  }
+}
+
+function activityTypeNormalize(t: string): ActivityType {
+  if (t === 'call' || t === 'email' || t === 'note' || t === 'meeting' || t === 'deal' || t === 'alert') return t
+  if (t === 'lead_created') return 'note'
+  if (t.includes('email')) return 'email'
+  if (t.includes('call')) return 'call'
+  if (t.includes('meeting') || t.includes('booking')) return 'meeting'
+  if (t.includes('deal') || t.includes('won') || t.includes('lost')) return 'deal'
+  return 'note'
+}
 
 const MOCK_CONTACTS: Contact[] = [
   { id:'c1', name:'Sarah Johnson', email:'sarah@techcorp.io', phone:'+1 415 555 0101', company:'TechCorp', stage:'Customer', score:92, rfm_tier:'Champion', rfm_r:5, rfm_f:5, rfm_m:5, last_activity:'2026-05-25T10:00:00Z', tags:['VIP','Enterprise'], avatar_color:'bg-indigo-600', deal_value:12000, notes:'Key decision maker', created_at:'2026-01-15T09:00:00Z' },
@@ -156,10 +312,39 @@ function ScoreBar({ score, className = '' }: { score: number; className?: string
 }
 
 // ── Contact Slide-over ─────────────────────────────────────────────────────────
-function ContactSlideover({ contact, onClose, activities }: { contact: Contact; onClose: () => void; activities: Activity[] }) {
+function ContactSlideover({ contact, onClose, activities, workspaceId, onUpdated }: { contact: Contact; onClose: () => void; activities: Activity[]; workspaceId: string | null; onUpdated: () => void }) {
   const [note, setNote] = useState('')
   const [editStage, setEditStage] = useState(contact.stage)
-  const contactActivities = activities.filter(a => a.contact_id === contact.id)
+  const [savingStage, setSavingStage] = useState(false)
+  const [savingNote, setSavingNote] = useState(false)
+  const contactActivities = activities
+
+  async function saveStage(stage: Stage) {
+    setEditStage(stage)
+    setSavingStage(true)
+    try {
+      await fetch('/api/leads-captured', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: contact.id, status: stageToStatus(stage) }),
+      })
+      onUpdated()
+    } finally { setSavingStage(false) }
+  }
+
+  async function submitNote() {
+    if (!note.trim() || !workspaceId) return
+    setSavingNote(true)
+    try {
+      await fetch(`/api/leads-captured/${contact.id}/activity`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspaceId, type: 'note', title: note.slice(0, 100), description: note }),
+      })
+      setNote('')
+      onUpdated()
+    } finally { setSavingNote(false) }
+  }
 
   return (
     <div className="fixed inset-0 bg-gray-950/80 backdrop-blur-sm z-50 flex items-stretch justify-end" onClick={onClose}>
@@ -188,7 +373,7 @@ function ContactSlideover({ contact, onClose, activities }: { contact: Contact; 
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="text-xs text-gray-500 uppercase tracking-wide mb-1.5 block">Stage</label>
-              <select value={editStage} onChange={e => setEditStage(e.target.value as Stage)} className={selectCls}>
+              <select value={editStage} disabled={savingStage} onChange={e => saveStage(e.target.value as Stage)} className={selectCls}>
                 {STAGES.map(s => <option key={s} value={s}>{s}</option>)}
               </select>
             </div>
@@ -238,8 +423,8 @@ function ContactSlideover({ contact, onClose, activities }: { contact: Contact; 
           <div>
             <label className="text-xs text-gray-500 uppercase tracking-wide mb-2 block">Add Note</label>
             <div className="flex gap-2">
-              <input value={note} onChange={e => setNote(e.target.value)} placeholder="Type a note..." className={inputCls} />
-              <button className="px-3 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-medium transition-colors flex-shrink-0">+</button>
+              <input value={note} onChange={e => setNote(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') submitNote() }} placeholder="Type a note..." className={inputCls} />
+              <button onClick={submitNote} disabled={!note.trim() || savingNote} className="px-3 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white rounded-lg text-sm font-medium transition-colors flex-shrink-0">{savingNote ? '…' : '+'}</button>
             </div>
           </div>
         </div>
@@ -256,13 +441,15 @@ function ContactSlideover({ contact, onClose, activities }: { contact: Contact; 
 }
 
 // ── CSV Import Modal ───────────────────────────────────────────────────────────
-function CSVImportModal({ onClose }: { onClose: () => void }) {
+function CSVImportModal({ onClose, workspaceId, onImported }: { onClose: () => void; workspaceId: string | null; onImported: () => void }) {
   const [file, setFile] = useState<File | null>(null)
   const [preview, setPreview] = useState<string[][]>([])
+  const [allRows, setAllRows] = useState<string[][]>([])
   const [mapping, setMapping] = useState<Record<string,string>>({})
   const [duplicate, setDuplicate] = useState<'skip'|'update'|'create'>('skip')
   const [importing, setImporting] = useState(false)
   const [imported, setImported] = useState(false)
+  const [progress, setProgress] = useState({ done: 0, total: 0, success: 0, skipped: 0, errors: 0 })
   const fileRef = useRef<HTMLInputElement>(null)
 
   const CRM_FIELDS = ['name','email','phone','company','stage','score','tags','-- ignore --']
@@ -278,8 +465,9 @@ function CSVImportModal({ onClose }: { onClose: () => void }) {
     const reader = new FileReader()
     reader.onload = (ev) => {
       const text = ev.target?.result as string
-      const rows = text.split('\n').slice(0, 6).map(r => r.split(',').map(c => c.replace(/"/g, '').trim()))
-      setPreview(rows)
+      const rows = text.split(/\r?\n/).filter(r => r.trim()).map(r => r.split(',').map(c => c.replace(/^"|"$/g, '').trim()))
+      setAllRows(rows)
+      setPreview(rows.slice(0, 6))
       const headers = rows[0] || []
       const auto: Record<string,string> = {}
       headers.forEach(h => {
@@ -288,6 +476,9 @@ function CSVImportModal({ onClose }: { onClose: () => void }) {
         else if (low.includes('email')) auto[h] = 'email'
         else if (low.includes('phone')) auto[h] = 'phone'
         else if (low.includes('company') || low.includes('org')) auto[h] = 'company'
+        else if (low.includes('stage') || low.includes('status')) auto[h] = 'stage'
+        else if (low.includes('score')) auto[h] = 'score'
+        else if (low.includes('tag')) auto[h] = 'tags'
         else auto[h] = '-- ignore --'
       })
       setMapping(auto)
@@ -295,9 +486,70 @@ function CSVImportModal({ onClose }: { onClose: () => void }) {
     reader.readAsText(f)
   }
 
-  function doImport() {
+  async function doImport() {
+    if (!workspaceId) return
+    const headers = allRows[0] || []
+    const dataRows = allRows.slice(1)
+    if (dataRows.length === 0) return
+
     setImporting(true)
-    setTimeout(() => { setImporting(false); setImported(true) }, 1800)
+    setProgress({ done: 0, total: dataRows.length, success: 0, skipped: 0, errors: 0 })
+
+    let success = 0, skipped = 0, errors = 0
+
+    for (let i = 0; i < dataRows.length; i++) {
+      const row = dataRows[i]
+      const fields: Record<string, string> = {}
+      headers.forEach((h, j) => {
+        const target = mapping[h]
+        if (target && target !== '-- ignore --' && row[j]) {
+          fields[target] = row[j]
+        }
+      })
+
+      if (!fields.name && !fields.email) { skipped++; setProgress(p => ({ ...p, done: i + 1, skipped })); continue }
+
+      try {
+        const stageStr = fields.stage ? stageToStatus((fields.stage.charAt(0).toUpperCase() + fields.stage.slice(1).toLowerCase()) as Stage) : 'new'
+        const res = await fetch('/api/leads-captured', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            workspaceId,
+            name: fields.name || fields.email || '—',
+            email: fields.email,
+            phone: fields.phone,
+            source: 'csv_import',
+            status: stageStr,
+            score: fields.score ? Number(fields.score) : 0,
+          }),
+        })
+        const data = await res.json() as { ok?: boolean; id?: string; error?: string }
+        if (res.ok && data.id) {
+          success++
+          // attach company / tags via PATCH custom_fields
+          if (fields.company || fields.tags) {
+            const cf: Record<string, unknown> = {}
+            if (fields.company) cf.company = fields.company
+            if (fields.tags) cf.tags = fields.tags.split(/[;|]/).map(t => t.trim()).filter(Boolean)
+            await fetch(`/api/leads-captured/${data.id}`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ workspaceId, custom_fields: cf }),
+            }).catch(() => {})
+          }
+        } else {
+          errors++
+        }
+      } catch {
+        errors++
+      }
+      setProgress({ done: i + 1, total: dataRows.length, success, skipped, errors })
+    }
+
+    setImporting(false)
+    setImported(true)
+    onImported()
   }
 
   if (imported) return (
@@ -305,8 +557,8 @@ function CSVImportModal({ onClose }: { onClose: () => void }) {
       <div className="bg-gray-900 border border-gray-800 rounded-2xl p-8 w-full max-w-sm text-center">
         <div className="text-4xl mb-4">✅</div>
         <h3 className="text-white font-semibold text-lg mb-2">Import Complete</h3>
-        <p className="text-gray-400 text-sm mb-1">247 contacts imported successfully</p>
-        <p className="text-gray-500 text-xs mb-6">3 duplicates skipped · 0 errors</p>
+        <p className="text-gray-400 text-sm mb-1">{progress.success} contacts imported successfully</p>
+        <p className="text-gray-500 text-xs mb-6">{progress.skipped} skipped · {progress.errors} errors</p>
         <button onClick={onClose} className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-medium transition-colors">Done</button>
       </div>
     </div>
@@ -400,24 +652,25 @@ function CSVImportModal({ onClose }: { onClose: () => void }) {
                 </div>
               </div>
 
-              {importing && (
+              {importing && progress.total > 0 && (
                 <div>
                   <div className="flex justify-between text-xs text-gray-400 mb-1.5">
-                    <span>Importing contacts...</span>
-                    <span>73%</span>
+                    <span>Importing row {progress.done} of {progress.total}…</span>
+                    <span>{Math.round((progress.done / progress.total) * 100)}%</span>
                   </div>
                   <div className="h-2 bg-gray-800 rounded-full overflow-hidden">
-                    <div className="h-2 bg-indigo-500 rounded-full animate-pulse" style={{ width: '73%' }} />
+                    <div className="h-2 bg-indigo-500 rounded-full transition-all" style={{ width: `${(progress.done / progress.total) * 100}%` }} />
                   </div>
+                  <p className="text-xs text-gray-500 mt-1">{progress.success} success · {progress.skipped} skipped · {progress.errors} errors</p>
                 </div>
               )}
 
               <button
                 onClick={doImport}
-                disabled={importing}
+                disabled={importing || !workspaceId || allRows.length <= 1}
                 className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white rounded-lg text-sm font-medium transition-colors"
               >
-                {importing ? 'Importing...' : `Import ${preview.length > 1 ? `~${(preview.length - 1) * 50}` : ''} contacts`}
+                {importing ? 'Importing…' : `Import ${allRows.length > 1 ? allRows.length - 1 : 0} contacts`}
               </button>
             </>
           )}
@@ -499,12 +752,29 @@ function SegmentModal({ onClose }: { onClose: () => void }) {
 }
 
 // ── Add Activity Modal ─────────────────────────────────────────────────────────
-function AddActivityModal({ onClose, contacts }: { onClose: () => void; contacts: Contact[] }) {
+function AddActivityModal({ onClose, contacts, workspaceId, onLogged }: { onClose: () => void; contacts: Contact[]; workspaceId: string | null; onLogged: () => void }) {
   const [type, setType] = useState<ActivityType>('call')
   const [contactId, setContactId] = useState(contacts[0]?.id || '')
   const [notes, setNotes] = useState('')
   const [outcome, setOutcome] = useState('')
   const [nextAction, setNextAction] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  async function submit() {
+    if (!contactId || !workspaceId) return
+    setSaving(true)
+    try {
+      const title = `${type[0].toUpperCase()}${type.slice(1)}${outcome ? ' — ' + outcome : ''}`
+      const desc = [notes, nextAction ? `Next: ${nextAction}` : ''].filter(Boolean).join('\n')
+      await fetch(`/api/leads-captured/${contactId}/activity`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspaceId, type, title, description: desc }),
+      })
+      onLogged()
+      onClose()
+    } finally { setSaving(false) }
+  }
 
   return (
     <div className="fixed inset-0 bg-gray-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
@@ -547,7 +817,7 @@ function AddActivityModal({ onClose, contacts }: { onClose: () => void; contacts
           </div>
           <div className="flex gap-3">
             <button onClick={onClose} className="flex-1 py-2.5 border border-gray-700 text-gray-400 rounded-lg text-sm hover:text-white">Cancel</button>
-            <button onClick={onClose} className="flex-1 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-medium transition-colors">Log Activity</button>
+            <button onClick={submit} disabled={saving || !contactId} className="flex-1 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white rounded-lg text-sm font-medium transition-colors">{saving ? 'Logging…' : 'Log Activity'}</button>
           </div>
         </div>
       </div>
@@ -556,8 +826,44 @@ function AddActivityModal({ onClose, contacts }: { onClose: () => void; contacts
 }
 
 // ── Add Deal Modal ─────────────────────────────────────────────────────────────
-function AddDealModal({ onClose, contacts }: { onClose: () => void; contacts: Contact[] }) {
+function AddDealModal({ onClose, contacts, workspaceId, onAdded }: { onClose: () => void; contacts: Contact[]; workspaceId: string | null; onAdded: () => void }) {
   const [form, setForm] = useState({ name:'', contact: contacts[0]?.name || '', value:'', probability:'50', stage:'Prospecting', close_date:'' })
+  const [saving, setSaving] = useState(false)
+
+  async function submit() {
+    if (!form.name || !workspaceId) return
+    const contact = contacts.find(c => c.name === form.contact)
+    setSaving(true)
+    try {
+      // Map UI stage to API stage
+      const stageMap: Record<string, string> = {
+        'Prospecting': 'prospect',
+        'Qualification': 'qualified',
+        'Proposal': 'proposal',
+        'Negotiation': 'negotiation',
+        'Closed Won': 'won',
+        'Closed Lost': 'lost',
+      }
+      await fetch('/api/sales-deals', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          workspaceId,
+          leadId: contact?.id,
+          contactName: form.contact || 'Unknown',
+          contactEmail: contact?.email,
+          company: contact?.company,
+          title: form.name,
+          value: Number(form.value) || 0,
+          stage: stageMap[form.stage] || 'prospect',
+          probability: Number(form.probability) || 50,
+          expectedClose: form.close_date || undefined,
+        }),
+      })
+      onAdded()
+      onClose()
+    } finally { setSaving(false) }
+  }
 
   return (
     <div className="fixed inset-0 bg-gray-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
@@ -592,7 +898,7 @@ function AddDealModal({ onClose, contacts }: { onClose: () => void; contacts: Co
           </div>
           <div className="flex gap-3">
             <button onClick={onClose} className="flex-1 py-2.5 border border-gray-700 text-gray-400 rounded-lg text-sm hover:text-white">Cancel</button>
-            <button onClick={onClose} className="flex-1 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-medium transition-colors">Add Deal</button>
+            <button onClick={submit} disabled={saving || !form.name} className="flex-1 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white rounded-lg text-sm font-medium transition-colors">{saving ? 'Adding…' : 'Add Deal'}</button>
           </div>
         </div>
       </div>
@@ -601,25 +907,48 @@ function AddDealModal({ onClose, contacts }: { onClose: () => void; contacts: Co
 }
 
 // ── Add Contact Modal ──────────────────────────────────────────────────────────
-function AddContactModal({ onClose, onAdd }: { onClose: () => void; onAdd: (c: Contact) => void }) {
+function AddContactModal({ onClose, workspaceId, onAdded }: { onClose: () => void; workspaceId: string | null; onAdded: () => void }) {
   const [form, setForm] = useState({ name:'', email:'', phone:'', company:'', stage:'Lead' as Stage, notes:'' })
+  const [submitting, setSubmitting] = useState(false)
+  const [submitError, setSubmitError] = useState<string | null>(null)
 
-  function submit() {
+  async function submit() {
     if (!form.name || !form.email) return
-    const newContact: Contact = {
-      id: `c${Date.now()}`,
-      ...form,
-      score: 30,
-      rfm_tier: 'New Customer',
-      rfm_r: 4, rfm_f: 1, rfm_m: 1,
-      last_activity: new Date().toISOString(),
-      tags: [],
-      avatar_color: AVATAR_COLORS[Math.floor(Math.random() * AVATAR_COLORS.length)],
-      deal_value: 0,
-      created_at: new Date().toISOString(),
+    if (!workspaceId) { setSubmitError('No workspace selected'); return }
+    setSubmitting(true); setSubmitError(null)
+    try {
+      const res = await fetch('/api/leads-captured', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          workspaceId,
+          name: form.name,
+          email: form.email,
+          phone: form.phone,
+          source: 'manual',
+          status: stageToStatus(form.stage),
+          notes: form.notes,
+        }),
+      })
+      const data = await res.json() as { ok?: boolean; id?: string; error?: string }
+      if (!res.ok || data.error) throw new Error(data.error || 'Failed to add contact')
+
+      // Persist company in custom_fields via separate PATCH if provided
+      if (form.company && data.id) {
+        await fetch(`/api/leads-captured/${data.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ workspaceId, custom_fields: { company: form.company } }),
+        }).catch(() => {})
+      }
+
+      onAdded()
+      onClose()
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSubmitting(false)
     }
-    onAdd(newContact)
-    onClose()
   }
 
   return (
@@ -651,9 +980,12 @@ function AddContactModal({ onClose, onAdd }: { onClose: () => void; onAdd: (c: C
             <label className="text-xs text-gray-400 mb-1 block">Notes</label>
             <textarea value={form.notes} onChange={e => setForm(p => ({...p, notes:e.target.value}))} rows={2} className={inputCls + ' resize-none'} placeholder="Initial notes..." />
           </div>
+          {submitError && <p className="text-red-400 text-xs">{submitError}</p>}
           <div className="flex gap-3 pt-2">
             <button onClick={onClose} className="flex-1 py-2.5 border border-gray-700 text-gray-400 rounded-lg text-sm hover:text-white">Cancel</button>
-            <button onClick={submit} disabled={!form.name || !form.email} className="flex-1 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white rounded-lg text-sm font-medium transition-colors">Add Contact</button>
+            <button onClick={submit} disabled={!form.name || !form.email || submitting} className="flex-1 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white rounded-lg text-sm font-medium transition-colors">
+              {submitting ? 'Adding…' : 'Add Contact'}
+            </button>
           </div>
         </div>
       </div>
@@ -682,16 +1014,20 @@ const RFM_GRID: { label: string; count: number; color: string }[][] = [
 
 // ── Main Page ──────────────────────────────────────────────────────────────────
 export default function LeadsCRMPage() {
-  const [contacts, setContacts] = useState<Contact[]>(MOCK_CONTACTS)
-  const [activities] = useState<Activity[]>(MOCK_ACTIVITIES)
-  const [deals] = useState<Deal[]>(MOCK_DEALS)
+  const [contacts, setContacts] = useState<Contact[]>([])
+  const [activities, setActivities] = useState<Activity[]>([])
+  const [deals, setDeals] = useState<Deal[]>([])
   const [segments] = useState<Segment[]>(MOCK_SEGMENTS)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [workspaceId, setWorkspaceId] = useState<string | null>(null)
 
   const [mainTab, setMainTab] = useState<MainTab>('contacts')
   const [viewMode, setViewMode] = useState<ViewMode>('table')
   const [search, setSearch] = useState('')
   const [selectedContacts, setSelectedContacts] = useState<Set<string>>(new Set())
   const [selectedContact, setSelectedContact] = useState<Contact | null>(null)
+  const [selectedContactActivities, setSelectedContactActivities] = useState<Activity[]>([])
   const [kanbanDragId, setKanbanDragId] = useState<string | null>(null)
   const [activityFilter, setActivityFilter] = useState<string>('all')
 
@@ -700,6 +1036,102 @@ export default function LeadsCRMPage() {
   const [showAddActivity, setShowAddActivity] = useState(false)
   const [showAddDeal, setShowAddDeal] = useState(false)
   const [showAddContact, setShowAddContact] = useState(false)
+
+  // ── Data loading ──────────────────────────────────────────────────────────
+  const loadData = useCallback(async (wsId: string) => {
+    try {
+      setError(null)
+      const [leadsRes, dealsRes] = await Promise.all([
+        fetch(`/api/leads-captured?workspaceId=${wsId}`),
+        fetch(`/api/sales-deals?workspaceId=${wsId}`),
+      ])
+      const leads = (await leadsRes.json()) as LeadRow[] | { error?: string }
+      const dealsData = (await dealsRes.json()) as DealRow[] | { error?: string }
+      if (!Array.isArray(leads)) throw new Error((leads as { error?: string }).error || 'Failed to load contacts')
+      const dealRows = Array.isArray(dealsData) ? dealsData : []
+
+      // Fetch activities for each lead in parallel (limit if huge)
+      const leadsToFetchActivities = leads.slice(0, 50)
+      const activitySettled = await Promise.allSettled(
+        leadsToFetchActivities.map(l =>
+          fetch(`/api/leads-captured/${l.id}/activity`).then(r => r.ok ? r.json() as Promise<ActivityRow[]> : [])
+        )
+      )
+
+      const activitiesByLead = new Map<string, ActivityRow[]>()
+      const allActivities: Activity[] = []
+      const leadNameById = new Map<string, string>()
+      leads.forEach(l => leadNameById.set(l.id, l.name || '—'))
+
+      activitySettled.forEach((res, i) => {
+        const lead = leadsToFetchActivities[i]
+        const rows = res.status === 'fulfilled' && Array.isArray(res.value) ? res.value : []
+        activitiesByLead.set(lead.id, rows)
+        rows.forEach(r => {
+          allActivities.push({
+            id: r.id,
+            contact_id: r.lead_id,
+            contact_name: leadNameById.get(r.lead_id) || '—',
+            type: activityTypeNormalize(r.type),
+            title: r.title,
+            notes: r.description || '',
+            outcome: '',
+            next_action: '',
+            timestamp: r.created_at,
+          })
+        })
+      })
+
+      const dealsByEmail = new Map<string, DealRow[]>()
+      dealRows.forEach(d => {
+        if (d.contact_email) {
+          const arr = dealsByEmail.get(d.contact_email) || []
+          arr.push(d)
+          dealsByEmail.set(d.contact_email, arr)
+        }
+      })
+
+      const mappedContacts: Contact[] = leads.map(l => leadToContact(l, activitiesByLead, dealsByEmail))
+      const mappedDeals: Deal[] = dealRows.map(dealRowToDeal)
+
+      setContacts(mappedContacts)
+      setDeals(mappedDeals)
+      setActivities(allActivities.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    const wsId = typeof window !== 'undefined' ? localStorage.getItem('workspaceId') : null
+    setWorkspaceId(wsId)
+    if (wsId) loadData(wsId)
+    else setLoading(false)
+  }, [loadData])
+
+  // Refetch activities for selected contact (richer detail)
+  useEffect(() => {
+    if (!selectedContact) { setSelectedContactActivities([]); return }
+    const sel = selectedContact
+    fetch(`/api/leads-captured/${sel.id}/activity`)
+      .then(r => r.ok ? r.json() as Promise<ActivityRow[]> : [])
+      .then(rows => {
+        const acts: Activity[] = (Array.isArray(rows) ? rows : []).map(r => ({
+          id: r.id,
+          contact_id: r.lead_id,
+          contact_name: sel.name,
+          type: activityTypeNormalize(r.type),
+          title: r.title,
+          notes: r.description || '',
+          outcome: '',
+          next_action: '',
+          timestamp: r.created_at,
+        }))
+        setSelectedContactActivities(acts)
+      }).catch(() => setSelectedContactActivities([]))
+  }, [selectedContact?.id])
 
   const filtered = contacts.filter(c =>
     !search || c.name.toLowerCase().includes(search.toLowerCase()) || c.email.toLowerCase().includes(search.toLowerCase()) || c.company.toLowerCase().includes(search.toLowerCase())
@@ -729,10 +1161,35 @@ export default function LeadsCRMPage() {
   const churnRisk = contacts.filter(c => c.rfm_tier === 'At Risk' || c.rfm_tier === 'Lost').length
 
   // ── Kanban drag ───────────────────────────────────────────────────────────
-  function handleKanbanDrop(stage: Stage) {
-    if (!kanbanDragId) return
-    setContacts(cs => cs.map(c => c.id === kanbanDragId ? { ...c, stage } : c))
+  async function handleKanbanDrop(stage: Stage) {
+    const id = kanbanDragId
+    if (!id) return
     setKanbanDragId(null)
+    const previous = contacts.find(c => c.id === id)?.stage
+    // Optimistic update
+    setContacts(cs => cs.map(c => c.id === id ? { ...c, stage } : c))
+    try {
+      const res = await fetch('/api/leads-captured', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, status: stageToStatus(stage) }),
+      })
+      if (!res.ok) throw new Error('PATCH failed')
+    } catch {
+      // Rollback on error
+      if (previous) setContacts(cs => cs.map(c => c.id === id ? { ...c, stage: previous } : c))
+    }
+  }
+
+  async function deleteContact(id: string) {
+    const previous = contacts
+    setContacts(cs => cs.filter(c => c.id !== id))
+    try {
+      const res = await fetch(`/api/leads-captured?id=${id}`, { method: 'DELETE' })
+      if (!res.ok) throw new Error('DELETE failed')
+    } catch {
+      setContacts(previous)
+    }
   }
 
   // ── Bulk actions ──────────────────────────────────────────────────────────
@@ -753,6 +1210,30 @@ export default function LeadsCRMPage() {
   DEAL_STAGES.forEach(s => { dealStageMap[s] = deals.filter(d => d.stage === s) })
 
   const filteredActivities = activityFilter === 'all' ? activities : activities.filter(a => a.type === activityFilter)
+
+  // ── RFM Analysis: real computation from contacts ─────────────────────────
+  const rfmTierCounts: Record<RFMTier, number> = {
+    Champion: 0, Loyal: 0, 'Potential Loyalist': 0, 'New Customer': 0,
+    'At Risk': 0, Lost: 0,
+  }
+  contacts.forEach(c => { rfmTierCounts[c.rfm_tier] = (rfmTierCounts[c.rfm_tier] || 0) + 1 })
+
+  const rfmTierStats: { tier: RFMTier; count: number; aov: number; avgRecencyDays: number; action: string }[] = (Object.keys(rfmTierCounts) as RFMTier[]).map(tier => {
+    const items = contacts.filter(c => c.rfm_tier === tier)
+    const aov = items.length ? Math.round(items.reduce((s, c) => s + c.deal_value, 0) / items.length) : 0
+    const avgRecency = items.length
+      ? Math.round(items.reduce((s, c) => s + (Date.now() - new Date(c.last_activity).getTime()) / 86400000, 0) / items.length)
+      : 0
+    const actionMap: Record<RFMTier, string> = {
+      Champion: 'Reward & ask for referrals',
+      Loyal: 'Upsell to higher plan',
+      'Potential Loyalist': 'Loyalty program invite',
+      'New Customer': 'Onboarding sequence',
+      'At Risk': 'Re-engagement campaign',
+      Lost: 'Win-back offer',
+    }
+    return { tier, count: items.length, aov, avgRecencyDays: avgRecency, action: actionMap[tier] }
+  })
 
   return (
     <div className="h-full flex flex-col bg-gray-950">
@@ -825,8 +1306,46 @@ export default function LeadsCRMPage() {
       {/* ── Tab Content ─────────────────────────────────────────────────── */}
       <div className="flex-1 overflow-auto">
 
+        {/* Loading state */}
+        {loading && (
+          <div className="p-12 text-center text-gray-500">
+            <div className="inline-block w-8 h-8 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin mb-3" />
+            <p>Loading contacts…</p>
+          </div>
+        )}
+
+        {/* Error state */}
+        {!loading && error && (
+          <div className="p-8 m-6 bg-red-950/40 border border-red-800 rounded-xl text-center">
+            <p className="text-red-400 font-medium">Failed to load CRM data</p>
+            <p className="text-red-300/70 text-sm mt-1">{error}</p>
+            <button onClick={() => workspaceId && loadData(workspaceId)} className="mt-3 px-4 py-1.5 bg-red-900 hover:bg-red-800 text-white rounded-lg text-sm">Retry</button>
+          </div>
+        )}
+
+        {/* Empty state (no workspaceId or no contacts) */}
+        {!loading && !error && !workspaceId && (
+          <div className="p-12 m-6 bg-gray-900 border border-gray-800 rounded-xl text-center">
+            <div className="text-5xl mb-3">🔐</div>
+            <p className="text-white font-medium">No workspace selected</p>
+            <p className="text-gray-500 text-sm mt-1">Set up a workspace to use the CRM.</p>
+          </div>
+        )}
+
+        {!loading && !error && workspaceId && contacts.length === 0 && mainTab === 'contacts' && (
+          <div className="p-12 m-6 bg-gray-900 border border-gray-800 rounded-xl text-center">
+            <div className="text-5xl mb-3">📇</div>
+            <p className="text-white font-medium text-lg">Your CRM is empty</p>
+            <p className="text-gray-500 text-sm mt-1 mb-5">Add your first contact or import a CSV to get started.</p>
+            <div className="flex justify-center gap-3">
+              <button onClick={() => setShowAddContact(true)} className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-medium">➕ Add Contact</button>
+              <button onClick={() => setShowImport(true)} className="px-4 py-2 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 rounded-lg text-sm">⬆ Import CSV</button>
+            </div>
+          </div>
+        )}
+
         {/* ═══════════════ CONTACTS TAB ════════════════════════════════ */}
-        {mainTab === 'contacts' && (
+        {mainTab === 'contacts' && !loading && contacts.length > 0 && (
           <div className="p-6">
 
             {/* ── TABLE VIEW ── */}
@@ -886,7 +1405,7 @@ export default function LeadsCRMPage() {
                             <button onClick={() => setSelectedContact(c)} className="p-1.5 bg-gray-800 hover:bg-indigo-900/40 rounded text-xs" title="View">👁</button>
                             <button className="p-1.5 bg-gray-800 hover:bg-blue-900/40 rounded text-xs" title="Email">📧</button>
                             <button className="p-1.5 bg-gray-800 hover:bg-green-900/40 rounded text-xs" title="Call">📞</button>
-                            <button className="p-1.5 bg-gray-800 hover:bg-red-900/40 rounded text-xs text-gray-600 hover:text-red-400" onClick={() => setContacts(cs => cs.filter(x => x.id !== c.id))} title="Delete">✕</button>
+                            <button className="p-1.5 bg-gray-800 hover:bg-red-900/40 rounded text-xs text-gray-600 hover:text-red-400" onClick={() => deleteContact(c.id)} title="Delete">✕</button>
                           </div>
                         </td>
                       </tr>
@@ -1032,28 +1551,22 @@ export default function LeadsCRMPage() {
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-              {/* RFM Grid */}
+              {/* RFM Grid — real tier counts */}
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-                <h3 className="text-white font-semibold mb-4">RFM Segment Grid</h3>
-                <div className="mb-3 flex justify-between text-xs text-gray-500">
-                  <span>← Frequency →</span>
-                  <span>F1 → F5</span>
-                </div>
-                <div className="space-y-2">
-                  {['High Recency (R5-R4)', 'Mid Recency (R3)', 'Low Recency (R2-R1)'].map((rowLabel, ri) => (
-                    <div key={ri}>
-                      <div className="text-xs text-gray-600 mb-1.5">{rowLabel}</div>
-                      <div className="grid grid-cols-3 gap-2">
-                        {RFM_GRID[ri].map((cell, ci) => (
-                          <div key={ci} className={`${cell.color} border rounded-lg p-3 text-center cursor-pointer hover:opacity-80 transition-opacity`}>
-                            <p className="text-xs text-gray-300 font-medium leading-tight mb-1">{cell.label}</p>
-                            <p className="text-xl font-bold text-white">{cell.count}</p>
-                          </div>
-                        ))}
+                <h3 className="text-white font-semibold mb-4">RFM Segment Distribution</h3>
+                {contacts.length === 0 ? (
+                  <p className="text-gray-500 text-sm">No contacts yet — add contacts to see RFM analysis.</p>
+                ) : (
+                  <div className="grid grid-cols-2 gap-3">
+                    {(Object.keys(rfmTierCounts) as RFMTier[]).map(tier => (
+                      <div key={tier} className={`border rounded-lg p-3 ${RFM_COLORS[tier]}`}>
+                        <p className="text-xs text-gray-300 font-medium leading-tight mb-1">{tier}</p>
+                        <p className="text-xl font-bold text-white">{rfmTierCounts[tier]}</p>
+                        <p className="text-xs text-gray-500 mt-1">{contacts.length ? Math.round((rfmTierCounts[tier] / contacts.length) * 100) : 0}%</p>
                       </div>
-                    </div>
-                  ))}
-                </div>
+                    ))}
+                  </div>
+                )}
               </div>
 
               {/* AI Insights */}
@@ -1092,24 +1605,20 @@ export default function LeadsCRMPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {[
-                    { tier:'Champion', count:47, aov:'$1,240', recency:3, action:'Reward & ask for referrals', tierKey:'Champion' as RFMTier },
-                    { tier:'Loyal', count:38, aov:'$820', recency:12, action:'Upsell to higher plan', tierKey:'Loyal' as RFMTier },
-                    { tier:'Potential Loyalist', count:29, aov:'$480', recency:18, action:'Loyalty program invite', tierKey:'Potential Loyalist' as RFMTier },
-                    { tier:'At Risk', count:31, aov:'$420', recency:45, action:'Re-engagement campaign', tierKey:'At Risk' as RFMTier },
-                    { tier:'Lost', count:19, aov:'$220', recency:120, action:'Win-back offer', tierKey:'Lost' as RFMTier },
-                    { tier:'New Customer', count:58, aov:'$180', recency:5, action:'Onboarding sequence', tierKey:'New Customer' as RFMTier },
-                  ].map((row, i) => (
+                  {rfmTierStats.filter(r => r.count > 0).map((row, i) => (
                     <tr key={i} className="border-b border-gray-800 hover:bg-gray-800/30">
                       <td className="px-4 py-3">
-                        <span className={`px-2 py-0.5 rounded-full text-xs border ${RFM_COLORS[row.tierKey]}`}>{row.tier}</span>
+                        <span className={`px-2 py-0.5 rounded-full text-xs border ${RFM_COLORS[row.tier]}`}>{row.tier}</span>
                       </td>
                       <td className="px-4 py-3 text-white font-medium">{row.count}</td>
-                      <td className="px-4 py-3 text-emerald-400 font-medium">{row.aov}</td>
-                      <td className="px-4 py-3 text-gray-300">{row.recency}d</td>
+                      <td className="px-4 py-3 text-emerald-400 font-medium">${row.aov.toLocaleString()}</td>
+                      <td className="px-4 py-3 text-gray-300">{row.avgRecencyDays}d</td>
                       <td className="px-4 py-3 text-gray-400 text-sm">{row.action}</td>
                     </tr>
                   ))}
+                  {rfmTierStats.every(r => r.count === 0) && (
+                    <tr><td colSpan={5} className="text-center py-8 text-gray-500">No contact data yet</td></tr>
+                  )}
                 </tbody>
               </table>
             </div>
@@ -1231,12 +1740,12 @@ export default function LeadsCRMPage() {
       </div>
 
       {/* ── Modals ───────────────────────────────────────────────────────── */}
-      {showImport && <CSVImportModal onClose={() => setShowImport(false)} />}
+      {showImport && <CSVImportModal onClose={() => setShowImport(false)} workspaceId={workspaceId} onImported={() => workspaceId && loadData(workspaceId)} />}
       {showSegmentModal && <SegmentModal onClose={() => setShowSegmentModal(false)} />}
-      {showAddActivity && <AddActivityModal onClose={() => setShowAddActivity(false)} contacts={contacts} />}
-      {showAddDeal && <AddDealModal onClose={() => setShowAddDeal(false)} contacts={contacts} />}
-      {showAddContact && <AddContactModal onClose={() => setShowAddContact(false)} onAdd={c => setContacts(cs => [c, ...cs])} />}
-      {selectedContact && <ContactSlideover contact={selectedContact} onClose={() => setSelectedContact(null)} activities={activities} />}
+      {showAddActivity && <AddActivityModal onClose={() => setShowAddActivity(false)} contacts={contacts} workspaceId={workspaceId} onLogged={() => workspaceId && loadData(workspaceId)} />}
+      {showAddDeal && <AddDealModal onClose={() => setShowAddDeal(false)} contacts={contacts} workspaceId={workspaceId} onAdded={() => workspaceId && loadData(workspaceId)} />}
+      {showAddContact && <AddContactModal onClose={() => setShowAddContact(false)} workspaceId={workspaceId} onAdded={() => workspaceId && loadData(workspaceId)} />}
+      {selectedContact && <ContactSlideover contact={selectedContact} onClose={() => setSelectedContact(null)} activities={selectedContactActivities} workspaceId={workspaceId} onUpdated={() => workspaceId && loadData(workspaceId)} />}
     </div>
   )
 }

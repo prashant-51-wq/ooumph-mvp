@@ -410,16 +410,55 @@ export default function SettingsPage() {
   }
 
   const testConnection = async (provider: string) => {
-    setTestResults(prev => ({ ...prev, [provider]: 'Testing...' }))
-    await new Promise(r => setTimeout(r, 1200))
+    // Map UI provider slug → BYOK provider name + ModelSettings field
+    const PROVIDER_MAP: Record<string, { byok: string; field: keyof ModelSettings }> = {
+      openai:     { byok: 'openai',     field: 'openaiApiKey' },
+      anthropic:  { byok: 'anthropic',  field: 'anthropicApiKey' },
+      elevenLabs: { byok: 'elevenlabs', field: 'elevenLabsApiKey' },
+      stability:  { byok: 'stability',  field: 'stabilityApiKey' },
+      replicate:  { byok: 'replicate',  field: 'replicateApiToken' },
+      gemini:     { byok: 'gemini',     field: 'geminiApiKey' },
+      kling:      { byok: 'kling',      field: 'klingAccessKey' },
+      runway:     { byok: 'runway',     field: 'runwayApiKey' },
+    }
+    const map = PROVIDER_MAP[provider]
+    if (!map) {
+      setTestResults(prev => ({ ...prev, [provider]: '⚠ Unknown provider' }))
+      return
+    }
     const ms = modelSettings as unknown as Record<string, string>
-    const key = ms[provider + 'ApiKey'] || ms[provider + 'AccessKey'] || ''
+    const key = ms[map.field as string] || ''
     if (!key) {
       setTestResults(prev => ({ ...prev, [provider]: '⚠ No API key set' }))
-    } else {
-      setTestResults(prev => ({ ...prev, [provider]: '✅ Connected · key accepted' }))
+      setTimeout(() => setTestResults(prev => { const s = { ...prev }; delete s[provider]; return s }), 4000)
+      return
     }
-    setTimeout(() => setTestResults(prev => { const s = { ...prev }; delete s[provider]; return s }), 4000)
+    setTestResults(prev => ({ ...prev, [provider]: 'Testing…' }))
+    try {
+      const workspaceId = localStorage.getItem('workspaceId') || ''
+      const res = await fetch('/api/workspace-secrets', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspaceId, provider: map.byok, action: 'test', key }),
+      })
+      const data = await res.json()
+      if (data?.ok) {
+        // Also persist to encrypted store on a successful test
+        try {
+          await fetch('/api/workspace-secrets', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ workspaceId, provider: map.byok, key }),
+          })
+        } catch { /* save failure is non-blocking */ }
+        setTestResults(prev => ({ ...prev, [provider]: `✅ ${data.message || 'Connected'}` }))
+      } else {
+        setTestResults(prev => ({ ...prev, [provider]: `❌ ${data?.message || data?.error || 'Connection failed'}` }))
+      }
+    } catch (err) {
+      setTestResults(prev => ({ ...prev, [provider]: `❌ ${err instanceof Error ? err.message : 'Network error'}` }))
+    }
+    setTimeout(() => setTestResults(prev => { const s = { ...prev }; delete s[provider]; return s }), 8000)
   }
 
   const testNotification = async (service: 'slack' | 'telegram') => {

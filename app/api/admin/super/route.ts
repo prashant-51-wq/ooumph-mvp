@@ -1,158 +1,304 @@
-// TODO: Add platform-owner auth check — only super admin role can access
+/**
+ * /api/admin/super
+ *
+ * Platform-owner dashboard data. REQUIRES super admin authentication.
+ *
+ * Auth: users.is_admin = 1 OR email in SUPER_ADMIN_EMAILS env var
+ *       OR x-admin-secret header matching ADMIN_SECRET
+ *
+ * Sections:
+ *   ?section=overview      → platform-wide MRR, signups, churn
+ *   ?section=agencies      → list of all workspaces (with vendor profiles + subscriptions)
+ *   ?section=commissions   → affiliate / vendor commission ledger
+ *   ?section=platform      → platform settings
+ */
 
 import { NextRequest, NextResponse } from 'next/server'
+import { sql } from '@/lib/db'
+import { assertSuperAdmin } from '@/lib/guards'
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-type AgencyPlan = 'Starter' | 'Pro' | 'Agency' | 'Enterprise'
-type AgencyStatus = 'Active' | 'Trial' | 'Suspended' | 'Churned'
-
-interface OverviewStats {
-  totalAgencies: number
-  activeMrr: number
-  platformRevenue: number
-  activeSubscriptions: number
-  trialSubscriptions: number
-  churnRate: number
-  avgRevenuePerAgency: number
-  recentSignups: RecentSignup[]
-  revenueByMonth: MonthRevenue[]
-}
-
-interface RecentSignup {
+interface WorkspaceRow {
   id: string
   name: string
-  ownerEmail: string
-  plan: AgencyPlan
-  mrr: number
-  joinDate: string
-  status: AgencyStatus
+  industry: string | null
+  owner_email: string
+  status: string
+  created_at: string
 }
 
-interface AgencyRecord {
+interface SubscriptionRow {
+  workspace_id: string
+  plan_id: string
+  status: string
+  current_period_end: string | null
+}
+
+interface PlanRow {
   id: string
   name: string
-  ownerEmail: string
-  plan: AgencyPlan
-  mrr: number
-  seatsUsed: number
-  seatsTotal: number
-  status: AgencyStatus
-  joinDate: string
+  slug: string
+  price_monthly: number
 }
 
-interface AffiliateRecord {
-  id: string
-  name: string
-  email: string
-  referredAgencies: number
-  totalReferralMrr: number
-  commissionRate: number
-  earnedThisMonth: number
-  paidOut: number
-  balance: number
-}
+async function getOverview() {
+  const workspacesRes = await sql`SELECT id, name, industry, owner_email, status, created_at FROM workspaces ORDER BY created_at DESC`
+  const workspaces = workspacesRes.rows as unknown as WorkspaceRow[]
 
-interface CommissionsData {
-  affiliates: AffiliateRecord[]
-  totalOwed: number
-  paidThisMonth: number
-  topAffiliateName: string
-}
+  const subsRes = await sql`SELECT workspace_id, plan_id, status, current_period_end FROM subscriptions`
+  const subs = subsRes.rows as unknown as SubscriptionRow[]
 
-interface MonthRevenue {
-  month: string
-  value: number
-}
+  const plansRes = await sql`SELECT id, name, slug, price_monthly FROM plans`
+  const plans = plansRes.rows as unknown as PlanRow[]
 
-// ─── Mock data ────────────────────────────────────────────────────────────────
+  const planById = new Map(plans.map(p => [p.id, p]))
+  const subByWs = new Map(subs.map(s => [s.workspace_id, s]))
 
-const AGENCIES: AgencyRecord[] = [
-  { id: 'ag-1', name: 'Pixel Peak Media', ownerEmail: 'lisa@pixelpeak.com', plan: 'Agency', mrr: 497, seatsUsed: 8, seatsTotal: 10, status: 'Active', joinDate: '2025-11-14' },
-  { id: 'ag-2', name: 'GrowthStack Co.', ownerEmail: 'dev@growthstack.io', plan: 'Pro', mrr: 149, seatsUsed: 3, seatsTotal: 5, status: 'Active', joinDate: '2026-01-02' },
-  { id: 'ag-3', name: 'BrightBrand HQ', ownerEmail: 'ops@brightbrandhq.com', plan: 'Enterprise', mrr: 997, seatsUsed: 22, seatsTotal: 50, status: 'Active', joinDate: '2025-09-30' },
-  { id: 'ag-4', name: 'Funnel Craft Agency', ownerEmail: 'joe@funnelcraft.io', plan: 'Starter', mrr: 49, seatsUsed: 1, seatsTotal: 2, status: 'Trial', joinDate: '2026-05-20' },
-  { id: 'ag-5', name: 'ScaleNow Partners', ownerEmail: 'team@scalenow.com', plan: 'Agency', mrr: 497, seatsUsed: 7, seatsTotal: 10, status: 'Active', joinDate: '2026-02-14' },
-  { id: 'ag-6', name: 'Momentum Marketing', ownerEmail: 'hi@momentumktg.co', plan: 'Pro', mrr: 149, seatsUsed: 4, seatsTotal: 5, status: 'Active', joinDate: '2026-03-08' },
-  { id: 'ag-7', name: 'DraftMark Agency', ownerEmail: 'admin@draftmark.xyz', plan: 'Starter', mrr: 49, seatsUsed: 2, seatsTotal: 2, status: 'Suspended', joinDate: '2025-12-01' },
-  { id: 'ag-8', name: 'ViralVault Studio', ownerEmail: 'vv@viralvault.studio', plan: 'Pro', mrr: 0, seatsUsed: 0, seatsTotal: 5, status: 'Churned', joinDate: '2026-01-15' },
-]
+  // MRR = sum of active subscriptions × plan price
+  const activeMrrCents = subs.reduce((sum, s) => {
+    if (s.status !== 'active' && s.status !== 'trialing') return sum
+    const plan = planById.get(s.plan_id)
+    return sum + (plan?.price_monthly || 0)
+  }, 0)
+  const activeMrr = activeMrrCents / 100
 
-const AFFILIATES: AffiliateRecord[] = [
-  { id: 'aff-1', name: 'Jordan Miles', email: 'jordan@affiliates.io', referredAgencies: 14, totalReferralMrr: 3820, commissionRate: 20, earnedThisMonth: 764, paidOut: 4200, balance: 764 },
-  { id: 'aff-2', name: 'Priya Chandran', email: 'priya.c@resellers.net', referredAgencies: 8, totalReferralMrr: 1940, commissionRate: 20, earnedThisMonth: 388, paidOut: 1800, balance: 388 },
-  { id: 'aff-3', name: 'Brett Farley', email: 'brett@brettfarley.com', referredAgencies: 5, totalReferralMrr: 1200, commissionRate: 15, earnedThisMonth: 180, paidOut: 820, balance: 180 },
-  { id: 'aff-4', name: 'Nadia Osei', email: 'nadia@growthhq.africa', referredAgencies: 3, totalReferralMrr: 595, commissionRate: 15, earnedThisMonth: 89, paidOut: 300, balance: 89 },
-]
+  const totalAgencies = workspaces.length
+  const activeSubscriptions = subs.filter(s => s.status === 'active').length
+  const trialSubscriptions = subs.filter(s => s.status === 'trialing').length
+  const churnedCount = subs.filter(s => s.status === 'canceled' || s.status === 'cancelled').length
+  const churnRate = totalAgencies > 0 ? parseFloat(((churnedCount / totalAgencies) * 100).toFixed(1)) : 0
+  const avgRevenuePerAgency = activeSubscriptions > 0 ? Math.round(activeMrr / activeSubscriptions) : 0
 
-const REVENUE_BY_MONTH: MonthRevenue[] = [
-  { month: 'Dec', value: 8200 },
-  { month: 'Jan', value: 10400 },
-  { month: 'Feb', value: 12800 },
-  { month: 'Mar', value: 15100 },
-  { month: 'Apr', value: 17600 },
-  { month: 'May', value: 21340 },
-]
+  // Platform revenue: 20% take rate by default (could be from platform_settings)
+  const platformRevenue = Math.round(activeMrr * 0.2)
 
-// ─── Handlers ─────────────────────────────────────────────────────────────────
+  // Recent signups: 5 most recent workspaces
+  const recentSignups = workspaces.slice(0, 5).map(w => {
+    const sub = subByWs.get(w.id)
+    const plan = sub ? planById.get(sub.plan_id) : undefined
+    return {
+      id: w.id,
+      name: w.name,
+      ownerEmail: w.owner_email,
+      plan: plan?.name || 'Free',
+      mrr: plan ? plan.price_monthly / 100 : 0,
+      joinDate: w.created_at,
+      status: sub?.status === 'active' ? 'Active' : sub?.status === 'trialing' ? 'Trial' : 'Free',
+    }
+  })
 
-function getOverview(): OverviewStats {
-  const activeAgencies = AGENCIES.filter(a => a.status !== 'Churned')
-  const totalMrr = activeAgencies.reduce((s, a) => s + a.mrr, 0)
-  const churnedCount = AGENCIES.filter(a => a.status === 'Churned').length
-  const churnRate = parseFloat(((churnedCount / AGENCIES.length) * 100).toFixed(1))
-  const recentSignups: RecentSignup[] = [...AGENCIES]
-    .sort((a, b) => new Date(b.joinDate).getTime() - new Date(a.joinDate).getTime())
-    .slice(0, 5)
-    .map(({ id, name, ownerEmail, plan, mrr, joinDate, status }) => ({
-      id, name, ownerEmail, plan, mrr, joinDate, status,
-    }))
+  // Revenue by month: aggregate from commission_ledger
+  // Last 6 months
+  const ledgerRes = await sql`
+    SELECT gross_amount, created_at
+    FROM commission_ledger
+    WHERE created_at >= ${new Date(Date.now() - 180 * 86400000).toISOString()}
+    ORDER BY created_at ASC
+  `
+  const ledger = ledgerRes.rows as Array<{ gross_amount: number; created_at: string }>
+  const monthBuckets = new Map<string, number>()
+  for (let i = 5; i >= 0; i--) {
+    const d = new Date()
+    d.setMonth(d.getMonth() - i)
+    monthBuckets.set(d.toLocaleString('default', { month: 'short' }), 0)
+  }
+  for (const entry of ledger) {
+    const month = new Date(entry.created_at).toLocaleString('default', { month: 'short' })
+    monthBuckets.set(month, (monthBuckets.get(month) || 0) + entry.gross_amount / 100)
+  }
+  const revenueByMonth = Array.from(monthBuckets.entries()).map(([month, value]) => ({ month, value: Math.round(value) }))
 
   return {
-    totalAgencies: AGENCIES.length,
-    activeMrr: totalMrr,
-    platformRevenue: Math.round(totalMrr * 0.2),
-    activeSubscriptions: AGENCIES.filter(a => a.status === 'Active').length,
-    trialSubscriptions: AGENCIES.filter(a => a.status === 'Trial').length,
+    totalAgencies,
+    activeMrr: Math.round(activeMrr),
+    platformRevenue,
+    activeSubscriptions,
+    trialSubscriptions,
     churnRate,
-    avgRevenuePerAgency: Math.round(totalMrr / Math.max(activeAgencies.length, 1)),
+    avgRevenuePerAgency,
     recentSignups,
-    revenueByMonth: REVENUE_BY_MONTH,
+    revenueByMonth,
   }
 }
 
-function getAgencies(): AgencyRecord[] {
-  return AGENCIES
+async function getAgencies() {
+  const workspacesRes = await sql`SELECT id, name, industry, owner_email, status, created_at FROM workspaces ORDER BY created_at DESC`
+  const workspaces = workspacesRes.rows as unknown as WorkspaceRow[]
+
+  const subsRes = await sql`SELECT workspace_id, plan_id, status FROM subscriptions`
+  const subs = subsRes.rows as unknown as SubscriptionRow[]
+
+  const plansRes = await sql`SELECT id, name, price_monthly FROM plans`
+  const plans = plansRes.rows as unknown as PlanRow[]
+
+  const membersRes = await sql`SELECT workspace_id, COUNT(*) as count FROM workspace_members WHERE status = 'active' GROUP BY workspace_id`
+  const members = membersRes.rows as Array<{ workspace_id: string; count: number }>
+
+  const planById = new Map(plans.map(p => [p.id, p]))
+  const subByWs = new Map(subs.map(s => [s.workspace_id, s]))
+  const memberCountByWs = new Map(members.map(m => [m.workspace_id, Number(m.count)]))
+
+  return workspaces.map(w => {
+    const sub = subByWs.get(w.id)
+    const plan = sub ? planById.get(sub.plan_id) : undefined
+    const planName = (plan?.name || 'Free') as 'Free' | 'Starter' | 'Pro' | 'Agency' | 'Enterprise'
+    const planSeatLimits: Record<string, number> = { Free: 1, Starter: 2, Pro: 5, Agency: 10, Enterprise: 50 }
+    return {
+      id: w.id,
+      name: w.name,
+      ownerEmail: w.owner_email,
+      plan: planName,
+      mrr: plan ? plan.price_monthly / 100 : 0,
+      seatsUsed: memberCountByWs.get(w.id) || 1,
+      seatsTotal: planSeatLimits[planName] || 1,
+      status: sub?.status === 'active' ? 'Active' : sub?.status === 'trialing' ? 'Trial' : (w.status === 'suspended' ? 'Suspended' : 'Active'),
+      joinDate: w.created_at,
+    }
+  })
 }
 
-function getCommissions(): CommissionsData {
-  const totalOwed = AFFILIATES.reduce((s, a) => s + a.balance, 0)
-  const paidThisMonth = AFFILIATES.reduce((s, a) => s + a.earnedThisMonth, 0)
-  const top = AFFILIATES.reduce((t, a) => a.balance > t.balance ? a : t, AFFILIATES[0])
+async function getCommissions() {
+  const ledgerRes = await sql`
+    SELECT vendor_workspace_id, SUM(gross_amount) as gross, SUM(commission_amount) as commission, SUM(net_amount) as net
+    FROM commission_ledger
+    GROUP BY vendor_workspace_id
+  `
+  const ledger = ledgerRes.rows as Array<{
+    vendor_workspace_id: string
+    gross: number
+    commission: number
+    net: number
+  }>
+
+  const vendorIds = ledger.map(l => l.vendor_workspace_id)
+  let vendors: Array<{ workspace_id: string; white_label_name: string | null }> = []
+  if (vendorIds.length > 0) {
+    // SQLite doesn't support array params nicely; fetch all and filter
+    const vendorsRes = await sql`SELECT workspace_id, white_label_name FROM vendor_profiles`
+    vendors = vendorsRes.rows as Array<{ workspace_id: string; white_label_name: string | null }>
+  }
+  const workspacesRes = await sql`SELECT id, name, owner_email FROM workspaces`
+  const workspaces = workspacesRes.rows as Array<{ id: string; name: string; owner_email: string }>
+
+  const wsById = new Map(workspaces.map(w => [w.id, w]))
+  const vendorByWs = new Map(vendors.map(v => [v.workspace_id, v]))
+
+  const clientCountsRes = await sql`SELECT vendor_workspace_id, COUNT(*) as count FROM client_accounts GROUP BY vendor_workspace_id`
+  const clientCounts = new Map(
+    (clientCountsRes.rows as Array<{ vendor_workspace_id: string; count: number }>).map(r => [r.vendor_workspace_id, Number(r.count)])
+  )
+
+  const affiliates = ledger.map(l => {
+    const ws = wsById.get(l.vendor_workspace_id)
+    const vendor = vendorByWs.get(l.vendor_workspace_id)
+    return {
+      id: l.vendor_workspace_id,
+      name: vendor?.white_label_name || ws?.name || 'Unknown',
+      email: ws?.owner_email || '',
+      referredAgencies: clientCounts.get(l.vendor_workspace_id) || 0,
+      totalReferralMrr: Math.round(l.gross / 100),
+      commissionRate: l.gross > 0 ? Math.round((l.commission / l.gross) * 100) : 0,
+      earnedThisMonth: Math.round(l.commission / 100),
+      paidOut: 0, // TODO: track separately when payouts are processed
+      balance: Math.round(l.commission / 100),
+    }
+  })
+
+  const totalOwed = affiliates.reduce((s, a) => s + a.balance, 0)
+  const paidThisMonth = affiliates.reduce((s, a) => s + a.earnedThisMonth, 0)
+  const top = affiliates.reduce<typeof affiliates[number] | null>((t, a) => (!t || a.balance > t.balance ? a : t), null)
+
   return {
-    affiliates: AFFILIATES,
+    affiliates,
     totalOwed,
     paidThisMonth,
     topAffiliateName: top?.name ?? '',
   }
 }
 
-// ─── Route handler ────────────────────────────────────────────────────────────
+async function getPlatformSettings() {
+  const result = await sql`SELECT key, value FROM platform_settings`
+  const rows = result.rows as Array<{ key: string; value: string }>
+  const settings: Record<string, string> = {}
+  for (const row of rows) {
+    settings[row.key] = row.value
+  }
+  return settings
+}
 
 export async function GET(req: NextRequest) {
+  const denied = await assertSuperAdmin(req)
+  if (denied) return denied
+
   const section = req.nextUrl.searchParams.get('section')
 
-  switch (section) {
-    case 'overview':
-      return NextResponse.json(getOverview())
-    case 'agencies':
-      return NextResponse.json(getAgencies())
-    case 'commissions':
-      return NextResponse.json(getCommissions())
-    default:
-      return NextResponse.json(
-        { error: 'Invalid section. Use: overview | agencies | commissions' },
-        { status: 400 }
-      )
+  try {
+    switch (section) {
+      case 'overview':
+        return NextResponse.json(await getOverview())
+      case 'agencies':
+        return NextResponse.json(await getAgencies())
+      case 'commissions':
+        return NextResponse.json(await getCommissions())
+      case 'platform':
+        return NextResponse.json(await getPlatformSettings())
+      default:
+        return NextResponse.json(
+          { error: 'Invalid section. Use: overview | agencies | commissions | platform' },
+          { status: 400 }
+        )
+    }
+  } catch (err) {
+    console.error('[/api/admin/super]', err)
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : 'Internal error' },
+      { status: 500 }
+    )
+  }
+}
+
+/**
+ * POST /api/admin/super
+ * Update platform settings (admin only).
+ */
+export async function POST(req: NextRequest) {
+  const denied = await assertSuperAdmin(req)
+  if (denied) return denied
+
+  try {
+    const body = await req.json()
+    const action = body.action as string
+
+    if (action === 'update_setting') {
+      const { key, value } = body as { key: string; value: string }
+      if (!key) return NextResponse.json({ error: 'key required' }, { status: 400 })
+      // UPSERT pattern that works in both SQLite and Postgres
+      const existing = await sql`SELECT key FROM platform_settings WHERE key = ${key} LIMIT 1`
+      if ((existing.rows[0] as { key?: string } | undefined)?.key) {
+        await sql`UPDATE platform_settings SET value = ${value}, updated_at = ${new Date().toISOString()} WHERE key = ${key}`
+      } else {
+        await sql`INSERT INTO platform_settings (key, value) VALUES (${key}, ${value})`
+      }
+      return NextResponse.json({ ok: true })
+    }
+
+    if (action === 'suspend_workspace') {
+      const { workspaceId } = body as { workspaceId: string }
+      await sql`UPDATE workspaces SET status = 'suspended' WHERE id = ${workspaceId}`
+      return NextResponse.json({ ok: true })
+    }
+
+    if (action === 'unsuspend_workspace') {
+      const { workspaceId } = body as { workspaceId: string }
+      await sql`UPDATE workspaces SET status = 'active' WHERE id = ${workspaceId}`
+      return NextResponse.json({ ok: true })
+    }
+
+    return NextResponse.json({ error: 'Unknown action' }, { status: 400 })
+  } catch (err) {
+    console.error('[/api/admin/super POST]', err)
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : 'Internal error' },
+      { status: 500 }
+    )
   }
 }
