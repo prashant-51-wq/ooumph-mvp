@@ -1562,7 +1562,11 @@ export default function DashboardPage() {
         </div>
 
         {/* ── Body ──────────────────────────────────────────────────────────── */}
-        <div className="flex flex-1 overflow-hidden">
+        {/* min-w-0 + min-h-0 on the flex row prevents any single column from
+            forcing the row wider than its allotted main area (which would
+            push the global sidebar off-screen). The chat panel's own min-w-0
+            below lets it shrink to fit alongside the fixed-width stats + rail. */}
+        <div className="flex flex-1 min-w-0 min-h-0 overflow-hidden">
 
           {/* ── Left: Chat panel ──────────────────────────────────────────────── */}
           <div className="flex-1 flex flex-col min-w-0 border-r border-gray-800">

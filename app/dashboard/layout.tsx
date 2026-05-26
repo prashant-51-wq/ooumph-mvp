@@ -495,8 +495,13 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           <SidebarContent {...sidebarProps} />
         </aside>
 
-        {/* Main content */}
-        <main className="flex-1 overflow-auto">
+        {/* Main content
+            min-w-0 is critical: flex-1 items have implicit `min-width: auto`,
+            meaning they refuse to shrink below their content's intrinsic
+            min-content. Without min-w-0, a wide page (e.g. /dashboard with
+            its 3-column rail layout) can force <main> to grow horizontally,
+            pushing the fixed-width sidebar off the viewport's left edge. */}
+        <main className="flex-1 min-w-0 overflow-auto">
           {/* Command palette */}
           <CommandPalette open={cmdPaletteOpen} onClose={() => setCmdPaletteOpen(false)} />
 
