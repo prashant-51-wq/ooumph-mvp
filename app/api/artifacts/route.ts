@@ -13,8 +13,25 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
   const workspaceId = searchParams.get('workspaceId')
   const type = searchParams.get('type')
+  const id = searchParams.get('id')
   const limit = parseInt(searchParams.get('limit') || '50')
   if (!workspaceId) return NextResponse.json([])
+
+  // Single-artifact lookup by id (used by ReviewRequiredModal + detail views)
+  if (id) {
+    const single = await sql`
+      SELECT * FROM artifacts
+      WHERE id = ${id} AND workspace_id = ${workspaceId}
+      LIMIT 1
+    `
+    const row = single.rows[0] as Record<string, unknown> | undefined
+    if (!row) return NextResponse.json(null, { status: 404 })
+    let parsedCj: unknown = row.content_json
+    if (typeof row.content_json === 'string') {
+      try { parsedCj = JSON.parse(row.content_json) } catch { /* keep raw */ }
+    }
+    return NextResponse.json({ ...row, content_json: parsedCj })
+  }
 
   let rows
   if (type && TYPE_ALIASES[type]) {

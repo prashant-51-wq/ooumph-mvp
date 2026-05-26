@@ -3,6 +3,9 @@
 import Link from 'next/link'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
+import { useAgentStream } from '@/lib/use-agent-stream'
+import AgentConsole from '@/components/AgentConsole'
+import ReviewRequiredModal from '@/components/ReviewRequiredModal'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -31,6 +34,9 @@ interface Message {
   timestamp: Date
   tokens?: number
   cost?: number
+  /** When true, the bubble's text is sourced from useAgentStream.streamingText
+   *  in real time. Flipped to false (and `text` set to final reply) on done. */
+  isStreaming?: boolean
 }
 
 interface AgentRun {
@@ -421,6 +427,8 @@ function MessageBubble({
   onRephrase,
   executing,
   executingMsgId,
+  streamingText,
+  isLive,
 }: {
   msg: Message
   userLetter: string
@@ -428,13 +436,22 @@ function MessageBubble({
   onRephrase: () => void
   executing: boolean
   executingMsgId: string | null
+  /** When this message is the currently-streaming bubble, the live token
+   *  text comes from the hook's streamingText state — not msg.text. */
+  streamingText?: string
+  /** True when this specific message is actively receiving token deltas. */
+  isLive?: boolean
 }) {
   const isCmo = msg.role === 'cmo'
   const [copied, setCopied] = useState(false)
   const [feedback, setFeedback] = useState<'up' | 'down' | null>(null)
 
+  // Choose the text source: live streamingText for the in-flight bubble,
+  // otherwise the finalized msg.text from state.
+  const displayText = isLive ? (streamingText ?? '') : msg.text
+
   function handleCopy() {
-    void navigator.clipboard.writeText(msg.text)
+    void navigator.clipboard.writeText(displayText)
     setCopied(true)
     setTimeout(() => setCopied(false), 1500)
   }
@@ -453,10 +470,21 @@ function MessageBubble({
               : 'bg-indigo-600 text-white rounded-tr-sm'
           }`}
         >
-          {isCmo ? renderCMOText(msg.text) : msg.text}
+          {isCmo ? (
+            <>
+              {displayText.length > 0
+                ? renderCMOText(displayText)
+                : isLive
+                  ? <span className="text-gray-500 italic">thinking…</span>
+                  : null}
+              {isLive && displayText.length > 0 && (
+                <span className="inline-block w-1.5 h-3.5 bg-indigo-400 ml-0.5 align-middle animate-pulse" />
+              )}
+            </>
+          ) : msg.text}
 
-          {/* Copy button on hover (CMO only) */}
-          {isCmo && (
+          {/* Copy button on hover (CMO only, hide while streaming) */}
+          {isCmo && !isLive && (
             <button
               onClick={handleCopy}
               className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded bg-gray-700 hover:bg-gray-600 text-gray-400 hover:text-white text-xs"
@@ -891,6 +919,28 @@ export default function DashboardPage() {
   const [showAttachMenu, setShowAttachMenu] = useState(false)
   const [isRecording, setIsRecording] = useState(false)
 
+  // ── Agent Console (right-side rail) ──────────────────────────────────────
+  // Persisted across reloads so the user's last preference is honored.
+  const [consoleOpen, setConsoleOpen] = useState(true)
+  // The id of the message bubble that the current stream is typing into.
+  // While set, that bubble's text comes from useAgentStream.streamingText.
+  const [streamingMsgId, setStreamingMsgId] = useState<string | null>(null)
+  // Capture the pending proposal so we can finalize the bubble + show
+  // the ProposalCard once the `done` event lands.
+  const pendingProposalRef = useRef<{
+    msgId: string
+    project: ProjectProposal
+    team: TeamMember[]
+    firstAction: string
+  } | null>(null)
+
+  // Review Required Modal state — opens when an `approval_pending` event arrives
+  const [reviewModal, setReviewModal] = useState<{
+    approvalId: string
+    artifactId: string
+    publishDestination?: string
+  } | null>(null)
+
   // Scroll ref
   const bottomRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -919,9 +969,19 @@ export default function DashboardPage() {
       }
       setWorkspaceId(wid)
       setBusinessName(localStorage.getItem('businessName') || '')
+      // Restore Agent Console open/closed preference
+      const savedConsole = localStorage.getItem('ooumph_console_open')
+      if (savedConsole !== null) setConsoleOpen(savedConsole === 'true')
     }
     init()
   }, [router])
+
+  // Persist the console preference whenever it changes
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('ooumph_console_open', String(consoleOpen))
+    }
+  }, [consoleOpen])
 
   // ── Stats ─────────────────────────────────────────────────────────────────────
 
@@ -1140,7 +1200,87 @@ export default function DashboardPage() {
     el.style.height = `${Math.min(el.scrollHeight, 112)}px`
   }
 
-  // ── Send message ──────────────────────────────────────────────────────────────
+  // ── Agent Console: shared streaming hook ──────────────────────────────────────
+  //
+  // ONE useAgentStream instance is shared by chat + execute. Each call to
+  // sendMessage/approveTeam invokes stream.start() with an override body,
+  // which internally resets state and starts a fresh stream.
+  //
+  // Token deltas (cmo chat) → fed into the streaming chat bubble via
+  // streamingText (auto-accumulated by the hook).
+  // Lifecycle + approval events → appear in the AgentConsole rail.
+  const stream = useAgentStream({
+    endpoint: '/api/agents/cmo',
+    body: null, // overridden per-call via stream.start({ body })
+    onDone: ({ output, cost }) => {
+      // Chat path: output is the proposal. Finalize the streaming bubble.
+      const out = output as
+        | { reply?: string; project?: ProjectProposal; team?: TeamMember[]; firstAction?: string }
+        | null
+      const pending = pendingProposalRef.current
+
+      if (pending && out?.reply) {
+        const replyText = out.reply
+        const proposal = (out.project && out.team)
+          ? { project: out.project, team: out.team, firstAction: out.firstAction ?? 'strategy' }
+          : undefined
+        const tokenEstimate = Math.round(replyText.split(/\s+/).length * 1.35)
+
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === pending.msgId
+              ? {
+                  ...m,
+                  text: replyText,
+                  isStreaming: false,
+                  proposal,
+                  tokens: tokenEstimate,
+                  cost: typeof cost === 'number' ? cost : tokenEstimate * 0.000003,
+                }
+              : m,
+          ),
+        )
+        pendingProposalRef.current = null
+        setStreamingMsgId(null)
+        // Show the console rail if it was closed — first run for a new user
+        if (!consoleOpen) setConsoleOpen(true)
+      }
+      setLoading(false)
+      // Refresh stats + runs after any completion
+      loadRuns()
+    },
+    onError: (msg) => {
+      // Finalize the streaming bubble with an error message
+      const pending = pendingProposalRef.current
+      if (pending) {
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === pending.msgId
+              ? { ...m, text: `Something went wrong: ${msg}`, isStreaming: false }
+              : m,
+          ),
+        )
+        pendingProposalRef.current = null
+        setStreamingMsgId(null)
+      }
+      setLoading(false)
+      setExecuting(false)
+      setExecutingMsgId(null)
+    },
+    onApprovalPending: ({ approvalId, artifactId, publishDestination }) => {
+      // Open the Review Required modal directly over the chat — the user
+      // keeps their context (chat history + console feed still visible
+      // behind the modal backdrop) while reviewing the AI's output.
+      setReviewModal({ approvalId, artifactId, publishDestination })
+    },
+  })
+
+  // ── Send message (streaming) ──────────────────────────────────────────────────
+  //
+  // Submits the user's chat to /api/agents/cmo with Accept: text/event-stream.
+  // Token events stream into the empty CMO bubble we create up-front; lifecycle
+  // events render in the AgentConsole rail; the `done` event's output payload
+  // contains the structured proposal which we attach to the same bubble.
 
   async function sendMessage(text?: string) {
     const messageText = (text ?? input).trim()
@@ -1152,80 +1292,36 @@ export default function DashboardPage() {
       text: messageText,
       timestamp: new Date(),
     }
+    const cmoMsgId = uid()
+    const cmoStreamingMsg: Message = {
+      id: cmoMsgId,
+      role: 'cmo',
+      text: '',
+      timestamp: new Date(),
+      isStreaming: true,
+    }
 
-    setMessages((prev) => [...prev, userMsg])
+    setMessages((prev) => [...prev, userMsg, cmoStreamingMsg])
     setInput('')
-    if (textareaRef.current) {
-      textareaRef.current.style.height = 'auto'
-    }
+    if (textareaRef.current) textareaRef.current.style.height = 'auto'
     setLoading(true)
+    setStreamingMsgId(cmoMsgId)
+    pendingProposalRef.current = { msgId: cmoMsgId, project: {} as ProjectProposal, team: [], firstAction: 'strategy' }
 
-    try {
-      const res = await fetch('/api/agents/cmo', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspaceId, message: messageText, action: 'chat' }),
-      })
+    if (!consoleOpen) setConsoleOpen(true)
 
-      const data = await res.json() as {
-        ok: boolean
-        response?: string
-        project?: ProjectProposal
-        team?: TeamMember[]
-        firstAction?: string
-        error?: string
-      }
-
-      if (!data.ok || !data.response) {
-        const errMsg: Message = {
-          id: uid(),
-          role: 'cmo',
-          text: data.error
-            ? `Something went wrong: ${data.error}`
-            : "I couldn't process that request. Could you try rephrasing?",
-          timestamp: new Date(),
-        }
-        setMessages((prev) => [...prev, errMsg])
-        return
-      }
-
-      // Estimate tokens/cost (rough approximation)
-      const tokenEstimate = Math.round(data.response.split(/\s+/).length * 1.35)
-      const costEstimate = tokenEstimate * 0.000003
-
-      const cmoMsg: Message = {
-        id: uid(),
-        role: 'cmo',
-        text: data.response,
-        timestamp: new Date(),
-        tokens: tokenEstimate,
-        cost: costEstimate,
-        ...(data.team && data.project
-          ? {
-              proposal: {
-                project: data.project,
-                team: data.team,
-                firstAction: data.firstAction ?? 'strategy',
-              },
-            }
-          : {}),
-      }
-
-      setMessages((prev) => [...prev, cmoMsg])
-    } catch {
-      const errMsg: Message = {
-        id: uid(),
-        role: 'cmo',
-        text: "I'm having trouble connecting right now. Please try again in a moment.",
-        timestamp: new Date(),
-      }
-      setMessages((prev) => [...prev, errMsg])
-    } finally {
-      setLoading(false)
-    }
+    // Fire the stream — lifecycle events flow into the console, tokens flow
+    // into the bubble via streamingText. State is auto-managed by the hook.
+    void stream.start({
+      body: { workspaceId, message: messageText, action: 'chat' },
+    })
   }
 
-  // ── Approve team ──────────────────────────────────────────────────────────────
+  // ── Approve team (streaming execute) ─────────────────────────────────────────
+  //
+  // Same streaming pipeline but with action: 'execute'. The CMO orchestrator
+  // calls the firstAction sub-agent, which produces an artifact + approval.
+  // The approval_pending event triggers onApprovalPending (Step 5 modal).
 
   async function approveTeam(firstAction: string, msgId: string) {
     if (!workspaceId || executing) return
@@ -1235,62 +1331,65 @@ export default function DashboardPage() {
     const approvedMsg = messages.find((m) => m.id === msgId)
     const proposal = approvedMsg?.proposal
 
-    try {
-      const res = await fetch('/api/agents/cmo', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspaceId, message: '', action: 'execute', firstAction }),
-      })
-
-      const data = await res.json() as { ok: boolean; response?: string; projectId?: string; error?: string }
-
-      if (data.ok) {
-        if (proposal) {
-          try {
-            const projectId = uid()
-            const newProject = {
-              id: projectId,
-              name: proposal.project.name,
-              goal: proposal.project.goal,
-              team: proposal.team,
-              status: 'active',
-              createdAt: new Date().toISOString(),
-              firstAction: proposal.firstAction,
-            }
-            const existing = JSON.parse(localStorage.getItem('ooumph_projects_v1') || '[]') as unknown[]
-            localStorage.setItem('ooumph_projects_v1', JSON.stringify([newProject, ...existing]))
-          } catch { /* storage errors are non-fatal */ }
+    // Cache the project to localStorage immediately so the user has a record
+    // even if the stream is interrupted mid-flight (Vercel after() will still
+    // complete the work in the background).
+    if (proposal) {
+      try {
+        const projectId = uid()
+        const newProject = {
+          id: projectId,
+          name: proposal.project.name,
+          goal: proposal.project.goal,
+          team: proposal.team,
+          status: 'active',
+          createdAt: new Date().toISOString(),
+          firstAction: proposal.firstAction,
         }
+        const existing = JSON.parse(localStorage.getItem('ooumph_projects_v1') || '[]') as unknown[]
+        localStorage.setItem('ooumph_projects_v1', JSON.stringify([newProject, ...existing]))
+      } catch { /* storage errors are non-fatal */ }
+    }
 
-        const confirmMsg: Message = {
-          id: uid(),
-          role: 'cmo',
-          text: `Team approved! 🚀 Your ${agentLabel(firstAction)} agent is now running. Opening the Workspace in a moment...`,
-          timestamp: new Date(),
-        }
-        setMessages((prev) => [...prev, confirmMsg])
-        loadRuns()
-        setTimeout(() => router.push('/dashboard/activity'), 1400)
-      } else {
-        const errMsg: Message = {
-          id: uid(),
-          role: 'cmo',
-          text: `I had trouble starting the team: ${data.error ?? 'Unknown error'}. You can try again or start from the ${agentLabel(firstAction)} page directly.`,
-          timestamp: new Date(),
-        }
-        setMessages((prev) => [...prev, errMsg])
-      }
-    } catch {
-      const errMsg: Message = {
-        id: uid(),
+    // Insert a confirmation bubble that will be updated as the stream completes
+    const confirmMsgId = uid()
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: confirmMsgId,
         role: 'cmo',
-        text: "I couldn't kick off the agents right now. Try visiting the Strategy page to start manually.",
+        text: `Spinning up your ${agentLabel(firstAction)} agent — watch the console for live progress.`,
         timestamp: new Date(),
-      }
-      setMessages((prev) => [...prev, errMsg])
+      },
+    ])
+
+    if (!consoleOpen) setConsoleOpen(true)
+
+    // Fire the execute stream. The CMO emits agent_start → routes to the
+    // sub-agent → artifact_created → approval_pending → done events.
+    try {
+      await new Promise<void>((resolve) => {
+        // Build a one-shot hook usage: subscribe to this run's onDone via the
+        // shared hook (which already has onDone wired above). We just need
+        // a sentinel to resolve when the stream completes.
+        const checkDone = () => {
+          if (stream.status === 'done' || stream.status === 'error') {
+            resolve()
+          } else {
+            setTimeout(checkDone, 200)
+          }
+        }
+        void stream.start({
+          body: { workspaceId, message: '', action: 'execute', firstAction, projectContext: proposal },
+        })
+        checkDone()
+      })
+    } catch (err) {
+      console.error('[approveTeam stream]', err)
     } finally {
       setExecuting(false)
       setExecutingMsgId(null)
+      loadRuns()
     }
   }
 
@@ -1357,6 +1456,54 @@ export default function DashboardPage() {
           businessName={businessName}
           stats={stats}
           onClose={() => setShowContextModal(false)}
+        />
+      )}
+
+      {/* ── Review Required Modal ──────────────────────────────────────────────
+            Fired by the `approval_pending` event from the CMO stream. Overlays
+            the chat (the modal uses a backdrop with backdrop-blur, so chat +
+            console rail remain visible behind it). On approve, optionally
+            queues the artifact for publish if a publishDestination is set. */}
+      {reviewModal && workspaceId && (
+        <ReviewRequiredModal
+          isOpen={true}
+          approvalId={reviewModal.approvalId}
+          artifactId={reviewModal.artifactId}
+          publishDestination={reviewModal.publishDestination}
+          workspaceId={workspaceId}
+          onClose={() => setReviewModal(null)}
+          onApproved={({ queuedForPublish }) => {
+            // Confirm in the chat thread so the user has a clean audit trail.
+            setMessages((prev) => [
+              ...prev,
+              {
+                id: uid(),
+                role: 'cmo',
+                text: queuedForPublish
+                  ? `✅ Approved & queued for publish to ${reviewModal.publishDestination}. I'll let you know when it ships.`
+                  : `✅ Approved. The artifact is saved to your workspace — head to the Approvals or Publishing Hub when you're ready to send.`,
+                timestamp: new Date(),
+              },
+            ])
+            // Refresh counters + notifications so the bell badge updates.
+            loadRuns()
+            void fetch(`/api/stats?workspaceId=${workspaceId}`)
+              .then((r) => r.json())
+              .then((s: Stats) => setStats(s))
+              .catch(() => {})
+          }}
+          onRejected={() => {
+            setMessages((prev) => [
+              ...prev,
+              {
+                id: uid(),
+                role: 'cmo',
+                text: `❌ Rejected — I've logged your reasoning as a learning note. Next generation will adjust.`,
+                timestamp: new Date(),
+              },
+            ])
+            loadRuns()
+          }}
         />
       )}
 
@@ -1447,9 +1594,12 @@ export default function DashboardPage() {
                   onRephrase={handleRephrase}
                   executing={executing}
                   executingMsgId={executingMsgId}
+                  streamingText={stream.streamingText}
+                  isLive={msg.id === streamingMsgId && msg.isStreaming === true}
                 />
               ))}
-              {loading && <TypingIndicator />}
+              {/* Show typing indicator only when waiting BEFORE the first token */}
+              {loading && stream.streamingText.length === 0 && stream.status !== 'streaming' && <TypingIndicator />}
               <div ref={bottomRef} />
             </div>
 
@@ -1729,6 +1879,34 @@ export default function DashboardPage() {
                 <p className="text-indigo-500">Human governance active — no content goes out without your sign-off.</p>
               </div>
             </div>
+          </div>
+
+          {/* ── Rightmost: Agent Console rail ─────────────────────────────────
+                Persistent right-side rail. 320px when open, 40px strip
+                (with vertical label + pulse indicator) when collapsed.
+                Open/closed state persists to localStorage.
+
+                Hidden on mobile/tablet (<lg) to keep the chat readable —
+                will get a dedicated bottom-sheet treatment in Step 25
+                (mobile responsiveness pass). */}
+          <div className="hidden lg:flex flex-shrink-0">
+            <AgentConsole
+              mode="rail"
+              open={consoleOpen}
+              events={stream.events}
+              status={stream.status}
+              totalCost={stream.cost}
+              errorMessage={stream.error}
+              onClose={() => setConsoleOpen((v) => !v)}
+              onApprovalClick={({ approvalId, artifactId }) => {
+                // Open the Review Required modal in-place — keep chat context.
+                setReviewModal({ approvalId, artifactId })
+              }}
+              onArtifactClick={({ artifactId }) => {
+                router.push(`/dashboard/approvals?focus=${artifactId}`)
+              }}
+              title="Agent Console"
+            />
           </div>
 
         </div>

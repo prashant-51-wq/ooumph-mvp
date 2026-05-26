@@ -1,7 +1,10 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useRouter } from 'next/navigation'
+import { useAgentStream } from '@/lib/use-agent-stream'
+import AgentConsole from '@/components/AgentConsole'
+import ReviewRequiredModal from '@/components/ReviewRequiredModal'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -470,6 +473,20 @@ export default function StrategyPage() {
   const [expandedProject, setExpandedProject] = useState<string | null>(null)
   const [restoringId, setRestoringId] = useState<string | null>(null)
 
+  // ── Agent Console (floating) state ────────────────────────────────────────
+  // Closed by default; auto-opens on Generate click; auto-collapses 30s after
+  // the run completes IF the user isn't hovering/interacting with the console.
+  const [consoleOpen, setConsoleOpen] = useState(false)
+  // ReviewRequiredModal state — opens when approval_pending arrives
+  const [reviewModal, setReviewModal] = useState<{
+    approvalId: string
+    artifactId: string
+    publishDestination?: string
+  } | null>(null)
+  // Idle timer that collapses the console 30s after a run reaches a
+  // terminal status — cancelled if the user is interacting with it.
+  const collapseTimerRef = useRef<NodeJS.Timeout | null>(null)
+
   useEffect(() => {
     const wid = localStorage.getItem('workspaceId')
     if (!wid) {
@@ -535,29 +552,76 @@ export default function StrategyPage() {
     if (workspaceId) loadStrategies(workspaceId)
   }, [workspaceId, loadStrategies])
 
+  // ── Streaming hook ───────────────────────────────────────────────────────
+  // One shared useAgentStream instance per page. Each Generate click invokes
+  // .start({ body }) which auto-resets state and begins a new SSE stream.
+  const stream = useAgentStream({
+    endpoint: '/api/agents/strategy',
+    body: null, // overridden per-call via stream.start({ body })
+    onDone: () => {
+      // Refresh artifact list to capture the freshly-saved strategy
+      if (workspaceId) void loadStrategies(workspaceId)
+      setGenerating(null)
+    },
+    onError: (msg) => {
+      setGenError(msg)
+      setGenerating(null)
+    },
+    onApprovalPending: ({ approvalId, artifactId, publishDestination }) => {
+      // Open the Review Required modal directly over the workspace —
+      // user keeps their place + console feed visible behind the backdrop.
+      setReviewModal({ approvalId, artifactId, publishDestination })
+    },
+  })
+
+  // ── Auto-collapse: 30s after stream reaches a terminal state ────────────
+  // The timer is armed when status becomes 'done' | 'error' | 'cancelled'
+  // AND the console is currently open. It's cancelled if the user hovers
+  // into the console (the wrapper below handles onMouseEnter/Leave). When
+  // it fires, the console smoothly collapses to the hidden floating state.
+  const armCollapseTimer = useCallback(() => {
+    if (collapseTimerRef.current) clearTimeout(collapseTimerRef.current)
+    collapseTimerRef.current = setTimeout(() => {
+      setConsoleOpen(false)
+      collapseTimerRef.current = null
+    }, 30_000)
+  }, [])
+
+  const cancelCollapseTimer = useCallback(() => {
+    if (collapseTimerRef.current) {
+      clearTimeout(collapseTimerRef.current)
+      collapseTimerRef.current = null
+    }
+  }, [])
+
+  useEffect(() => {
+    const isTerminal =
+      stream.status === 'done' ||
+      stream.status === 'error' ||
+      stream.status === 'cancelled'
+    if (isTerminal && consoleOpen) {
+      armCollapseTimer()
+    } else {
+      // Streaming / connecting / idle (pre-start) → no auto-collapse
+      cancelCollapseTimer()
+    }
+    return cancelCollapseTimer
+  }, [stream.status, consoleOpen, armCollapseTimer, cancelCollapseTimer])
+
+  // ── Generate strategy (streaming) ────────────────────────────────────────
   const generateStrategy = async (timeframe: Timeframe) => {
     if (!workspaceId) return
     setGenerating(timeframe)
     setGenError(null)
-    try {
-      const res = await fetch('/api/agents/strategy', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspaceId, timeframe }),
-      })
-      const data = await res.json() as { strategy?: AIStrategy; artifactId?: string; error?: string }
-      if (data.error) {
-        setGenError(data.error)
-        return
-      }
-      // Reload everything to capture the new artifact + version numbering
-      await loadStrategies(workspaceId)
-      setActiveTab(timeframe)
-    } catch (e) {
-      setGenError(e instanceof Error ? e.message : 'Generation failed')
-    } finally {
-      setGenerating(null)
-    }
+    // Auto-open the console so the user sees live progress
+    setConsoleOpen(true)
+    cancelCollapseTimer()
+    setActiveTab(timeframe)
+    // Fire the stream — lifecycle + artifact_created + approval_pending
+    // events arrive in real time. onDone / onError handle terminal state.
+    void stream.start({
+      body: { workspaceId, timeframe },
+    })
   }
 
   const restoreVersion = async (version: StrategyVersion) => {
@@ -874,6 +938,83 @@ export default function StrategyPage() {
               kpis: [],
             }
             setProjects(prev => [newProject, ...prev])
+          }}
+        />
+      )}
+
+      {/* ── Floating Agent Console ──────────────────────────────────────────
+            Bottom-right popover that auto-opens on Generate click and
+            auto-collapses 30s after the stream completes (idle timer is
+            cancelled when the user hovers over the console). */}
+      <div
+        onMouseEnter={cancelCollapseTimer}
+        onMouseLeave={() => {
+          const isTerminal =
+            stream.status === 'done' ||
+            stream.status === 'error' ||
+            stream.status === 'cancelled'
+          if (isTerminal && consoleOpen) armCollapseTimer()
+        }}
+      >
+        <AgentConsole
+          mode="floating"
+          open={consoleOpen}
+          events={stream.events}
+          status={stream.status}
+          totalCost={stream.cost}
+          errorMessage={stream.error}
+          onClose={() => setConsoleOpen(false)}
+          onApprovalClick={({ approvalId, artifactId }) => {
+            // Same modal — keeps the user in-context on the Strategy page
+            setReviewModal({ approvalId, artifactId })
+          }}
+          onArtifactClick={() => {
+            // Already viewing strategy artifacts on this page — no-op for now
+          }}
+          title="Strategy Agent"
+        />
+      </div>
+
+      {/* ── Floating "▶ open console" button when closed during/after run ──
+            If the stream has produced events but the user closed/dismissed
+            the console, this lightweight launcher lets them re-open it
+            without having to re-run anything. */}
+      {!consoleOpen && stream.events.length > 0 && (
+        <button
+          onClick={() => {
+            setConsoleOpen(true)
+            cancelCollapseTimer()
+          }}
+          className="fixed bottom-4 right-4 z-30 px-3 py-2 rounded-full bg-gray-900 hover:bg-gray-800 border border-gray-700 hover:border-indigo-700 text-white text-xs font-medium shadow-lg shadow-black/40 flex items-center gap-2 transition-colors"
+          aria-label="Open Agent Console"
+        >
+          <span>🤖</span>
+          <span>Open Console</span>
+          {(stream.status === 'streaming' || stream.status === 'connecting') && (
+            <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse" />
+          )}
+          <span className="text-gray-500 text-[10px]">{stream.events.length}</span>
+        </button>
+      )}
+
+      {/* ── Review Required Modal ───────────────────────────────────────────
+            Triggered by approval_pending events. Overlays the strategy
+            workspace so the user retains context while reviewing. */}
+      {reviewModal && workspaceId && (
+        <ReviewRequiredModal
+          isOpen={true}
+          approvalId={reviewModal.approvalId}
+          artifactId={reviewModal.artifactId}
+          publishDestination={reviewModal.publishDestination}
+          workspaceId={workspaceId}
+          onClose={() => setReviewModal(null)}
+          onApproved={() => {
+            // Refresh the strategy list so the approved version is reflected.
+            if (workspaceId) void loadStrategies(workspaceId)
+          }}
+          onRejected={() => {
+            // Even after rejection, refresh to update status indicators.
+            if (workspaceId) void loadStrategies(workspaceId)
           }}
         />
       )}

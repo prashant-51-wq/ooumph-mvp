@@ -156,6 +156,11 @@ async function postgresQuery(strings: TemplateStringsArray, ...values: unknown[]
     await pgSql`CREATE INDEX IF NOT EXISTS idx_ab_tests_workspace ON ab_tests(workspace_id, status)`
     await pgSql`CREATE TABLE IF NOT EXISTS ab_test_insights (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, source_test_id TEXT, text TEXT NOT NULL, lift REAL DEFAULT 0, deployed INTEGER DEFAULT 0, created_at TIMESTAMPTZ DEFAULT NOW())`
     await pgSql`CREATE INDEX IF NOT EXISTS idx_ab_test_insights_workspace ON ab_test_insights(workspace_id, created_at DESC)`
+    // === Streaming agent runs (Step 1 of Agent Console redesign) ===
+    await pgSql`CREATE TABLE IF NOT EXISTS agent_run_events (id TEXT PRIMARY KEY, agent_run_id TEXT NOT NULL, workspace_id TEXT NOT NULL, event_type VARCHAR(50) NOT NULL, payload TEXT NOT NULL DEFAULT '{}', created_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_agent_run_events_run ON agent_run_events(agent_run_id, created_at ASC)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_agent_run_events_workspace ON agent_run_events(workspace_id, created_at DESC)`
+    await pgSql`ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS parent_run_id TEXT`
   }
 
   const rows = await pgSql(strings, ...values) as Record<string, unknown>[]
@@ -722,6 +727,14 @@ function initSQLiteSync(db: import('better-sqlite3').Database) {
     'CREATE INDEX IF NOT EXISTS idx_ab_tests_workspace ON ab_tests(workspace_id, status)',
     'CREATE TABLE IF NOT EXISTS ab_test_insights (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, source_test_id TEXT, text TEXT NOT NULL, lift REAL DEFAULT 0, deployed INTEGER DEFAULT 0, created_at TEXT DEFAULT (datetime(\'now\')))',
     'CREATE INDEX IF NOT EXISTS idx_ab_test_insights_workspace ON ab_test_insights(workspace_id, created_at DESC)',
+    // === Streaming agent runs (Step 1 of Agent Console redesign) ===
+    // Persists meaningful lifecycle events emitted by lib/agent-stream.ts for
+    // audit + replay. "token" delta events are intentionally NOT persisted (too noisy).
+    'CREATE TABLE IF NOT EXISTS agent_run_events (id TEXT PRIMARY KEY, agent_run_id TEXT NOT NULL, workspace_id TEXT NOT NULL, event_type TEXT NOT NULL, payload TEXT NOT NULL DEFAULT \'{}\', created_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE INDEX IF NOT EXISTS idx_agent_run_events_run ON agent_run_events(agent_run_id, created_at ASC)',
+    'CREATE INDEX IF NOT EXISTS idx_agent_run_events_workspace ON agent_run_events(workspace_id, created_at DESC)',
+    // Sub-agent runs (e.g. CMO spawning research+brand_voice+strategy) reference their orchestrator.
+    'ALTER TABLE agent_runs ADD COLUMN parent_run_id TEXT',
   ]
   for (const m of migrations) {
     try { db.exec(m) } catch { /* column already exists */ }
@@ -811,5 +824,10 @@ export async function initializeDatabase() {
   await pgSql`CREATE INDEX IF NOT EXISTS idx_ab_tests_workspace ON ab_tests(workspace_id, status)`
   await pgSql`CREATE TABLE IF NOT EXISTS ab_test_insights (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, source_test_id TEXT, text TEXT NOT NULL, lift REAL DEFAULT 0, deployed INTEGER DEFAULT 0, created_at TIMESTAMPTZ DEFAULT NOW())`
   await pgSql`CREATE INDEX IF NOT EXISTS idx_ab_test_insights_workspace ON ab_test_insights(workspace_id, created_at DESC)`
+  // === Streaming agent runs ===
+  await pgSql`CREATE TABLE IF NOT EXISTS agent_run_events (id TEXT PRIMARY KEY, agent_run_id TEXT NOT NULL, workspace_id TEXT NOT NULL, event_type VARCHAR(50) NOT NULL, payload TEXT NOT NULL DEFAULT '{}', created_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_agent_run_events_run ON agent_run_events(agent_run_id, created_at ASC)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_agent_run_events_workspace ON agent_run_events(workspace_id, created_at DESC)`
+  await pgSql`ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS parent_run_id TEXT`
   console.log('✅ Neon Postgres DB initialized')
 }

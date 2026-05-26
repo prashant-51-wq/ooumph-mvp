@@ -16,6 +16,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { publishTweet } from '@/lib/twitter-oauth'
 import { fetchWithTimeout } from '@/lib/fetch-with-timeout'
+import { assertArtifactApproved } from '@/lib/guards'
 
 interface DirectPublishBody {
   workspaceId: string
@@ -127,6 +128,14 @@ export async function POST(req: NextRequest) {
     if (!workspaceId || !platforms?.length || !content) {
       return NextResponse.json({ error: 'workspaceId, platforms, and content required' }, { status: 400 })
     }
+
+    // ─── Human governance gate (defense in depth) ─────────────────────────
+    // When this route is called with an artifactId (the normal flow from
+    // ReviewRequiredModal), verify that artifact's approval has been
+    // committed before any external API write fires. Ad-hoc raw-content
+    // publishes (no artifactId) trust the caller. See ARCHITECTURE_SAFETY.md.
+    const gate = await assertArtifactApproved(workspaceId, artifactId)
+    if (gate) return gate
 
     // Load all integrations for this workspace
     const integResult = await sql`

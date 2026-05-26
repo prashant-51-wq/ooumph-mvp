@@ -150,6 +150,69 @@ export async function assertSuperAdmin(req: NextRequest): Promise<NextResponse |
 }
 
 /**
+ * Verifies that an artifact has an `approved` approval record before any
+ * third-party side effect (email send, social publish, ad spend) fires on
+ * its content. This is the runtime enforcement of the safety invariant
+ * documented in ARCHITECTURE_SAFETY.md.
+ *
+ * Usage in a route that fires external writes:
+ *
+ *   const gate = await assertArtifactApproved(workspaceId, artifactId)
+ *   if (gate) return gate    // 403 with "approval required" body
+ *
+ * Returns:
+ *  - null if the artifact is approved (proceed with side effect)
+ *  - NextResponse 403 if pending/rejected/missing
+ *  - NextResponse 404 if the artifact doesn't exist in this workspace
+ *
+ * Skip the check (return null) when artifactId is intentionally absent —
+ * e.g. ad-hoc raw-content sends where the caller takes responsibility for
+ * gating. The check should always run when artifactId is provided.
+ */
+export async function assertArtifactApproved(
+  workspaceId: string,
+  artifactId: string | undefined | null,
+): Promise<NextResponse | null> {
+  if (!artifactId) return null  // ad-hoc raw-content path — caller's responsibility
+
+  const { sql } = await import('@/lib/db')
+  const result = await sql`
+    SELECT a.id, a.status as artifact_status, ap.status as approval_status
+    FROM artifacts a
+    LEFT JOIN approvals ap ON ap.artifact_id = a.id
+    WHERE a.id = ${artifactId} AND a.workspace_id = ${workspaceId}
+    ORDER BY ap.created_at DESC
+    LIMIT 1
+  `
+  const row = result.rows[0] as { id?: string; artifact_status?: string; approval_status?: string } | undefined
+
+  if (!row?.id) {
+    return NextResponse.json(
+      { error: 'Artifact not found in this workspace' },
+      { status: 404 },
+    )
+  }
+
+  // Approval row may be missing for legacy artifacts — defer to artifact.status in that case.
+  // The artifacts table's status is set in lockstep with approvals (see /api/approvals PATCH).
+  const effectiveStatus = row.approval_status || row.artifact_status
+
+  if (effectiveStatus !== 'approved') {
+    return NextResponse.json(
+      {
+        error: 'Artifact has not been approved by a human reviewer',
+        artifactId,
+        currentStatus: effectiveStatus || 'unknown',
+        hint: 'Open the Review Required modal on the artifact and click Approve before triggering this action.',
+      },
+      { status: 403 },
+    )
+  }
+
+  return null
+}
+
+/**
  * Check if the current session belongs to a super admin (returns boolean, no error response).
  * Used in page-level checks where we want to redirect instead of returning an error.
  */
