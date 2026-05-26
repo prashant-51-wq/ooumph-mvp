@@ -14,8 +14,34 @@ export async function GET(req: NextRequest) {
   const workspaceId = searchParams.get('workspaceId')
   const type = searchParams.get('type')
   const id = searchParams.get('id')
+  const agentRunId = searchParams.get('agentRunId')
   const limit = parseInt(searchParams.get('limit') || '50')
   if (!workspaceId) return NextResponse.json([])
+
+  // Children of a specific agent run — used by Workspace Hub middle panel.
+  // Walks the parent_run_id chain by joining agent_runs so we capture
+  // artifacts from sub-agent runs spawned by this master run too.
+  if (agentRunId) {
+    const rows = (await sql`
+      SELECT a.* FROM artifacts a
+      WHERE a.workspace_id = ${workspaceId}
+        AND (
+          a.agent_run_id = ${agentRunId}
+          OR a.agent_run_id IN (
+            SELECT id FROM agent_runs WHERE parent_run_id = ${agentRunId}
+          )
+        )
+      ORDER BY a.created_at ASC
+    `).rows
+    const items = rows.map((r) => {
+      let parsed: unknown = r.content_json
+      if (typeof r.content_json === 'string') {
+        try { parsed = JSON.parse(r.content_json) } catch { /* keep raw */ }
+      }
+      return { ...r, content_json: parsed }
+    })
+    return NextResponse.json(items)
+  }
 
   // Single-artifact lookup by id (used by ReviewRequiredModal + detail views)
   if (id) {

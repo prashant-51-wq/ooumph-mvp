@@ -95,6 +95,7 @@ const ADVANCED_NAV = [
   {
     label: 'SYSTEM',
     items: [
+      { href: '/dashboard/workspace', label: 'Workspace Hub', icon: '🗂️' },
       { href: '/dashboard/health', label: 'System Health', icon: '🩺' },
       { href: '/dashboard/activity', label: 'Activity Feed', icon: '📡' },
       { href: '/dashboard/audit', label: 'Audit Log', icon: '📋' },
@@ -150,6 +151,7 @@ function getPageTitle(pathname: string): string {
     '/dashboard/funnel/form-builder': 'Form Builder',
     '/dashboard/super-admin': 'Super Admin',
     '/dashboard/health': 'System Health',
+    '/dashboard/workspace': 'Workspace Hub',
     '/dashboard/memory': 'Brand Memory',
     '/dashboard/learning': 'AI Learning',
     '/dashboard/brand-monitor': 'Brand Monitor',
