@@ -155,53 +155,13 @@ function aiToCard(
   }
 }
 
-// ─── Mock projects (kept for now — no projects API exists) ────────────────────
-
-const MOCK_PROJECTS: StrategyProject[] = [
-  {
-    id: 'proj-1',
-    name: 'Q2 Acquisition Push',
-    description: 'Drive 500 new trial signups through paid + organic channels.',
-    timeframe: 'monthly',
-    status: 'active',
-    performanceScore: 88,
-    startDate: '2026-04-01',
-    team: ['Sarah K.', 'Marcus T.', 'Lena R.'],
-    kpis: [
-      { metric: 'Trial Signups', target: 500, actual: 412, unit: '' },
-      { metric: 'CAC', target: 45, actual: 51, unit: '$' },
-      { metric: 'Conversion Rate', target: 8, actual: 6.4, unit: '%' },
-    ],
-  },
-  {
-    id: 'proj-2',
-    name: 'Brand Awareness Sprint',
-    description: 'Reach 100K new people organically in 4 weeks.',
-    timeframe: 'weekly',
-    status: 'active',
-    performanceScore: 72,
-    startDate: '2026-05-05',
-    team: ['Ava M.', 'James W.'],
-    kpis: [
-      { metric: 'Organic Reach', target: 100000, actual: 68000, unit: '' },
-      { metric: 'Follower Growth', target: 2000, actual: 1540, unit: '' },
-    ],
-  },
-  {
-    id: 'proj-3',
-    name: 'Email Re-Engagement',
-    description: 'Win back 200 churned subscribers with a 5-email sequence.',
-    timeframe: 'weekly',
-    status: 'planning',
-    performanceScore: 0,
-    startDate: '2026-06-01',
-    team: ['Lena R.'],
-    kpis: [
-      { metric: 'Win-Back Rate', target: 20, actual: 0, unit: '%' },
-      { metric: 'Revenue Recovered', target: 4000, actual: 0, unit: '$' },
-    ],
-  },
-]
+// Sprint 3C: removed MOCK_PROJECTS — a ~46-line array of fake "Q2 Acquisition
+// Push" / "Brand Awareness Sprint" projects with fake KPIs. The Strategy page
+// renders projects from the `projects` state, which is now seeded empty and
+// can be populated when /api/strategy-projects (a richer schema with KPIs
+// + timeframe + team) ships in a later sprint. The minimal workspace_projects
+// table from Sprint 2 Commit 1 covers a different need (lightweight CMO
+// chat record) and is not used here.
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -467,7 +427,13 @@ export default function StrategyPage() {
   const [loading, setLoading] = useState(true)
   const [generating, setGenerating] = useState<Timeframe | null>(null)
   const [genError, setGenError] = useState<string | null>(null)
-  const [projects, setProjects] = useState<StrategyProject[]>(MOCK_PROJECTS)
+  // Sprint 3C: was useState<StrategyProject[]>(MOCK_PROJECTS) seeded with
+  // four fake projects ("Q2 Acquisition Push" / "Brand Awareness Sprint")
+  // with fabricated KPI counts. Now starts empty — when a richer
+  // /api/strategy-projects endpoint ships (with KPIs/timeframe/team) it
+  // can hydrate this. The minimal workspace_projects table from Sprint 2
+  // Commit 1 is a different shape (CMO chat record), not used here.
+  const [projects, setProjects] = useState<StrategyProject[]>([])
   const [historyOpen, setHistoryOpen] = useState(false)
   const [showNewProject, setShowNewProject] = useState(false)
   const [expandedProject, setExpandedProject] = useState<string | null>(null)

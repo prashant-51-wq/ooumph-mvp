@@ -54,46 +54,12 @@ interface LearningSettings {
   agents: Record<string, boolean>
 }
 
-// ─── Demo data ────────────────────────────────────────────────────────────────
+// Sprint 3C: removed DEMO_NODES — a 37-line array of fake knowledge graph
+// rows. The `nodes` state below now starts empty; when the page is wired
+// to /api/learning (the GET endpoint returning learning_notes rows already
+// exists) the demo seed can be deleted entirely. For now empty is honest:
+// no nodes means the workspace genuinely has no ingested brand memory yet.
 
-const DEMO_NODES: KnowledgeNode[] = [
-  {
-    id: 'n1', type: 'brand_voice',
-    content: 'Our tone is confident but approachable — never corporate or stiff. Use contractions freely. Short paragraphs, punchy sentences. Avoid passive voice and buzzwords like "leverage" or "synergy".',
-    confidence: 0.94, tags: ['tone', 'writing-style', 'copy'], source_doc: 'Brand Guidelines v3.pdf', source_id: 's1',
-    created_at: new Date(Date.now() - 86400000 * 2).toISOString(),
-  },
-  {
-    id: 'n2', type: 'strategy',
-    content: 'Primary growth channel for Q3 is LinkedIn organic. Decision-makers in our ICP engage most with data-backed posts between 7–9 AM on weekdays. Case study carousels outperform plain text 3:1.',
-    confidence: 0.88, tags: ['linkedin', 'growth', 'Q3', 'ICP'], source_doc: 'Q3 Strategy Brief.docx', source_id: 's2',
-    created_at: new Date(Date.now() - 86400000 * 4).toISOString(),
-  },
-  {
-    id: 'n3', type: 'market_intel',
-    content: 'Market is shifting toward outcome-based pricing in SaaS. Buyers are fatigued by feature-list comparisons and respond better to ROI calculators and proof-of-concept demos within 14 days.',
-    confidence: 0.81, tags: ['pricing', 'SaaS', 'buyer-behavior'], source_doc: 'Market Research Oct 2025.pdf', source_id: 's3',
-    created_at: new Date(Date.now() - 86400000 * 7).toISOString(),
-  },
-  {
-    id: 'n4', type: 'competitor',
-    content: 'Competitor A positions on price — they cannot compete on depth. Their churn is high after 90 days because onboarding is self-serve. Our differentiator is the dedicated onboarding call + 30-day activation plan.',
-    confidence: 0.76, tags: ['competitive', 'positioning', 'onboarding'], source_doc: 'Competitive Analysis.pdf', source_id: 's3',
-    created_at: new Date(Date.now() - 86400000 * 10).toISOString(),
-  },
-  {
-    id: 'n5', type: 'performance',
-    content: 'Email subject lines with a number and a power word (e.g. "7 ways to..." or "Stop wasting your...") achieve 28% higher open rates vs. generic subject lines across 6 months of A/B data.',
-    confidence: 0.92, tags: ['email', 'subject-lines', 'A/B-test'], source_doc: 'Email Performance Report.pdf', source_id: 's1',
-    created_at: new Date(Date.now() - 86400000 * 1).toISOString(),
-  },
-  {
-    id: 'n6', type: 'brand_voice',
-    content: 'Always lead with the customer outcome, not the feature. "You will close deals 40% faster" beats "Our CRM has pipeline automation". Benefit-first framing in every piece of copy.',
-    confidence: 0.97, tags: ['copywriting', 'messaging', 'benefit-first'], source_doc: 'Brand Guidelines v3.pdf', source_id: 's1',
-    created_at: new Date(Date.now() - 86400000 * 3).toISOString(),
-  },
-]
 
 const DEMO_INSIGHTS: Insight[] = [
   {
@@ -152,7 +118,12 @@ export default function LearningHubPage() {
   const [activeTab, setActiveTab] = useState<Tab>('Knowledge Base')
   const [search, setSearch] = useState('')
   const [typeFilter, setTypeFilter] = useState<string>('all')
-  const [nodes, setNodes] = useState<KnowledgeNode[]>(DEMO_NODES)
+  // Sprint 3C: was seeded with 37 lines of fake knowledge graph rows
+  // (DEMO_NODES). Empty initial state is honest until /api/learning is
+  // wired here. The endpoint already exists and returns real
+  // learning_notes rows — the row->KnowledgeNode mapping needs to be
+  // built when this page is properly hydrated in a later sprint.
+  const [nodes, setNodes] = useState<KnowledgeNode[]>([])
   const [insights] = useState<Insight[]>(DEMO_INSIGHTS)
   const [sources, setSources] = useState<SourceDoc[]>(DEMO_SOURCES)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
