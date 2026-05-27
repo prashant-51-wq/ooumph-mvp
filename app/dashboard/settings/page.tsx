@@ -31,7 +31,7 @@ const NAV_ITEMS: { key: SectionKey; icon: string; label: string; link?: string }
   { key: 'security', icon: '🔒', label: 'Security' },
   { key: 'appearance', icon: '🎨', label: 'Appearance' },
   { key: 'usage', icon: '📊', label: 'Usage & Limits' },
-  { key: 'integrations', icon: '🔗', label: 'Integrations', link: '/dashboard/connections' },
+  { key: 'integrations', icon: '🔗', label: 'Integrations', link: '/dashboard/integrations' },
   { key: 'billing', icon: '💳', label: 'Billing', link: '/dashboard/billing' },
   { key: 'danger', icon: '🗑', label: 'Danger Zone' },
 ]

@@ -117,7 +117,7 @@ export async function GET(req: NextRequest) {
         type: 'error',
         title: `${row.agent_name} failed`,
         body: row.error_message?.slice(0, 200) || undefined,
-        link: '/dashboard/audit',
+        link: '/dashboard/activity', // Was /dashboard/audit (mock page hidden Sprint 1E); activity feed shows real runs
         severity: 'error',
         read: false,
         created_at: row.created_at,

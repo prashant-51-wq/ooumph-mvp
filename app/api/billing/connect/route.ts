@@ -66,8 +66,12 @@ export async function POST(req: NextRequest) {
     // Create onboarding link
     const accountLink = await stripe.accountLinks.create({
       account: accountId,
-      refresh_url: `${appUrl}/dashboard/agency?connect=refresh`,
-      return_url: `${appUrl}/dashboard/agency?connect=success`,
+      // Sprint 1E: /dashboard/agency was hidden (100% mock data). The Stripe
+      // Connect onboarding flow returns here after the user completes / refreshes
+      // Stripe-hosted onboarding. Until a real vendor-payouts surface exists, send
+      // them to /dashboard/billing which is the closest real billing-related page.
+      refresh_url: `${appUrl}/dashboard/billing?connect=refresh`,
+      return_url: `${appUrl}/dashboard/billing?connect=success`,
       type: 'account_onboarding',
     })
 

@@ -43,13 +43,15 @@ const ADVANCED_NAV = [
     label: 'CREATE',
     items: [
       { href: '/dashboard/content', label: 'Content', icon: '📝' },
-      { href: '/dashboard/creative', label: 'Creative Studio', icon: '🎨' },
-      { href: '/dashboard/blog', label: 'Blog & Scripts', icon: '✍️' },
+      // Swapped /dashboard/creative (fake) → /dashboard/creative-studio (real) — Sprint 1E
+      { href: '/dashboard/creative-studio', label: 'Creative Studio', icon: '🎨' },
+      { href: '/dashboard/blog', label: 'Blog Drafts', icon: '✍️' },
       { href: '/dashboard/image-gen', label: 'Image Studio', icon: '🖼️' },
       { href: '/dashboard/video-gen', label: 'Video Studio', icon: '🎬' },
       { href: '/dashboard/voiceover', label: 'Voiceover', icon: '🎙️' },
       { href: '/dashboard/repurpose', label: 'Repurpose', icon: '♻️' },
-      { href: '/dashboard/media', label: 'Media Library', icon: '🗂️' },
+      // Swapped /dashboard/media (fake) → /dashboard/media-library (real) — Sprint 1E
+      { href: '/dashboard/media-library', label: 'Media Library', icon: '🗂️' },
     ],
   },
   {
@@ -77,8 +79,8 @@ const ADVANCED_NAV = [
     items: [
       { href: '/dashboard/workflows', label: 'Workflows', icon: '⚡' },
       { href: '/dashboard/ab-test', label: 'A/B Testing', icon: '🧪' },
-      { href: '/dashboard/growth', label: 'Growth Engine', icon: '📈' },
-      { href: '/dashboard/export', label: 'Data Export', icon: '📤' },
+      // Hidden /dashboard/growth (all hardcoded MRR_TREND, 0 fetch calls) — Sprint 1E
+      // Hidden /dashboard/export (all MOCK_SCHEDULES/MOCK_HISTORY, 0 fetch calls) — Sprint 1E
       { href: '/dashboard/assets', label: 'Assets', icon: '📦' },
     ],
   },
@@ -86,9 +88,10 @@ const ADVANCED_NAV = [
     label: 'ACCOUNT',
     items: [
       { href: '/dashboard/billing', label: 'Billing & Plans', icon: '💳' },
-      { href: '/dashboard/agency', label: 'Agency Dashboard', icon: '🏢' },
+      // Hidden /dashboard/agency (all MOCK_ data, 0 fetch calls) — Sprint 1E
       { href: '/dashboard/payments', label: 'Payments', icon: '💰' },
-      { href: '/dashboard/connections', label: 'Connections', icon: '🔗' },
+      // Swapped /dashboard/connections (all hardcoded, 0 fetch calls) → /dashboard/integrations (real) — Sprint 1E
+      { href: '/dashboard/integrations', label: 'Integrations', icon: '🔗' },
       { href: '/dashboard/onboarding', label: 'Workspace Setup', icon: '🚀' },
     ],
   },
@@ -98,7 +101,7 @@ const ADVANCED_NAV = [
       { href: '/dashboard/workspace', label: 'Workspace Hub', icon: '🗂️' },
       { href: '/dashboard/health', label: 'System Health', icon: '🩺' },
       { href: '/dashboard/activity', label: 'Activity Feed', icon: '📡' },
-      { href: '/dashboard/audit', label: 'Audit Log', icon: '📋' },
+      // Hidden /dashboard/audit (all hardcoded ACTIVITY_LOGS/AGENT_TASKS/API_CALLS, refresh is `// In production:` comment, 0 fetch calls) — Sprint 1E
       { href: '/dashboard/privacy', label: 'Privacy & Trust', icon: '🔒' },
     ],
   },
@@ -118,7 +121,7 @@ function getPageTitle(pathname: string): string {
     '/dashboard/content': 'Content Calendar',
     '/dashboard/approvals': 'Approvals',
     '/dashboard/agents': 'Agents',
-    '/dashboard/connections': 'Connections',
+    '/dashboard/integrations': 'Integrations',
     '/dashboard/settings': 'Settings',
     '/dashboard/inbox': 'Unified Inbox',
     '/dashboard/calendar': 'Calendar',
@@ -129,23 +132,20 @@ function getPageTitle(pathname: string): string {
     '/dashboard/campaign': 'Campaigns',
     '/dashboard/email-marketing': 'Email Marketing',
     '/dashboard/ads': 'Paid Ads',
-    '/dashboard/growth': 'Growth',
     '/dashboard/analytics': 'Analytics',
     '/dashboard/research': 'Research',
-    '/dashboard/blog': 'Blog & Scripts',
-    '/dashboard/creative': 'Creative Studio',
+    '/dashboard/blog': 'Blog Drafts',
+    '/dashboard/creative-studio': 'Creative Studio',
     '/dashboard/voiceover': 'Voiceover',
     '/dashboard/voice-ai': 'Voice AI',
     '/dashboard/video-gen': 'Video Studio',
     '/dashboard/image-gen': 'Image Studio',
-    '/dashboard/media': 'Media Library',
+    '/dashboard/media-library': 'Media Library',
     '/dashboard/repurpose': 'Repurpose',
     '/dashboard/pr': 'PR Studio',
     '/dashboard/publishing': 'Publishing',
     '/dashboard/billing': 'Billing & Plans',
     '/dashboard/payments': 'Payments',
-    '/dashboard/agency': 'Agency Dashboard',
-    '/dashboard/audit': 'Audit Log',
     '/dashboard/privacy': 'Privacy & Trust',
     '/dashboard/funnel': 'Funnel Plan',
     '/dashboard/funnel/form-builder': 'Form Builder',
@@ -156,7 +156,6 @@ function getPageTitle(pathname: string): string {
     '/dashboard/learning': 'AI Learning',
     '/dashboard/brand-monitor': 'Brand Monitor',
     '/dashboard/ab-test': 'A/B Testing',
-    '/dashboard/export': 'Data Export',
     '/dashboard/assets': 'Assets',
     '/dashboard/onboarding': 'Workspace Setup',
   }
@@ -549,12 +548,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                           className="block px-3 py-2 text-xs text-gray-300 hover:text-white hover:bg-gray-800">
                           + Create new workspace
                         </Link>
-                        <Link
-                          href="/dashboard/agency"
-                          onClick={() => setWorkspaceMenuOpen(false)}
-                          className="block px-3 py-2 text-xs text-gray-400 hover:text-white hover:bg-gray-800">
-                          Manage all clients →
-                        </Link>
+                        {/* "Manage all clients" link removed Sprint 1E — agency page was 100% mock data.
+                            Restore when /dashboard/agency is rewired to real client/team data. */}
                       </div>
                     </div>
                   )}
