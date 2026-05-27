@@ -95,9 +95,22 @@ export default function BrandMonitorPage() {
   const [history, setHistory] = useState<HistoryItem[]>([])
   const [lastScan, setLastScan] = useState<string | null>(null)
 
-  // Crisis detection state
-  const [crisisDetected] = useState(true) // demo: always show crisis panel
-  const [crisisSeverity] = useState<CrisisSeverity>('HIGH')
+  // Crisis detection state — Sprint 3B.
+  //
+  // Previously hardcoded to `useState(true)` with an "always show crisis
+  // panel" demo comment. That meant every workspace, on every page load,
+  // saw a fake "HIGH SEVERITY CRISIS DETECTED" banner regardless of any
+  // real signal. Wildly dishonest.
+  //
+  // The honest state is `false` by default. A real crisis detection flow
+  // requires a backend monitoring agent that flips this flag based on
+  // mention sentiment thresholds — that's a separate effort (no
+  // /api/brand-monitor/* endpoints exist in this codebase yet). Until
+  // then, the panel only appears when the operator explicitly triggers
+  // the "Demo crisis response" button, which is now visible only behind
+  // an honest "Demo only" label so no one mistakes it for real signal.
+  const [crisisDetected, setCrisisDetected] = useState(false)
+  const [crisisSeverity, setCrisisSeverity] = useState<CrisisSeverity>('HIGH')
   const [crisisModalOpen, setCrisisModalOpen] = useState(false)
   const [crisisResponse, setCrisisResponse] = useState('')
   const [generatingCrisis, setGeneratingCrisis] = useState(false)
@@ -187,11 +200,22 @@ export default function BrandMonitorPage() {
     setGeneratingCrisis(false)
   }
 
+  // Sprint 3B: aligned with the CRM "Send to CMO" pattern. Writes to the
+  // same `ooumph_cmo_prefill` localStorage key the CMO Dashboard reads.
+  // The legacy `pendingCMOInsights` array was a Brand-Monitor-only stash
+  // that nothing else in the app ever read back — confirmed via codebase
+  // grep. Per-source ledgers turn into write-only audit caches; one shared
+  // prefill key keeps the contract simple.
   const feedToCMO = (context: string) => {
-    const existing = JSON.parse(localStorage.getItem('pendingCMOInsights') || '[]')
-    existing.push({ context, timestamp: new Date().toISOString(), source: 'brand-monitor' })
-    localStorage.setItem('pendingCMOInsights', JSON.stringify(existing))
-    showToast('✓ Sent to CMO — she\'ll factor this into your next strategy')
+    try {
+      const payload = {
+        source: 'brand-monitor',
+        context,
+        ts: Date.now(),
+      }
+      localStorage.setItem('ooumph_cmo_prefill', JSON.stringify(payload))
+    } catch { /* localStorage may be disabled — best-effort only */ }
+    showToast('Sent to CMO. Open the CMO Dashboard to continue with this context.')
   }
 
   const downloadReport = () => {
