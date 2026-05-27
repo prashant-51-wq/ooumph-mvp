@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { seedWorkspace } from '@/lib/seed-workspace'
+import { seedDefaultAgents } from '@/lib/agents'
 
 export async function POST(req: NextRequest) {
   try {
@@ -50,10 +51,26 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // Sprint 2 Commit 2: populate the agents registry with the canonical
+    // agent slugs so the Agents page renders immediately and the cron
+    // worker has rows to filter on. Runs regardless of `skipSeed` because
+    // the registry isn't "sample data" — it's structural state every
+    // workspace needs to function. Failure is non-fatal: an empty
+    // registry just means `isAgentActive` falls back to its active default
+    // (see lib/agents.ts → fail open behavior), so workspaces still work.
+    let agentsSeeded = 0
+    try {
+      const r = await seedDefaultAgents(workspaceId)
+      agentsSeeded = r.inserted
+    } catch (err) {
+      console.error('[workspaces POST] agent seed failed (non-fatal):', err)
+    }
+
     return NextResponse.json({
       workspaceId,
       success: true,
       seeded: seedResult?.seeded || [],
+      agentsSeeded,
     })
   } catch (error) {
     console.error('Workspace creation error:', error)

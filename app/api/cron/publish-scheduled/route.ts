@@ -28,6 +28,7 @@ import { sql, newId } from '@/lib/db'
 import { assertArtifactApproved } from '@/lib/guards'
 import { decryptSecret } from '@/lib/secrets'
 import { shortenAndTrackUrls } from '@/lib/link-tracker'
+import { buildAgentActiveCache } from '@/lib/agents'
 
 export const runtime = 'nodejs'
 export const maxDuration = 300
@@ -213,6 +214,22 @@ export async function GET(req: NextRequest) {
     return clear
   }
 
+  // 🛑 Sprint 2 Commit 2 — Agent lifecycle gate. Reads agents.status for the
+  // 'social-agent' row (the publishing worker per the canonical slug list
+  // in lib/agents.ts → DEFAULT_AGENTS). When an operator pauses social-agent
+  // from /dashboard/agents, this cache returns false on the next tick and
+  // we skip every scheduled item for that workspace.
+  //
+  // Failure semantics: an unseeded registry row returns active (fail open),
+  // matching the seedDefaultAgents idempotency story. So a workspace that
+  // existed before Sprint 2 still publishes — only operators who've
+  // explicitly paused get the skip.
+  //
+  // Items skipped here stay in 'pending' (we don't flip to failed). They'll
+  // be re-evaluated on the next cron tick — so resuming the agent picks up
+  // backlog work automatically without manual requeue.
+  const socialAgentActive = buildAgentActiveCache('social-agent')
+
   for (const item of items) {
     const itemId = item.id
     const workspaceId = item.workspace_id
@@ -226,6 +243,15 @@ export async function GET(req: NextRequest) {
       // picked up on the next cron tick once the crisis clears.
       if (!(await isWorkspaceClear(workspaceId))) {
         results.push({ id: itemId, status: 'skipped_crisis' })
+        continue
+      }
+
+      // ── 0.5. Agent lifecycle gate — skip workspaces with social-agent paused ──
+      // Operator paused the publishing worker from /dashboard/agents. Leave
+      // the row in 'pending' so it'll publish automatically when they
+      // resume. No retry counter bump — pausing is not a failure.
+      if (!(await socialAgentActive(workspaceId))) {
+        results.push({ id: itemId, status: 'skipped_agent_paused' })
         continue
       }
 
