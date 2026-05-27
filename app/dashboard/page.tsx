@@ -173,31 +173,12 @@ const QUICK_ACTIONS = [
   'Generate lead plan',
 ]
 
-// ─── Market Pulse data ────────────────────────────────────────────────────────
-
-const MARKET_PULSE = [
-  {
-    id: '1',
-    icon: '🔥',
-    text: "'AI Marketing Tools' trending +340% this week",
-    time: '2h ago',
-    type: 'trend',
-  },
-  {
-    id: '2',
-    icon: '⚠',
-    text: 'Competitor launched new pricing tier',
-    time: '4h ago',
-    type: 'competitor',
-  },
-  {
-    id: '3',
-    icon: '💡',
-    text: 'LinkedIn posts getting 2x engagement this week',
-    time: '6h ago',
-    type: 'insight',
-  },
-]
+// Market Pulse widget removed in Sprint 3A — it was a fixed three-row array
+// of fabricated "insights" ("AI Marketing Tools trending +340%", "Competitor
+// launched new pricing tier") with no real source. There is no /api/market-pulse
+// endpoint and no plan to build one — the Research page already serves the
+// "what's happening" surface. The Source Test rejected this widget; the
+// honest move is deletion, not "Coming soon" theater.
 
 // ─── Notification severity → icon ─────────────────────────────────────────────
 
@@ -209,15 +190,33 @@ function notifIcon(severity: string, type: string): string {
   return '🤖'
 }
 
-// ─── Agent status data ─────────────────────────────────────────────────────────
-
-const AGENT_STATUS = [
-  { id: 'strategy', name: 'Strategy', status: 'running', color: 'bg-green-500' },
-  { id: 'content', name: 'Content', status: 'running', color: 'bg-green-500' },
-  { id: 'brand', name: 'Brand Monitor', status: 'idle', color: 'bg-gray-600' },
-  { id: 'research', name: 'Research', status: 'running', color: 'bg-green-500' },
-  { id: 'leadgen', name: 'Lead Gen', status: 'idle', color: 'bg-gray-600' },
-  { id: 'publishing', name: 'Publishing', status: 'running', color: 'bg-green-500' },
+// Agent status display config — Sprint 3A.
+//
+// Previously a fully hardcoded array of fake statuses ("Strategy: running",
+// "Brand Monitor: idle") that lied about every workspace's actual agent
+// state. The CMO dashboard now hydrates from /api/agents/registry (Sprint 2
+// Commit 3 endpoint) which returns the real per-(workspace,agent) lifecycle.
+//
+// AGENT_STATUS_DISPLAY is the CURATED set of agents we show on the dashboard
+// sidebar — out of the 17 in the registry, these 6 are the highest-level
+// supervisor+key-worker slots that map to the UI's "All 6 →" caption.
+//
+// Each entry pairs a registry slug (the canonical name in the agents table)
+// with a display label and ordering. When the registry returns 'paused' or
+// 'error' the dot turns gray; only 'active' shows the green pulse. Agents
+// that don't exist in the registry yet (unseeded workspace) render as 'idle'
+// gray so we never lie about activity.
+interface AgentDisplaySlot {
+  slug: string                     // matches DEFAULT_AGENTS[].name in lib/agents.ts
+  label: string                    // display name
+}
+const AGENT_STATUS_DISPLAY: AgentDisplaySlot[] = [
+  { slug: 'cmo',              label: 'Strategy' },
+  { slug: 'content-sup',      label: 'Content' },
+  { slug: 'brand-monitor',    label: 'Brand Monitor' },
+  { slug: 'intelligence-sup', label: 'Research' },
+  { slug: 'lead-scorer',      label: 'Lead Gen' },
+  { slug: 'social-agent',     label: 'Publishing' },
 ]
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -657,10 +656,12 @@ function CampaignCarousel({ onDeploy }: { onDeploy: (prompt: string) => void }) 
 function WorkspaceSnapshot({
   businessName,
   stats,
+  activeCampaigns,
   onExpand,
 }: {
   businessName: string
   stats: Stats
+  activeCampaigns: number    // Sprint 3A: real campaign count from /api/artifacts
   onExpand: () => void
 }) {
   const [open, setOpen] = useState(false)
@@ -687,20 +688,34 @@ function WorkspaceSnapshot({
             </div>
             <div className="bg-gray-900 border border-gray-800 rounded-lg px-3 py-2">
               <p className="text-gray-600">Active campaigns</p>
-              <p className="text-gray-200 font-medium">2</p>
+              <p className="text-gray-200 font-medium">{activeCampaigns}</p>
             </div>
             <div className="bg-gray-900 border border-gray-800 rounded-lg px-3 py-2">
               <p className="text-gray-600">Top channel</p>
-              <p className="text-gray-200 font-medium">Email (48%)</p>
+              {/* No real channel-attribution source yet. The Analytics page
+                  has the live channel breakdown — link there rather than
+                  fabricating "Email (48%)". */}
+              <p className="text-gray-500 font-medium">
+                <Link href="/dashboard/analytics" className="hover:text-indigo-300">
+                  See Analytics →
+                </Link>
+              </p>
             </div>
             <div className="bg-gray-900 border border-gray-800 rounded-lg px-3 py-2">
               <p className="text-gray-600">Pending items</p>
               <p className="text-yellow-400 font-medium">{stats.pendingApprovals}</p>
             </div>
           </div>
+          {/* "Last strategy: Growth Sprint brief · 3 days ago" was hardcoded.
+              The Strategy page already lists every strategy artifact with
+              real timestamps — link there. */}
           <div className="bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-xs">
-            <p className="text-gray-600">Last strategy</p>
-            <p className="text-gray-300">Growth Sprint brief · 3 days ago</p>
+            <p className="text-gray-600">Strategy</p>
+            <p className="text-gray-300">
+              <Link href="/dashboard/strategy" className="hover:text-indigo-300">
+                Open Strategy page →
+              </Link>
+            </p>
           </div>
           <button
             onClick={onExpand}
@@ -720,12 +735,24 @@ function WorkspaceSnapshot({
 function CMOContextModal({
   businessName,
   stats,
+  activeCampaigns,
+  brandVoiceScore,
+  leadsThisWeek,
+  learningNotes,
   onClose,
 }: {
   businessName: string
   stats: Stats
+  activeCampaigns: number
+  brandVoiceScore: number       // 0 when no scored approvals yet
+  leadsThisWeek: number
+  learningNotes: number          // real count from /api/stats — was used as proxy for "documents"
   onClose: () => void
 }) {
+  // Sprint 3A: every visible number traces to real state. Numbers that had no
+  // backing source (Industry, Target ICP, Past campaigns count, Competitor
+  // count, Current Strategy Focus) are now empty states with a link to the
+  // page that DOES have authoritative data. We never fabricate.
   return (
     <div className="fixed inset-0 bg-gray-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
       <div className="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-lg overflow-hidden shadow-2xl">
@@ -738,32 +765,52 @@ function CMOContextModal({
             <p className="text-xs text-gray-500 uppercase tracking-wider font-medium mb-2">Workspace</p>
             <div className="text-sm text-gray-300 space-y-1">
               <p><span className="text-gray-600">Business:</span> {businessName || 'Ooumph Workspace'}</p>
-              <p><span className="text-gray-600">Industry:</span> SaaS / Marketing Technology</p>
-              <p><span className="text-gray-600">Active campaigns:</span> 2</p>
-              <p><span className="text-gray-600">Target ICP:</span> SMB Marketing Teams, Agency Owners</p>
+              <p><span className="text-gray-600">Active campaigns:</span> {activeCampaigns}</p>
+              {/* Industry / Target ICP previously hardcoded. They live on
+                  brand_profiles but we don't pull them here yet — until we
+                  do, link to Settings rather than fabricate. */}
+              <p className="text-gray-600 text-xs pt-1">
+                <Link href="/dashboard/settings" className="hover:text-indigo-300">
+                  Industry &amp; target audience → Settings
+                </Link>
+              </p>
             </div>
           </div>
           <div>
             <p className="text-xs text-gray-500 uppercase tracking-wider font-medium mb-2">Knowledge Nodes</p>
             <div className="text-sm text-gray-300 space-y-1">
-              <p><span className="text-gray-600">Brand guidelines:</span> Loaded</p>
-              <p><span className="text-gray-600">Product context:</span> 24 documents</p>
-              <p><span className="text-gray-600">Past campaigns:</span> 8 reference campaigns</p>
-              <p><span className="text-gray-600">Competitor data:</span> 5 tracked competitors</p>
+              <p><span className="text-gray-600">Brand memories:</span> {learningNotes}</p>
+              {/* Past campaigns and competitor tracking don't have count
+                  endpoints yet; surface the page that does. */}
+              <p className="text-gray-600 text-xs pt-1">
+                <Link href="/dashboard/memory" className="hover:text-indigo-300">
+                  Manage knowledge nodes →
+                </Link>
+              </p>
             </div>
           </div>
           <div>
             <p className="text-xs text-gray-500 uppercase tracking-wider font-medium mb-2">Performance</p>
             <div className="text-sm text-gray-300 space-y-1">
-              <p><span className="text-gray-600">Brand Voice Score:</span> 91%</p>
+              <p>
+                <span className="text-gray-600">Brand Voice Score:</span>{' '}
+                {brandVoiceScore > 0 ? `${brandVoiceScore}%` : <span className="text-gray-500">No approvals scored yet</span>}
+              </p>
               <p><span className="text-gray-600">Artifacts generated:</span> {stats.artifacts}</p>
-              <p><span className="text-gray-600">Leads this week:</span> 23</p>
+              <p><span className="text-gray-600">Leads this week:</span> {leadsThisWeek}</p>
               <p><span className="text-gray-600">Pending approvals:</span> {stats.pendingApprovals}</p>
             </div>
           </div>
           <div>
             <p className="text-xs text-gray-500 uppercase tracking-wider font-medium mb-2">Current Strategy Focus</p>
-            <p className="text-sm text-gray-300">Growth Sprint — 30-day intensive targeting SMB decision-makers via LinkedIn + email. Primary KPI: 50 qualified leads by end of month.</p>
+            {/* Hardcoded "Growth Sprint — 30-day intensive..." removed.
+                The Strategy page is the canonical source of the active
+                strategy artifact. */}
+            <p className="text-sm text-gray-500">
+              <Link href="/dashboard/strategy" className="text-indigo-400 hover:text-indigo-300">
+                See active strategy →
+              </Link>
+            </p>
           </div>
         </div>
         <div className="px-5 py-4 border-t border-gray-800">
@@ -900,6 +947,11 @@ export default function DashboardPage() {
   const [runs, setRuns] = useState<AgentRun[]>([])
   const [runsLoading, setRunsLoading] = useState(true)
   const [stats, setStats] = useState<Stats>({ artifacts: 0, pendingApprovals: 0, learningNotes: 0, completedTypes: [] })
+  // Sprint 3A: real agent lifecycle map (slug -> 'active'|'paused'|'error'|'disabled').
+  // Hydrated from /api/agents/registry (the endpoint added in Sprint 2 Commit 3).
+  // The sidebar's "Agent Status" widget reads this; previously it was a fully
+  // hardcoded array of fake statuses that lied about every workspace.
+  const [agentStatuses, setAgentStatuses] = useState<Record<string, string>>({})
   const [costToday, setCostToday] = useState(0)
   const [activeCampaigns, setActiveCampaigns] = useState(0)
   const [brandVoiceScore, setBrandVoiceScore] = useState(0)
@@ -1168,6 +1220,22 @@ export default function DashboardPage() {
         }
         const avg = scored.reduce((a, m) => a + (m.performance_score || 0), 0) / scored.length
         setBrandVoiceScore(Math.round(avg))
+      })
+      .catch(() => {})
+
+    // Sprint 3A: Agent registry hydration for the sidebar status widget.
+    // Pulls every row from the agents table for this workspace and indexes
+    // by name so AGENT_STATUS_DISPLAY can look up the real status. Refreshed
+    // on workspace change only — pause/resume happens on a different page
+    // (/dashboard/agents) which has its own polling; if the user toggles
+    // from there then returns here, this picks up the change on next mount.
+    fetch(`/api/agents/registry?workspaceId=${workspaceId}`)
+      .then(r => r.ok ? r.json() : [])
+      .then((rows: Array<{ name: string; status: string }>) => {
+        if (!Array.isArray(rows)) return
+        const map: Record<string, string> = {}
+        for (const r of rows) map[r.name] = r.status
+        setAgentStatuses(map)
       })
       .catch(() => {})
   }, [workspaceId])
@@ -1464,6 +1532,10 @@ export default function DashboardPage() {
         <CMOContextModal
           businessName={businessName}
           stats={stats}
+          activeCampaigns={activeCampaigns}
+          brandVoiceScore={brandVoiceScore}
+          leadsThisWeek={leadsThisWeek}
+          learningNotes={stats.learningNotes}
           onClose={() => setShowContextModal(false)}
         />
       )}
@@ -1717,6 +1789,7 @@ export default function DashboardPage() {
             <WorkspaceSnapshot
               businessName={businessName}
               stats={stats}
+              activeCampaigns={activeCampaigns}
               onExpand={() => setShowContextModal(true)}
             />
           </div>
@@ -1774,28 +1847,53 @@ export default function DashboardPage() {
               <LinkClickROIWidget workspaceId={workspaceId} compact />
             </div>
 
-            {/* Agent Status */}
+            {/* Agent Status — Sprint 3A: real lifecycle from /api/agents/registry.
+                Status sources: 'active' from the registry shows green pulse;
+                'paused' shows amber with the 'Paused' label; 'error' shows
+                red; missing rows (unseeded workspace) show gray 'idle' so we
+                never lie about activity. */}
             <div className="p-4 border-b border-gray-800">
               <div className="flex items-center justify-between mb-3">
                 <p className="text-xs text-gray-500 uppercase tracking-wider font-medium">Agent Status</p>
-                <Link href="/agents" className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors">
-                  All 6 →
+                <Link href="/dashboard/agents" className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors">
+                  All →
                 </Link>
               </div>
               <div className="space-y-1.5">
-                {AGENT_STATUS.map((agent) => (
-                  <Link
-                    key={agent.id}
-                    href="/agents"
-                    className="flex items-center gap-2.5 py-1.5 px-2 rounded-lg hover:bg-gray-900 transition-colors group"
-                  >
-                    <span className={`w-2 h-2 rounded-full flex-shrink-0 ${agent.color} ${agent.status === 'running' ? 'animate-pulse' : ''}`} />
-                    <span className="flex-1 text-gray-300 text-xs group-hover:text-white transition-colors">{agent.name}</span>
-                    <span className={`text-[10px] font-medium ${agent.status === 'running' ? 'text-green-400' : 'text-gray-600'}`}>
-                      {agent.status === 'running' ? 'Running' : 'Idle'}
-                    </span>
-                  </Link>
-                ))}
+                {AGENT_STATUS_DISPLAY.map((slot) => {
+                  const realStatus = agentStatuses[slot.slug]            // 'active' | 'paused' | 'error' | 'disabled' | undefined
+                  // Visual mapping. We don't have a "running right now" signal
+                  // here — that requires joining /api/agent-runs. For the
+                  // sidebar we surface lifecycle only; the /dashboard/agents
+                  // page is where users see live task counts.
+                  const isActive = realStatus === 'active'
+                  const isPaused = realStatus === 'paused'
+                  const isError  = realStatus === 'error'
+                  const dotColor = isActive ? 'bg-green-500'
+                                 : isPaused ? 'bg-amber-500'
+                                 : isError  ? 'bg-red-500'
+                                 : 'bg-gray-600'
+                  const label    = isActive ? 'Active'
+                                 : isPaused ? 'Paused'
+                                 : isError  ? 'Error'
+                                 : realStatus === 'disabled' ? 'Disabled'
+                                 : 'Idle'
+                  const textColor = isActive ? 'text-green-400'
+                                  : isPaused ? 'text-amber-400'
+                                  : isError  ? 'text-red-400'
+                                  : 'text-gray-600'
+                  return (
+                    <Link
+                      key={slot.slug}
+                      href="/dashboard/agents"
+                      className="flex items-center gap-2.5 py-1.5 px-2 rounded-lg hover:bg-gray-900 transition-colors group"
+                    >
+                      <span className={`w-2 h-2 rounded-full flex-shrink-0 ${dotColor} ${isActive ? 'animate-pulse' : ''}`} />
+                      <span className="flex-1 text-gray-300 text-xs group-hover:text-white transition-colors">{slot.label}</span>
+                      <span className={`text-[10px] font-medium ${textColor}`}>{label}</span>
+                    </Link>
+                  )
+                })}
               </div>
             </div>
 
@@ -1840,33 +1938,21 @@ export default function DashboardPage() {
               )}
             </div>
 
-            {/* Market Pulse — TODO: wire to real /api/market-pulse endpoint once available */}
+            {/* Market Pulse widget DELETED in Sprint 3A.
+                The previous version hardcoded three fake "insights" with no
+                real source ('AI Marketing Tools trending +340%', etc.). The
+                Research page already serves the live competitor + trend
+                surface — link the user there instead of fabricating a feed. */}
             <div className="p-4 border-b border-gray-800">
-              <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center justify-between mb-2">
                 <p className="text-xs text-gray-500 uppercase tracking-wider font-medium">Market Pulse</p>
-                <Link href="/dashboard/research" className="text-xs text-gray-600 hover:text-gray-400 transition-colors">
-                  Feed →
+                <Link href="/dashboard/research" className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors">
+                  Open →
                 </Link>
               </div>
-              <div className="space-y-2">
-                {MARKET_PULSE.map((pulse) => (
-                  <div key={pulse.id} className="bg-gray-900 border border-gray-800 rounded-xl p-3">
-                    <div className="flex items-start gap-2 mb-2">
-                      <span className="text-base leading-none flex-shrink-0 mt-0.5">{pulse.icon}</span>
-                      <p className="text-gray-300 text-[11px] leading-snug flex-1">{pulse.text}</p>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-gray-700 text-[10px]">{pulse.time}</span>
-                      <button
-                        onClick={() => void sendMessage(`Tell me more about this insight: "${pulse.text}"`)}
-                        className="text-[10px] text-indigo-400 hover:text-indigo-300 transition-colors"
-                      >
-                        Feed to Chat →
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
+              <p className="text-gray-600 text-[11px] leading-snug">
+                Live competitor and trend signals are on the Research page.
+              </p>
             </div>
 
             {/* Activity feed */}
