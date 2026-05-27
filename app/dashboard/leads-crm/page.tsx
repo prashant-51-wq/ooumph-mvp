@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useRef, useCallback, useEffect } from 'react'
+import { useRouter } from 'next/navigation'
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 type Stage = 'Lead' | 'Prospect' | 'Qualified' | 'Proposal' | 'Customer' | 'Churned'
@@ -223,40 +224,14 @@ function activityTypeNormalize(t: string): ActivityType {
   return 'note'
 }
 
-const MOCK_CONTACTS: Contact[] = [
-  { id:'c1', name:'Sarah Johnson', email:'sarah@techcorp.io', phone:'+1 415 555 0101', company:'TechCorp', stage:'Customer', score:92, rfm_tier:'Champion', rfm_r:5, rfm_f:5, rfm_m:5, last_activity:'2026-05-25T10:00:00Z', tags:['VIP','Enterprise'], avatar_color:'bg-indigo-600', deal_value:12000, notes:'Key decision maker', created_at:'2026-01-15T09:00:00Z' },
-  { id:'c2', name:'Marcus Chen', email:'mchen@innovate.com', phone:'+1 312 555 0202', company:'Innovate LLC', stage:'Proposal', score:78, rfm_tier:'Loyal', rfm_r:4, rfm_f:4, rfm_m:3, last_activity:'2026-05-24T14:30:00Z', tags:['Warm','Mid-market'], avatar_color:'bg-purple-600', deal_value:8500, notes:'Interested in annual plan', created_at:'2026-02-20T11:00:00Z' },
-  { id:'c3', name:'Priya Patel', email:'priya@startupx.co', phone:'+91 98765 43210', company:'StartupX', stage:'Qualified', score:65, rfm_tier:'Potential Loyalist', rfm_r:3, rfm_f:3, rfm_m:4, last_activity:'2026-05-22T09:15:00Z', tags:['Startup','High Growth'], avatar_color:'bg-pink-600', deal_value:3200, notes:'Budget decision in Q3', created_at:'2026-03-10T08:00:00Z' },
-  { id:'c4', name:'Derek Williams', email:'derek@bigco.net', phone:'+1 212 555 0303', company:'BigCo Inc', stage:'Lead', score:42, rfm_tier:'At Risk', rfm_r:2, rfm_f:3, rfm_m:4, last_activity:'2026-05-10T16:00:00Z', tags:['Cold','Enterprise'], avatar_color:'bg-blue-600', deal_value:25000, notes:'Need re-engagement', created_at:'2026-04-05T10:00:00Z' },
-  { id:'c5', name:'Amelia Torres', email:'atorres@creative.agency', phone:'+1 310 555 0404', company:'Creative Agency', stage:'Customer', score:88, rfm_tier:'Champion', rfm_r:5, rfm_f:4, rfm_m:5, last_activity:'2026-05-25T08:45:00Z', tags:['Agency','Referral'], avatar_color:'bg-emerald-600', deal_value:6800, notes:'Great advocate', created_at:'2026-01-28T12:00:00Z' },
-  { id:'c6', name:'James Park', email:'jpark@finance.co', phone:'+1 646 555 0505', company:'Finance Co', stage:'Prospect', score:55, rfm_tier:'New Customer', rfm_r:4, rfm_f:1, rfm_m:2, last_activity:'2026-05-18T11:30:00Z', tags:['Finance','Inbound'], avatar_color:'bg-orange-600', deal_value:4500, notes:'Signed up last week', created_at:'2026-05-12T09:00:00Z' },
-  { id:'c7', name:'Lena Fischer', email:'lena@eurobiz.de', phone:'+49 30 555 0606', company:'EuroBiz GmbH', stage:'Churned', score:18, rfm_tier:'Lost', rfm_r:1, rfm_f:1, rfm_m:3, last_activity:'2026-03-01T10:00:00Z', tags:['EMEA','Churned'], avatar_color:'bg-rose-600', deal_value:0, notes:'Contract expired', created_at:'2025-11-20T10:00:00Z' },
-  { id:'c8', name:'Carlos Mendez', email:'carlos@latam.store', phone:'+52 55 555 0707', company:'LatAm Store', stage:'Qualified', score:71, rfm_tier:'Loyal', rfm_r:4, rfm_f:5, rfm_m:3, last_activity:'2026-05-23T15:00:00Z', tags:['LATAM','Repeat'], avatar_color:'bg-cyan-600', deal_value:5600, notes:'Expanding to 3 markets', created_at:'2026-02-01T10:00:00Z' },
-]
-
-const MOCK_ACTIVITIES: Activity[] = [
-  { id:'a1', contact_id:'c1', contact_name:'Sarah Johnson', type:'call', title:'Discovery call — great fit', notes:'Discussed Q3 expansion plans', outcome:'Positive', next_action:'Send proposal', timestamp:'2026-05-25T10:00:00Z' },
-  { id:'a2', contact_id:'c2', contact_name:'Marcus Chen', type:'email', title:'Proposal sent', notes:'3-year SaaS plan included', outcome:'Sent', next_action:'Follow up in 2 days', timestamp:'2026-05-24T14:30:00Z' },
-  { id:'a3', contact_id:'c3', contact_name:'Priya Patel', type:'meeting', title:'Product demo completed', notes:'Showed automation features', outcome:'Interested', next_action:'Budget confirmation call', timestamp:'2026-05-22T09:15:00Z' },
-  { id:'a4', contact_id:'c5', contact_name:'Amelia Torres', type:'deal', title:'Deal closed — $6,800', notes:'Annual subscription', outcome:'Won', next_action:'Onboarding call', timestamp:'2026-05-21T16:00:00Z' },
-  { id:'a5', contact_id:'c4', contact_name:'Derek Williams', type:'alert', title:'No response — 15 days', notes:'Last email opened but not replied', outcome:'At Risk', next_action:'Send win-back', timestamp:'2026-05-10T16:00:00Z' },
-  { id:'a6', contact_id:'c6', contact_name:'James Park', type:'note', title:'Inbound signup from blog post', notes:'Read "AI Marketing" article', outcome:'New', next_action:'Welcome sequence started', timestamp:'2026-05-18T11:30:00Z' },
-]
-
-const MOCK_DEALS: Deal[] = [
-  { id:'d1', name:'TechCorp Annual Plan', contact:'Sarah Johnson', value:12000, probability:90, stage:'Negotiation', close_date:'2026-06-15', owner:'You' },
-  { id:'d2', name:'Innovate Q3 Upgrade', contact:'Marcus Chen', value:8500, probability:65, stage:'Proposal', close_date:'2026-06-30', owner:'You' },
-  { id:'d3', name:'StartupX Starter Plan', contact:'Priya Patel', value:3200, probability:50, stage:'Qualification', close_date:'2026-07-20', owner:'You' },
-  { id:'d4', name:'BigCo Enterprise License', contact:'Derek Williams', value:25000, probability:20, stage:'Prospecting', close_date:'2026-08-31', owner:'You' },
-  { id:'d5', name:'Finance Co Pro Plan', contact:'James Park', value:4500, probability:75, stage:'Proposal', close_date:'2026-06-10', owner:'You' },
-]
-
-const MOCK_SEGMENTS: Segment[] = [
-  { id:'s1', name:'Champions (RFM 555)', count:47, last_updated:'2026-05-25', performance:'AOV $1,240 · 94% retention', conditions:[{field:'rfm_r',operator:'>=',value:'5'},{field:'rfm_f',operator:'>=',value:'5'},{field:'rfm_m',operator:'>=',value:'4'}], type:'builtin' },
-  { id:'s2', name:'At Risk (RFM 2xx)', count:31, last_updated:'2026-05-24', performance:'AOV $420 · dropping', conditions:[{field:'rfm_r',operator:'<=',value:'2'}], type:'builtin' },
-  { id:'s3', name:'New Customers (RFM x1x)', count:58, last_updated:'2026-05-23', performance:'AOV $180 · onboarding', conditions:[{field:'rfm_f',operator:'=',value:'1'}], type:'builtin' },
-  { id:'s4', name:'High Value Prospects', count:22, last_updated:'2026-05-22', performance:'Avg deal $8.5k', conditions:[{field:'score',operator:'>=',value:'70'},{field:'stage',operator:'=',value:'Qualified'}], type:'builtin' },
-]
+// MOCK_CONTACTS / MOCK_ACTIVITIES / MOCK_DEALS / MOCK_SEGMENTS were previously
+// declared here as 8 fake contacts (Sarah Johnson / Marcus Chen / Priya Patel
+// etc.), 6 fake activities, 5 fake deals, and 4 fake segments. They've been
+// removed in Sprint 1D — `contacts`, `activities`, and `deals` are now
+// hydrated from /api/leads-captured + /api/sales-deals + per-lead activity
+// endpoints, and `segments` is derived client-side from real contact data
+// (see the `segments` block in the page component). No silent mock fallback
+// remains. Source Test: every visible row on the CRM traces to a DB row.
 
 const DEAL_STAGES = ['Prospecting','Qualification','Proposal','Negotiation','Closed Won','Closed Lost']
 
@@ -313,10 +288,12 @@ function ScoreBar({ score, className = '' }: { score: number; className?: string
 
 // ── Contact Slide-over ─────────────────────────────────────────────────────────
 function ContactSlideover({ contact, onClose, activities, workspaceId, onUpdated }: { contact: Contact; onClose: () => void; activities: Activity[]; workspaceId: string | null; onUpdated: () => void }) {
+  const router = useRouter()
   const [note, setNote] = useState('')
   const [editStage, setEditStage] = useState(contact.stage)
   const [savingStage, setSavingStage] = useState(false)
   const [savingNote, setSavingNote] = useState(false)
+  const [actionMsg, setActionMsg] = useState<string | null>(null)
   const contactActivities = activities
 
   async function saveStage(stage: Stage) {
@@ -332,6 +309,31 @@ function ContactSlideover({ contact, onClose, activities, workspaceId, onUpdated
     } finally { setSavingStage(false) }
   }
 
+  /**
+   * Log an activity row against the lead. Mirrors `submitNote` but parameterizes
+   * the type/title so the Email/Call/Send-to-CMO buttons can use the same path.
+   * Failure to log is non-fatal: the user-visible action (mailto, tel, navigation)
+   * still happens; we just won't have the audit row.
+   *
+   * Note on `type`: the API accepts any string, but the existing frontend
+   * `ActivityType` union only knows about call/email/note/meeting/deal/alert.
+   * "Send to CMO" is logged as type='note' with a recognizable title so the
+   * timeline icon renders correctly until we expand the ActivityType union.
+   */
+  async function logActivity(type: ActivityType, title: string, description?: string) {
+    if (!workspaceId) return
+    try {
+      await fetch(`/api/leads-captured/${contact.id}/activity`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspaceId, type, title, description }),
+      })
+      onUpdated()
+    } catch {
+      // Best-effort — don't block the user's action on a failed audit write.
+    }
+  }
+
   async function submitNote() {
     if (!note.trim() || !workspaceId) return
     setSavingNote(true)
@@ -344,6 +346,72 @@ function ContactSlideover({ contact, onClose, activities, workspaceId, onUpdated
       setNote('')
       onUpdated()
     } finally { setSavingNote(false) }
+  }
+
+  /**
+   * Email button — opens a mailto: link in a new tab and logs an `email`
+   * activity row so the timeline reflects the contact attempt. The browser's
+   * native mail handler takes over from there. We don't have a Send-Email-
+   * via-Workspace flow yet; mailto is the honest fallback.
+   */
+  function handleEmailClick() {
+    if (!contact.email) {
+      setActionMsg('No email address on this contact.')
+      return
+    }
+    setActionMsg(null)
+    void logActivity('email', `Started email to ${contact.email}`, 'Opened in mail client via mailto:')
+    if (typeof window !== 'undefined') {
+      window.location.href = `mailto:${contact.email}`
+    }
+  }
+
+  /**
+   * Call button — opens a tel: link and logs a `call` activity. On desktop
+   * this triggers the OS's default handler (FaceTime / Phone Link / etc.).
+   * On mobile it places a call. If there's no phone number, we surface that
+   * honestly rather than failing silently.
+   */
+  function handleCallClick() {
+    if (!contact.phone) {
+      setActionMsg('No phone number on this contact.')
+      return
+    }
+    setActionMsg(null)
+    void logActivity('call', `Started call to ${contact.phone}`, 'Opened in dialer via tel:')
+    if (typeof window !== 'undefined') {
+      window.location.href = `tel:${contact.phone.replace(/[^\d+]/g, '')}`
+    }
+  }
+
+  /**
+   * Send-to-CMO button — stashes a lead-context payload in localStorage so the
+   * CMO dashboard can pick it up as a prefill, then navigates there. There is
+   * no /api/cmo/context endpoint yet; using a known localStorage key keeps the
+   * handoff honest (the CMO page can ignore it gracefully). Logs `sent_to_cmo`
+   * so the lead's timeline records the escalation.
+   */
+  function handleSendToCmo() {
+    if (typeof window !== 'undefined') {
+      try {
+        const payload = {
+          source: 'crm',
+          leadId: contact.id,
+          name: contact.name,
+          email: contact.email,
+          company: contact.company,
+          stage: contact.stage,
+          dealValue: contact.deal_value,
+          score: contact.score,
+          ts: Date.now(),
+        }
+        localStorage.setItem('ooumph_cmo_prefill', JSON.stringify(payload))
+      } catch { /* localStorage may be full / disabled — fall through to nav */ }
+    }
+    // Logged as 'note' (not 'sent_to_cmo') because the ActivityType union
+    // in this file doesn't include sent_to_cmo yet. Title makes intent clear.
+    void logActivity('note', `Sent ${contact.name} to CMO Dashboard`, 'Lead context queued for the CMO chat — see prefill on the dashboard.')
+    router.push('/dashboard')
   }
 
   return (
@@ -430,10 +498,35 @@ function ContactSlideover({ contact, onClose, activities, workspaceId, onUpdated
         </div>
 
         {/* Footer actions */}
-        <div className="border-t border-gray-800 p-4 flex gap-2 flex-shrink-0">
-          <button className="flex-1 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-medium transition-colors">📧 Email</button>
-          <button className="flex-1 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg text-sm transition-colors">📞 Call</button>
-          <button className="px-3 py-2 bg-indigo-900/40 hover:bg-indigo-900/60 text-indigo-300 rounded-lg text-sm transition-colors">Send to CMO</button>
+        <div className="border-t border-gray-800 p-4 flex flex-col gap-2 flex-shrink-0">
+          {actionMsg && (
+            <p className="text-amber-300 text-xs">{actionMsg}</p>
+          )}
+          <div className="flex gap-2">
+            <button
+              onClick={handleEmailClick}
+              disabled={!contact.email}
+              title={contact.email ? `Email ${contact.email}` : 'No email address on file'}
+              className="flex-1 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-lg text-sm font-medium transition-colors"
+            >
+              📧 Email
+            </button>
+            <button
+              onClick={handleCallClick}
+              disabled={!contact.phone}
+              title={contact.phone ? `Call ${contact.phone}` : 'No phone number on file'}
+              className="flex-1 py-2 bg-gray-800 hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed text-gray-300 rounded-lg text-sm transition-colors"
+            >
+              📞 Call
+            </button>
+            <button
+              onClick={handleSendToCmo}
+              title="Send this lead's context to the CMO Dashboard"
+              className="px-3 py-2 bg-indigo-900/40 hover:bg-indigo-900/60 text-indigo-300 rounded-lg text-sm transition-colors"
+            >
+              Send to CMO
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -1017,7 +1110,10 @@ export default function LeadsCRMPage() {
   const [contacts, setContacts] = useState<Contact[]>([])
   const [activities, setActivities] = useState<Activity[]>([])
   const [deals, setDeals] = useState<Deal[]>([])
-  const [segments] = useState<Segment[]>(MOCK_SEGMENTS)
+  // Segments derived from real contacts below in `segments`. The previous
+  // version pinned `MOCK_SEGMENTS` here so the Segments tab always showed
+  // four fictional segments ("Champions (RFM 555) · 47 contacts" etc.)
+  // regardless of the workspace's actual data. Source Test violated.
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [workspaceId, setWorkspaceId] = useState<string | null>(null)
@@ -1152,6 +1248,46 @@ export default function LeadsCRMPage() {
   const filtered = contacts.filter(c =>
     !search || c.name.toLowerCase().includes(search.toLowerCase()) || c.email.toLowerCase().includes(search.toLowerCase()) || c.company.toLowerCase().includes(search.toLowerCase())
   )
+
+  // ── Real segments derived from loaded contacts ─────────────────────────────
+  // Every count below is computed from the workspace's actual `contacts` array
+  // (which comes from /api/leads-captured). No mocks, no fabrication. When the
+  // workspace is empty all counts are 0 and the Segments tab renders an empty
+  // state. There's no /api/crm/segments endpoint yet — when it ships, swap
+  // this useMemo for a fetch.
+  const segments: Segment[] = (() => {
+    const now = Date.now()
+    const ONE_WEEK = 7 * 24 * 3600 * 1000
+    const TWO_WEEKS = 14 * 24 * 3600 * 1000
+    const lastActivityByLead = new Map<string, number>()
+    activities.forEach(a => {
+      const t = new Date(a.timestamp).getTime()
+      const prev = lastActivityByLead.get(a.contact_id) ?? 0
+      if (t > prev) lastActivityByLead.set(a.contact_id, t)
+    })
+    const newThisWeek = contacts.filter(c => now - new Date(c.created_at).getTime() <= ONE_WEEK).length
+    const hot = contacts.filter(c => c.score >= 75).length
+    const cold = contacts.filter(c => c.score < 25).length
+    const noFollowUp = contacts.filter(c => {
+      const last = lastActivityByLead.get(c.id)
+      return !last || now - last >= TWO_WEEKS
+    }).length
+    const customers = contacts.filter(c => c.stage === 'Customer').length
+    const qualified = contacts.filter(c => c.stage === 'Qualified' || c.stage === 'Proposal').length
+    const today = new Date().toISOString()
+    const mk = (id: string, name: string, count: number, performance: string, conditions: Segment['conditions']): Segment => ({
+      id, name, count, last_updated: today, performance, conditions, type: 'builtin',
+    })
+    return [
+      mk('all', 'All Contacts', contacts.length, `${contacts.length} total in CRM`, []),
+      mk('new_week', 'New This Week', newThisWeek, 'Created in last 7 days', [{ field: 'created_at', operator: '>=', value: 'now-7d' }]),
+      mk('hot', 'Hot Leads (score ≥ 75)', hot, 'High-intent prospects', [{ field: 'score', operator: '>=', value: '75' }]),
+      mk('cold', 'Cold Leads (score < 25)', cold, 'Low engagement', [{ field: 'score', operator: '<', value: '25' }]),
+      mk('stalled', 'No Follow-up (14d+)', noFollowUp, 'No activity in 2 weeks', [{ field: 'last_activity', operator: '<=', value: 'now-14d' }]),
+      mk('qualified', 'Qualified / In Proposal', qualified, 'Active sales conversations', [{ field: 'stage', operator: 'in', value: 'Qualified,Proposal' }]),
+      mk('customers', 'Customers', customers, 'Closed deals', [{ field: 'stage', operator: '=', value: 'Customer' }]),
+    ]
+  })()
 
   // ── CSV Export ────────────────────────────────────────────────────────────
   function exportCSV() {
