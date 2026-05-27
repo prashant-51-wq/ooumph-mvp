@@ -1,776 +1,520 @@
 'use client'
 
-import { useState } from 'react'
+/**
+ * /dashboard/blog — Blog Drafts (Sprint 1C rewrite)
+ *
+ * The previous Blog Publisher contained zero `fetch()` calls. Every action
+ * was a setTimeout fake:
+ *   - `handlePublish()` was `await new Promise(r => setTimeout(r, 1500))`
+ *     followed by a green "Published!" toast. Nothing reached WordPress
+ *     or any other destination.
+ *   - `runAiTool()` was setTimeout + a hardcoded text dictionary (the
+ *     same canned "AI" paragraph every time).
+ *   - `MOCK_POSTS` populated the Posts list with five fictional articles.
+ *   - `DESTINATIONS` showed WordPress / Ghost / LinkedIn as "connected"
+ *     with no real integration ever performed.
+ *
+ * There is no `/api/blog/posts` endpoint and no WordPress integration in
+ * this codebase. Until that work lands, the honest thing is to scope the
+ * page down to "Blog Drafts": a local-first composer for blog posts that
+ * supports Save Draft, Export Markdown, Copy HTML, and Copy Plain Text.
+ * Publishing is visibly disabled with a "Coming soon" notice that links
+ * to the Integrations page.
+ *
+ * Drafts persist in localStorage under `ooumph_blog_drafts_v1`. This is
+ * device-local, NOT a cloud sync — the UI surfaces that limitation
+ * explicitly so a user never thinks their draft is safely stored on a
+ * server when it isn't. (Refresh Test: drafts survive F5 on the same
+ * device. Source Test: every visible draft traces back to localStorage,
+ * which is documented as device-local.)
+ *
+ * When a real `/api/blog/drafts` endpoint ships (Sprint 3+), swap the
+ * localStorage backing in `loadDrafts` / `saveDrafts` and remove the
+ * device-local notice.
+ */
+
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useRouter } from 'next/navigation'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type BlogTab = 'posts' | 'composer' | 'analytics'
-type PostStatus = 'Draft' | 'Scheduled' | 'Published' | 'Failed'
+type BlogTab = 'drafts' | 'composer'
 
-interface BlogPost {
+interface BlogDraft {
   id: string
   title: string
-  status: PostStatus
+  body: string
+  /** Raw plaintext word count for the body (best-effort split on whitespace). */
   wordCount: number
-  seoScore: number
-  destinations: string[]
-  date: string
-  views?: number
-  readTime?: string
-  shares?: number
+  createdAt: string
+  updatedAt: string
 }
 
-interface PublishDestination {
-  id: string
-  name: string
-  icon: string
-  status: 'connected' | 'warning' | 'disconnected'
+// ─── localStorage backing ─────────────────────────────────────────────────────
+
+const STORAGE_KEY = 'ooumph_blog_drafts_v1'
+
+function loadDrafts(): BlogDraft[] {
+  if (typeof window === 'undefined') return []
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw) as unknown
+    if (!Array.isArray(parsed)) return []
+    return (parsed as BlogDraft[]).filter(d => d && typeof d.id === 'string')
+  } catch {
+    return []
+  }
 }
 
-interface DestSettings {
-  id: string
-  name: string
-  fields: { key: string; label: string; type: 'text' | 'password'; placeholder: string }[]
+function saveDrafts(drafts: BlogDraft[]): void {
+  if (typeof window === 'undefined') return
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(drafts))
+  } catch {
+    // localStorage may be full or disabled in the user's browser — best-effort only.
+  }
 }
 
-// ─── Mock data ────────────────────────────────────────────────────────────────
-
-const DESTINATIONS: PublishDestination[] = [
-  { id: 'wordpress', name: 'WordPress', icon: 'WP', status: 'connected' },
-  { id: 'ghost', name: 'Ghost', icon: 'Gh', status: 'connected' },
-  { id: 'medium', name: 'Medium', icon: 'M', status: 'warning' },
-  { id: 'substack', name: 'Substack', icon: 'SS', status: 'disconnected' },
-  { id: 'hashnode', name: 'Hashnode', icon: 'HN', status: 'disconnected' },
-  { id: 'linkedin', name: 'LinkedIn Articles', icon: 'in', status: 'connected' },
-]
-
-const DEST_SETTINGS: DestSettings[] = [
-  { id: 'wordpress', name: 'WordPress', fields: [
-    { key: 'siteUrl', label: 'Site URL', type: 'text', placeholder: 'https://yourblog.com' },
-    { key: 'username', label: 'Username', type: 'text', placeholder: 'admin' },
-    { key: 'appPassword', label: 'App Password', type: 'password', placeholder: 'xxxx xxxx xxxx xxxx' },
-  ]},
-  { id: 'ghost', name: 'Ghost', fields: [
-    { key: 'apiUrl', label: 'API URL', type: 'text', placeholder: 'https://yourblog.ghost.io' },
-    { key: 'adminApiKey', label: 'Admin API Key', type: 'password', placeholder: 'key:secret' },
-  ]},
-  { id: 'medium', name: 'Medium', fields: [
-    { key: 'integrationToken', label: 'Integration Token', type: 'password', placeholder: 'Your Medium token' },
-  ]},
-  { id: 'substack', name: 'Substack', fields: [
-    { key: 'email', label: 'Email', type: 'text', placeholder: 'you@example.com' },
-    { key: 'password', label: 'Password', type: 'password', placeholder: 'Your Substack password' },
-  ]},
-  { id: 'hashnode', name: 'Hashnode', fields: [
-    { key: 'apiKey', label: 'Personal Access Token', type: 'password', placeholder: 'Your Hashnode token' },
-  ]},
-  { id: 'linkedin', name: 'LinkedIn Articles', fields: [
-    { key: 'accessToken', label: 'OAuth Access Token', type: 'password', placeholder: 'OAuth token from LinkedIn' },
-  ]},
-]
-
-const MOCK_POSTS: BlogPost[] = [
-  { id: '1', title: '10 AI Marketing Tools That Will Replace Your Agency in 2026', status: 'Published', wordCount: 2847, seoScore: 92, destinations: ['wordpress', 'ghost', 'linkedin'], date: '2026-05-22', views: 4821, readTime: '11 min', shares: 143 },
-  { id: '2', title: 'How to Build a Content Moat: The Unfair Advantage', status: 'Published', wordCount: 1923, seoScore: 78, destinations: ['wordpress', 'medium'], date: '2026-05-18', views: 2304, readTime: '8 min', shares: 87 },
-  { id: '3', title: 'The CMO\'s Complete Guide to Marketing Automation in 2026', status: 'Scheduled', wordCount: 3200, seoScore: 88, destinations: ['wordpress', 'ghost', 'hashnode', 'linkedin'], date: '2026-05-28', views: 0, readTime: '13 min' },
-  { id: '4', title: 'Why Most Brands Fail at Social Media (And How to Fix It)', status: 'Draft', wordCount: 950, seoScore: 45, destinations: ['wordpress'], date: '2026-05-26' },
-  { id: '5', title: 'Customer Story: How TechCorp 3X\'d Their Leads with AI', status: 'Failed', wordCount: 1540, seoScore: 71, destinations: ['medium', 'linkedin'], date: '2026-05-24' },
-]
-
-const SEO_SCORE_COLOR = (score: number) =>
-  score >= 80 ? 'bg-green-900/40 text-green-400' :
-  score >= 50 ? 'bg-yellow-900/40 text-yellow-400' :
-  'bg-red-900/40 text-red-400'
-
-const STATUS_COLORS: Record<PostStatus, string> = {
-  Published: 'bg-green-900/40 text-green-400',
-  Scheduled: 'bg-blue-900/40 text-blue-400',
-  Draft: 'bg-gray-700 text-gray-400',
-  Failed: 'bg-red-900/40 text-red-400',
+function countWords(s: string): number {
+  return s.trim() ? s.trim().split(/\s+/).length : 0
 }
 
-const DEST_STATUS: Record<string, string> = {
-  connected: 'text-green-400',
-  warning: 'text-yellow-400',
-  disconnected: 'text-gray-600',
+function newId(): string {
+  // Cheap client-side id. Drafts never leave the device so collision risk is fine.
+  return `draft_${Date.now().toString(36)}_${Math.floor(Math.random() * 1e6).toString(36)}`
 }
 
-const DEST_ICONS: Record<string, string> = {
-  connected: '✅',
-  warning: '⚠',
-  disconnected: '❌',
+// Markdown → minimal HTML (good enough for "Copy HTML" — for a real blog publish
+// the future API will do server-side rendering with proper sanitization).
+function mdToHtml(md: string): string {
+  // Headings, bold, italic, links, lists, paragraphs. Intentionally conservative.
+  const lines = md.split('\n')
+  const out: string[] = []
+  let inList = false
+  for (const raw of lines) {
+    const line = raw.trimEnd()
+    if (!line) {
+      if (inList) { out.push('</ul>'); inList = false }
+      out.push('')
+      continue
+    }
+    const h = /^(#{1,6})\s+(.*)/.exec(line)
+    if (h) {
+      if (inList) { out.push('</ul>'); inList = false }
+      out.push(`<h${h[1].length}>${escapeHtml(h[2])}</h${h[1].length}>`)
+      continue
+    }
+    if (/^\s*[-*]\s+/.test(line)) {
+      if (!inList) { out.push('<ul>'); inList = true }
+      out.push(`<li>${inlineFormat(line.replace(/^\s*[-*]\s+/, ''))}</li>`)
+      continue
+    }
+    if (inList) { out.push('</ul>'); inList = false }
+    out.push(`<p>${inlineFormat(line)}</p>`)
+  }
+  if (inList) out.push('</ul>')
+  return out.filter(Boolean).join('\n')
 }
 
-const AI_TOOLS = [
-  'Expand Section', 'Improve Readability', 'Add Examples',
-  'Generate Intro', 'Write Conclusion', 'Generate H2s',
-]
+function inlineFormat(s: string): string {
+  let r = escapeHtml(s)
+  r = r.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+  r = r.replace(/\*([^*]+)\*/g, '<em>$1</em>')
+  r = r.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, t: string, u: string) => `<a href="${escapeAttr(u)}">${t}</a>`)
+  return r
+}
 
-const FORMAT_TOOLBAR = [
-  { label: 'B', title: 'Bold', action: '**text**' },
-  { label: 'I', title: 'Italic', action: '_text_' },
-  { label: 'H1', title: 'Heading 1', action: '# ' },
-  { label: 'H2', title: 'Heading 2', action: '## ' },
-  { label: 'H3', title: 'Heading 3', action: '### ' },
-  { label: '•', title: 'Bullet list', action: '- ' },
-  { label: '1.', title: 'Numbered list', action: '1. ' },
-  { label: '"', title: 'Quote', action: '> ' },
-  { label: '<>', title: 'Code', action: '`code`' },
-  { label: '🔗', title: 'Link', action: '[text](url)' },
-]
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
 
-// ─── Page ─────────────────────────────────────────────────────────────────────
+function escapeAttr(s: string): string {
+  return escapeHtml(s).replace(/"/g, '&quot;')
+}
 
-export default function BlogStudioPage() {
-  const [activeTab, setActiveTab] = useState<BlogTab>('posts')
-  const [selectedDestinations, setSelectedDestinations] = useState<string[]>(['wordpress', 'ghost'])
-  const [showDestSettings, setShowDestSettings] = useState(false)
-  const [editingDest, setEditingDest] = useState<string | null>(null)
-  const [showNewPostModal, setShowNewPostModal] = useState(false)
+// ─── Main page ────────────────────────────────────────────────────────────────
 
-  // Composer state
+export default function BlogDraftsPage() {
+  const router = useRouter()
+  const [tab, setTab] = useState<BlogTab>('drafts')
+
+  // Draft state
+  const [drafts, setDraftsState] = useState<BlogDraft[]>([])
+  const [editingId, setEditingId] = useState<string | null>(null)
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
-  const [metaTitle, setMetaTitle] = useState('')
-  const [metaDescription, setMetaDescription] = useState('')
-  const [focusKeyword, setFocusKeyword] = useState('')
-  const [featuredImagePrompt, setFeaturedImagePrompt] = useState('')
-  const [generating, setGenerating] = useState(false)
-  const [generatingAi, setGeneratingAi] = useState<string | null>(null)
-  const [scheduleTime, setScheduleTime] = useState('')
-  const [publishMode, setPublishMode] = useState<'now' | 'schedule'>('now')
-  const [wpCategory, setWpCategory] = useState('General')
-  const [publishSuccess, setPublishSuccess] = useState(false)
+  const [statusMsg, setStatusMsg] = useState<{ kind: 'success' | 'error' | 'info'; text: string } | null>(null)
 
-  // SEO score calculation
-  const seoScore = Math.min(100, Math.round(
-    (title.length > 20 ? 20 : title.length) +
-    (body.length > 500 ? 25 : Math.round(body.length / 20)) +
-    (metaTitle.length >= 50 && metaTitle.length <= 60 ? 20 : 5) +
-    (metaDescription.length >= 150 && metaDescription.length <= 160 ? 20 : 5) +
-    (focusKeyword && body.toLowerCase().includes(focusKeyword.toLowerCase()) ? 15 : 0)
-  ))
+  // Hydrate drafts from localStorage on mount.
+  useEffect(() => {
+    setDraftsState(loadDrafts())
+  }, [])
 
-  const wordCount = body.trim() ? body.trim().split(/\s+/).length : 0
-  const readTime = Math.max(1, Math.round(wordCount / 200))
-  const keywordDensity = focusKeyword && body
-    ? ((body.toLowerCase().split(focusKeyword.toLowerCase()).length - 1) / wordCount * 100).toFixed(1)
-    : '0.0'
+  const persist = useCallback((next: BlogDraft[]) => {
+    setDraftsState(next)
+    saveDrafts(next)
+  }, [])
 
-  const seoChecks = [
-    { label: 'Title contains keyword', pass: focusKeyword ? title.toLowerCase().includes(focusKeyword.toLowerCase()) : false },
-    { label: 'Meta description written', pass: metaDescription.length > 20 },
-    { label: 'Meta title 50-60 chars', pass: metaTitle.length >= 50 && metaTitle.length <= 60 },
-    { label: 'Content 1000+ words', pass: wordCount >= 1000 },
-    { label: 'Keyword density 1-3%', pass: parseFloat(keywordDensity) >= 1 && parseFloat(keywordDensity) <= 3 },
-  ]
-
-  function toggleDest(id: string) {
-    setSelectedDestinations(prev => prev.includes(id) ? prev.filter(d => d !== id) : [...prev, id])
+  function startNew() {
+    setEditingId(null)
+    setTitle('')
+    setBody('')
+    setStatusMsg(null)
+    setTab('composer')
   }
 
-  function insertAtCursor(text: string) {
-    setBody(prev => prev + '\n' + text)
+  function openDraft(id: string) {
+    const d = drafts.find(x => x.id === id)
+    if (!d) return
+    setEditingId(id)
+    setTitle(d.title)
+    setBody(d.body)
+    setStatusMsg(null)
+    setTab('composer')
   }
 
-  async function runAiTool(tool: string) {
-    if (!body.trim()) return
-    setGeneratingAi(tool)
-    await new Promise(r => setTimeout(r, 1500))
-    const additions: Record<string, string> = {
-      'Expand Section': '\n\nFurthermore, this approach creates compounding benefits over time. When organizations implement these strategies consistently, they often see a 40-60% improvement in key metrics within the first quarter alone. The key is to maintain momentum and continue iterating based on data-driven insights.',
-      'Improve Readability': '\n\n**Key takeaway:** The concepts above can be distilled into three simple actions you can take today:\n\n1. Start small and build momentum\n2. Measure what matters most\n3. Iterate based on real user feedback',
-      'Add Examples': '\n\n**Real-world example:** Consider Company X, a mid-size SaaS firm that implemented this exact strategy. Within 6 months, they reduced their customer acquisition cost by 35% and doubled their organic traffic — all without increasing their marketing budget.',
-      'Generate Intro': 'What if you could achieve 10x better results with half the effort? That\'s not a pipe dream — it\'s the reality for companies that have mastered the strategies in this guide.\n\nIn the next 10 minutes, you\'ll discover exactly how to replicate their success.\n\n',
-      'Write Conclusion': '\n\n## Wrapping Up\n\nThe path forward is clear: embrace these strategies, measure consistently, and keep your customer at the center of every decision. The brands winning today are not the ones with the biggest budgets — they\'re the ones with the sharpest focus.\n\nStart with one tactic. Master it. Then stack the next one.\n\n**Ready to get started? Schedule a free strategy call today.**',
-      'Generate H2s': '\n\n## Why This Matters More Than You Think\n\n## The Step-by-Step Framework\n\n## Common Mistakes to Avoid\n\n## Real Results: What to Expect\n\n## Getting Started Today',
+  function saveDraft() {
+    if (!title.trim() && !body.trim()) {
+      setStatusMsg({ kind: 'error', text: 'Nothing to save — give the draft a title or some body text first.' })
+      return
     }
-    setBody(prev => prev + (additions[tool] || `\n\n[AI expanded content for "${tool}"]`))
-    setGeneratingAi(null)
+    const now = new Date().toISOString()
+    if (editingId) {
+      const next = drafts.map(d => d.id === editingId
+        ? { ...d, title: title.trim() || '(untitled)', body, wordCount: countWords(body), updatedAt: now }
+        : d
+      )
+      persist(next)
+      setStatusMsg({ kind: 'success', text: 'Draft updated. Saved locally on this device.' })
+    } else {
+      const draft: BlogDraft = {
+        id: newId(),
+        title: title.trim() || '(untitled)',
+        body,
+        wordCount: countWords(body),
+        createdAt: now,
+        updatedAt: now,
+      }
+      const next = [draft, ...drafts]
+      persist(next)
+      setEditingId(draft.id)
+      setStatusMsg({ kind: 'success', text: 'Draft saved. Saved locally on this device.' })
+    }
   }
 
-  async function handlePublish() {
-    if (!title.trim() || !body.trim()) return
-    setGenerating(true)
-    await new Promise(r => setTimeout(r, 1500))
-    setGenerating(false)
-    setPublishSuccess(true)
-    setTimeout(() => setPublishSuccess(false), 3000)
+  function deleteDraft(id: string) {
+    if (!confirm('Delete this draft? This cannot be undone.')) return
+    const next = drafts.filter(d => d.id !== id)
+    persist(next)
+    if (editingId === id) {
+      setEditingId(null)
+      setTitle('')
+      setBody('')
+      setTab('drafts')
+    }
   }
 
-  const tabs: { id: BlogTab; label: string }[] = [
-    { id: 'posts', label: 'Posts' },
-    { id: 'composer', label: 'Composer' },
-    { id: 'analytics', label: 'Analytics' },
-  ]
+  function exportMarkdown() {
+    if (!title.trim() && !body.trim()) {
+      setStatusMsg({ kind: 'error', text: 'Nothing to export.' })
+      return
+    }
+    const md = title.trim() ? `# ${title.trim()}\n\n${body}` : body
+    const blob = new Blob([md], { type: 'text/markdown' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${(title.trim() || 'draft').replace(/[^a-z0-9-_]+/gi, '_').toLowerCase()}.md`
+    a.click()
+    URL.revokeObjectURL(url)
+    setStatusMsg({ kind: 'info', text: 'Markdown downloaded.' })
+  }
 
-  const currentDestSettings = DEST_SETTINGS.find(d => d.id === editingDest)
+  async function copyToClipboard(text: string, label: string) {
+    if (typeof navigator === 'undefined' || !navigator.clipboard) {
+      setStatusMsg({ kind: 'error', text: 'Clipboard not available in this browser.' })
+      return
+    }
+    try {
+      await navigator.clipboard.writeText(text)
+      setStatusMsg({ kind: 'success', text: `${label} copied to clipboard.` })
+    } catch {
+      setStatusMsg({ kind: 'error', text: 'Copy failed — your browser may have blocked clipboard access.' })
+    }
+  }
+
+  function copyHtml() {
+    if (!body.trim()) { setStatusMsg({ kind: 'error', text: 'Nothing to copy.' }); return }
+    const html = title.trim()
+      ? `<h1>${escapeHtml(title.trim())}</h1>\n${mdToHtml(body)}`
+      : mdToHtml(body)
+    copyToClipboard(html, 'HTML')
+  }
+
+  function copyPlainText() {
+    if (!title.trim() && !body.trim()) { setStatusMsg({ kind: 'error', text: 'Nothing to copy.' }); return }
+    const plain = title.trim() ? `${title.trim()}\n\n${body}` : body
+    copyToClipboard(plain, 'Plain text')
+  }
+
+  const totalWords = useMemo(() => countWords(body), [body])
+  const readTimeMin = Math.max(1, Math.round(totalWords / 220)) // ~220 wpm
+
+  // ── Render ──────────────────────────────────────────────────────────────────
 
   return (
-    <div className="p-8 max-w-7xl mx-auto">
-      {/* Header */}
-      <div className="flex items-start justify-between mb-6">
-        <div>
-          <div className="flex items-center gap-3 mb-1">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center text-sm">✍</div>
-            <h1 className="text-2xl font-bold text-white">Blog Studio</h1>
+    <div className="flex h-full bg-gray-950">
+      <div className="flex-1 flex flex-col min-w-0">
+
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800 flex-shrink-0 flex-wrap gap-3">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-amber-500 to-orange-600 flex items-center justify-center text-sm">
+              ✍️
+            </div>
+            <div>
+              <h1 className="text-white font-bold text-lg">Blog Drafts</h1>
+              <p className="text-gray-600 text-xs">Draft &amp; export. Direct publishing coming soon.</p>
+            </div>
           </div>
-          <p className="text-gray-400 text-sm ml-11">Write, optimize, and publish to all your platforms</p>
-        </div>
-        <div className="flex items-center gap-3">
-          {/* Destination status pills */}
-          <div className="flex items-center gap-1.5">
-            {DESTINATIONS.map(dest => (
-              <div
-                key={dest.id}
-                title={`${dest.name}: ${dest.status}`}
-                className="flex items-center gap-1 bg-gray-900 border border-gray-800 rounded-lg px-2 py-1"
-              >
-                <span className={`text-xs font-bold ${dest.status === 'connected' ? 'text-white' : dest.status === 'warning' ? 'text-yellow-400' : 'text-gray-600'}`}>
-                  {dest.icon}
-                </span>
-                <span className={`text-xs ${DEST_STATUS[dest.status]}`}>{DEST_ICONS[dest.status]}</span>
-              </div>
-            ))}
+          <div className="flex items-center gap-2">
             <button
-              onClick={() => setShowDestSettings(true)}
-              className="w-7 h-7 flex items-center justify-center rounded-lg border border-gray-700 text-gray-500 hover:text-white hover:border-gray-500 text-sm transition-colors"
-              title="Configure destinations"
+              onClick={startNew}
+              className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium transition-colors"
             >
-              ⚙
+              + New Draft
             </button>
           </div>
-          <button
-            onClick={() => { setActiveTab('composer'); setTitle(''); setBody('') }}
-            className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-xl text-sm font-medium flex items-center gap-2"
-          >
-            ✍ New Post
-          </button>
         </div>
-      </div>
 
-      {/* Tabs */}
-      <div className="border-b border-gray-800 mb-6">
-        <div className="flex gap-0.5">
-          {tabs.map(t => (
+        {/* Persistent "device-local" notice — never lie about storage */}
+        <div className="px-6 pt-4 flex-shrink-0">
+          <div className="p-3 rounded-xl bg-amber-950/30 border border-amber-800/50 text-amber-300 text-xs flex items-start gap-2">
+            <span className="text-base flex-shrink-0">📝</span>
+            <span className="flex-1">
+              Drafts are saved <strong>locally in this browser</strong>, not in your workspace.
+              They will not appear on other devices and may be cleared if you reset browser storage.
+              Cloud-synced drafts and direct publishing to WordPress / Ghost / Medium will arrive in a future release —
+              follow <button onClick={() => router.push('/dashboard/integrations')} className="underline">Integrations</button> for status.
+            </span>
+          </div>
+        </div>
+
+        {/* Tabs */}
+        <div className="flex border-b border-gray-800 px-6 flex-shrink-0 mt-3">
+          {(['drafts', 'composer'] as BlogTab[]).map(t => (
             <button
-              key={t.id}
-              onClick={() => setActiveTab(t.id)}
-              className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
-                activeTab === t.id
-                  ? 'border-indigo-500 text-white'
-                  : 'border-transparent text-gray-500 hover:text-gray-300'
-              }`}
+              key={t}
+              onClick={() => setTab(t)}
+              className={`px-4 py-3 text-sm font-medium border-b-2 -mb-px transition-colors capitalize ${tab === t ? 'border-indigo-500 text-white' : 'border-transparent text-gray-500 hover:text-gray-300'}`}
             >
-              {t.label}
+              {t === 'drafts' ? `Drafts (${drafts.length})` : 'Composer'}
             </button>
           ))}
         </div>
-      </div>
 
-      {/* ── Tab: Posts ────────────────────────────────────────────────────────── */}
-      {activeTab === 'posts' && (
-        <div>
-          <div className="flex items-center justify-between mb-4">
-            <p className="text-gray-400 text-sm">{MOCK_POSTS.length} posts</p>
-            <button
-              onClick={() => { setActiveTab('composer') }}
-              className="text-indigo-400 text-sm hover:text-indigo-300"
-            >
-              + Generate New Post
-            </button>
-          </div>
-          {MOCK_POSTS.length === 0 ? (
-            <div className="bg-gray-900 border border-gray-800 rounded-2xl p-12 text-center">
-              <div className="text-5xl mb-3">📝</div>
-              <h3 className="text-white font-semibold text-base mb-1">No blog posts yet</h3>
-              <p className="text-gray-500 text-sm mb-5 max-w-md mx-auto">Create your first blog post with AI, or connect a destination like WordPress or Ghost to start publishing.</p>
-              <button
-                onClick={() => setActiveTab('composer')}
-                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium rounded-lg"
-              >
-                + Create your first post
-              </button>
-            </div>
-          ) : (
-          <div className="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-gray-800">
-                  <th className="text-left text-gray-500 text-xs px-5 py-3 font-medium">Title</th>
-                  <th className="text-left text-gray-500 text-xs px-4 py-3 font-medium">Status</th>
-                  <th className="text-left text-gray-500 text-xs px-4 py-3 font-medium">Words</th>
-                  <th className="text-left text-gray-500 text-xs px-4 py-3 font-medium">SEO</th>
-                  <th className="text-left text-gray-500 text-xs px-4 py-3 font-medium">Destinations</th>
-                  <th className="text-left text-gray-500 text-xs px-4 py-3 font-medium">Date</th>
-                  <th className="text-right text-gray-500 text-xs px-4 py-3 font-medium">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {MOCK_POSTS.map(post => (
-                  <tr key={post.id} className="border-b border-gray-800/50 hover:bg-gray-800/30 transition-colors">
-                    <td className="px-5 py-4">
-                      <p className="text-white font-medium text-sm leading-tight max-w-xs">{post.title}</p>
-                      {post.views ? <p className="text-gray-600 text-xs mt-0.5">{post.views.toLocaleString()} views · {post.readTime}</p> : null}
-                    </td>
-                    <td className="px-4 py-4">
-                      <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${STATUS_COLORS[post.status]}`}>
-                        {post.status}
-                      </span>
-                    </td>
-                    <td className="px-4 py-4 text-gray-400 text-xs">{post.wordCount.toLocaleString()}</td>
-                    <td className="px-4 py-4">
-                      <span className={`text-xs px-2 py-0.5 rounded-full font-bold ${SEO_SCORE_COLOR(post.seoScore)}`}>
-                        {post.seoScore}
-                      </span>
-                    </td>
-                    <td className="px-4 py-4">
-                      <div className="flex gap-1 flex-wrap">
-                        {post.destinations.map(d => {
-                          const dest = DESTINATIONS.find(x => x.id === d)
-                          return dest ? (
-                            <span key={d} className="text-xs bg-gray-800 text-gray-400 px-1.5 py-0.5 rounded font-mono">{dest.icon}</span>
-                          ) : null
-                        })}
-                      </div>
-                    </td>
-                    <td className="px-4 py-4 text-gray-500 text-xs">{post.date}</td>
-                    <td className="px-4 py-4">
-                      <div className="flex justify-end gap-1">
-                        <button
-                          onClick={() => setActiveTab('composer')}
-                          className="text-xs px-2 py-1 text-gray-400 hover:text-white rounded hover:bg-gray-700"
-                        >
-                          Edit
-                        </button>
-                        <button className="text-xs px-2 py-1 text-gray-400 hover:text-white rounded hover:bg-gray-700">Dup</button>
-                        {post.status === 'Published' && (
-                          <button className="text-xs px-2 py-1 text-indigo-400 hover:text-indigo-300 rounded hover:bg-gray-700">↻</button>
-                        )}
-                        <button className="text-xs px-2 py-1 text-red-700 hover:text-red-400 rounded hover:bg-gray-700">✕</button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          )}
-        </div>
-      )}
-
-      {/* ── Tab: Composer ─────────────────────────────────────────────────────── */}
-      {activeTab === 'composer' && (
-        <div className="grid grid-cols-3 gap-6">
-          {/* Editor column */}
-          <div className="col-span-2 space-y-4">
-            {/* Title */}
-            <input
-              value={title}
-              onChange={e => setTitle(e.target.value)}
-              placeholder="Post title — make it compelling and keyword-rich"
-              className="w-full px-5 py-4 bg-gray-900 border border-gray-800 rounded-2xl text-white text-lg font-semibold placeholder-gray-600 focus:outline-none focus:border-indigo-500"
-            />
-
-            {/* AI tools */}
-            <div className="bg-gray-900 border border-gray-800 rounded-2xl p-3">
-              <p className="text-gray-500 text-xs mb-2 font-medium">AI Writing Tools</p>
-              <div className="flex flex-wrap gap-2">
-                {AI_TOOLS.map(tool => (
-                  <button
-                    key={tool}
-                    onClick={() => runAiTool(tool)}
-                    disabled={generatingAi !== null}
-                    className="px-3 py-1.5 bg-gray-800 hover:bg-indigo-900/40 hover:text-indigo-300 border border-gray-700 hover:border-indigo-700 text-gray-400 text-xs rounded-xl transition-colors disabled:opacity-50 flex items-center gap-1.5"
-                  >
-                    {generatingAi === tool ? <><SpinnerSm /> {tool}</> : tool}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Format toolbar */}
-            <div className="bg-gray-900 border border-gray-800 rounded-t-2xl rounded-b-none px-4 py-2 flex gap-1 flex-wrap border-b-0">
-              {FORMAT_TOOLBAR.map(btn => (
+        {/* ── DRAFTS TAB ─────────────────────────────────────────────────────── */}
+        {tab === 'drafts' && (
+          <div className="flex-1 overflow-y-auto p-6 space-y-3">
+            {drafts.length === 0 ? (
+              <div className="text-center py-16 bg-gray-900 border border-gray-800 rounded-2xl">
+                <div className="text-5xl mb-3">✍️</div>
+                <h3 className="text-white font-semibold text-base mb-1">No drafts yet</h3>
+                <p className="text-gray-500 text-sm mb-4 max-w-md mx-auto">
+                  Start a new draft. You can export it as Markdown / HTML or copy it into your CMS until direct publishing ships.
+                </p>
                 <button
-                  key={btn.label}
-                  onClick={() => insertAtCursor(btn.action)}
-                  title={btn.title}
-                  className="w-8 h-8 flex items-center justify-center text-gray-400 hover:text-white hover:bg-gray-700 rounded-lg text-xs font-bold transition-colors"
+                  onClick={startNew}
+                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium rounded-lg"
                 >
-                  {btn.label}
-                </button>
-              ))}
-              <div className="ml-auto flex items-center gap-3 text-xs text-gray-500">
-                <span>{wordCount.toLocaleString()} words</span>
-                <span>{readTime} min read</span>
-              </div>
-            </div>
-
-            {/* Body editor */}
-            <textarea
-              value={body}
-              onChange={e => setBody(e.target.value)}
-              placeholder="Start writing your post... or use the AI tools above to generate content."
-              rows={20}
-              className="w-full px-5 py-4 bg-gray-900 border border-gray-800 rounded-b-2xl rounded-t-none text-gray-200 text-sm placeholder-gray-700 focus:outline-none focus:border-indigo-500 resize-none leading-relaxed font-mono"
-            />
-
-            {/* Publishing destinations */}
-            <div className="bg-gray-900 border border-gray-800 rounded-2xl p-5 space-y-4">
-              <h3 className="text-white font-semibold text-sm">Publishing Destinations</h3>
-              <div className="grid grid-cols-3 gap-2">
-                {DESTINATIONS.map(dest => (
-                  <label
-                    key={dest.id}
-                    className={`flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-all ${
-                      selectedDestinations.includes(dest.id)
-                        ? 'border-indigo-500 bg-indigo-900/20'
-                        : 'border-gray-700 hover:border-gray-600'
-                    } ${dest.status === 'disconnected' ? 'opacity-40 cursor-not-allowed' : ''}`}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={selectedDestinations.includes(dest.id)}
-                      onChange={() => dest.status !== 'disconnected' && toggleDest(dest.id)}
-                      className="accent-indigo-500"
-                      disabled={dest.status === 'disconnected'}
-                    />
-                    <div>
-                      <p className={`text-sm font-medium ${selectedDestinations.includes(dest.id) ? 'text-white' : 'text-gray-400'}`}>
-                        {dest.name}
-                      </p>
-                      <p className={`text-xs ${DEST_STATUS[dest.status]}`}>{dest.status}</p>
-                    </div>
-                  </label>
-                ))}
-              </div>
-
-              {/* WordPress-specific settings */}
-              {selectedDestinations.includes('wordpress') && (
-                <div className="bg-gray-800/50 rounded-xl p-4 space-y-3">
-                  <p className="text-gray-400 text-xs font-medium">WordPress Settings</p>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="text-gray-500 text-xs mb-1 block">Category</label>
-                      <select
-                        value={wpCategory}
-                        onChange={e => setWpCategory(e.target.value)}
-                        className="w-full bg-gray-700 border border-gray-600 text-white text-xs px-2 py-1.5 rounded-lg focus:outline-none"
-                      >
-                        <option>General</option>
-                        <option>Marketing</option>
-                        <option>Tutorials</option>
-                        <option>Case Studies</option>
-                        <option>News</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label className="text-gray-500 text-xs mb-1 block">Tags</label>
-                      <input
-                        placeholder="marketing, AI, strategy"
-                        className="w-full bg-gray-700 border border-gray-600 text-white text-xs px-2 py-1.5 rounded-lg focus:outline-none placeholder-gray-600"
-                      />
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* LinkedIn-specific settings */}
-              {selectedDestinations.includes('linkedin') && (
-                <div className="bg-gray-800/50 rounded-xl p-4">
-                  <p className="text-gray-400 text-xs font-medium mb-2">LinkedIn Settings</p>
-                  <div className="flex gap-2">
-                    <label className="flex items-center gap-2 text-xs text-gray-300 cursor-pointer">
-                      <input type="radio" name="li-type" defaultChecked className="accent-indigo-500" />
-                      Article (Long-form)
-                    </label>
-                    <label className="flex items-center gap-2 text-xs text-gray-300 cursor-pointer">
-                      <input type="radio" name="li-type" className="accent-indigo-500" />
-                      Post (Short)
-                    </label>
-                  </div>
-                </div>
-              )}
-
-              {/* Featured image */}
-              <div>
-                <p className="text-gray-400 text-xs font-medium mb-2">Featured Image</p>
-                <div className="flex gap-2">
-                  <div className="flex-1 border-2 border-dashed border-gray-700 rounded-xl p-3 text-center text-gray-600 text-xs cursor-pointer hover:border-indigo-600 hover:text-indigo-400 transition-colors">
-                    Upload image
-                  </div>
-                  <div className="flex-1 border border-gray-700 rounded-xl p-3 text-center">
-                    <input
-                      value={featuredImagePrompt}
-                      onChange={e => setFeaturedImagePrompt(e.target.value)}
-                      placeholder="Or describe an AI image..."
-                      className="w-full bg-transparent text-xs text-white placeholder-gray-600 focus:outline-none"
-                    />
-                  </div>
-                  <button className="px-3 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs rounded-xl">
-                    🤖 Generate
-                  </button>
-                </div>
-              </div>
-
-              {/* Schedule / Publish */}
-              <div className="flex items-center gap-3 pt-2 border-t border-gray-800">
-                <div className="flex rounded-xl border border-gray-700 overflow-hidden">
-                  <button
-                    onClick={() => setPublishMode('now')}
-                    className={`px-4 py-2 text-sm transition-colors ${publishMode === 'now' ? 'bg-gray-700 text-white' : 'text-gray-500 hover:text-white'}`}
-                  >
-                    Publish Now
-                  </button>
-                  <button
-                    onClick={() => setPublishMode('schedule')}
-                    className={`px-4 py-2 text-sm transition-colors ${publishMode === 'schedule' ? 'bg-gray-700 text-white' : 'text-gray-500 hover:text-white'}`}
-                  >
-                    Schedule
-                  </button>
-                </div>
-                {publishMode === 'schedule' && (
-                  <input
-                    type="datetime-local"
-                    value={scheduleTime}
-                    onChange={e => setScheduleTime(e.target.value)}
-                    className="bg-gray-800 border border-gray-700 text-white text-sm px-3 py-2 rounded-xl focus:outline-none focus:border-indigo-500"
-                  />
-                )}
-                <button
-                  onClick={handlePublish}
-                  disabled={generating || !title.trim() || !body.trim()}
-                  className="ml-auto bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white px-6 py-2 rounded-xl text-sm font-medium flex items-center gap-2"
-                >
-                  {generating ? <><SpinnerSm /> Publishing...</> :
-                   publishSuccess ? '✅ Published!' :
-                   publishMode === 'schedule' ? '📅 Schedule' : '🚀 Publish'}
+                  Start your first draft →
                 </button>
               </div>
-            </div>
-          </div>
-
-          {/* SEO Panel */}
-          <div className="space-y-4">
-            {/* SEO Score */}
-            <div className="bg-gray-900 border border-gray-800 rounded-2xl p-5">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-white font-semibold text-sm">SEO Score</h3>
-                <span className={`text-2xl font-bold ${seoScore >= 80 ? 'text-green-400' : seoScore >= 50 ? 'text-yellow-400' : 'text-red-400'}`}>
-                  {seoScore}
-                </span>
-              </div>
-              <div className="w-full h-2 bg-gray-800 rounded-full overflow-hidden mb-4">
+            ) : (
+              drafts.map(d => (
                 <div
-                  className={`h-full rounded-full transition-all ${seoScore >= 80 ? 'bg-green-500' : seoScore >= 50 ? 'bg-yellow-500' : 'bg-red-500'}`}
-                  style={{ width: `${seoScore}%` }}
-                />
-              </div>
-              <div className="space-y-2">
-                {seoChecks.map(check => (
-                  <div key={check.label} className="flex items-center gap-2">
-                    <span className={`text-xs ${check.pass ? 'text-green-400' : 'text-gray-600'}`}>
-                      {check.pass ? '✓' : '✕'}
-                    </span>
-                    <span className={`text-xs ${check.pass ? 'text-gray-300' : 'text-gray-600'}`}>{check.label}</span>
+                  key={d.id}
+                  className="flex items-center gap-4 p-4 bg-gray-900 border border-gray-800 rounded-xl hover:border-gray-700 transition-colors"
+                >
+                  <div className="flex-1 min-w-0">
+                    <button onClick={() => openDraft(d.id)} className="text-left w-full">
+                      <p className="text-white font-medium text-sm truncate">{d.title || '(untitled)'}</p>
+                      <p className="text-gray-500 text-xs mt-1">
+                        {d.wordCount} word{d.wordCount === 1 ? '' : 's'} · Last edited {new Date(d.updatedAt).toLocaleString()}
+                      </p>
+                    </button>
                   </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Meta Title */}
-            <div className="bg-gray-900 border border-gray-800 rounded-2xl p-5 space-y-3">
-              <h3 className="text-white font-semibold text-sm">SEO Settings</h3>
-              <div>
-                <div className="flex justify-between mb-1">
-                  <label className="text-gray-400 text-xs">Meta Title</label>
-                  <span className={`text-xs ${metaTitle.length >= 50 && metaTitle.length <= 60 ? 'text-green-400' : 'text-yellow-400'}`}>
-                    {metaTitle.length}/60
-                  </span>
+                  <button
+                    onClick={() => openDraft(d.id)}
+                    className="px-3 py-1.5 rounded-lg text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 transition-colors"
+                  >
+                    Edit
+                  </button>
+                  <button
+                    onClick={() => deleteDraft(d.id)}
+                    className="px-3 py-1.5 rounded-lg text-xs bg-red-900/40 hover:bg-red-900/60 text-red-400 transition-colors"
+                  >
+                    Delete
+                  </button>
                 </div>
-                <input
-                  value={metaTitle}
-                  onChange={e => setMetaTitle(e.target.value)}
-                  placeholder="SEO-optimized page title..."
-                  className="w-full bg-gray-800 border border-gray-700 text-white text-xs px-3 py-2 rounded-xl focus:outline-none focus:border-indigo-500 placeholder-gray-600"
-                />
-              </div>
-              <div>
-                <div className="flex justify-between mb-1">
-                  <label className="text-gray-400 text-xs">Meta Description</label>
-                  <span className={`text-xs ${metaDescription.length >= 150 && metaDescription.length <= 160 ? 'text-green-400' : 'text-yellow-400'}`}>
-                    {metaDescription.length}/160
-                  </span>
-                </div>
-                <textarea
-                  value={metaDescription}
-                  onChange={e => setMetaDescription(e.target.value)}
-                  placeholder="Compelling description that drives clicks from search results..."
-                  rows={3}
-                  className="w-full bg-gray-800 border border-gray-700 text-white text-xs px-3 py-2 rounded-xl focus:outline-none focus:border-indigo-500 placeholder-gray-600 resize-none"
-                />
-              </div>
-              <div>
-                <label className="text-gray-400 text-xs mb-1 block">Focus Keyword</label>
-                <input
-                  value={focusKeyword}
-                  onChange={e => setFocusKeyword(e.target.value)}
-                  placeholder="Primary keyword to rank for..."
-                  className="w-full bg-gray-800 border border-gray-700 text-white text-xs px-3 py-2 rounded-xl focus:outline-none focus:border-indigo-500 placeholder-gray-600"
-                />
-                {focusKeyword && body && (
-                  <p className="text-gray-500 text-xs mt-1">Keyword density: {keywordDensity}%</p>
-                )}
-              </div>
-            </div>
-
-            {/* Quick stats */}
-            {wordCount > 0 && (
-              <div className="bg-gray-900 border border-gray-800 rounded-2xl p-4">
-                <h3 className="text-gray-400 text-xs font-medium mb-3">Content Stats</h3>
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="bg-gray-800 rounded-xl p-3 text-center">
-                    <p className="text-white font-bold">{wordCount.toLocaleString()}</p>
-                    <p className="text-gray-500 text-xs">Words</p>
-                  </div>
-                  <div className="bg-gray-800 rounded-xl p-3 text-center">
-                    <p className="text-white font-bold">{readTime} min</p>
-                    <p className="text-gray-500 text-xs">Read time</p>
-                  </div>
-                </div>
-              </div>
+              ))
             )}
           </div>
-        </div>
-      )}
+        )}
 
-      {/* ── Tab: Analytics ────────────────────────────────────────────────────── */}
-      {activeTab === 'analytics' && (
-        <div className="space-y-5">
-          {/* Best publishing time */}
-          <div className="bg-indigo-900/10 border border-indigo-800/30 rounded-2xl p-5 flex items-center gap-4">
-            <div className="text-3xl">⏰</div>
+        {/* ── COMPOSER TAB ───────────────────────────────────────────────────── */}
+        {tab === 'composer' && (
+          <div className="flex-1 overflow-y-auto p-6 space-y-4">
+
+            {statusMsg && (
+              <div className={`p-3 rounded-xl border text-sm flex items-start gap-2 ${
+                statusMsg.kind === 'success' ? 'bg-emerald-950/40 border-emerald-800/50 text-emerald-300'
+                  : statusMsg.kind === 'error' ? 'bg-red-950/40 border-red-800/50 text-red-300'
+                    : 'bg-gray-900 border-gray-800 text-gray-400'
+              }`}>
+                <span>
+                  {statusMsg.kind === 'success' ? '✓' : statusMsg.kind === 'error' ? '✕' : 'ℹ'}
+                </span>
+                <span className="flex-1">{statusMsg.text}</span>
+                <button onClick={() => setStatusMsg(null)} className="text-gray-500 hover:text-white">×</button>
+              </div>
+            )}
+
+            {/* Title */}
             <div>
-              <p className="text-white font-semibold">Best publishing time for your audience</p>
-              <p className="text-indigo-300 text-sm">Tuesday 9 AM or Thursday 2 PM — 34% higher engagement</p>
+              <label className="text-gray-400 text-xs block mb-1.5">Title</label>
+              <input
+                value={title}
+                onChange={e => setTitle(e.target.value)}
+                placeholder="Your post title"
+                className="w-full bg-gray-900 border border-gray-800 rounded-lg px-3 py-2.5 text-white text-base placeholder-gray-600 focus:outline-none focus:border-indigo-500"
+              />
             </div>
-          </div>
 
-          {/* Stats table */}
-          <div className="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden">
-            <div className="px-5 py-4 border-b border-gray-800">
-              <h3 className="text-white font-semibold">Post Performance</h3>
+            {/* Body */}
+            <div>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="text-gray-400 text-xs">Body (Markdown supported)</label>
+                <p className="text-gray-600 text-xs">
+                  {totalWords} word{totalWords === 1 ? '' : 's'} · ~{readTimeMin} min read
+                </p>
+              </div>
+              <textarea
+                value={body}
+                onChange={e => setBody(e.target.value)}
+                rows={22}
+                placeholder={`# Heading\n\nYour blog content here. **Bold**, *italic*, [links](https://example.com), and - bullet lists work.`}
+                className="w-full bg-gray-900 border border-gray-800 rounded-lg px-4 py-3 text-white text-sm font-mono placeholder-gray-600 focus:outline-none focus:border-indigo-500 resize-none leading-relaxed"
+              />
             </div>
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-gray-800">
-                  {['Title', 'Views', 'Read Time Avg', 'Shares', 'SEO Score'].map(h => (
-                    <th key={h} className="text-left text-gray-500 text-xs px-4 py-3 font-medium">{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {MOCK_POSTS.filter(p => p.status === 'Published').map(post => (
-                  <tr key={post.id} className="border-b border-gray-800/50 hover:bg-gray-800/30">
-                    <td className="px-4 py-3 text-white text-xs font-medium max-w-xs truncate">{post.title}</td>
-                    <td className="px-4 py-3 text-gray-300 text-xs">{post.views?.toLocaleString() || '—'}</td>
-                    <td className="px-4 py-3 text-gray-400 text-xs">{post.readTime || '—'}</td>
-                    <td className="px-4 py-3 text-gray-400 text-xs">{post.shares?.toLocaleString() || '—'}</td>
-                    <td className="px-4 py-3">
-                      <span className={`text-xs px-2 py-0.5 rounded-full font-bold ${SEO_SCORE_COLOR(post.seoScore)}`}>{post.seoScore}</span>
-                    </td>
-                  </tr>
+
+            {/* Actions */}
+            <div className="flex flex-wrap gap-2 pt-2">
+              <button
+                onClick={saveDraft}
+                className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-sm transition-colors"
+              >
+                {editingId ? 'Update Draft' : 'Save Draft'}
+              </button>
+              <button
+                onClick={exportMarkdown}
+                disabled={!title.trim() && !body.trim()}
+                className="px-4 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 disabled:opacity-50 text-white font-medium text-sm transition-colors border border-gray-700"
+              >
+                ↓ Export Markdown
+              </button>
+              <button
+                onClick={copyHtml}
+                disabled={!body.trim()}
+                className="px-4 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 disabled:opacity-50 text-white font-medium text-sm transition-colors border border-gray-700"
+              >
+                Copy HTML
+              </button>
+              <button
+                onClick={copyPlainText}
+                disabled={!title.trim() && !body.trim()}
+                className="px-4 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 disabled:opacity-50 text-white font-medium text-sm transition-colors border border-gray-700"
+              >
+                Copy Plain Text
+              </button>
+
+              {/* Disabled-but-visible publish button so users see the feature is
+                  intentionally on the roadmap, not missing. Tooltip explains. */}
+              <span className="ml-auto">
+                <button
+                  disabled
+                  title="Direct publishing to WordPress / Ghost / Medium / LinkedIn is on the roadmap. For now, copy HTML or export Markdown and paste into your CMS."
+                  className="px-4 py-2 rounded-lg bg-gray-900 text-gray-600 font-medium text-sm cursor-not-allowed border border-gray-800"
+                >
+                  Publish to CMS — Coming soon
+                </button>
+              </span>
+            </div>
+
+            {editingId && (
+              <p className="text-gray-600 text-xs">
+                Editing draft saved {new Date(drafts.find(d => d.id === editingId)?.createdAt || Date.now()).toLocaleString()}.
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* ── RIGHT SIDEBAR — only on composer tab ─────────────────────────────── */}
+      {tab === 'composer' && (
+        <div className="w-64 flex-shrink-0 border-l border-gray-800 overflow-y-auto">
+          <div className="p-4 space-y-5">
+            <div>
+              <h3 className="text-gray-400 text-xs font-medium uppercase tracking-wide mb-3">Recent drafts</h3>
+              <div className="space-y-2">
+                {drafts.slice(0, 5).map(d => (
+                  <button
+                    key={d.id}
+                    onClick={() => openDraft(d.id)}
+                    className={`w-full text-left p-2.5 rounded-lg border transition-colors ${editingId === d.id ? 'bg-indigo-950/40 border-indigo-700' : 'bg-gray-900 border-gray-800 hover:border-gray-700'}`}
+                  >
+                    <p className="text-white text-xs font-medium truncate">{d.title || '(untitled)'}</p>
+                    <p className="text-gray-600 text-xs mt-0.5">{d.wordCount} words · {new Date(d.updatedAt).toLocaleDateString()}</p>
+                  </button>
                 ))}
-              </tbody>
-            </table>
-          </div>
-
-          {/* Traffic sources */}
-          <div className="bg-gray-900 border border-gray-800 rounded-2xl p-5">
-            <h3 className="text-white font-semibold text-sm mb-4">Traffic Sources</h3>
-            <div className="space-y-3">
-              {[
-                { label: 'Organic Search', pct: 58, color: 'bg-green-500' },
-                { label: 'Social Media', pct: 23, color: 'bg-indigo-500' },
-                { label: 'Direct', pct: 12, color: 'bg-violet-500' },
-                { label: 'Referral', pct: 7, color: 'bg-amber-500' },
-              ].map(src => (
-                <div key={src.label} className="flex items-center gap-3">
-                  <span className="text-gray-400 text-xs w-32 flex-shrink-0">{src.label}</span>
-                  <div className="flex-1 h-2 bg-gray-800 rounded-full overflow-hidden">
-                    <div className={`h-full ${src.color} rounded-full`} style={{ width: `${src.pct}%` }} />
-                  </div>
-                  <span className="text-white text-xs font-medium w-8 text-right">{src.pct}%</span>
-                </div>
-              ))}
+                {drafts.length === 0 && (
+                  <p className="text-gray-600 text-xs">No drafts yet.</p>
+                )}
+              </div>
             </div>
-          </div>
-        </div>
-      )}
 
-      {/* Destination Settings Slide-over */}
-      {showDestSettings && (
-        <div className="fixed inset-0 bg-gray-950/60 backdrop-blur-sm z-50 flex justify-end">
-          <div className="w-96 bg-gray-900 border-l border-gray-800 overflow-y-auto">
-            <div className="flex items-center justify-between p-5 border-b border-gray-800">
-              <h3 className="text-white font-bold">Publishing Destinations</h3>
-              <button onClick={() => { setShowDestSettings(false); setEditingDest(null) }} className="text-gray-500 hover:text-white text-xl">×</button>
+            <div>
+              <h3 className="text-gray-400 text-xs font-medium uppercase tracking-wide mb-3">Markdown tips</h3>
+              <ul className="text-gray-500 text-xs space-y-1.5 leading-relaxed">
+                <li><code className="text-gray-300"># Title</code> — H1 heading</li>
+                <li><code className="text-gray-300">## Section</code> — H2 heading</li>
+                <li><code className="text-gray-300">**bold**</code> — <strong>bold</strong></li>
+                <li><code className="text-gray-300">*italic*</code> — <em>italic</em></li>
+                <li><code className="text-gray-300">[text](url)</code> — link</li>
+                <li><code className="text-gray-300">- item</code> — bullet list</li>
+              </ul>
             </div>
-            <div className="p-5 space-y-4">
-              {DESTINATIONS.map(dest => (
-                <div key={dest.id} className={`bg-gray-800 border rounded-2xl overflow-hidden ${editingDest === dest.id ? 'border-indigo-500' : 'border-gray-700'}`}>
-                  <div className="flex items-center justify-between p-4">
-                    <div className="flex items-center gap-3">
-                      <div className="w-9 h-9 bg-gray-700 rounded-xl flex items-center justify-center text-white font-bold text-sm">{dest.icon}</div>
-                      <div>
-                        <p className="text-white font-medium text-sm">{dest.name}</p>
-                        <p className={`text-xs ${DEST_STATUS[dest.status]}`}>{dest.status}</p>
-                      </div>
-                    </div>
-                    <div className="flex gap-2">
-                      <button
-                        onClick={() => setEditingDest(editingDest === dest.id ? null : dest.id)}
-                        className="text-xs text-gray-400 hover:text-white px-2 py-1 rounded-lg hover:bg-gray-700"
-                      >
-                        {editingDest === dest.id ? 'Close' : 'Configure'}
-                      </button>
-                    </div>
-                  </div>
-                  {editingDest === dest.id && currentDestSettings && (
-                    <div className="px-4 pb-4 space-y-3 border-t border-gray-700">
-                      <div className="pt-3 space-y-3">
-                        {currentDestSettings.fields.map(field => (
-                          <div key={field.key}>
-                            <label className="text-gray-400 text-xs mb-1 block">{field.label}</label>
-                            <input
-                              type={field.type}
-                              placeholder={field.placeholder}
-                              className="w-full bg-gray-700 border border-gray-600 text-white text-xs px-3 py-2 rounded-xl focus:outline-none focus:border-indigo-500 placeholder-gray-500"
-                            />
-                          </div>
-                        ))}
-                        <button className="w-full bg-indigo-600 hover:bg-indigo-500 text-white text-xs py-2 rounded-xl font-medium">
-                          Test Connection
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              ))}
+
+            <div>
+              <h3 className="text-gray-400 text-xs font-medium uppercase tracking-wide mb-3">AI assistance</h3>
+              <div className="p-3 rounded-xl bg-gray-900 border border-gray-800">
+                <p className="text-gray-400 text-xs leading-relaxed">
+                  AI write / expand / improve tools previously here were placeholder text inserts.
+                  Real AI drafting will move to the CMO Dashboard streaming flow — prompt
+                  &ldquo;Draft a blog post about X&rdquo; from there.
+                </p>
+                <button
+                  onClick={() => router.push('/dashboard')}
+                  className="mt-2 text-xs text-indigo-400 hover:text-indigo-300"
+                >
+                  Open CMO Dashboard →
+                </button>
+              </div>
             </div>
           </div>
         </div>
       )}
     </div>
-  )
-}
-
-function SpinnerSm() {
-  return (
-    <svg className="animate-spin w-3 h-3" viewBox="0 0 24 24" fill="none">
-      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-    </svg>
   )
 }
