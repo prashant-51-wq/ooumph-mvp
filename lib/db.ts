@@ -166,6 +166,70 @@ async function postgresQuery(strings: TemplateStringsArray, ...values: unknown[]
     await pgSql`CREATE INDEX IF NOT EXISTS idx_project_tasks_initiative ON project_tasks(initiative_run_id, task_index ASC)`
     await pgSql`CREATE INDEX IF NOT EXISTS idx_project_tasks_workspace ON project_tasks(workspace_id, created_at DESC)`
     await pgSql`CREATE INDEX IF NOT EXISTS idx_project_tasks_status ON project_tasks(status, created_at ASC)`
+    // === Sprint 2 Commit 1: Agent Lifecycle + Workspace Projects (Postgres inline init) ===
+    //
+    //   agents — per-workspace agent registry. One row per (workspace_id, name).
+    //   This is the table the operator's Pause/Resume UI mutates and the table
+    //   the cron worker filters on (`WHERE status = 'active'`). Architecture
+    //   recommendation: status column gating, not external process teardown —
+    //   matches the Vercel serverless deployment model (no daemons to SIGTERM).
+    //
+    //   The CHECK constraint enforces the four states the worker recognizes:
+    //     active   — runnable, default for new rows
+    //     paused   — operator-paused; cron skips on next tick
+    //     error    — system-flagged after repeated failures (set by runner, not UI)
+    //     disabled — soft-deleted by an admin; never returns to runnable without
+    //                explicit re-enable
+    //
+    //   paused_at / paused_by are captured at the moment of pause so the timeline
+    //   can attribute the action (audit log feeder for Sprint 2D).
+    //
+    //   Note: there was no prior `agents` table in this codebase — only
+    //   `agent_runs` (per-invocation log) and `voice_agents` (telephony). This
+    //   creates the registry table with the three Sprint 2 tracking columns
+    //   built-in. CREATE TABLE IF NOT EXISTS keeps it safe to re-run.
+    await pgSql`CREATE TABLE IF NOT EXISTS agents (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+      name VARCHAR(100) NOT NULL,
+      status VARCHAR(20) NOT NULL DEFAULT 'active' CHECK (status IN ('active','paused','error','disabled')),
+      paused_at TIMESTAMPTZ,
+      paused_by TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`
+    // Forward-compat: if a future version's CREATE TABLE was applied without
+    // the tracking columns, top them up. ADD COLUMN IF NOT EXISTS is a no-op
+    // when the column already exists.
+    await pgSql`ALTER TABLE agents ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'active'`
+    await pgSql`ALTER TABLE agents ADD COLUMN IF NOT EXISTS paused_at TIMESTAMPTZ`
+    await pgSql`ALTER TABLE agents ADD COLUMN IF NOT EXISTS paused_by TEXT`
+    await pgSql`CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_workspace_name ON agents(workspace_id, name)`
+    // Composite (workspace_id, status) is the index the cron filter hits every
+    // tick — `WHERE workspace_id = ? AND status = 'active'`. Keep it first.
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_agents_workspace_status ON agents(workspace_id, status)`
+    //
+    //   workspace_projects — persistent project registry. Replaces the
+    //   `ooumph_projects_v1` localStorage stash on the CMO dashboard, which
+    //   trapped projects on a single browser. After Sprint 2A wires the UI to
+    //   /api/projects, the same project list is available across devices and
+    //   survives a localStorage clear.
+    //
+    //   Schema kept intentionally minimal per the Sprint 2 spec — id + name +
+    //   status + standard timestamps. No CHECK constraint on status so workflow
+    //   evolution doesn't require a migration: callers can use whatever vocab
+    //   the product needs (active / archived / completed / etc.). If a fixed
+    //   vocabulary becomes needed, add CHECK in a follow-up migration.
+    await pgSql`CREATE TABLE IF NOT EXISTS workspace_projects (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+      name VARCHAR(255) NOT NULL,
+      status VARCHAR(20) NOT NULL DEFAULT 'active',
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_workspace_projects_workspace ON workspace_projects(workspace_id, created_at DESC)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_workspace_projects_status ON workspace_projects(workspace_id, status)`
     // === Sprint 1: Email Department schema (Postgres inline init) ===
     // Bridges email_campaigns into the artifact safety gate (artifact_id) and
     // adds scheduling + provider tracking columns. Adds list management tables
@@ -1099,6 +1163,38 @@ function initSQLiteSync(db: import('better-sqlite3').Database) {
     'CREATE INDEX IF NOT EXISTS idx_project_tasks_initiative ON project_tasks(initiative_run_id, task_index ASC)',
     'CREATE INDEX IF NOT EXISTS idx_project_tasks_workspace ON project_tasks(workspace_id, created_at DESC)',
     'CREATE INDEX IF NOT EXISTS idx_project_tasks_status ON project_tasks(status, created_at ASC)',
+    // === Sprint 2 Commit 1: Agent Lifecycle + Workspace Projects (SQLite track) ===
+    //
+    //   `agents` — per-workspace agent registry. This is the table the
+    //   operator's Pause/Resume UI mutates and the cron worker filters on
+    //   (`WHERE status = 'active'`). SQLite honours CHECK constraints in
+    //   CREATE TABLE, so the four-state vocabulary is enforced at write time.
+    //
+    //   The status check matches the Postgres definition above:
+    //   active / paused / error / disabled. paused_at / paused_by capture
+    //   the moment of pause for audit attribution.
+    //
+    //   The runner loop at the bottom of this array wraps every statement
+    //   in try/catch — so the follow-up ALTER TABLE ADD COLUMN entries below
+    //   are safe on re-run (SQLite throws "duplicate column name", we swallow).
+    //   Timestamps use SQLite's `datetime(\'now\')` default (TEXT-encoded ISO)
+    //   instead of TIMESTAMPTZ so the same row shape works on both engines.
+    'CREATE TABLE IF NOT EXISTS agents (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, name TEXT NOT NULL, status TEXT NOT NULL DEFAULT \'active\' CHECK (status IN (\'active\', \'paused\', \'error\', \'disabled\')), paused_at TEXT, paused_by TEXT, created_at TEXT DEFAULT (datetime(\'now\')), updated_at TEXT DEFAULT (datetime(\'now\')))',
+    // Forward-compat ALTERs for installs where `agents` predates this commit.
+    // The migration runner's try/catch makes "duplicate column" a no-op.
+    'ALTER TABLE agents ADD COLUMN status TEXT NOT NULL DEFAULT \'active\'',
+    'ALTER TABLE agents ADD COLUMN paused_at TEXT',
+    'ALTER TABLE agents ADD COLUMN paused_by TEXT',
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_workspace_name ON agents(workspace_id, name)',
+    'CREATE INDEX IF NOT EXISTS idx_agents_workspace_status ON agents(workspace_id, status)',
+    //
+    //   `workspace_projects` — persistent project registry replacing the
+    //   `ooumph_projects_v1` localStorage stash on the CMO dashboard. Minimal
+    //   shape (id / name / status / timestamps) per Sprint 2 spec — no CHECK
+    //   so callers can evolve the status vocabulary without a migration.
+    'CREATE TABLE IF NOT EXISTS workspace_projects (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, name TEXT NOT NULL, status TEXT NOT NULL DEFAULT \'active\', created_at TEXT DEFAULT (datetime(\'now\')), updated_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE INDEX IF NOT EXISTS idx_workspace_projects_workspace ON workspace_projects(workspace_id, created_at DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_workspace_projects_status ON workspace_projects(workspace_id, status)',
     // === Sprint 1: Email Department schema ===
     // ALTER additions to email_campaigns: artifact_id links to the AI-generated
     // source artifact (powering the assertArtifactApproved safety gate),
@@ -1430,6 +1526,44 @@ export async function initializeDatabase() {
   await pgSql`CREATE INDEX IF NOT EXISTS idx_project_tasks_initiative ON project_tasks(initiative_run_id, task_index ASC)`
   await pgSql`CREATE INDEX IF NOT EXISTS idx_project_tasks_workspace ON project_tasks(workspace_id, created_at DESC)`
   await pgSql`CREATE INDEX IF NOT EXISTS idx_project_tasks_status ON project_tasks(status, created_at ASC)`
+  // === Sprint 2 Commit 1: Agent Lifecycle + Workspace Projects (Postgres standalone init) ===
+  //
+  //   Mirrors the inline-init definitions above. The standalone path is used
+  //   when callers (cron workers, scripts, the health page) explicitly call
+  //   `initializeDatabase()` instead of going through the lazy postgresQuery
+  //   first-use init. Both paths must agree on schema or one consumer will
+  //   see "column does not exist" errors after a deploy.
+  //
+  //   See the inline-init block above for the rationale on status vocabulary,
+  //   the index strategy (UNIQUE workspace_name + composite workspace_status),
+  //   and why CREATE TABLE IF NOT EXISTS + targeted ALTER COLUMN IF NOT EXISTS
+  //   gives us forward-compatible idempotency.
+  await pgSql`CREATE TABLE IF NOT EXISTS agents (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+    name VARCHAR(100) NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'active' CHECK (status IN ('active','paused','error','disabled')),
+    paused_at TIMESTAMPTZ,
+    paused_by TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+  )`
+  await pgSql`ALTER TABLE agents ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'active'`
+  await pgSql`ALTER TABLE agents ADD COLUMN IF NOT EXISTS paused_at TIMESTAMPTZ`
+  await pgSql`ALTER TABLE agents ADD COLUMN IF NOT EXISTS paused_by TEXT`
+  await pgSql`CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_workspace_name ON agents(workspace_id, name)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_agents_workspace_status ON agents(workspace_id, status)`
+
+  await pgSql`CREATE TABLE IF NOT EXISTS workspace_projects (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+    name VARCHAR(255) NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'active',
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+  )`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_workspace_projects_workspace ON workspace_projects(workspace_id, created_at DESC)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_workspace_projects_status ON workspace_projects(workspace_id, status)`
   // === Sprint 1: Email Department schema (Postgres standalone init) ===
   await pgSql`ALTER TABLE email_campaigns ADD COLUMN IF NOT EXISTS artifact_id TEXT`
   await pgSql`ALTER TABLE email_campaigns ADD COLUMN IF NOT EXISTS list_id TEXT`
