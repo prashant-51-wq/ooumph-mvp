@@ -293,7 +293,9 @@ function AgentCard({
   agent: Agent
   onConfigure: (a: Agent) => void
   onViewLogs: (a: Agent) => void
-  onTogglePause: (id: string) => void
+  // Accept either sync or async handlers — Sprint 2 Commit 3 wired this
+  // to a real API call that returns Promise<void>.
+  onTogglePause: (id: string) => void | Promise<void>
 }) {
   const isSupervisor = agent.category === 'supervisor'
   return (
@@ -380,7 +382,9 @@ function AgentListRow({
   agent: Agent
   onConfigure: (a: Agent) => void
   onViewLogs: (a: Agent) => void
-  onTogglePause: (id: string) => void
+  // Accept either sync or async handlers — Sprint 2 Commit 3 wired this
+  // to a real API call that returns Promise<void>.
+  onTogglePause: (id: string) => void | Promise<void>
 }) {
   return (
     <div className={`flex items-center gap-4 px-4 py-3 border-b border-gray-800 hover:bg-gray-800/30 transition-colors ${agent.category === 'supervisor' ? 'bg-indigo-950/10' : ''}`}>
@@ -415,7 +419,7 @@ function AgentListRow({
 }
 
 // Config Slide-over
-function ConfigSlideover({ agent, onClose, onSave }: { agent: Agent; onClose: () => void; onSave: (id: string, cfg: AgentConfig) => void }) {
+function ConfigSlideover({ agent, onClose, onSave }: { agent: Agent; onClose: () => void; onSave: (id: string, cfg: AgentConfig) => void | Promise<void> }) {
   const [cfg, setCfg] = useState<AgentConfig>({ ...agent.config })
 
   const toggleTool = (tool: string) => {
@@ -718,6 +722,52 @@ function HierarchyView({ agents, onConfigure }: { agents: Agent[]; onConfigure: 
 
 // ── Main Page ────────────────────────────────────────────────────────────────
 
+// ── API ↔ UI value mappers (Sprint 2 Commit 3) ──────────────────────────────
+//
+// The UI uses title-cased enums (Tone='Professional', Priority='Normal',
+// Schedule='Always on'); the backend validates lowercase tokens
+// ('professional', 'normal', 'always'). These helpers normalize both
+// directions so the user keeps the friendly labels and the API contract
+// stays strict.
+
+function uiToApiPriority(p: PriorityOption): 'low' | 'normal' | 'high' | 'critical' {
+  return p.toLowerCase() as 'low' | 'normal' | 'high' | 'critical'
+}
+
+function apiToUiPriority(p: string | null | undefined): PriorityOption {
+  if (!p) return 'Normal'
+  const cap = p[0].toUpperCase() + p.slice(1).toLowerCase()
+  if (cap === 'Low' || cap === 'High' || cap === 'Critical' || cap === 'Normal') return cap as PriorityOption
+  return 'Normal'
+}
+
+function uiToApiSchedule(s: ScheduleOption): string {
+  if (s === 'Always on') return 'always'
+  if (s === 'Business hours') return 'business_hours'
+  return 'custom'
+}
+
+function apiToUiSchedule(s: string | null | undefined): ScheduleOption {
+  if (s === 'business_hours') return 'Business hours'
+  if (s === 'custom') return 'Custom schedule'
+  return 'Always on'
+}
+
+// Lifecycle status received from the agents registry. Maps to AgentStatus,
+// preserving 'idle' as the UI-only "available but no recent run" state —
+// when the registry says 'active' we keep whatever the runs-hydration set
+// (idle or active) so we don't accidentally lie about activity.
+type ApiAgentStatus = 'active' | 'paused' | 'error' | 'disabled'
+
+interface RegistryRow {
+  id: string
+  workspace_id: string
+  name: string
+  status: ApiAgentStatus
+  paused_at: string | null
+  paused_by: string | null
+}
+
 export default function AgentsPage() {
   const [agents, setAgents] = useState<Agent[]>(AGENTS)
   const [view, setView] = useState<ViewMode>('grid')
@@ -726,6 +776,11 @@ export default function AgentsPage() {
   const [allPaused, setAllPaused] = useState(false)
   const [search, setSearch] = useState('')
   const [categoryFilter, setCategoryFilter] = useState<'all' | 'supervisor' | 'worker'>('all')
+  // ⚠ Sprint 2 Commit 3: in-flight indicator so double-clicks on
+  // Pause/Resume/Save can't fire two PATCHes for the same agent.
+  const [busyAgentId, setBusyAgentId] = useState<string | null>(null)
+  // Top-line success/error toast for operator feedback after a write.
+  const [statusMsg, setStatusMsg] = useState<{ kind: 'success' | 'error'; text: string } | null>(null)
 
   // Hydrate the static agent catalog with real run data from /api/agent-runs.
   // The static AGENTS list is the registry of available agents; we layer
@@ -801,24 +856,207 @@ export default function AgentsPage() {
     return () => { cancelled = true; clearInterval(interval) }
   }, [])
 
-  const togglePause = (id: string) => {
-    setAgents(prev => prev.map(a => a.id === id
-      ? { ...a, status: (a.status === 'paused' ? 'idle' : 'paused') as AgentStatus }
-      : a
-    ))
+  // ── Lifecycle registry hydration (Sprint 2 Commit 3) ────────────────────
+  //
+  // Fetches the agents table on mount + after each PATCH so the UI's
+  // Pause/Resume state survives reload. The runs-hydration effect above
+  // sets 'active'/'idle' based on recent task volume; THIS effect overlays
+  // 'paused' on top so a paused agent visibly stays paused regardless of
+  // recent activity.
+  useEffect(() => {
+    const wid = typeof window !== 'undefined' ? localStorage.getItem('workspaceId') : null
+    if (!wid) return
+    let cancelled = false
+
+    const hydrateRegistry = async () => {
+      try {
+        const res = await fetch(`/api/agents/registry?workspaceId=${wid}`)
+        if (!res.ok) return
+        const rows = await res.json() as RegistryRow[]
+        if (cancelled || !Array.isArray(rows)) return
+        const byName = new Map(rows.map(r => [r.name, r]))
+        setAgents(prev => prev.map(a => {
+          const reg = byName.get(a.id)
+          if (!reg) return a
+          // Pause is authoritative — show paused regardless of runs-hydration.
+          // Error/disabled also overlay. Active falls back to whatever the
+          // runs-hydration computed (might be idle if no recent runs).
+          if (reg.status === 'paused') return { ...a, status: 'paused' }
+          if (reg.status === 'error') return { ...a, status: 'error' }
+          return a
+        }))
+      } catch (err) {
+        console.error('[agents] registry hydrate failed', err)
+      }
+    }
+
+    hydrateRegistry()
+    // Don't re-poll the registry — it only changes via this page's own
+    // PATCHes, which already trigger a fresh fetch via refetchRegistry().
+    return () => { cancelled = true }
+  }, [])
+
+  // Re-fetch the registry — called after every successful status PATCH so
+  // the UI sees the canonical row (with server-set paused_at / paused_by).
+  const refetchRegistry = async (): Promise<void> => {
+    const wid = typeof window !== 'undefined' ? localStorage.getItem('workspaceId') : null
+    if (!wid) return
+    try {
+      const res = await fetch(`/api/agents/registry?workspaceId=${wid}`)
+      if (!res.ok) return
+      const rows = await res.json() as RegistryRow[]
+      const byName = new Map(rows.map(r => [r.name, r]))
+      setAgents(prev => prev.map(a => {
+        const reg = byName.get(a.id)
+        if (!reg) return a
+        if (reg.status === 'paused') return { ...a, status: 'paused' }
+        if (reg.status === 'error') return { ...a, status: 'error' }
+        // Resume → drop back to 'idle' so the runs-hydration effect can
+        // promote to 'active' on its next tick if there's running work.
+        if (a.status === 'paused' && reg.status === 'active') {
+          return { ...a, status: 'idle' }
+        }
+        return a
+      }))
+    } catch { /* non-fatal */ }
   }
 
-  const toggleAll = () => {
+  /**
+   * Pause/Resume a single agent. PATCHes /api/agents/[name]/status, then
+   * re-reads the registry to confirm the server-side state. Optimistic
+   * UI update is intentionally NOT used — a failed PATCH leaving the UI
+   * lying about the real state is worse than a brief loading flash.
+   */
+  const togglePause = async (id: string) => {
+    const wid = typeof window !== 'undefined' ? localStorage.getItem('workspaceId') : null
+    if (!wid) {
+      setStatusMsg({ kind: 'error', text: 'No workspace selected.' })
+      return
+    }
+    if (busyAgentId) return
+    const current = agents.find(a => a.id === id)
+    if (!current) return
+    const targetStatus: ApiAgentStatus = current.status === 'paused' ? 'active' : 'paused'
+
+    setBusyAgentId(id)
+    setStatusMsg(null)
+    try {
+      const res = await fetch(`/api/agents/${encodeURIComponent(id)}/status`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspaceId: wid, status: targetStatus }),
+      })
+      if (!res.ok) {
+        const txt = await res.text().catch(() => '')
+        setStatusMsg({ kind: 'error', text: `Failed to ${targetStatus === 'paused' ? 'pause' : 'resume'} ${current.name}: ${txt.slice(0, 200) || res.status}` })
+        return
+      }
+      await refetchRegistry()
+      setStatusMsg({
+        kind: 'success',
+        text: targetStatus === 'paused'
+          ? `${current.name} paused. The cron worker will skip it on the next tick.`
+          : `${current.name} resumed. Queued work will pick up on the next cron tick.`,
+      })
+    } catch (err) {
+      setStatusMsg({ kind: 'error', text: `Network error: ${err instanceof Error ? err.message : String(err)}` })
+    } finally {
+      setBusyAgentId(null)
+    }
+  }
+
+  /**
+   * Pause/Resume EVERY agent. Fires N PATCH requests in sequence
+   * (intentionally not parallel — we want the writes to be observable in
+   * /audit and avoid race-conditions on the agents.updated_at column).
+   * Failures collect and surface as a single "partial" toast.
+   */
+  const toggleAll = async () => {
+    const wid = typeof window !== 'undefined' ? localStorage.getItem('workspaceId') : null
+    if (!wid) {
+      setStatusMsg({ kind: 'error', text: 'No workspace selected.' })
+      return
+    }
+    if (busyAgentId) return
     const newPaused = !allPaused
+    const targetStatus: ApiAgentStatus = newPaused ? 'paused' : 'active'
+
+    setBusyAgentId('__all__')
+    setStatusMsg(null)
+    let succeeded = 0
+    let failed = 0
+    for (const a of agents) {
+      try {
+        const res = await fetch(`/api/agents/${encodeURIComponent(a.id)}/status`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ workspaceId: wid, status: targetStatus }),
+        })
+        if (res.ok) succeeded++; else failed++
+      } catch { failed++ }
+    }
     setAllPaused(newPaused)
-    setAgents(prev => prev.map(a => ({
-      ...a,
-      status: newPaused ? 'paused' : (a.id.includes('sup') || a.id === 'cmo' ? 'active' : 'idle') as AgentStatus,
-    })))
+    await refetchRegistry()
+    setBusyAgentId(null)
+    if (failed === 0) {
+      setStatusMsg({ kind: 'success', text: `${succeeded} agents ${newPaused ? 'paused' : 'resumed'}.` })
+    } else {
+      setStatusMsg({
+        kind: 'error',
+        text: `Partial: ${succeeded} ${newPaused ? 'paused' : 'resumed'}, ${failed} failed.`,
+      })
+    }
   }
 
-  const saveConfig = (id: string, cfg: AgentConfig) => {
-    setAgents(prev => prev.map(a => a.id === id ? { ...a, config: cfg, model: cfg.model } : a))
+  /**
+   * Save configuration to /api/agents/[name]/config. Persists to the
+   * agent_configs table (separate from lifecycle status). Doesn't
+   * optimistically write to local state — we wait for the PATCH to
+   * succeed before reflecting the change.
+   */
+  const saveConfig = async (id: string, cfg: AgentConfig) => {
+    const wid = typeof window !== 'undefined' ? localStorage.getItem('workspaceId') : null
+    if (!wid) {
+      setStatusMsg({ kind: 'error', text: 'No workspace selected.' })
+      return
+    }
+    if (busyAgentId) return
+    setBusyAgentId(id)
+    setStatusMsg(null)
+    try {
+      const res = await fetch(`/api/agents/${encodeURIComponent(id)}/config`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          workspaceId: wid,
+          model: cfg.model,
+          instructions: cfg.instructions,
+          tone: cfg.tone,                              // stored as-is; the server is lenient on tone
+          maxTasksPerDay: cfg.maxTasksPerDay,
+          priority: uiToApiPriority(cfg.priority),
+          allowedTools: cfg.allowedTools,
+          schedule: uiToApiSchedule(cfg.schedule),
+          dailyCostCap: cfg.costCapPerDay,
+          escalateTo: cfg.autoEscalateTo === 'None' ? null : cfg.autoEscalateTo,
+          // apiKeyOverride intentionally NOT sent — that's a BYOK concern
+          // handled by /api/workspace-secrets, not by agent_configs. The
+          // input remains in local state only so the user sees their entry
+          // until they navigate to the proper BYOK settings.
+        }),
+      })
+      if (!res.ok) {
+        const txt = await res.text().catch(() => '')
+        setStatusMsg({ kind: 'error', text: `Save failed: ${txt.slice(0, 200) || res.status}` })
+        return
+      }
+      // Update local state on success so the user sees their edits stick.
+      setAgents(prev => prev.map(a => a.id === id ? { ...a, config: cfg, model: cfg.model } : a))
+      setStatusMsg({ kind: 'success', text: `${agents.find(a => a.id === id)?.name || 'Agent'} configuration saved.` })
+    } catch (err) {
+      setStatusMsg({ kind: 'error', text: `Network error: ${err instanceof Error ? err.message : String(err)}` })
+    } finally {
+      setBusyAgentId(null)
+    }
   }
 
   const filtered = agents.filter(a => {
@@ -869,6 +1107,19 @@ export default function AgentsPage() {
           </button>
         </div>
       </div>
+
+      {/* Status toast — appears after Pause/Resume/Save. Sprint 2 Commit 3. */}
+      {statusMsg && (
+        <div className={`mb-4 p-3 rounded-xl border text-sm flex items-start gap-2 ${
+          statusMsg.kind === 'success'
+            ? 'bg-emerald-950/40 border-emerald-800/50 text-emerald-300'
+            : 'bg-red-950/40 border-red-800/50 text-red-300'
+        }`}>
+          <span>{statusMsg.kind === 'success' ? '✓' : '✕'}</span>
+          <span className="flex-1">{statusMsg.text}</span>
+          <button onClick={() => setStatusMsg(null)} className="text-gray-500 hover:text-white">×</button>
+        </div>
+      )}
 
       {/* Stats Bar */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">

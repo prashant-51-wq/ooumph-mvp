@@ -1332,24 +1332,32 @@ export default function DashboardPage() {
     const approvedMsg = messages.find((m) => m.id === msgId)
     const proposal = approvedMsg?.proposal
 
-    // Cache the project to localStorage immediately so the user has a record
-    // even if the stream is interrupted mid-flight (Vercel after() will still
-    // complete the work in the background).
-    if (proposal) {
+    // Persist the project to the workspace_projects DB table so the record
+    // survives reloads AND is available across devices. Sprint 2 Commit 3
+    // replaced the ooumph_projects_v1 localStorage stash with this API
+    // call — the previous version trapped projects on a single browser
+    // and lost them on storage clear. Failure here is non-fatal: the
+    // stream below is what actually runs the work; this is just the
+    // audit row for the user's project history.
+    //
+    // Note: the workspace_projects table currently stores only name + status
+    // (per the Sprint 2 minimal schema). The richer proposal fields (goal,
+    // team, firstAction) are intentionally not persisted yet — they'll
+    // arrive when /api/projects is extended in a later sprint. For now we
+    // just record that a project named X was started.
+    if (proposal && workspaceId) {
       try {
-        const projectId = uid()
-        const newProject = {
-          id: projectId,
-          name: proposal.project.name,
-          goal: proposal.project.goal,
-          team: proposal.team,
-          status: 'active',
-          createdAt: new Date().toISOString(),
-          firstAction: proposal.firstAction,
-        }
-        const existing = JSON.parse(localStorage.getItem('ooumph_projects_v1') || '[]') as unknown[]
-        localStorage.setItem('ooumph_projects_v1', JSON.stringify([newProject, ...existing]))
-      } catch { /* storage errors are non-fatal */ }
+        await fetch('/api/projects', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            workspaceId,
+            name: proposal.project.name,
+          }),
+        })
+      } catch (err) {
+        console.error('[approveTeam] project persist failed (non-fatal):', err)
+      }
     }
 
     // Insert a confirmation bubble that will be updated as the stream completes
