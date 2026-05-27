@@ -70,14 +70,22 @@ function generateToken(): string {
   return `${TOKEN_PREFIX}${urlSafe}`
 }
 
-function parseScopes(raw: string | null | undefined): string[] {
+function parseScopes(raw: unknown): string[] {
   if (!raw) return []
-  try {
-    const parsed = JSON.parse(raw) as unknown
-    if (Array.isArray(parsed)) {
-      return parsed.filter((s): s is string => typeof s === 'string' && s.length > 0).slice(0, 64)
-    }
-  } catch { /* fall through */ }
+  // lib/db.parseJsonFields auto-parses JSON-ish strings on Postgres reads,
+  // so this column can arrive as either an already-parsed array OR a raw
+  // JSON string (SQLite path keeps it stringified). Handle both.
+  if (Array.isArray(raw)) {
+    return raw.filter((s): s is string => typeof s === 'string' && s.length > 0).slice(0, 64)
+  }
+  if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw) as unknown
+      if (Array.isArray(parsed)) {
+        return parsed.filter((s): s is string => typeof s === 'string' && s.length > 0).slice(0, 64)
+      }
+    } catch { /* fall through */ }
+  }
   return []
 }
 

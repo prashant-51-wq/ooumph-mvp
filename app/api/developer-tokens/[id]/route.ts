@@ -29,16 +29,22 @@ interface DeveloperTokenRow {
   created_at: string
 }
 
-function parseScopes(raw: string | null | undefined): string[] {
+function parseScopes(raw: unknown): string[] {
   if (!raw) return []
-  try {
-    const parsed = JSON.parse(raw) as unknown
-    return Array.isArray(parsed)
-      ? parsed.filter((s): s is string => typeof s === 'string')
-      : []
-  } catch {
-    return []
+  // Handle both already-parsed array (Postgres via parseJsonFields) and raw
+  // JSON string (SQLite path). E2E test caught the silent empty-array bug.
+  if (Array.isArray(raw)) {
+    return raw.filter((s): s is string => typeof s === 'string')
   }
+  if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw) as unknown
+      if (Array.isArray(parsed)) {
+        return parsed.filter((s): s is string => typeof s === 'string')
+      }
+    } catch { /* fall through */ }
+  }
+  return []
 }
 
 // ─── GET (metadata only) ──────────────────────────────────────────────────
