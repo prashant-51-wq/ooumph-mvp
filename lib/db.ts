@@ -166,6 +166,356 @@ async function postgresQuery(strings: TemplateStringsArray, ...values: unknown[]
     await pgSql`CREATE INDEX IF NOT EXISTS idx_project_tasks_initiative ON project_tasks(initiative_run_id, task_index ASC)`
     await pgSql`CREATE INDEX IF NOT EXISTS idx_project_tasks_workspace ON project_tasks(workspace_id, created_at DESC)`
     await pgSql`CREATE INDEX IF NOT EXISTS idx_project_tasks_status ON project_tasks(status, created_at ASC)`
+    // === Sprint 1: Email Department schema (Postgres inline init) ===
+    // Bridges email_campaigns into the artifact safety gate (artifact_id) and
+    // adds scheduling + provider tracking columns. Adds list management tables
+    // (email_lists, email_list_members) and per-recipient send tracking
+    // (email_campaign_sends).
+    await pgSql`ALTER TABLE email_campaigns ADD COLUMN IF NOT EXISTS artifact_id TEXT`
+    await pgSql`ALTER TABLE email_campaigns ADD COLUMN IF NOT EXISTS list_id TEXT`
+    await pgSql`ALTER TABLE email_campaigns ADD COLUMN IF NOT EXISTS scheduled_for TIMESTAMPTZ`
+    await pgSql`ALTER TABLE email_campaigns ADD COLUMN IF NOT EXISTS from_name TEXT`
+    await pgSql`ALTER TABLE email_campaigns ADD COLUMN IF NOT EXISTS from_email TEXT`
+    await pgSql`ALTER TABLE email_campaigns ADD COLUMN IF NOT EXISTS reply_to TEXT`
+    await pgSql`ALTER TABLE email_campaigns ADD COLUMN IF NOT EXISTS preview_text TEXT`
+    await pgSql`ALTER TABLE email_campaigns ADD COLUMN IF NOT EXISTS provider VARCHAR(50) DEFAULT 'resend'`
+    await pgSql`ALTER TABLE email_campaigns ADD COLUMN IF NOT EXISTS provider_campaign_id TEXT`
+    await pgSql`ALTER TABLE email_campaigns ADD COLUMN IF NOT EXISTS bounce_count INTEGER DEFAULT 0`
+    await pgSql`ALTER TABLE email_campaigns ADD COLUMN IF NOT EXISTS unsubscribe_count INTEGER DEFAULT 0`
+    await pgSql`ALTER TABLE email_campaigns ADD COLUMN IF NOT EXISTS failed_count INTEGER DEFAULT 0`
+    await pgSql`ALTER TABLE email_campaigns ADD COLUMN IF NOT EXISTS error_message TEXT`
+    await pgSql`ALTER TABLE email_campaigns ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()`
+    await pgSql`ALTER TABLE email_campaigns ADD COLUMN IF NOT EXISTS created_by TEXT`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_email_campaigns_artifact ON email_campaigns(artifact_id)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_email_campaigns_status_schedule ON email_campaigns(status, scheduled_for)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_email_campaigns_workspace ON email_campaigns(workspace_id, created_at DESC)`
+
+    await pgSql`ALTER TABLE email_subscribers ADD COLUMN IF NOT EXISTS phone VARCHAR(50)`
+    await pgSql`ALTER TABLE email_subscribers ADD COLUMN IF NOT EXISTS first_name TEXT`
+    await pgSql`ALTER TABLE email_subscribers ADD COLUMN IF NOT EXISTS last_name TEXT`
+    await pgSql`ALTER TABLE email_subscribers ADD COLUMN IF NOT EXISTS unsubscribed_at TIMESTAMPTZ`
+    await pgSql`ALTER TABLE email_subscribers ADD COLUMN IF NOT EXISTS bounce_count INTEGER DEFAULT 0`
+    await pgSql`ALTER TABLE email_subscribers ADD COLUMN IF NOT EXISTS last_engaged_at TIMESTAMPTZ`
+    await pgSql`ALTER TABLE email_subscribers ADD COLUMN IF NOT EXISTS source VARCHAR(100)`
+    await pgSql`ALTER TABLE email_subscribers ADD COLUMN IF NOT EXISTS custom_fields TEXT DEFAULT '{}'`
+    await pgSql`ALTER TABLE email_subscribers ADD COLUMN IF NOT EXISTS consent_given_at TIMESTAMPTZ`
+    await pgSql`ALTER TABLE email_subscribers ADD COLUMN IF NOT EXISTS consent_source VARCHAR(100)`
+    await pgSql`ALTER TABLE email_subscribers ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()`
+    await pgSql`CREATE UNIQUE INDEX IF NOT EXISTS idx_email_subscribers_workspace_email ON email_subscribers(workspace_id, email)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_email_subscribers_status ON email_subscribers(workspace_id, status)`
+
+    await pgSql`CREATE TABLE IF NOT EXISTS email_lists (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, name VARCHAR(255) NOT NULL, description TEXT, status VARCHAR(50) DEFAULT 'active', subscriber_count INTEGER DEFAULT 0, default_from_name TEXT, default_from_email TEXT, double_opt_in INTEGER DEFAULT 0, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_email_lists_workspace ON email_lists(workspace_id, status)`
+
+    await pgSql`CREATE TABLE IF NOT EXISTS email_list_members (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, list_id TEXT NOT NULL, subscriber_id TEXT NOT NULL, status VARCHAR(50) DEFAULT 'subscribed', added_at TIMESTAMPTZ DEFAULT NOW(), unsubscribed_at TIMESTAMPTZ)`
+    await pgSql`CREATE UNIQUE INDEX IF NOT EXISTS idx_email_list_members_unique ON email_list_members(list_id, subscriber_id)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_email_list_members_subscriber ON email_list_members(subscriber_id)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_email_list_members_workspace ON email_list_members(workspace_id, status)`
+
+    await pgSql`CREATE TABLE IF NOT EXISTS email_campaign_sends (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, campaign_id TEXT NOT NULL, subscriber_id TEXT, email_address VARCHAR(255) NOT NULL, status VARCHAR(50) DEFAULT 'queued', external_message_id TEXT, error_message TEXT, sent_at TIMESTAMPTZ, opened_at TIMESTAMPTZ, clicked_at TIMESTAMPTZ, bounced_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_email_campaign_sends_campaign ON email_campaign_sends(campaign_id, status)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_email_campaign_sends_subscriber ON email_campaign_sends(subscriber_id)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_email_campaign_sends_workspace ON email_campaign_sends(workspace_id, created_at DESC)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_email_campaign_sends_external ON email_campaign_sends(external_message_id)`
+    // === Sprint 2: Publishing & Social schema (Postgres inline init) ===
+    // Augments the existing scheduled_content / published_content tables with
+    // Sprint-2 canonical column names (channel, content_body, scheduled_at,
+    // retry_count, scheduled_content_id, native_post_id, permalink). Older
+    // column names (platform / content / scheduled_for / post_id / post_url)
+    // are preserved for backward compat — Sprint-2 routes use the new ones.
+    await pgSql`ALTER TABLE scheduled_content ADD COLUMN IF NOT EXISTS channel TEXT`
+    await pgSql`ALTER TABLE scheduled_content ADD COLUMN IF NOT EXISTS content_body TEXT`
+    await pgSql`ALTER TABLE scheduled_content ADD COLUMN IF NOT EXISTS scheduled_at TIMESTAMPTZ`
+    await pgSql`ALTER TABLE scheduled_content ADD COLUMN IF NOT EXISTS retry_count INTEGER DEFAULT 0`
+    await pgSql`ALTER TABLE scheduled_content ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()`
+    // Calendar uses (workspace_id, scheduled_at) for the timeline view, and
+    // the worker loop scans (status, scheduled_at) for items due to publish.
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_scheduled_content_workspace_schedule ON scheduled_content(workspace_id, scheduled_at)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_scheduled_content_status_schedule ON scheduled_content(status, scheduled_at)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_scheduled_content_artifact ON scheduled_content(artifact_id)`
+
+    await pgSql`ALTER TABLE published_content ADD COLUMN IF NOT EXISTS scheduled_content_id TEXT`
+    await pgSql`ALTER TABLE published_content ADD COLUMN IF NOT EXISTS channel TEXT`
+    await pgSql`ALTER TABLE published_content ADD COLUMN IF NOT EXISTS native_post_id TEXT`
+    await pgSql`ALTER TABLE published_content ADD COLUMN IF NOT EXISTS permalink TEXT`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_published_content_workspace ON published_content(workspace_id, published_at DESC)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_published_content_scheduled ON published_content(scheduled_content_id)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_published_content_channel ON published_content(workspace_id, channel)`
+
+    // OAuth tokens — per-workspace, per-platform encrypted credentials for
+    // LinkedIn / X / WordPress / etc. Encrypted-at-rest via lib/secrets.ts
+    // (AES-256-GCM). The UNIQUE (workspace_id, platform) constraint enforces
+    // one connection per platform per workspace.
+    await pgSql`CREATE TABLE IF NOT EXISTS oauth_tokens (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, platform VARCHAR(50) NOT NULL, encrypted_access_token TEXT NOT NULL, encrypted_refresh_token TEXT, expires_at TIMESTAMPTZ, scope TEXT, account_id TEXT, account_label TEXT, status VARCHAR(30) DEFAULT 'active', last_refreshed_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE UNIQUE INDEX IF NOT EXISTS idx_oauth_tokens_unique ON oauth_tokens(workspace_id, platform)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_oauth_tokens_status ON oauth_tokens(status, expires_at)`
+
+    // Tracked links — 6-char slug → original URL mapping with denormalised
+    // click_count for hot-path stat cards. Per-click event rows live in
+    // link_clicks (below) for daily-series chart rollups.
+    await pgSql`CREATE TABLE IF NOT EXISTS tracked_links (id TEXT PRIMARY KEY, slug VARCHAR(16) NOT NULL UNIQUE, workspace_id TEXT NOT NULL, original_url TEXT NOT NULL, scheduled_content_id TEXT, published_content_id TEXT, channel VARCHAR(50), campaign_id TEXT, click_count INTEGER DEFAULT 0, last_clicked_at TIMESTAMPTZ, status VARCHAR(30) DEFAULT 'active', created_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_tracked_links_workspace ON tracked_links(workspace_id, created_at DESC)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_tracked_links_scheduled ON tracked_links(scheduled_content_id)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_tracked_links_channel ON tracked_links(workspace_id, channel)`
+    await pgSql`CREATE TABLE IF NOT EXISTS link_clicks (id TEXT PRIMARY KEY, slug VARCHAR(16) NOT NULL, workspace_id TEXT NOT NULL, channel VARCHAR(50), referrer TEXT, user_agent TEXT, country VARCHAR(8), clicked_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_link_clicks_slug ON link_clicks(slug, clicked_at DESC)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_link_clicks_workspace ON link_clicks(workspace_id, clicked_at DESC)`
+
+    // === Sprint 3: Paid Acquisition Department (Postgres inline init) ===
+    // ad_campaigns — canonical paid campaign row. native_campaign_id is the
+    // provider's id (Meta campaign id, Google customer ID + campaign id, etc.)
+    // once we've launched the campaign upstream. `error_log` captures the
+    // most recent failure surface from the provider's API.
+    await pgSql`CREATE TABLE IF NOT EXISTS ad_campaigns (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, platform VARCHAR(50) NOT NULL, native_campaign_id TEXT, name TEXT NOT NULL, daily_budget INTEGER NOT NULL DEFAULT 0, status VARCHAR(30) NOT NULL DEFAULT 'draft', error_log TEXT, utm_override TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`
+    // Upgrade path — adds utm_override to any environment that ran the
+    // pre-amendment Sprint-3 Commit 1 (CREATE IF NOT EXISTS is a no-op once
+    // the table exists, so the column would otherwise be missing).
+    await pgSql`ALTER TABLE ad_campaigns ADD COLUMN IF NOT EXISTS utm_override TEXT`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_ad_campaigns_workspace_status ON ad_campaigns(workspace_id, status)`
+
+    // ad_creatives — individual ad units inside a campaign. artifact_id is
+    // the safety-gate link: if present, the dispatcher refuses to push the
+    // creative live until the underlying artifact is human-approved.
+    await pgSql`CREATE TABLE IF NOT EXISTS ad_creatives (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, ad_campaign_id TEXT NOT NULL, artifact_id TEXT, headline TEXT NOT NULL, body_copy TEXT NOT NULL, media_url TEXT, destination_url TEXT NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_ad_creatives_artifact ON ad_creatives(artifact_id)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_ad_creatives_campaign ON ad_creatives(ad_campaign_id)`
+
+    // funnel_steps — public landing/thank-you pages served at /lp/[slug].
+    // Slug is workspace-scoped-unique (we enforce that at the route layer)
+    // but DB-globally unique because the public URL is /lp/:slug with no
+    // workspace prefix.
+    await pgSql`CREATE TABLE IF NOT EXISTS funnel_steps (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, slug TEXT NOT NULL UNIQUE, html_content TEXT NOT NULL, view_count INTEGER NOT NULL DEFAULT 0, conversion_count INTEGER NOT NULL DEFAULT 0, created_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_funnel_steps_workspace ON funnel_steps(workspace_id, created_at DESC)`
+
+    // form_submissions — leads captured from a funnel step. submitted_data
+    // stores arbitrary key/value pairs as JSON text. The (funnel_step_id,
+    // email) index supports both "all submissions for this step" and
+    // "has this email already submitted?" lookups for de-dup logic.
+    await pgSql`CREATE TABLE IF NOT EXISTS form_submissions (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, funnel_step_id TEXT NOT NULL, email TEXT, submitted_data TEXT NOT NULL DEFAULT '{}', created_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_form_submissions_step_email ON form_submissions(funnel_step_id, email)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_form_submissions_workspace ON form_submissions(workspace_id, created_at DESC)`
+
+    // === Sprint 4: Lead Gen & CRM Department (Postgres inline init) ===
+    // Extend leads_captured with B2B enrichment fields. `enrichment_status`
+    // tracks the multi-source synthesis lifecycle:
+    //   pending → enriching → completed | failed
+    // The other columns hold the merged output of the parallel enrichment
+    // sources (Brave Search + Apollo/Clearbit-style providers run in parallel).
+    await pgSql`ALTER TABLE leads_captured ADD COLUMN IF NOT EXISTS enrichment_status VARCHAR(30) DEFAULT 'pending'`
+    await pgSql`ALTER TABLE leads_captured ADD COLUMN IF NOT EXISTS company_name TEXT`
+    await pgSql`ALTER TABLE leads_captured ADD COLUMN IF NOT EXISTS company_size TEXT`
+    await pgSql`ALTER TABLE leads_captured ADD COLUMN IF NOT EXISTS estimated_revenue TEXT`
+    await pgSql`ALTER TABLE leads_captured ADD COLUMN IF NOT EXISTS industry TEXT`
+    await pgSql`ALTER TABLE leads_captured ADD COLUMN IF NOT EXISTS linkedin_url TEXT`
+    await pgSql`ALTER TABLE leads_captured ADD COLUMN IF NOT EXISTS twitter_url TEXT`
+    await pgSql`ALTER TABLE leads_captured ADD COLUMN IF NOT EXISTS tech_stack TEXT DEFAULT '[]'`
+    await pgSql`ALTER TABLE leads_captured ADD COLUMN IF NOT EXISTS enrichment_summary TEXT`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_leads_captured_workspace_enrichment ON leads_captured(workspace_id, enrichment_status)`
+
+    // lead_activities — Sprint-4 canonical column `activity_type` is added
+    // alongside the legacy `type` column for backward-compat. Existing
+    // (lead_id, created_at DESC) timeline index already exists from prior init.
+    await pgSql`ALTER TABLE lead_activities ADD COLUMN IF NOT EXISTS activity_type TEXT`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_lead_activities_workspace_type ON lead_activities(workspace_id, activity_type)`
+
+    // enrichment_logs — per-provider raw response capture for replay/audit.
+    // provider_used: 'brave_search' | 'apollo' | 'clearbit' | 'hunter' | …
+    // execution_time_ms tracks the slowest provider in a parallel race so we
+    // can A/B different combinations and prune the slow ones.
+    await pgSql`CREATE TABLE IF NOT EXISTS enrichment_logs (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, lead_id TEXT NOT NULL, provider_used VARCHAR(50) NOT NULL, execution_time_ms INTEGER, raw_response TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_enrichment_logs_lead ON enrichment_logs(lead_id, created_at DESC)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_enrichment_logs_provider ON enrichment_logs(workspace_id, provider_used, created_at DESC)`
+
+    // === Sprint 5: PR & Reputation Desk (Postgres inline init) ===
+    // PR Circuit Breaker — workspaces row carries a single canonical flag so
+    // every customer-facing dispatch route (publishing, ads, email-marketing)
+    // can short-circuit when a crisis is active. crisis_tripped_at stamps
+    // when it flipped, so the UI can surface "Crisis declared 4h ago".
+    //   clear → tripped → recovering → clear
+    await pgSql`ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS crisis_status VARCHAR(30) DEFAULT 'clear'`
+    await pgSql`ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS crisis_tripped_at TIMESTAMPTZ`
+
+    // brand_mentions — public scraped references. sentiment_score is 0.00
+    // (most negative) to 1.00 (most positive); severity_level is the
+    // human-readable bucket the scanner sets when it ingests the row
+    // (low / medium / high / critical). The composite index supports the
+    // "show all unread crisis-grade mentions" hot path.
+    await pgSql`CREATE TABLE IF NOT EXISTS brand_mentions (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, source_platform VARCHAR(50) NOT NULL, source_url TEXT, author_handle TEXT, content_text TEXT NOT NULL, sentiment_score NUMERIC(4, 2) DEFAULT 1.00, severity_level VARCHAR(20) DEFAULT 'low', status VARCHAR(30) DEFAULT 'unread', detected_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_brand_mentions_workspace_severity_status ON brand_mentions(workspace_id, severity_level, status)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_brand_mentions_workspace_recent ON brand_mentions(workspace_id, created_at DESC)`
+
+    // pr_campaigns — press release drafts that flow through the standard
+    // artifact-approval HITL gate. artifact_id links to the source artifact
+    // so assertArtifactApproved() can block journalist outreach until a
+    // human has signed off on the press copy.
+    await pgSql`CREATE TABLE IF NOT EXISTS pr_campaigns (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, artifact_id TEXT, title TEXT NOT NULL, body_content TEXT NOT NULL, status VARCHAR(30) DEFAULT 'draft', error_log TEXT, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_pr_campaigns_workspace_status ON pr_campaigns(workspace_id, status)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_pr_campaigns_artifact ON pr_campaigns(artifact_id)`
+
+    // media_contacts — journalist + outlet CRM. UNIQUE (workspace_id, email)
+    // prevents duplicate cards inside a single client account; we surface
+    // this as a clean 409 in the route layer rather than a raw DB error.
+    await pgSql`CREATE TABLE IF NOT EXISTS media_contacts (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, journalist_name TEXT NOT NULL, email VARCHAR(255), outlet_name TEXT, beat_focus TEXT, linkedin_url TEXT, twitter_url TEXT, notes TEXT, last_contacted_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE UNIQUE INDEX IF NOT EXISTS idx_media_contacts_unique ON media_contacts(workspace_id, email)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_media_contacts_workspace_beat ON media_contacts(workspace_id, beat_focus)`
+
+    // === Sprint 6: Creative Studio & Media Unification (Postgres inline init) ===
+    // media_assets — single source of truth for every generated / uploaded
+    // creative file. parent_asset_id makes this a tree: a 4:5 crop of a
+    // 1:1 master, an MP4 transcode of a WebM source, an audio clip extracted
+    // from a video — all reference the original via parent_asset_id.
+    // dimensions stores "WxH" for images (e.g. "1024x1024"); duration_seconds
+    // lives on audio/video rows. mime_type is the canonical web/* identifier.
+    await pgSql`CREATE TABLE IF NOT EXISTS media_assets (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, parent_asset_id TEXT REFERENCES media_assets(id) ON DELETE SET NULL, filename TEXT NOT NULL, url TEXT NOT NULL, asset_type VARCHAR(30) NOT NULL, mime_type VARCHAR(120), file_size INTEGER, dimensions VARCHAR(50), duration_seconds NUMERIC(10, 3), source_provider VARCHAR(50), metadata_json TEXT DEFAULT '{}', status VARCHAR(30) DEFAULT 'ready', created_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_media_assets_workspace_type ON media_assets(workspace_id, asset_type)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_media_assets_parent ON media_assets(parent_asset_id)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_media_assets_workspace_recent ON media_assets(workspace_id, created_at DESC)`
+
+    // creative_generation_jobs — async generation queue. artifact_id links
+    // the job to an artifact row so the HITL Review modal can gate publish.
+    // Lifecycle: pending → running → completed | failed | cancelled
+    // result_asset_id back-references the media_assets row produced on success.
+    await pgSql`CREATE TABLE IF NOT EXISTS creative_generation_jobs (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, artifact_id TEXT, provider VARCHAR(50) NOT NULL, model_name TEXT, prompt_text TEXT NOT NULL, negative_prompt TEXT, status VARCHAR(30) DEFAULT 'pending', result_asset_id TEXT REFERENCES media_assets(id) ON DELETE SET NULL, cost_estimate NUMERIC(10, 4) DEFAULT 0, duration_ms INTEGER, error_message TEXT, started_at TIMESTAMPTZ, completed_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_creative_jobs_workspace_status ON creative_generation_jobs(workspace_id, status)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_creative_jobs_artifact ON creative_generation_jobs(artifact_id)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_creative_jobs_workspace_recent ON creative_generation_jobs(workspace_id, created_at DESC)`
+
+    // voice_profiles — workspace's library of cloned/curated ElevenLabs / VAPI
+    // voices. UNIQUE (workspace_id, native_provider_voice_id) prevents the
+    // same provider voice from being registered twice in a workspace.
+    await pgSql`CREATE TABLE IF NOT EXISTS voice_profiles (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, voice_name TEXT NOT NULL, native_provider_voice_id TEXT NOT NULL, provider VARCHAR(50) DEFAULT 'elevenlabs', gender VARCHAR(20), accent_label TEXT, sample_url TEXT, status VARCHAR(30) DEFAULT 'active', is_default INTEGER DEFAULT 0, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE UNIQUE INDEX IF NOT EXISTS idx_voice_profiles_unique ON voice_profiles(workspace_id, native_provider_voice_id)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_voice_profiles_workspace_status ON voice_profiles(workspace_id, status)`
+
+    // === Sprint 7: Growth & Experiments (Postgres inline init) ===
+    // marketing_experiments — the test definition. target_type/target_reference_id
+    // is a polymorphic pointer ('email_campaign' / 'ad_campaign' / 'funnel_step' /
+    // 'pr_campaign' / 'creative_job') so a single experiment row can A/B-test any
+    // entity in the system. statistical_significance_threshold is the Bayesian
+    // posterior probability we require before auto-declaring a winner (default 0.95).
+    await pgSql`CREATE TABLE IF NOT EXISTS marketing_experiments (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, name TEXT NOT NULL, hypothesis TEXT, target_type VARCHAR(50) NOT NULL, target_reference_id TEXT NOT NULL, status VARCHAR(30) DEFAULT 'draft', statistical_significance_threshold NUMERIC(4, 3) DEFAULT 0.95, winner_variant_id TEXT, started_at TIMESTAMPTZ, completed_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_marketing_experiments_workspace_status ON marketing_experiments(workspace_id, status)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_marketing_experiments_target ON marketing_experiments(workspace_id, target_type, target_reference_id)`
+
+    // experiment_variants — the test arms. configuration_override_json carries
+    // the per-variant patch that gets merged into the target's base config at
+    // dispatch time (e.g. a different subject line for an email_campaign, or a
+    // different headline for an ad_creative). The composite index supports the
+    // hot path of the variant router: "give me variant X of experiment Y".
+    await pgSql`CREATE TABLE IF NOT EXISTS experiment_variants (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, experiment_id TEXT NOT NULL REFERENCES marketing_experiments(id) ON DELETE CASCADE, variant_label VARCHAR(50) NOT NULL, configuration_override_json TEXT NOT NULL DEFAULT '{}', traffic_allocation_weight INTEGER NOT NULL DEFAULT 50, impression_count INTEGER NOT NULL DEFAULT 0, conversion_count INTEGER NOT NULL DEFAULT 0, created_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_experiment_variants_lookup ON experiment_variants(experiment_id, variant_label)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_experiment_variants_workspace ON experiment_variants(workspace_id, experiment_id)`
+
+    // experiment_events — append-only event ledger. tracking_id is the
+    // deterministic hash assigned by the variant router (visitor cookie or
+    // user_id), so we can reconstruct the entire funnel per visitor without
+    // PII leakage. event_type: 'impression' | 'conversion' | 'click' | …
+    await pgSql`CREATE TABLE IF NOT EXISTS experiment_events (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, variant_id TEXT NOT NULL REFERENCES experiment_variants(id) ON DELETE CASCADE, tracking_id TEXT NOT NULL, event_type VARCHAR(50) NOT NULL, event_value NUMERIC(12, 4), metadata_json TEXT DEFAULT '{}', created_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_experiment_events_variant_type ON experiment_events(variant_id, event_type, created_at DESC)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_experiment_events_tracking ON experiment_events(tracking_id)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_experiment_events_workspace_recent ON experiment_events(workspace_id, created_at DESC)`
+
+    // === Sprint 8: Voice AI & Inbound Call Center (Postgres inline init) ===
+    // voice_agents — one row per configured AI voice agent. The composite
+    // UNIQUE (workspace_id, phone_number) prevents two agents from claiming
+    // the same trunk number inside a workspace, which is exactly the kind of
+    // double-routing bug that silently swallows inbound calls. We allow
+    // multiple agents with NULL phone_number (web/SDK-only agents) because
+    // Postgres treats NULLs as distinct in unique indexes by default.
+    await pgSql`CREATE TABLE IF NOT EXISTS voice_agents (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, voice_profile_id TEXT REFERENCES voice_profiles(id) ON DELETE SET NULL, provider VARCHAR(50) DEFAULT 'vapi', agent_name TEXT NOT NULL, phone_number TEXT, system_prompt TEXT, temperature NUMERIC(3, 2) DEFAULT 0.70, llm_model VARCHAR(60) DEFAULT 'gpt-4o', status VARCHAR(30) DEFAULT 'active', created_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE UNIQUE INDEX IF NOT EXISTS idx_voice_agents_workspace_phone ON voice_agents(workspace_id, phone_number)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_voice_agents_workspace_status ON voice_agents(workspace_id, status)`
+
+    // call_logs — append-only ledger of every inbound/outbound call. lead_id
+    // is nullable because the webhook may arrive before CRM enrichment links
+    // a phone number to a captured lead (back-fill happens in the worker).
+    // sentiment_score is numeric NULL until the post-call analysis pass writes it.
+    await pgSql`CREATE TABLE IF NOT EXISTS call_logs (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, voice_agent_id TEXT REFERENCES voice_agents(id) ON DELETE SET NULL, lead_id TEXT REFERENCES leads_captured(id) ON DELETE SET NULL, provider VARCHAR(50), direction VARCHAR(20), from_number TEXT, to_number TEXT, duration_seconds INTEGER DEFAULT 0, recording_url TEXT, transcript TEXT, summary TEXT, sentiment_score NUMERIC(4, 2), call_status VARCHAR(30) DEFAULT 'completed', action_taken TEXT, metadata_json TEXT DEFAULT '{}', created_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_call_logs_workspace_recent ON call_logs(workspace_id, created_at DESC)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_call_logs_lead ON call_logs(lead_id)`
+
+    // Hot-path CRM lookup: when the inbound webhook fires we need to resolve
+    // the caller's phone → lead_id in single-digit milliseconds so the agent
+    // can greet by name. A B-tree index on leads_captured(phone) makes the
+    // equality lookup index-only.
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_leads_captured_phone ON leads_captured(phone)`
+
+    // === Sprint 9: Agency Ops & Third-Party Connections (Postgres inline init) ===
+    // developer_tokens — Personal Access Tokens for the public Ooumph API.
+    // We store only a hash of the token (sha256 of the plaintext that we
+    // showed once at create time). The (token_hash) index is the single
+    // hot lookup the API gateway runs on every authenticated request, so
+    // it must be a plain B-tree on the hash column alone — no compound
+    // workspace filter, because the request hasn't been attributed yet.
+    // scopes_json is a serialised array of scope strings ('read:leads',
+    // 'write:campaigns', etc.); enforcing the grammar is the route's job.
+    await pgSql`CREATE TABLE IF NOT EXISTS developer_tokens (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, token_name TEXT NOT NULL, token_hash TEXT NOT NULL, scopes_json TEXT NOT NULL DEFAULT '[]', last_used_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_developer_tokens_hash ON developer_tokens(token_hash)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_developer_tokens_workspace ON developer_tokens(workspace_id)`
+
+    // webhook_subscriptions — outbound webhook fan-out registry. The event
+    // router fires whenever a domain event happens ('lead.captured',
+    // 'experiment.winner_declared', 'call.completed'…) and walks every
+    // matching row to POST the payload. The composite index makes that
+    // walk index-only: filter by (workspace_id, event_type, status='active')
+    // is the only access pattern. secret_signature is the HMAC key we sign
+    // the body with so receivers can verify authenticity.
+    await pgSql`CREATE TABLE IF NOT EXISTS webhook_subscriptions (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, target_url TEXT NOT NULL, event_type TEXT NOT NULL, secret_signature TEXT NOT NULL, status VARCHAR(30) DEFAULT 'active', created_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_webhook_subs_router ON webhook_subscriptions(workspace_id, event_type, status)`
+    // Forensic columns for the dispatcher's 3x retry circuit. last_error_log
+    // holds the diagnosis blob (JSON-encoded), last_attempt_at the wall-clock
+    // moment we last tried delivery, last_attempt_status the HTTP code or
+    // 'network_error'/'timeout'. Additive so re-running this block is safe.
+    await pgSql`ALTER TABLE webhook_subscriptions ADD COLUMN IF NOT EXISTS last_error_log TEXT`
+    await pgSql`ALTER TABLE webhook_subscriptions ADD COLUMN IF NOT EXISTS last_attempt_at TIMESTAMPTZ`
+    await pgSql`ALTER TABLE webhook_subscriptions ADD COLUMN IF NOT EXISTS last_attempt_status VARCHAR(30)`
+
+    // integration_connections — one row per third-party integration card
+    // (Stripe, HubSpot, Slack, Notion, Salesforce…) the workspace has
+    // connected. credentials_encrypted is the AES-256-GCM blob produced by
+    // lib/secrets.ts — we never store plaintext keys. The composite UNIQUE
+    // (workspace_id, provider_slug) makes the "Connect Stripe" button
+    // idempotent: re-clicking it updates the existing row rather than
+    // creating a duplicate card on the dashboard.
+    await pgSql`CREATE TABLE IF NOT EXISTS integration_connections (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, provider_slug TEXT NOT NULL, credentials_encrypted TEXT, status VARCHAR(30) DEFAULT 'connected', updated_at TIMESTAMPTZ DEFAULT NOW(), created_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE UNIQUE INDEX IF NOT EXISTS idx_integration_connections_unique ON integration_connections(workspace_id, provider_slug)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_integration_connections_workspace_status ON integration_connections(workspace_id, status)`
+
+    // === Sprint 10: System Polish & Performance Hardening (Postgres inline init) ===
+    // system_performance_audits — append-only telemetry. Every meaningful
+    // server operation (cron run, agent invocation, external API call) writes
+    // one row carrying its wall-clock duration_ms, terminal status
+    // ('ok' / 'error' / 'timeout' / 'rate_limited'), and an optional
+    // error_captured snippet. The composite index covers the only access
+    // pattern: scoped to a workspace, grouped by operation_name, ordered by
+    // recency — exactly what the /dashboard/system-health graphs scan.
+    await pgSql`CREATE TABLE IF NOT EXISTS system_performance_audits (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, operation_name TEXT NOT NULL, duration_ms INTEGER NOT NULL DEFAULT 0, status VARCHAR(30) NOT NULL DEFAULT 'ok', error_captured TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_perf_audits_workspace_op_recent ON system_performance_audits(workspace_id, operation_name, created_at DESC)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_perf_audits_status ON system_performance_audits(workspace_id, status, created_at DESC)`
+
+    // workspace_retention_policies — per-tenant log-rotation rules. One row
+    // per (workspace_id, stream_target) such as 'call_logs', 'agent_runs',
+    // 'experiment_events', 'notifications'. The retention cron walks this
+    // table and either purges (DELETE) or archives (move to cold storage)
+    // based on action_disposition. The composite UNIQUE makes the upsert
+    // semantics clean: editing a policy never duplicates a stream.
+    await pgSql`CREATE TABLE IF NOT EXISTS workspace_retention_policies (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, stream_target TEXT NOT NULL, retention_days INTEGER NOT NULL DEFAULT 90, action_disposition VARCHAR(30) NOT NULL DEFAULT 'purge', updated_at TIMESTAMPTZ DEFAULT NOW(), created_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE UNIQUE INDEX IF NOT EXISTS idx_retention_policies_unique ON workspace_retention_policies(workspace_id, stream_target)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_retention_policies_workspace ON workspace_retention_policies(workspace_id)`
+
+    // Dual-Key Budget Lock — per-workspace spend caps. Stored on workspaces
+    // table so every ad-spend check can pull the lock value with the same
+    // row that already holds workspace identity (avoids a second JOIN).
+    // Values are in lowest currency denomination (cents). Defaults: $500/day
+    // hard cap, $250/day alert threshold. The dispatcher must verify
+    // *today's accumulated spend + this campaign's daily_budget*
+    // ≤ hard_max_daily_spend before activating any campaign.
+    await pgSql`ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS hard_max_daily_spend INTEGER NOT NULL DEFAULT 50000`
+    await pgSql`ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS alert_threshold_budget INTEGER NOT NULL DEFAULT 25000`
+    // Workspace-level UTM template (resolved at dispatch time with reserved
+    // tokens like {platform}, {campaign_slug}, {creative_id}). Per-campaign
+    // override lives in ad_campaigns.utm_override.
+    await pgSql`ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS utm_template TEXT`
   }
 
   const rows = await pgSql(strings, ...values) as Record<string, unknown>[]
@@ -749,6 +1099,238 @@ function initSQLiteSync(db: import('better-sqlite3').Database) {
     'CREATE INDEX IF NOT EXISTS idx_project_tasks_initiative ON project_tasks(initiative_run_id, task_index ASC)',
     'CREATE INDEX IF NOT EXISTS idx_project_tasks_workspace ON project_tasks(workspace_id, created_at DESC)',
     'CREATE INDEX IF NOT EXISTS idx_project_tasks_status ON project_tasks(status, created_at ASC)',
+    // === Sprint 1: Email Department schema ===
+    // ALTER additions to email_campaigns: artifact_id links to the AI-generated
+    // source artifact (powering the assertArtifactApproved safety gate),
+    // scheduled_for + provider tracking + counters for bounce/unsubscribe/fail.
+    // The try/catch wrapper around db.exec() makes each ALTER idempotent
+    // (SQLite throws "duplicate column name" if it already exists — we swallow).
+    'ALTER TABLE email_campaigns ADD COLUMN artifact_id TEXT',
+    'ALTER TABLE email_campaigns ADD COLUMN list_id TEXT',
+    'ALTER TABLE email_campaigns ADD COLUMN scheduled_for TEXT',
+    'ALTER TABLE email_campaigns ADD COLUMN from_name TEXT',
+    'ALTER TABLE email_campaigns ADD COLUMN from_email TEXT',
+    'ALTER TABLE email_campaigns ADD COLUMN reply_to TEXT',
+    'ALTER TABLE email_campaigns ADD COLUMN preview_text TEXT',
+    'ALTER TABLE email_campaigns ADD COLUMN provider TEXT DEFAULT \'resend\'',
+    'ALTER TABLE email_campaigns ADD COLUMN provider_campaign_id TEXT',
+    'ALTER TABLE email_campaigns ADD COLUMN bounce_count INTEGER DEFAULT 0',
+    'ALTER TABLE email_campaigns ADD COLUMN unsubscribe_count INTEGER DEFAULT 0',
+    'ALTER TABLE email_campaigns ADD COLUMN failed_count INTEGER DEFAULT 0',
+    'ALTER TABLE email_campaigns ADD COLUMN error_message TEXT',
+    'ALTER TABLE email_campaigns ADD COLUMN updated_at TEXT DEFAULT (datetime(\'now\'))',
+    'ALTER TABLE email_campaigns ADD COLUMN created_by TEXT',
+    'CREATE INDEX IF NOT EXISTS idx_email_campaigns_artifact ON email_campaigns(artifact_id)',
+    'CREATE INDEX IF NOT EXISTS idx_email_campaigns_status_schedule ON email_campaigns(status, scheduled_for)',
+    'CREATE INDEX IF NOT EXISTS idx_email_campaigns_workspace ON email_campaigns(workspace_id, created_at DESC)',
+    // email_subscribers extensibility — Klaviyo-level segmentation needs first/
+    // last name split, phone, consent tracking (GDPR/CAN-SPAM), bounce
+    // accounting, engagement recency, custom_fields for arbitrary attributes.
+    'ALTER TABLE email_subscribers ADD COLUMN phone TEXT',
+    'ALTER TABLE email_subscribers ADD COLUMN first_name TEXT',
+    'ALTER TABLE email_subscribers ADD COLUMN last_name TEXT',
+    'ALTER TABLE email_subscribers ADD COLUMN unsubscribed_at TEXT',
+    'ALTER TABLE email_subscribers ADD COLUMN bounce_count INTEGER DEFAULT 0',
+    'ALTER TABLE email_subscribers ADD COLUMN last_engaged_at TEXT',
+    'ALTER TABLE email_subscribers ADD COLUMN source TEXT',
+    'ALTER TABLE email_subscribers ADD COLUMN custom_fields TEXT DEFAULT \'{}\'',
+    'ALTER TABLE email_subscribers ADD COLUMN consent_given_at TEXT',
+    'ALTER TABLE email_subscribers ADD COLUMN consent_source TEXT',
+    'ALTER TABLE email_subscribers ADD COLUMN updated_at TEXT DEFAULT (datetime(\'now\'))',
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_email_subscribers_workspace_email ON email_subscribers(workspace_id, email)',
+    'CREATE INDEX IF NOT EXISTS idx_email_subscribers_status ON email_subscribers(workspace_id, status)',
+    // Contact lists — addressable audience segments. A subscriber may belong
+    // to multiple lists via the email_list_members junction table.
+    'CREATE TABLE IF NOT EXISTS email_lists (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT, status TEXT DEFAULT \'active\', subscriber_count INTEGER DEFAULT 0, default_from_name TEXT, default_from_email TEXT, double_opt_in INTEGER DEFAULT 0, created_at TEXT DEFAULT (datetime(\'now\')), updated_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE INDEX IF NOT EXISTS idx_email_lists_workspace ON email_lists(workspace_id, status)',
+    'CREATE TABLE IF NOT EXISTS email_list_members (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, list_id TEXT NOT NULL, subscriber_id TEXT NOT NULL, status TEXT DEFAULT \'subscribed\', added_at TEXT DEFAULT (datetime(\'now\')), unsubscribed_at TEXT)',
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_email_list_members_unique ON email_list_members(list_id, subscriber_id)',
+    'CREATE INDEX IF NOT EXISTS idx_email_list_members_subscriber ON email_list_members(subscriber_id)',
+    'CREATE INDEX IF NOT EXISTS idx_email_list_members_workspace ON email_list_members(workspace_id, status)',
+    // Per-recipient delivery ledger — gives us granular open/click/bounce
+    // tracking and is the only place a real provider message_id is persisted
+    // (so webhook callbacks from Resend/Postmark can correlate back).
+    'CREATE TABLE IF NOT EXISTS email_campaign_sends (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, campaign_id TEXT NOT NULL, subscriber_id TEXT, email_address TEXT NOT NULL, status TEXT DEFAULT \'queued\', external_message_id TEXT, error_message TEXT, sent_at TEXT, opened_at TEXT, clicked_at TEXT, bounced_at TEXT, created_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE INDEX IF NOT EXISTS idx_email_campaign_sends_campaign ON email_campaign_sends(campaign_id, status)',
+    'CREATE INDEX IF NOT EXISTS idx_email_campaign_sends_subscriber ON email_campaign_sends(subscriber_id)',
+    'CREATE INDEX IF NOT EXISTS idx_email_campaign_sends_workspace ON email_campaign_sends(workspace_id, created_at DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_email_campaign_sends_external ON email_campaign_sends(external_message_id)',
+    // === Sprint 2: Publishing & Social schema ===
+    // scheduled_content gets Sprint-2 canonical columns; existing (platform /
+    // content / scheduled_for) stay for back-compat. The wrapping try/catch
+    // around db.exec() in this migration loop makes each ALTER idempotent —
+    // SQLite throws "duplicate column name" if it already exists and we swallow.
+    'ALTER TABLE scheduled_content ADD COLUMN channel TEXT',
+    'ALTER TABLE scheduled_content ADD COLUMN content_body TEXT',
+    'ALTER TABLE scheduled_content ADD COLUMN scheduled_at TEXT',
+    'ALTER TABLE scheduled_content ADD COLUMN retry_count INTEGER DEFAULT 0',
+    'ALTER TABLE scheduled_content ADD COLUMN updated_at TEXT DEFAULT (datetime(\'now\'))',
+    'CREATE INDEX IF NOT EXISTS idx_scheduled_content_workspace_schedule ON scheduled_content(workspace_id, scheduled_at)',
+    'CREATE INDEX IF NOT EXISTS idx_scheduled_content_status_schedule ON scheduled_content(status, scheduled_at)',
+    'CREATE INDEX IF NOT EXISTS idx_scheduled_content_artifact ON scheduled_content(artifact_id)',
+    // published_content — link back to the scheduled_content row, plus
+    // Sprint-2 canonical fields (channel, native_post_id, permalink).
+    'ALTER TABLE published_content ADD COLUMN scheduled_content_id TEXT',
+    'ALTER TABLE published_content ADD COLUMN channel TEXT',
+    'ALTER TABLE published_content ADD COLUMN native_post_id TEXT',
+    'ALTER TABLE published_content ADD COLUMN permalink TEXT',
+    'CREATE INDEX IF NOT EXISTS idx_published_content_workspace ON published_content(workspace_id, published_at DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_published_content_scheduled ON published_content(scheduled_content_id)',
+    'CREATE INDEX IF NOT EXISTS idx_published_content_channel ON published_content(workspace_id, channel)',
+    // OAuth tokens — encrypted credentials per (workspace, platform). Access
+    // and refresh tokens are encrypted via lib/secrets.ts before storage.
+    'CREATE TABLE IF NOT EXISTS oauth_tokens (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, platform TEXT NOT NULL, encrypted_access_token TEXT NOT NULL, encrypted_refresh_token TEXT, expires_at TEXT, scope TEXT, account_id TEXT, account_label TEXT, status TEXT DEFAULT \'active\', last_refreshed_at TEXT, created_at TEXT DEFAULT (datetime(\'now\')), updated_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_oauth_tokens_unique ON oauth_tokens(workspace_id, platform)',
+    'CREATE INDEX IF NOT EXISTS idx_oauth_tokens_status ON oauth_tokens(status, expires_at)',
+    // Tracked links — for the URL shortener / analytics redirector (/api/l/:slug)
+    'CREATE TABLE IF NOT EXISTS tracked_links (id TEXT PRIMARY KEY, slug TEXT NOT NULL UNIQUE, workspace_id TEXT NOT NULL, original_url TEXT NOT NULL, scheduled_content_id TEXT, published_content_id TEXT, channel TEXT, campaign_id TEXT, click_count INTEGER DEFAULT 0, last_clicked_at TEXT, status TEXT DEFAULT \'active\', created_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE INDEX IF NOT EXISTS idx_tracked_links_workspace ON tracked_links(workspace_id, created_at DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_tracked_links_scheduled ON tracked_links(scheduled_content_id)',
+    'CREATE INDEX IF NOT EXISTS idx_tracked_links_channel ON tracked_links(workspace_id, channel)',
+    'CREATE TABLE IF NOT EXISTS link_clicks (id TEXT PRIMARY KEY, slug TEXT NOT NULL, workspace_id TEXT NOT NULL, channel TEXT, referrer TEXT, user_agent TEXT, country TEXT, clicked_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE INDEX IF NOT EXISTS idx_link_clicks_slug ON link_clicks(slug, clicked_at DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_link_clicks_workspace ON link_clicks(workspace_id, clicked_at DESC)',
+    // === Sprint 3: Paid Acquisition Department ===
+    // ad_campaigns — canonical paid campaign rows
+    'CREATE TABLE IF NOT EXISTS ad_campaigns (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, platform TEXT NOT NULL, native_campaign_id TEXT, name TEXT NOT NULL, daily_budget INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT \'draft\', error_log TEXT, utm_override TEXT, created_at TEXT DEFAULT (datetime(\'now\')))',
+    // Upgrade path for installs that ran the pre-amendment Sprint-3 Commit 1.
+    // try/catch wrapper around db.exec() swallows the "duplicate column" error
+    // on fresh installs where the CREATE above already included the column.
+    'ALTER TABLE ad_campaigns ADD COLUMN utm_override TEXT',
+    'CREATE INDEX IF NOT EXISTS idx_ad_campaigns_workspace_status ON ad_campaigns(workspace_id, status)',
+    // ad_creatives — individual creatives in a campaign (artifact_id is the HITL safety gate)
+    'CREATE TABLE IF NOT EXISTS ad_creatives (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, ad_campaign_id TEXT NOT NULL, artifact_id TEXT, headline TEXT NOT NULL, body_copy TEXT NOT NULL, media_url TEXT, destination_url TEXT NOT NULL, created_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE INDEX IF NOT EXISTS idx_ad_creatives_artifact ON ad_creatives(artifact_id)',
+    'CREATE INDEX IF NOT EXISTS idx_ad_creatives_campaign ON ad_creatives(ad_campaign_id)',
+    // funnel_steps — landing / thank-you pages served at /lp/[slug]
+    'CREATE TABLE IF NOT EXISTS funnel_steps (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, slug TEXT NOT NULL UNIQUE, html_content TEXT NOT NULL, view_count INTEGER NOT NULL DEFAULT 0, conversion_count INTEGER NOT NULL DEFAULT 0, created_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE INDEX IF NOT EXISTS idx_funnel_steps_workspace ON funnel_steps(workspace_id, created_at DESC)',
+    // form_submissions — leads captured from a funnel_step
+    'CREATE TABLE IF NOT EXISTS form_submissions (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, funnel_step_id TEXT NOT NULL, email TEXT, submitted_data TEXT NOT NULL DEFAULT \'{}\', created_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE INDEX IF NOT EXISTS idx_form_submissions_step_email ON form_submissions(funnel_step_id, email)',
+    'CREATE INDEX IF NOT EXISTS idx_form_submissions_workspace ON form_submissions(workspace_id, created_at DESC)',
+    // === Sprint 4: Lead Gen & CRM Department ===
+    // Each ALTER is wrapped in the migration loop's try/catch — "duplicate
+    // column name" errors are swallowed so re-running these is safe.
+    'ALTER TABLE leads_captured ADD COLUMN enrichment_status TEXT DEFAULT \'pending\'',
+    'ALTER TABLE leads_captured ADD COLUMN company_name TEXT',
+    'ALTER TABLE leads_captured ADD COLUMN company_size TEXT',
+    'ALTER TABLE leads_captured ADD COLUMN estimated_revenue TEXT',
+    'ALTER TABLE leads_captured ADD COLUMN industry TEXT',
+    'ALTER TABLE leads_captured ADD COLUMN linkedin_url TEXT',
+    'ALTER TABLE leads_captured ADD COLUMN twitter_url TEXT',
+    'ALTER TABLE leads_captured ADD COLUMN tech_stack TEXT DEFAULT \'[]\'',
+    'ALTER TABLE leads_captured ADD COLUMN enrichment_summary TEXT',
+    'CREATE INDEX IF NOT EXISTS idx_leads_captured_workspace_enrichment ON leads_captured(workspace_id, enrichment_status)',
+    // Sprint-4 canonical activity_type alongside legacy type column
+    'ALTER TABLE lead_activities ADD COLUMN activity_type TEXT',
+    'CREATE INDEX IF NOT EXISTS idx_lead_activities_workspace_type ON lead_activities(workspace_id, activity_type)',
+    // enrichment_logs — per-provider raw response capture for replay/audit
+    'CREATE TABLE IF NOT EXISTS enrichment_logs (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, lead_id TEXT NOT NULL, provider_used TEXT NOT NULL, execution_time_ms INTEGER, raw_response TEXT, created_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE INDEX IF NOT EXISTS idx_enrichment_logs_lead ON enrichment_logs(lead_id, created_at DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_enrichment_logs_provider ON enrichment_logs(workspace_id, provider_used, created_at DESC)',
+    // === Sprint 5: PR & Reputation Desk ===
+    // PR Circuit Breaker — single workspace-level kill switch
+    'ALTER TABLE workspaces ADD COLUMN crisis_status TEXT DEFAULT \'clear\'',
+    'ALTER TABLE workspaces ADD COLUMN crisis_tripped_at TEXT',
+    // brand_mentions — public scraped references with severity + status routing
+    'CREATE TABLE IF NOT EXISTS brand_mentions (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, source_platform TEXT NOT NULL, source_url TEXT, author_handle TEXT, content_text TEXT NOT NULL, sentiment_score REAL DEFAULT 1.00, severity_level TEXT DEFAULT \'low\', status TEXT DEFAULT \'unread\', detected_at TEXT, created_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE INDEX IF NOT EXISTS idx_brand_mentions_workspace_severity_status ON brand_mentions(workspace_id, severity_level, status)',
+    'CREATE INDEX IF NOT EXISTS idx_brand_mentions_workspace_recent ON brand_mentions(workspace_id, created_at DESC)',
+    // pr_campaigns — press release drafts gated by the standard artifact_id HITL hook
+    'CREATE TABLE IF NOT EXISTS pr_campaigns (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, artifact_id TEXT, title TEXT NOT NULL, body_content TEXT NOT NULL, status TEXT DEFAULT \'draft\', error_log TEXT, created_at TEXT DEFAULT (datetime(\'now\')), updated_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE INDEX IF NOT EXISTS idx_pr_campaigns_workspace_status ON pr_campaigns(workspace_id, status)',
+    'CREATE INDEX IF NOT EXISTS idx_pr_campaigns_artifact ON pr_campaigns(artifact_id)',
+    // media_contacts — journalist CRM with workspace-scoped UNIQUE(email)
+    'CREATE TABLE IF NOT EXISTS media_contacts (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, journalist_name TEXT NOT NULL, email TEXT, outlet_name TEXT, beat_focus TEXT, linkedin_url TEXT, twitter_url TEXT, notes TEXT, last_contacted_at TEXT, created_at TEXT DEFAULT (datetime(\'now\')), updated_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_media_contacts_unique ON media_contacts(workspace_id, email)',
+    'CREATE INDEX IF NOT EXISTS idx_media_contacts_workspace_beat ON media_contacts(workspace_id, beat_focus)',
+    // === Sprint 6: Creative Studio & Media Unification ===
+    // SQLite doesn't enforce REFERENCES by default but accepts the syntax — kept for parity.
+    // The parent_asset_id self-reference enables the asset variation tree.
+    'CREATE TABLE IF NOT EXISTS media_assets (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, parent_asset_id TEXT REFERENCES media_assets(id) ON DELETE SET NULL, filename TEXT NOT NULL, url TEXT NOT NULL, asset_type TEXT NOT NULL, mime_type TEXT, file_size INTEGER, dimensions TEXT, duration_seconds REAL, source_provider TEXT, metadata_json TEXT DEFAULT \'{}\', status TEXT DEFAULT \'ready\', created_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE INDEX IF NOT EXISTS idx_media_assets_workspace_type ON media_assets(workspace_id, asset_type)',
+    'CREATE INDEX IF NOT EXISTS idx_media_assets_parent ON media_assets(parent_asset_id)',
+    'CREATE INDEX IF NOT EXISTS idx_media_assets_workspace_recent ON media_assets(workspace_id, created_at DESC)',
+    // creative_generation_jobs — async generation queue gated by artifact HITL
+    'CREATE TABLE IF NOT EXISTS creative_generation_jobs (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, artifact_id TEXT, provider TEXT NOT NULL, model_name TEXT, prompt_text TEXT NOT NULL, negative_prompt TEXT, status TEXT DEFAULT \'pending\', result_asset_id TEXT REFERENCES media_assets(id) ON DELETE SET NULL, cost_estimate REAL DEFAULT 0, duration_ms INTEGER, error_message TEXT, started_at TEXT, completed_at TEXT, created_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE INDEX IF NOT EXISTS idx_creative_jobs_workspace_status ON creative_generation_jobs(workspace_id, status)',
+    'CREATE INDEX IF NOT EXISTS idx_creative_jobs_artifact ON creative_generation_jobs(artifact_id)',
+    'CREATE INDEX IF NOT EXISTS idx_creative_jobs_workspace_recent ON creative_generation_jobs(workspace_id, created_at DESC)',
+    // voice_profiles — UNIQUE (workspace_id, native_provider_voice_id) blocks dup registration
+    'CREATE TABLE IF NOT EXISTS voice_profiles (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, voice_name TEXT NOT NULL, native_provider_voice_id TEXT NOT NULL, provider TEXT DEFAULT \'elevenlabs\', gender TEXT, accent_label TEXT, sample_url TEXT, status TEXT DEFAULT \'active\', is_default INTEGER DEFAULT 0, created_at TEXT DEFAULT (datetime(\'now\')), updated_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_voice_profiles_unique ON voice_profiles(workspace_id, native_provider_voice_id)',
+    'CREATE INDEX IF NOT EXISTS idx_voice_profiles_workspace_status ON voice_profiles(workspace_id, status)',
+    // === Sprint 7: Growth & Experiments ===
+    // marketing_experiments — polymorphic test definition (any target_type)
+    'CREATE TABLE IF NOT EXISTS marketing_experiments (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, name TEXT NOT NULL, hypothesis TEXT, target_type TEXT NOT NULL, target_reference_id TEXT NOT NULL, status TEXT DEFAULT \'draft\', statistical_significance_threshold REAL DEFAULT 0.95, winner_variant_id TEXT, started_at TEXT, completed_at TEXT, created_at TEXT DEFAULT (datetime(\'now\')), updated_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE INDEX IF NOT EXISTS idx_marketing_experiments_workspace_status ON marketing_experiments(workspace_id, status)',
+    'CREATE INDEX IF NOT EXISTS idx_marketing_experiments_target ON marketing_experiments(workspace_id, target_type, target_reference_id)',
+    // experiment_variants — test arms with override JSON + denormalised tally counters
+    'CREATE TABLE IF NOT EXISTS experiment_variants (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, experiment_id TEXT NOT NULL REFERENCES marketing_experiments(id) ON DELETE CASCADE, variant_label TEXT NOT NULL, configuration_override_json TEXT NOT NULL DEFAULT \'{}\', traffic_allocation_weight INTEGER NOT NULL DEFAULT 50, impression_count INTEGER NOT NULL DEFAULT 0, conversion_count INTEGER NOT NULL DEFAULT 0, created_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE INDEX IF NOT EXISTS idx_experiment_variants_lookup ON experiment_variants(experiment_id, variant_label)',
+    'CREATE INDEX IF NOT EXISTS idx_experiment_variants_workspace ON experiment_variants(workspace_id, experiment_id)',
+    // experiment_events — append-only ledger with deterministic tracking_id
+    'CREATE TABLE IF NOT EXISTS experiment_events (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, variant_id TEXT NOT NULL REFERENCES experiment_variants(id) ON DELETE CASCADE, tracking_id TEXT NOT NULL, event_type TEXT NOT NULL, event_value REAL, metadata_json TEXT DEFAULT \'{}\', created_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE INDEX IF NOT EXISTS idx_experiment_events_variant_type ON experiment_events(variant_id, event_type, created_at DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_experiment_events_tracking ON experiment_events(tracking_id)',
+    'CREATE INDEX IF NOT EXISTS idx_experiment_events_workspace_recent ON experiment_events(workspace_id, created_at DESC)',
+    // === Sprint 8: Voice AI & Inbound Call Center (SQLite local-dev path) ===
+    // voice_agents — composite UNIQUE (workspace_id, phone_number) blocks
+    // dual trunk assignment within a workspace. SQLite (unlike Postgres) treats
+    // NULL as equal in unique indexes, so two NULL-phone agents would collide.
+    // We don't enforce a phone in dev; relax the constraint by NOT marking
+    // phone_number NOT NULL — and rely on the app layer to refuse duplicate
+    // NON-NULL pairs the same way the Postgres UNIQUE does in prod.
+    'CREATE TABLE IF NOT EXISTS voice_agents (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, voice_profile_id TEXT REFERENCES voice_profiles(id) ON DELETE SET NULL, provider TEXT DEFAULT \'vapi\', agent_name TEXT NOT NULL, phone_number TEXT, system_prompt TEXT, temperature REAL DEFAULT 0.70, llm_model TEXT DEFAULT \'gpt-4o\', status TEXT DEFAULT \'active\', created_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_voice_agents_workspace_phone ON voice_agents(workspace_id, phone_number)',
+    'CREATE INDEX IF NOT EXISTS idx_voice_agents_workspace_status ON voice_agents(workspace_id, status)',
+    // call_logs — append-only ledger. Hot path is the chronological feed
+    // (workspace_id, created_at DESC); the per-lead history subview uses
+    // lead_id. duration_seconds defaults to 0 so partial webhook payloads
+    // (call started but never ended) still satisfy NOT NULL semantics.
+    'CREATE TABLE IF NOT EXISTS call_logs (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, voice_agent_id TEXT REFERENCES voice_agents(id) ON DELETE SET NULL, lead_id TEXT REFERENCES leads_captured(id) ON DELETE SET NULL, provider TEXT, direction TEXT, from_number TEXT, to_number TEXT, duration_seconds INTEGER DEFAULT 0, recording_url TEXT, transcript TEXT, summary TEXT, sentiment_score REAL, call_status TEXT DEFAULT \'completed\', action_taken TEXT, metadata_json TEXT DEFAULT \'{}\', created_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE INDEX IF NOT EXISTS idx_call_logs_workspace_recent ON call_logs(workspace_id, created_at DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_call_logs_lead ON call_logs(lead_id)',
+    // CRM phone-lookup hot path (inbound webhook resolution → lead_id).
+    'CREATE INDEX IF NOT EXISTS idx_leads_captured_phone ON leads_captured(phone)',
+    // === Sprint 9: Agency Ops & Third-Party Connections (SQLite local-dev path) ===
+    // developer_tokens — only the sha256 hash is stored; plaintext shown once.
+    'CREATE TABLE IF NOT EXISTS developer_tokens (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, token_name TEXT NOT NULL, token_hash TEXT NOT NULL, scopes_json TEXT NOT NULL DEFAULT \'[]\', last_used_at TEXT, created_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE INDEX IF NOT EXISTS idx_developer_tokens_hash ON developer_tokens(token_hash)',
+    'CREATE INDEX IF NOT EXISTS idx_developer_tokens_workspace ON developer_tokens(workspace_id)',
+    // webhook_subscriptions — outbound fan-out registry. The (workspace_id,
+    // event_type, status) composite covers the dispatcher's only access pattern.
+    'CREATE TABLE IF NOT EXISTS webhook_subscriptions (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, target_url TEXT NOT NULL, event_type TEXT NOT NULL, secret_signature TEXT NOT NULL, status TEXT DEFAULT \'active\', created_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE INDEX IF NOT EXISTS idx_webhook_subs_router ON webhook_subscriptions(workspace_id, event_type, status)',
+    // Forensic columns — additive so re-running the migration is idempotent.
+    'ALTER TABLE webhook_subscriptions ADD COLUMN last_error_log TEXT',
+    'ALTER TABLE webhook_subscriptions ADD COLUMN last_attempt_at TEXT',
+    'ALTER TABLE webhook_subscriptions ADD COLUMN last_attempt_status TEXT',
+    // integration_connections — UNIQUE (workspace_id, provider_slug) makes
+    // the "Connect Stripe" button idempotent. credentials_encrypted is the
+    // AES-256-GCM blob from lib/secrets.ts — never plaintext.
+    'CREATE TABLE IF NOT EXISTS integration_connections (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, provider_slug TEXT NOT NULL, credentials_encrypted TEXT, status TEXT DEFAULT \'connected\', updated_at TEXT DEFAULT (datetime(\'now\')), created_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_integration_connections_unique ON integration_connections(workspace_id, provider_slug)',
+    'CREATE INDEX IF NOT EXISTS idx_integration_connections_workspace_status ON integration_connections(workspace_id, status)',
+    // === Sprint 10: System Polish & Performance Hardening (SQLite local-dev path) ===
+    // system_performance_audits — append-only telemetry for /dashboard/system-health.
+    // (workspace_id, operation_name, created_at DESC) is the only access pattern.
+    'CREATE TABLE IF NOT EXISTS system_performance_audits (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, operation_name TEXT NOT NULL, duration_ms INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT \'ok\', error_captured TEXT, created_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE INDEX IF NOT EXISTS idx_perf_audits_workspace_op_recent ON system_performance_audits(workspace_id, operation_name, created_at DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_perf_audits_status ON system_performance_audits(workspace_id, status, created_at DESC)',
+    // workspace_retention_policies — per-tenant log-rotation rules. UNIQUE
+    // (workspace_id, stream_target) makes the upsert path collision-free
+    // when the settings page edits a policy in place.
+    'CREATE TABLE IF NOT EXISTS workspace_retention_policies (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, stream_target TEXT NOT NULL, retention_days INTEGER NOT NULL DEFAULT 90, action_disposition TEXT NOT NULL DEFAULT \'purge\', updated_at TEXT DEFAULT (datetime(\'now\')), created_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_retention_policies_unique ON workspace_retention_policies(workspace_id, stream_target)',
+    'CREATE INDEX IF NOT EXISTS idx_retention_policies_workspace ON workspace_retention_policies(workspace_id)',
+    // Dual-Key Budget Lock — values stored as cents on the workspaces row
+    'ALTER TABLE workspaces ADD COLUMN hard_max_daily_spend INTEGER NOT NULL DEFAULT 50000',
+    'ALTER TABLE workspaces ADD COLUMN alert_threshold_budget INTEGER NOT NULL DEFAULT 25000',
+    // Workspace-level UTM template (e.g. "utm_source={platform}&utm_medium=cpc&utm_campaign={campaign_slug}").
+    // Wrapped in try/catch by the migration loop — safe to run twice.
+    'ALTER TABLE workspaces ADD COLUMN utm_template TEXT',
   ]
   for (const m of migrations) {
     try { db.exec(m) } catch { /* column already exists */ }
@@ -848,5 +1430,173 @@ export async function initializeDatabase() {
   await pgSql`CREATE INDEX IF NOT EXISTS idx_project_tasks_initiative ON project_tasks(initiative_run_id, task_index ASC)`
   await pgSql`CREATE INDEX IF NOT EXISTS idx_project_tasks_workspace ON project_tasks(workspace_id, created_at DESC)`
   await pgSql`CREATE INDEX IF NOT EXISTS idx_project_tasks_status ON project_tasks(status, created_at ASC)`
+  // === Sprint 1: Email Department schema (Postgres standalone init) ===
+  await pgSql`ALTER TABLE email_campaigns ADD COLUMN IF NOT EXISTS artifact_id TEXT`
+  await pgSql`ALTER TABLE email_campaigns ADD COLUMN IF NOT EXISTS list_id TEXT`
+  await pgSql`ALTER TABLE email_campaigns ADD COLUMN IF NOT EXISTS scheduled_for TIMESTAMPTZ`
+  await pgSql`ALTER TABLE email_campaigns ADD COLUMN IF NOT EXISTS from_name TEXT`
+  await pgSql`ALTER TABLE email_campaigns ADD COLUMN IF NOT EXISTS from_email TEXT`
+  await pgSql`ALTER TABLE email_campaigns ADD COLUMN IF NOT EXISTS reply_to TEXT`
+  await pgSql`ALTER TABLE email_campaigns ADD COLUMN IF NOT EXISTS preview_text TEXT`
+  await pgSql`ALTER TABLE email_campaigns ADD COLUMN IF NOT EXISTS provider VARCHAR(50) DEFAULT 'resend'`
+  await pgSql`ALTER TABLE email_campaigns ADD COLUMN IF NOT EXISTS provider_campaign_id TEXT`
+  await pgSql`ALTER TABLE email_campaigns ADD COLUMN IF NOT EXISTS bounce_count INTEGER DEFAULT 0`
+  await pgSql`ALTER TABLE email_campaigns ADD COLUMN IF NOT EXISTS unsubscribe_count INTEGER DEFAULT 0`
+  await pgSql`ALTER TABLE email_campaigns ADD COLUMN IF NOT EXISTS failed_count INTEGER DEFAULT 0`
+  await pgSql`ALTER TABLE email_campaigns ADD COLUMN IF NOT EXISTS error_message TEXT`
+  await pgSql`ALTER TABLE email_campaigns ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()`
+  await pgSql`ALTER TABLE email_campaigns ADD COLUMN IF NOT EXISTS created_by TEXT`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_email_campaigns_artifact ON email_campaigns(artifact_id)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_email_campaigns_status_schedule ON email_campaigns(status, scheduled_for)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_email_campaigns_workspace ON email_campaigns(workspace_id, created_at DESC)`
+
+  await pgSql`ALTER TABLE email_subscribers ADD COLUMN IF NOT EXISTS phone VARCHAR(50)`
+  await pgSql`ALTER TABLE email_subscribers ADD COLUMN IF NOT EXISTS first_name TEXT`
+  await pgSql`ALTER TABLE email_subscribers ADD COLUMN IF NOT EXISTS last_name TEXT`
+  await pgSql`ALTER TABLE email_subscribers ADD COLUMN IF NOT EXISTS unsubscribed_at TIMESTAMPTZ`
+  await pgSql`ALTER TABLE email_subscribers ADD COLUMN IF NOT EXISTS bounce_count INTEGER DEFAULT 0`
+  await pgSql`ALTER TABLE email_subscribers ADD COLUMN IF NOT EXISTS last_engaged_at TIMESTAMPTZ`
+  await pgSql`ALTER TABLE email_subscribers ADD COLUMN IF NOT EXISTS source VARCHAR(100)`
+  await pgSql`ALTER TABLE email_subscribers ADD COLUMN IF NOT EXISTS custom_fields TEXT DEFAULT '{}'`
+  await pgSql`ALTER TABLE email_subscribers ADD COLUMN IF NOT EXISTS consent_given_at TIMESTAMPTZ`
+  await pgSql`ALTER TABLE email_subscribers ADD COLUMN IF NOT EXISTS consent_source VARCHAR(100)`
+  await pgSql`ALTER TABLE email_subscribers ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()`
+  await pgSql`CREATE UNIQUE INDEX IF NOT EXISTS idx_email_subscribers_workspace_email ON email_subscribers(workspace_id, email)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_email_subscribers_status ON email_subscribers(workspace_id, status)`
+
+  await pgSql`CREATE TABLE IF NOT EXISTS email_lists (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, name VARCHAR(255) NOT NULL, description TEXT, status VARCHAR(50) DEFAULT 'active', subscriber_count INTEGER DEFAULT 0, default_from_name TEXT, default_from_email TEXT, double_opt_in INTEGER DEFAULT 0, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_email_lists_workspace ON email_lists(workspace_id, status)`
+
+  await pgSql`CREATE TABLE IF NOT EXISTS email_list_members (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, list_id TEXT NOT NULL, subscriber_id TEXT NOT NULL, status VARCHAR(50) DEFAULT 'subscribed', added_at TIMESTAMPTZ DEFAULT NOW(), unsubscribed_at TIMESTAMPTZ)`
+  await pgSql`CREATE UNIQUE INDEX IF NOT EXISTS idx_email_list_members_unique ON email_list_members(list_id, subscriber_id)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_email_list_members_subscriber ON email_list_members(subscriber_id)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_email_list_members_workspace ON email_list_members(workspace_id, status)`
+
+  await pgSql`CREATE TABLE IF NOT EXISTS email_campaign_sends (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, campaign_id TEXT NOT NULL, subscriber_id TEXT, email_address VARCHAR(255) NOT NULL, status VARCHAR(50) DEFAULT 'queued', external_message_id TEXT, error_message TEXT, sent_at TIMESTAMPTZ, opened_at TIMESTAMPTZ, clicked_at TIMESTAMPTZ, bounced_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_email_campaign_sends_campaign ON email_campaign_sends(campaign_id, status)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_email_campaign_sends_subscriber ON email_campaign_sends(subscriber_id)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_email_campaign_sends_workspace ON email_campaign_sends(workspace_id, created_at DESC)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_email_campaign_sends_external ON email_campaign_sends(external_message_id)`
+  // === Sprint 2: Publishing & Social schema (Postgres standalone init) ===
+  await pgSql`ALTER TABLE scheduled_content ADD COLUMN IF NOT EXISTS channel TEXT`
+  await pgSql`ALTER TABLE scheduled_content ADD COLUMN IF NOT EXISTS content_body TEXT`
+  await pgSql`ALTER TABLE scheduled_content ADD COLUMN IF NOT EXISTS scheduled_at TIMESTAMPTZ`
+  await pgSql`ALTER TABLE scheduled_content ADD COLUMN IF NOT EXISTS retry_count INTEGER DEFAULT 0`
+  await pgSql`ALTER TABLE scheduled_content ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_scheduled_content_workspace_schedule ON scheduled_content(workspace_id, scheduled_at)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_scheduled_content_status_schedule ON scheduled_content(status, scheduled_at)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_scheduled_content_artifact ON scheduled_content(artifact_id)`
+
+  await pgSql`ALTER TABLE published_content ADD COLUMN IF NOT EXISTS scheduled_content_id TEXT`
+  await pgSql`ALTER TABLE published_content ADD COLUMN IF NOT EXISTS channel TEXT`
+  await pgSql`ALTER TABLE published_content ADD COLUMN IF NOT EXISTS native_post_id TEXT`
+  await pgSql`ALTER TABLE published_content ADD COLUMN IF NOT EXISTS permalink TEXT`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_published_content_workspace ON published_content(workspace_id, published_at DESC)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_published_content_scheduled ON published_content(scheduled_content_id)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_published_content_channel ON published_content(workspace_id, channel)`
+
+  await pgSql`CREATE TABLE IF NOT EXISTS oauth_tokens (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, platform VARCHAR(50) NOT NULL, encrypted_access_token TEXT NOT NULL, encrypted_refresh_token TEXT, expires_at TIMESTAMPTZ, scope TEXT, account_id TEXT, account_label TEXT, status VARCHAR(30) DEFAULT 'active', last_refreshed_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE UNIQUE INDEX IF NOT EXISTS idx_oauth_tokens_unique ON oauth_tokens(workspace_id, platform)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_oauth_tokens_status ON oauth_tokens(status, expires_at)`
+  await pgSql`CREATE TABLE IF NOT EXISTS tracked_links (id TEXT PRIMARY KEY, slug VARCHAR(16) NOT NULL UNIQUE, workspace_id TEXT NOT NULL, original_url TEXT NOT NULL, scheduled_content_id TEXT, published_content_id TEXT, channel VARCHAR(50), campaign_id TEXT, click_count INTEGER DEFAULT 0, last_clicked_at TIMESTAMPTZ, status VARCHAR(30) DEFAULT 'active', created_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_tracked_links_workspace ON tracked_links(workspace_id, created_at DESC)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_tracked_links_scheduled ON tracked_links(scheduled_content_id)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_tracked_links_channel ON tracked_links(workspace_id, channel)`
+  await pgSql`CREATE TABLE IF NOT EXISTS link_clicks (id TEXT PRIMARY KEY, slug VARCHAR(16) NOT NULL, workspace_id TEXT NOT NULL, channel VARCHAR(50), referrer TEXT, user_agent TEXT, country VARCHAR(8), clicked_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_link_clicks_slug ON link_clicks(slug, clicked_at DESC)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_link_clicks_workspace ON link_clicks(workspace_id, clicked_at DESC)`
+  // === Sprint 3: Paid Acquisition Department (Postgres standalone init) ===
+  await pgSql`CREATE TABLE IF NOT EXISTS ad_campaigns (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, platform VARCHAR(50) NOT NULL, native_campaign_id TEXT, name TEXT NOT NULL, daily_budget INTEGER NOT NULL DEFAULT 0, status VARCHAR(30) NOT NULL DEFAULT 'draft', error_log TEXT, utm_override TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`ALTER TABLE ad_campaigns ADD COLUMN IF NOT EXISTS utm_override TEXT`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_ad_campaigns_workspace_status ON ad_campaigns(workspace_id, status)`
+  await pgSql`CREATE TABLE IF NOT EXISTS ad_creatives (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, ad_campaign_id TEXT NOT NULL, artifact_id TEXT, headline TEXT NOT NULL, body_copy TEXT NOT NULL, media_url TEXT, destination_url TEXT NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_ad_creatives_artifact ON ad_creatives(artifact_id)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_ad_creatives_campaign ON ad_creatives(ad_campaign_id)`
+  await pgSql`CREATE TABLE IF NOT EXISTS funnel_steps (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, slug TEXT NOT NULL UNIQUE, html_content TEXT NOT NULL, view_count INTEGER NOT NULL DEFAULT 0, conversion_count INTEGER NOT NULL DEFAULT 0, created_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_funnel_steps_workspace ON funnel_steps(workspace_id, created_at DESC)`
+  await pgSql`CREATE TABLE IF NOT EXISTS form_submissions (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, funnel_step_id TEXT NOT NULL, email TEXT, submitted_data TEXT NOT NULL DEFAULT '{}', created_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_form_submissions_step_email ON form_submissions(funnel_step_id, email)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_form_submissions_workspace ON form_submissions(workspace_id, created_at DESC)`
+  // === Sprint 4: Lead Gen & CRM Department (Postgres standalone init) ===
+  await pgSql`ALTER TABLE leads_captured ADD COLUMN IF NOT EXISTS enrichment_status VARCHAR(30) DEFAULT 'pending'`
+  await pgSql`ALTER TABLE leads_captured ADD COLUMN IF NOT EXISTS company_name TEXT`
+  await pgSql`ALTER TABLE leads_captured ADD COLUMN IF NOT EXISTS company_size TEXT`
+  await pgSql`ALTER TABLE leads_captured ADD COLUMN IF NOT EXISTS estimated_revenue TEXT`
+  await pgSql`ALTER TABLE leads_captured ADD COLUMN IF NOT EXISTS industry TEXT`
+  await pgSql`ALTER TABLE leads_captured ADD COLUMN IF NOT EXISTS linkedin_url TEXT`
+  await pgSql`ALTER TABLE leads_captured ADD COLUMN IF NOT EXISTS twitter_url TEXT`
+  await pgSql`ALTER TABLE leads_captured ADD COLUMN IF NOT EXISTS tech_stack TEXT DEFAULT '[]'`
+  await pgSql`ALTER TABLE leads_captured ADD COLUMN IF NOT EXISTS enrichment_summary TEXT`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_leads_captured_workspace_enrichment ON leads_captured(workspace_id, enrichment_status)`
+  await pgSql`ALTER TABLE lead_activities ADD COLUMN IF NOT EXISTS activity_type TEXT`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_lead_activities_workspace_type ON lead_activities(workspace_id, activity_type)`
+  await pgSql`CREATE TABLE IF NOT EXISTS enrichment_logs (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, lead_id TEXT NOT NULL, provider_used VARCHAR(50) NOT NULL, execution_time_ms INTEGER, raw_response TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_enrichment_logs_lead ON enrichment_logs(lead_id, created_at DESC)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_enrichment_logs_provider ON enrichment_logs(workspace_id, provider_used, created_at DESC)`
+  // === Sprint 5: PR & Reputation Desk (Postgres standalone init) ===
+  await pgSql`ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS crisis_status VARCHAR(30) DEFAULT 'clear'`
+  await pgSql`ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS crisis_tripped_at TIMESTAMPTZ`
+  await pgSql`CREATE TABLE IF NOT EXISTS brand_mentions (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, source_platform VARCHAR(50) NOT NULL, source_url TEXT, author_handle TEXT, content_text TEXT NOT NULL, sentiment_score NUMERIC(4, 2) DEFAULT 1.00, severity_level VARCHAR(20) DEFAULT 'low', status VARCHAR(30) DEFAULT 'unread', detected_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_brand_mentions_workspace_severity_status ON brand_mentions(workspace_id, severity_level, status)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_brand_mentions_workspace_recent ON brand_mentions(workspace_id, created_at DESC)`
+  await pgSql`CREATE TABLE IF NOT EXISTS pr_campaigns (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, artifact_id TEXT, title TEXT NOT NULL, body_content TEXT NOT NULL, status VARCHAR(30) DEFAULT 'draft', error_log TEXT, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_pr_campaigns_workspace_status ON pr_campaigns(workspace_id, status)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_pr_campaigns_artifact ON pr_campaigns(artifact_id)`
+  await pgSql`CREATE TABLE IF NOT EXISTS media_contacts (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, journalist_name TEXT NOT NULL, email VARCHAR(255), outlet_name TEXT, beat_focus TEXT, linkedin_url TEXT, twitter_url TEXT, notes TEXT, last_contacted_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE UNIQUE INDEX IF NOT EXISTS idx_media_contacts_unique ON media_contacts(workspace_id, email)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_media_contacts_workspace_beat ON media_contacts(workspace_id, beat_focus)`
+  // === Sprint 6: Creative Studio & Media Unification (Postgres standalone init) ===
+  await pgSql`CREATE TABLE IF NOT EXISTS media_assets (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, parent_asset_id TEXT REFERENCES media_assets(id) ON DELETE SET NULL, filename TEXT NOT NULL, url TEXT NOT NULL, asset_type VARCHAR(30) NOT NULL, mime_type VARCHAR(120), file_size INTEGER, dimensions VARCHAR(50), duration_seconds NUMERIC(10, 3), source_provider VARCHAR(50), metadata_json TEXT DEFAULT '{}', status VARCHAR(30) DEFAULT 'ready', created_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_media_assets_workspace_type ON media_assets(workspace_id, asset_type)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_media_assets_parent ON media_assets(parent_asset_id)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_media_assets_workspace_recent ON media_assets(workspace_id, created_at DESC)`
+  await pgSql`CREATE TABLE IF NOT EXISTS creative_generation_jobs (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, artifact_id TEXT, provider VARCHAR(50) NOT NULL, model_name TEXT, prompt_text TEXT NOT NULL, negative_prompt TEXT, status VARCHAR(30) DEFAULT 'pending', result_asset_id TEXT REFERENCES media_assets(id) ON DELETE SET NULL, cost_estimate NUMERIC(10, 4) DEFAULT 0, duration_ms INTEGER, error_message TEXT, started_at TIMESTAMPTZ, completed_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_creative_jobs_workspace_status ON creative_generation_jobs(workspace_id, status)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_creative_jobs_artifact ON creative_generation_jobs(artifact_id)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_creative_jobs_workspace_recent ON creative_generation_jobs(workspace_id, created_at DESC)`
+  await pgSql`CREATE TABLE IF NOT EXISTS voice_profiles (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, voice_name TEXT NOT NULL, native_provider_voice_id TEXT NOT NULL, provider VARCHAR(50) DEFAULT 'elevenlabs', gender VARCHAR(20), accent_label TEXT, sample_url TEXT, status VARCHAR(30) DEFAULT 'active', is_default INTEGER DEFAULT 0, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE UNIQUE INDEX IF NOT EXISTS idx_voice_profiles_unique ON voice_profiles(workspace_id, native_provider_voice_id)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_voice_profiles_workspace_status ON voice_profiles(workspace_id, status)`
+  // === Sprint 7: Growth & Experiments (Postgres standalone init) ===
+  await pgSql`CREATE TABLE IF NOT EXISTS marketing_experiments (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, name TEXT NOT NULL, hypothesis TEXT, target_type VARCHAR(50) NOT NULL, target_reference_id TEXT NOT NULL, status VARCHAR(30) DEFAULT 'draft', statistical_significance_threshold NUMERIC(4, 3) DEFAULT 0.95, winner_variant_id TEXT, started_at TIMESTAMPTZ, completed_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_marketing_experiments_workspace_status ON marketing_experiments(workspace_id, status)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_marketing_experiments_target ON marketing_experiments(workspace_id, target_type, target_reference_id)`
+  await pgSql`CREATE TABLE IF NOT EXISTS experiment_variants (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, experiment_id TEXT NOT NULL REFERENCES marketing_experiments(id) ON DELETE CASCADE, variant_label VARCHAR(50) NOT NULL, configuration_override_json TEXT NOT NULL DEFAULT '{}', traffic_allocation_weight INTEGER NOT NULL DEFAULT 50, impression_count INTEGER NOT NULL DEFAULT 0, conversion_count INTEGER NOT NULL DEFAULT 0, created_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_experiment_variants_lookup ON experiment_variants(experiment_id, variant_label)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_experiment_variants_workspace ON experiment_variants(workspace_id, experiment_id)`
+  await pgSql`CREATE TABLE IF NOT EXISTS experiment_events (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, variant_id TEXT NOT NULL REFERENCES experiment_variants(id) ON DELETE CASCADE, tracking_id TEXT NOT NULL, event_type VARCHAR(50) NOT NULL, event_value NUMERIC(12, 4), metadata_json TEXT DEFAULT '{}', created_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_experiment_events_variant_type ON experiment_events(variant_id, event_type, created_at DESC)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_experiment_events_tracking ON experiment_events(tracking_id)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_experiment_events_workspace_recent ON experiment_events(workspace_id, created_at DESC)`
+  // === Sprint 8: Voice AI & Inbound Call Center (Postgres standalone init) ===
+  await pgSql`CREATE TABLE IF NOT EXISTS voice_agents (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, voice_profile_id TEXT REFERENCES voice_profiles(id) ON DELETE SET NULL, provider VARCHAR(50) DEFAULT 'vapi', agent_name TEXT NOT NULL, phone_number TEXT, system_prompt TEXT, temperature NUMERIC(3, 2) DEFAULT 0.70, llm_model VARCHAR(60) DEFAULT 'gpt-4o', status VARCHAR(30) DEFAULT 'active', created_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE UNIQUE INDEX IF NOT EXISTS idx_voice_agents_workspace_phone ON voice_agents(workspace_id, phone_number)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_voice_agents_workspace_status ON voice_agents(workspace_id, status)`
+  await pgSql`CREATE TABLE IF NOT EXISTS call_logs (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, voice_agent_id TEXT REFERENCES voice_agents(id) ON DELETE SET NULL, lead_id TEXT REFERENCES leads_captured(id) ON DELETE SET NULL, provider VARCHAR(50), direction VARCHAR(20), from_number TEXT, to_number TEXT, duration_seconds INTEGER DEFAULT 0, recording_url TEXT, transcript TEXT, summary TEXT, sentiment_score NUMERIC(4, 2), call_status VARCHAR(30) DEFAULT 'completed', action_taken TEXT, metadata_json TEXT DEFAULT '{}', created_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_call_logs_workspace_recent ON call_logs(workspace_id, created_at DESC)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_call_logs_lead ON call_logs(lead_id)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_leads_captured_phone ON leads_captured(phone)`
+  // === Sprint 9: Agency Ops & Third-Party Connections (Postgres standalone init) ===
+  await pgSql`CREATE TABLE IF NOT EXISTS developer_tokens (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, token_name TEXT NOT NULL, token_hash TEXT NOT NULL, scopes_json TEXT NOT NULL DEFAULT '[]', last_used_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_developer_tokens_hash ON developer_tokens(token_hash)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_developer_tokens_workspace ON developer_tokens(workspace_id)`
+  await pgSql`CREATE TABLE IF NOT EXISTS webhook_subscriptions (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, target_url TEXT NOT NULL, event_type TEXT NOT NULL, secret_signature TEXT NOT NULL, status VARCHAR(30) DEFAULT 'active', created_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_webhook_subs_router ON webhook_subscriptions(workspace_id, event_type, status)`
+  await pgSql`ALTER TABLE webhook_subscriptions ADD COLUMN IF NOT EXISTS last_error_log TEXT`
+  await pgSql`ALTER TABLE webhook_subscriptions ADD COLUMN IF NOT EXISTS last_attempt_at TIMESTAMPTZ`
+  await pgSql`ALTER TABLE webhook_subscriptions ADD COLUMN IF NOT EXISTS last_attempt_status VARCHAR(30)`
+  await pgSql`CREATE TABLE IF NOT EXISTS integration_connections (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, provider_slug TEXT NOT NULL, credentials_encrypted TEXT, status VARCHAR(30) DEFAULT 'connected', updated_at TIMESTAMPTZ DEFAULT NOW(), created_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE UNIQUE INDEX IF NOT EXISTS idx_integration_connections_unique ON integration_connections(workspace_id, provider_slug)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_integration_connections_workspace_status ON integration_connections(workspace_id, status)`
+  // === Sprint 10: System Polish & Performance Hardening (Postgres standalone init) ===
+  await pgSql`CREATE TABLE IF NOT EXISTS system_performance_audits (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, operation_name TEXT NOT NULL, duration_ms INTEGER NOT NULL DEFAULT 0, status VARCHAR(30) NOT NULL DEFAULT 'ok', error_captured TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_perf_audits_workspace_op_recent ON system_performance_audits(workspace_id, operation_name, created_at DESC)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_perf_audits_status ON system_performance_audits(workspace_id, status, created_at DESC)`
+  await pgSql`CREATE TABLE IF NOT EXISTS workspace_retention_policies (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, stream_target TEXT NOT NULL, retention_days INTEGER NOT NULL DEFAULT 90, action_disposition VARCHAR(30) NOT NULL DEFAULT 'purge', updated_at TIMESTAMPTZ DEFAULT NOW(), created_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE UNIQUE INDEX IF NOT EXISTS idx_retention_policies_unique ON workspace_retention_policies(workspace_id, stream_target)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_retention_policies_workspace ON workspace_retention_policies(workspace_id)`
+  await pgSql`ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS hard_max_daily_spend INTEGER NOT NULL DEFAULT 50000`
+  await pgSql`ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS alert_threshold_budget INTEGER NOT NULL DEFAULT 25000`
+  await pgSql`ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS utm_template TEXT`
   console.log('✅ Neon Postgres DB initialized')
 }

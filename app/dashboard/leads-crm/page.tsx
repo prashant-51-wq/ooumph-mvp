@@ -1111,6 +1111,22 @@ export default function LeadsCRMPage() {
     else setLoading(false)
   }, [loadData])
 
+  // Cross-CRM deep-link: the Voice AI call drawer (and any other surface) can
+  // open this page with ?leadId=… and the matching contact's drawer pops
+  // automatically. We watch `contacts` so the lookup runs once data lands —
+  // running it before is pointless because the list is empty.
+  useEffect(() => {
+    if (typeof window === 'undefined' || contacts.length === 0) return
+    const params = new URLSearchParams(window.location.search)
+    const targetLeadId = params.get('leadId')
+    if (!targetLeadId) return
+    const match = contacts.find(c => c.id === targetLeadId)
+    if (match) {
+      setMainTab('contacts')
+      setSelectedContact(match)
+    }
+  }, [contacts])
+
   // Refetch activities for selected contact (richer detail)
   useEffect(() => {
     if (!selectedContact) { setSelectedContactActivities([]); return }

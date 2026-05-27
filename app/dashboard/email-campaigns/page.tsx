@@ -1,1016 +1,741 @@
 'use client'
 
-import { useState } from 'react'
+/**
+ * /dashboard/email-campaigns
+ *
+ * Campaign list + 4-step wizard:
+ *   1. Audience  — pick a live list from /api/email-lists
+ *   2. Compose   — AI-draft via /api/agents/email-marketing (creates artifact
+ *                  + approval row + email_campaigns row in one shot)
+ *   3. Review    — manually edit subject / body; persisted via PATCH
+ *   4. Dispatch  — opens ReviewRequiredModal for the human governance gate;
+ *                  on approval fires /api/email-campaigns/[id]/send.
+ *
+ * The artifact lifecycle is the safety spine — until the artifact is
+ * approved, the dispatch route refuses to fire even a single email.
+ */
 
-// ─── Mock Data ────────────────────────────────────────────────────────────────
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import {
+  Mail, Plus, Sparkles, ArrowRight, ArrowLeft, Send, Check,
+  ListChecks, FileText, ShieldCheck, RefreshCw, AlertCircle, X, Loader2,
+} from 'lucide-react'
+import ReviewRequiredModal from '@/components/ReviewRequiredModal'
 
-const MOCK_CAMPAIGNS = [
-  {
-    id: 'c1',
-    name: 'May Product Launch — AI Reports',
-    type: 'Announcement',
-    status: 'sent',
-    list: 'Newsletter',
-    listCount: 2400,
-    subject: 'Introducing AI-powered reports — built just for you',
-    sentAt: 'May 10, 2026 · 9:02 AM',
-    stats: { sent: 2400, opens: 34.2, clicks: 8.7, unsubs: 12, revenue: 4820 },
-    opensByHour: [2, 8, 42, 180, 220, 195, 130, 96, 72, 54, 38, 27, 22, 18, 14, 12, 10, 9, 8, 7, 6, 5, 4, 3],
-    clickedLinks: [
-      { url: 'https://app.ooumph.co/reports', clicks: 187 },
-      { url: 'https://app.ooumph.co/pricing', clicks: 43 },
-      { url: 'https://ooumph.co/blog/ai-reports', clicks: 29 },
-    ],
-    devices: { desktop: 58, mobile: 34, tablet: 8 },
-    geo: [{ name: 'United States', clicks: 124 }, { name: 'United Kingdom', clicks: 38 }, { name: 'Canada', clicks: 27 }, { name: 'Australia', clicks: 19 }, { name: 'Germany', clicks: 14 }],
-  },
-  {
-    id: 'c2',
-    name: 'Spring Promotion — 20% Off Everything',
-    type: 'Promotional',
-    status: 'sent',
-    list: 'Promotions',
-    listCount: 3100,
-    subject: 'Your 20% spring discount — expires Friday',
-    sentAt: 'Apr 28, 2026 · 10:15 AM',
-    stats: { sent: 3100, opens: 28.5, clicks: 6.2, unsubs: 21, revenue: 7340 },
-    opensByHour: [1, 3, 12, 95, 210, 280, 245, 190, 150, 110, 78, 58, 44, 33, 26, 20, 17, 14, 12, 10, 8, 7, 6, 5],
-    clickedLinks: [
-      { url: 'https://app.ooumph.co/upgrade', clicks: 224 },
-      { url: 'https://ooumph.co/promo', clicks: 89 },
-    ],
-    devices: { desktop: 52, mobile: 40, tablet: 8 },
-    geo: [{ name: 'United States', clicks: 198 }, { name: 'United Kingdom', clicks: 44 }, { name: 'India', clicks: 31 }, { name: 'Canada', clicks: 22 }, { name: 'Brazil', clicks: 11 }],
-  },
-  {
-    id: 'c3',
-    name: 'April Newsletter — Growth Marketing Trends',
-    type: 'Newsletter',
-    status: 'sent',
-    list: 'Newsletter',
-    listCount: 2400,
-    subject: '5 growth marketing trends you can\'t ignore in 2026',
-    sentAt: 'Apr 15, 2026 · 8:30 AM',
-    stats: { sent: 2400, opens: 41.8, clicks: 12.4, unsubs: 8, revenue: 2100 },
-    opensByHour: [4, 12, 56, 210, 280, 220, 180, 140, 100, 74, 58, 44, 36, 30, 24, 20, 16, 14, 12, 10, 8, 7, 6, 5],
-    clickedLinks: [
-      { url: 'https://ooumph.co/blog/trends', clicks: 312 },
-      { url: 'https://ooumph.co/webinar', clicks: 97 },
-      { url: 'https://app.ooumph.co/templates', clicks: 54 },
-    ],
-    devices: { desktop: 64, mobile: 28, tablet: 8 },
-    geo: [{ name: 'United States', clicks: 267 }, { name: 'United Kingdom', clicks: 58 }, { name: 'Canada', clicks: 39 }, { name: 'Australia', clicks: 24 }, { name: 'Germany', clicks: 18 }],
-  },
-  {
-    id: 'c4',
-    name: 'Welcome Series — New Trial Users',
-    type: 'Automated',
-    status: 'sent',
-    list: 'Leads',
-    listCount: 890,
-    subject: 'Welcome to Ooumph — here\'s how to get started',
-    sentAt: 'Apr 2, 2026 · 12:00 PM',
-    stats: { sent: 890, opens: 62.3, clicks: 24.1, unsubs: 3, revenue: 980 },
-    opensByHour: [8, 22, 78, 140, 168, 145, 120, 92, 70, 52, 40, 32, 26, 22, 18, 16, 14, 12, 10, 8, 7, 6, 5, 4],
-    clickedLinks: [
-      { url: 'https://app.ooumph.co/onboarding', clicks: 214 },
-      { url: 'https://ooumph.co/docs', clicks: 76 },
-    ],
-    devices: { desktop: 48, mobile: 44, tablet: 8 },
-    geo: [{ name: 'United States', clicks: 142 }, { name: 'India', clicks: 48 }, { name: 'United Kingdom', clicks: 34 }, { name: 'Philippines', clicks: 18 }, { name: 'Nigeria', clicks: 12 }],
-  },
-  {
-    id: 'c5',
-    name: 'Win-back — 90-Day Inactive Subscribers',
-    type: 'Re-engagement',
-    status: 'sent',
-    list: 'Inactive',
-    listCount: 634,
-    subject: 'We miss you — here\'s what\'s new at Ooumph',
-    sentAt: 'Mar 20, 2026 · 2:00 PM',
-    stats: { sent: 634, opens: 18.7, clicks: 3.4, unsubs: 44, revenue: 340 },
-    opensByHour: [1, 2, 5, 18, 28, 34, 30, 22, 18, 14, 10, 8, 7, 6, 5, 4, 4, 3, 3, 2, 2, 2, 1, 1],
-    clickedLinks: [
-      { url: 'https://app.ooumph.co/whats-new', clicks: 22 },
-      { url: 'https://app.ooumph.co/login', clicks: 14 },
-    ],
-    devices: { desktop: 60, mobile: 32, tablet: 8 },
-    geo: [{ name: 'United States', clicks: 24 }, { name: 'United Kingdom', clicks: 8 }, { name: 'Germany', clicks: 4 }, { name: 'France', clicks: 3 }, { name: 'Spain', clicks: 2 }],
-  },
-  {
-    id: 'c6',
-    name: 'June Newsletter — Coming Soon',
-    type: 'Newsletter',
-    status: 'scheduled',
-    list: 'Newsletter',
-    listCount: 2847,
-    subject: '[Draft] June newsletter',
-    sentAt: 'Scheduled for Jun 10, 2026 · 9:00 AM',
-    stats: { sent: 0, opens: 0, clicks: 0, unsubs: 0, revenue: 0 },
-    opensByHour: [],
-    clickedLinks: [],
-    devices: { desktop: 0, mobile: 0, tablet: 0 },
-    geo: [],
-  },
-  {
-    id: 'c7',
-    name: 'Flash Sale — 48 Hours Only',
-    type: 'Promotional',
-    status: 'draft',
-    list: 'Newsletter',
-    listCount: 2847,
-    subject: '[Draft] Flash sale',
-    sentAt: 'Not scheduled',
-    stats: { sent: 0, opens: 0, clicks: 0, unsubs: 0, revenue: 0 },
-    opensByHour: [],
-    clickedLinks: [],
-    devices: { desktop: 0, mobile: 0, tablet: 0 },
-    geo: [],
-  },
-  {
-    id: 'c8',
-    name: 'Q1 Results — Stakeholder Update',
-    type: 'Newsletter',
-    status: 'archived',
-    list: 'Customers',
-    listCount: 412,
-    subject: 'Ooumph Q1 2026 — our biggest quarter yet',
-    sentAt: 'Mar 1, 2026 · 10:00 AM',
-    stats: { sent: 412, opens: 55.1, clicks: 18.2, unsubs: 2, revenue: 1240 },
-    opensByHour: [2, 6, 22, 60, 90, 82, 68, 52, 40, 30, 24, 18, 14, 12, 10, 8, 7, 6, 5, 4, 4, 3, 2, 2],
-    clickedLinks: [
-      { url: 'https://ooumph.co/q1-report', clicks: 75 },
-    ],
-    devices: { desktop: 70, mobile: 22, tablet: 8 },
-    geo: [{ name: 'United States', clicks: 56 }, { name: 'United Kingdom', clicks: 18 }],
-  },
-]
+// ─── Types ─────────────────────────────────────────────────────────────────
 
-const SUBSCRIBER_ACTIVITY = [
-  { name: 'Alex Morgan', email: 'alex.morgan@techcorp.com', opened: true, clicked: true, unsubbed: false },
-  { name: 'Sarah Chen', email: 'sarah.chen@startup.io', opened: true, clicked: false, unsubbed: false },
-  { name: 'Priya Patel', email: 'priya.patel@ventures.co', opened: true, clicked: true, unsubbed: false },
-  { name: 'James Wilson', email: 'james.wilson@example.com', opened: false, clicked: false, unsubbed: false },
-  { name: 'Nora Kim', email: 'nora.kim@design.co', opened: true, clicked: true, unsubbed: false },
-  { name: 'Dan Foster', email: 'dan.foster@media.io', opened: false, clicked: false, unsubbed: true },
-  { name: 'Mike Torres', email: 'mike.torres@agency.com', opened: true, clicked: false, unsubbed: false },
-]
+interface EmailList {
+  id: string
+  name: string
+  description: string | null
+  status: string
+  subscriber_count: number
+  live_subscriber_count?: number | string
+  default_from_name: string | null
+  default_from_email: string | null
+}
 
-const LISTS = ['Newsletter (2,847)', 'Leads (560)', 'Promotions (890)', 'Customers (412)', 'Inactive (634)', 'Trial Users (234)']
+interface Campaign {
+  id: string
+  workspace_id: string
+  name: string
+  subject: string | null
+  status: string
+  artifact_id: string | null
+  list_id: string | null
+  scheduled_for: string | null
+  recipient_count: number
+  sent_count: number
+  open_count: number
+  click_count: number
+  bounce_count: number
+  failed_count: number
+  error_message: string | null
+  content_json: Record<string, unknown> | string
+  sent_at: string | null
+  created_at: string
+  updated_at: string | null
+}
 
-const TEMPLATES = ['Welcome Email', 'Monthly Newsletter', 'Product Announcement', 'Flash Sale Promo', 'Re-engagement Win-back', 'Event Invitation']
+interface DraftedContent {
+  subject: string
+  previewText?: string
+  headline?: string
+  body: string
+  cta?: string
+  ctaUrl?: string
+  ps?: string
+  suggestedSendTime?: string
+}
 
-const AI_SUBJECTS = [
-  'You asked. We built it. Here\'s what\'s new.',
-  '5 reasons our customers are switching to Ooumph',
-  '[First name], your personalized marketing report is ready',
-  'The one thing top marketers do differently',
-  'Don\'t open this email if you\'re happy with slow growth',
-]
+type WizardStep = 'audience' | 'compose' | 'review' | 'dispatch'
 
-type Campaign = typeof MOCK_CAMPAIGNS[0]
+// ─── Helpers ───────────────────────────────────────────────────────────────
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function StatusBadge({ status }: { status: string }) {
-  const cfg: Record<string, string> = {
-    sent: 'bg-emerald-900/40 text-emerald-300 border-emerald-800',
-    scheduled: 'bg-blue-900/40 text-blue-300 border-blue-800',
-    sending: 'bg-yellow-900/40 text-yellow-300 border-yellow-800',
+function StatusPill({ status }: { status: string }) {
+  const map: Record<string, string> = {
     draft: 'bg-gray-800 text-gray-400 border-gray-700',
+    scheduled: 'bg-amber-900/40 text-amber-300 border-amber-800',
+    sending: 'bg-blue-900/40 text-blue-300 border-blue-800',
+    sent: 'bg-emerald-900/40 text-emerald-300 border-emerald-800',
+    failed: 'bg-rose-900/40 text-rose-300 border-rose-800',
     archived: 'bg-gray-800 text-gray-500 border-gray-700',
   }
   return (
-    <span className={`px-2.5 py-1 rounded-full text-xs border capitalize ${cfg[status] ?? cfg.draft}`}>{status}</span>
+    <span className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium border ${map[status] || 'bg-gray-800 text-gray-400 border-gray-700'}`}>
+      {status}
+    </span>
   )
 }
 
-function TypeBadge({ type }: { type: string }) {
-  const cfg: Record<string, string> = {
-    Newsletter: 'bg-indigo-900/40 text-indigo-300 border-indigo-800/40',
-    Promotional: 'bg-orange-900/40 text-orange-300 border-orange-800/40',
-    Announcement: 'bg-violet-900/40 text-violet-300 border-violet-800/40',
-    Automated: 'bg-teal-900/40 text-teal-300 border-teal-800/40',
-    Transactional: 'bg-sky-900/40 text-sky-300 border-sky-800/40',
-    'Re-engagement': 'bg-pink-900/40 text-pink-300 border-pink-800/40',
+function parseContent(v: unknown): DraftedContent {
+  if (!v) return { subject: '', body: '' }
+  if (typeof v === 'string') {
+    try { return JSON.parse(v) as DraftedContent } catch { return { subject: '', body: v } }
   }
-  return (
-    <span className={`px-2 py-0.5 rounded text-xs border ${cfg[type] ?? 'bg-gray-800 text-gray-400 border-gray-700'}`}>{type}</span>
-  )
+  return v as DraftedContent
 }
 
-// ─── Main Page ────────────────────────────────────────────────────────────────
+function formatRelative(iso: string | null): string {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso
+  const diff = Date.now() - d.getTime()
+  const s = Math.floor(diff / 1000)
+  if (s < 60) return `${s}s ago`
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`
+  if (s < 86400 * 7) return `${Math.floor(s / 86400)}d ago`
+  return d.toLocaleDateString()
+}
+
+// ─── Page ──────────────────────────────────────────────────────────────────
 
 export default function EmailCampaignsPage() {
-  const [statusFilter, setStatusFilter] = useState('all')
-  const [campaigns, setCampaigns] = useState(MOCK_CAMPAIGNS)
+  const [workspaceId, setWorkspaceId] = useState<string | null>(null)
+  const [campaigns, setCampaigns] = useState<Campaign[]>([])
+  const [loading, setLoading] = useState(true)
+  const [showWizard, setShowWizard] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
-  // New campaign wizard
-  const [showNew, setShowNew] = useState(false)
-  const [step, setStep] = useState(1)
-  const [form, setForm] = useState({
-    name: '',
-    type: 'Newsletter',
-    fromName: 'Ooumph Team',
-    fromEmail: 'hello@ooumph.co',
-    replyTo: 'support@ooumph.co',
-    trackOpens: true,
-    trackClicks: true,
-    utmSource: 'email',
-    utmMedium: 'newsletter',
-    list: '',
-    excludeDays: 30,
-    recipientTimezone: false,
-    subject: '',
-    previewText: '',
-    template: '',
-    useHtml: false,
-    htmlContent: '',
-    sendNow: true,
-    scheduleDate: '',
-    scheduleTime: '',
-    abTest: false,
-    abSubjectB: '',
-  })
-  const [showAiSubjects, setShowAiSubjects] = useState(false)
-  const [showEmailPreview, setShowEmailPreview] = useState(false)
-  const [launched, setLaunched] = useState(false)
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/auth/me')
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (cancelled) return
+        const id: string | null = data?.user?.workspaceId
+          || (typeof window !== 'undefined' ? localStorage.getItem('workspaceId') : null)
+        setWorkspaceId(id)
+        if (!id) setError('No workspace selected — finish onboarding first.')
+      })
+      .catch(() => { if (!cancelled) setError('Failed to load session') })
+    return () => { cancelled = true }
+  }, [])
 
-  // Test send
-  const [testEmail, setTestEmail] = useState('')
-  const [testSent, setTestSent] = useState(false)
+  const fetchCampaigns = useCallback(() => {
+    if (!workspaceId) return
+    setLoading(true)
+    fetch(`/api/email-campaigns?workspaceId=${workspaceId}`)
+      .then(r => r.json())
+      .then((rows: Campaign[]) => setCampaigns(Array.isArray(rows) ? rows : []))
+      .catch(() => setCampaigns([]))
+      .finally(() => setLoading(false))
+  }, [workspaceId])
 
-  // Campaign report
-  const [reportCampaign, setReportCampaign] = useState<Campaign | null>(null)
+  useEffect(() => { fetchCampaigns() }, [fetchCampaigns])
 
-  const filteredCampaigns = campaigns.filter(c => statusFilter === 'all' || c.status === statusFilter)
-
-  const STATUS_COUNTS: Record<string, number> = { all: campaigns.length }
-  campaigns.forEach(c => { STATUS_COUNTS[c.status] = (STATUS_COUNTS[c.status] || 0) + 1 })
-
-  const sentCampaigns = campaigns.filter(c => c.status === 'sent')
-  const avgOpen = sentCampaigns.length ? (sentCampaigns.reduce((a, c) => a + c.stats.opens, 0) / sentCampaigns.length).toFixed(1) : '0'
-  const avgClick = sentCampaigns.length ? (sentCampaigns.reduce((a, c) => a + c.stats.clicks, 0) / sentCampaigns.length).toFixed(1) : '0'
-  const totalRevenue = sentCampaigns.reduce((a, c) => a + c.stats.revenue, 0)
-  const totalSent = sentCampaigns.reduce((a, c) => a + c.stats.sent, 0)
-  const bestCampaign = [...sentCampaigns].sort((a, b) => b.stats.opens - a.stats.opens)[0]
-
-  function handleLaunch() {
-    const estimatedList = form.list ? parseInt(form.list.match(/\((\d+),?(\d*)\)/)?.[1] + (form.list.match(/\((\d+),?(\d*)\)/)?.[2] || '') || '0') : 0
-    const newCampaign: Campaign = {
-      id: `c${campaigns.length + 1}`,
-      name: form.name || 'Untitled Campaign',
-      type: form.type,
-      status: form.sendNow ? 'sent' : 'scheduled',
-      list: form.list.replace(/\s*\(.*\)/, '') || 'Newsletter',
-      listCount: estimatedList || 2847,
-      subject: form.subject,
-      sentAt: form.sendNow ? new Date().toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }) : `Scheduled for ${form.scheduleDate} · ${form.scheduleTime}`,
-      stats: { sent: form.sendNow ? (estimatedList || 2847) : 0, opens: form.sendNow ? 0 : 0, clicks: 0, unsubs: 0, revenue: 0 },
-      opensByHour: [],
-      clickedLinks: [],
-      devices: { desktop: 0, mobile: 0, tablet: 0 },
-      geo: [],
-    }
-    setCampaigns(prev => [newCampaign, ...prev])
-    setLaunched(true)
-    setTimeout(() => {
-      setShowNew(false)
-      setLaunched(false)
-      setStep(1)
-      setForm(f => ({ ...f, name: '', subject: '', list: '', template: '' }))
-    }, 1800)
-  }
-
-  function handleDuplicate(c: Campaign) {
-    const dup: Campaign = { ...c, id: `c${campaigns.length + 1}`, name: `${c.name} (Copy)`, status: 'draft', sentAt: 'Not scheduled', stats: { ...c.stats, sent: 0, opens: 0, clicks: 0, unsubs: 0, revenue: 0 } }
-    setCampaigns(prev => [dup, ...prev])
-  }
-
-  function handleArchive(id: string) {
-    setCampaigns(prev => prev.map(c => c.id === id ? { ...c, status: 'archived' } : c))
-  }
-
-  const inputCls = 'w-full px-3 py-2.5 rounded-lg bg-gray-800 border border-gray-700 text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500 text-sm'
-
-  const estimatedReach = form.list ? (form.list.match(/\d[\d,]*/)?.[0]?.replace(',', '') || '—') : '—'
-
-  const maxHourly = reportCampaign ? Math.max(...(reportCampaign.opensByHour.length ? reportCampaign.opensByHour : [1])) : 1
+  // Poll for live status during sending campaigns
+  useEffect(() => {
+    if (!workspaceId) return
+    const anyActive = campaigns.some(c => c.status === 'sending')
+    if (!anyActive) return
+    const t = setInterval(fetchCampaigns, 3000)
+    return () => clearInterval(t)
+  }, [workspaceId, campaigns, fetchCampaigns])
 
   return (
-    <div className="p-8 max-w-screen-xl mx-auto">
-      {/* ── Header ── */}
-      <div className="flex flex-wrap items-center justify-between gap-4 mb-6">
-        <h1 className="text-2xl font-bold text-white">Email Campaigns</h1>
-        <div className="flex items-center gap-3">
-          {/* Test send */}
-          <div className="flex items-center gap-2">
-            <input
-              value={testEmail}
-              onChange={e => setTestEmail(e.target.value)}
-              placeholder="your@email.com"
-              className="w-48 px-3 py-2 rounded-lg bg-gray-900 border border-gray-800 text-white placeholder-gray-500 text-sm focus:outline-none focus:border-indigo-500"
-            />
+    <div className="min-h-screen bg-gray-950 text-gray-100">
+      <div className="max-w-7xl mx-auto px-6 py-8">
+        <div className="flex items-start justify-between mb-6">
+          <div>
+            <h1 className="text-2xl font-bold text-white flex items-center gap-2">
+              <Mail className="w-6 h-6 text-indigo-400" /> Email Campaigns
+            </h1>
+            <p className="text-sm text-gray-500 mt-1">
+              AI-drafted broadcasts gated by human approval before any send.
+            </p>
+          </div>
+          <div className="flex gap-2">
             <button
-              onClick={() => { setTestSent(true); setTimeout(() => setTestSent(false), 2000) }}
-              disabled={!testEmail}
-              className="px-4 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 disabled:opacity-40 border border-gray-700 text-gray-300 hover:text-white text-sm font-medium transition-colors"
+              onClick={fetchCampaigns}
+              className="px-3 py-1.5 bg-gray-900 hover:bg-gray-800 border border-gray-700 text-gray-300 text-sm rounded-lg flex items-center gap-2"
             >
-              {testSent ? 'Sent!' : 'Send Test'}
+              <RefreshCw className="w-3.5 h-3.5" /> Refresh
+            </button>
+            <button
+              onClick={() => setShowWizard(true)}
+              disabled={!workspaceId}
+              className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm rounded-lg flex items-center gap-2"
+            >
+              <Plus className="w-4 h-4" /> New campaign
             </button>
           </div>
-          <button
-            onClick={() => { setShowNew(true); setStep(1) }}
-            className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium transition-colors"
-          >
-            + New Campaign
-          </button>
         </div>
-      </div>
 
-      {/* ── Stats Bar ── */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
-        {[
-          { label: 'Campaigns This Month', value: campaigns.filter(c => c.status !== 'archived').length.toString() },
-          { label: 'Total Sent', value: totalSent.toLocaleString() },
-          { label: 'Avg Open Rate', value: `${avgOpen}%` },
-          { label: 'Avg Click Rate', value: `${avgClick}%` },
-          { label: 'Total Revenue', value: `$${totalRevenue.toLocaleString()}` },
-          { label: 'Best Campaign', value: bestCampaign?.stats.opens + '%' || '—', sub: bestCampaign?.name.slice(0, 20) + '...' },
-        ].map(s => (
-          <div key={s.label} className="bg-gray-900 border border-gray-800 rounded-xl p-3">
-            <p className="text-gray-500 text-xs leading-tight">{s.label}</p>
-            <p className="text-white font-bold text-lg mt-0.5">{s.value}</p>
-            {s.sub && <p className="text-gray-600 text-xs leading-tight">{s.sub}</p>}
-          </div>
-        ))}
-      </div>
-
-      {/* ── Status Filter Tabs ── */}
-      <div className="flex gap-1 mb-6 bg-gray-900 border border-gray-800 rounded-xl p-1 w-fit flex-wrap">
-        {['all', 'draft', 'scheduled', 'sending', 'sent', 'archived'].map(s => (
-          <button
-            key={s}
-            onClick={() => setStatusFilter(s)}
-            className={`px-4 py-2 rounded-lg text-sm font-medium capitalize transition-colors ${statusFilter === s ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-white'}`}
-          >
-            {s} {STATUS_COUNTS[s] !== undefined && <span className="ml-1 text-xs opacity-70">({STATUS_COUNTS[s] ?? 0})</span>}
-          </button>
-        ))}
-      </div>
-
-      {/* ── Campaign Cards ── */}
-      <div className="space-y-3">
-        {filteredCampaigns.length === 0 && (
-          <div className="bg-gray-900 border border-gray-800 rounded-xl p-12 text-center">
-            <p className="text-gray-500 text-sm">No campaigns found for this status</p>
+        {error && (
+          <div className="mb-4 p-3 bg-rose-950/40 border border-rose-900 rounded-lg text-rose-300 text-sm flex items-center gap-2">
+            <AlertCircle className="w-4 h-4" /> {error}
           </div>
         )}
-        {filteredCampaigns.map(c => (
-          <div key={c.id} className="bg-gray-900 border border-gray-800 rounded-xl p-5 hover:border-gray-700 transition-colors">
-            <div className="flex flex-wrap items-start justify-between gap-4">
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 mb-1 flex-wrap">
-                  <h3 className="text-white font-semibold">{c.name}</h3>
-                  <TypeBadge type={c.type} />
-                  <StatusBadge status={c.status} />
+
+        {loading ? (
+          <div className="text-center py-16 text-gray-500 text-sm">Loading campaigns…</div>
+        ) : campaigns.length === 0 ? (
+          <div className="text-center py-20 border border-dashed border-gray-800 rounded-xl">
+            <Mail className="w-12 h-12 mx-auto mb-4 text-gray-700" />
+            <p className="text-gray-300 mb-1 text-lg">No campaigns yet</p>
+            <p className="text-sm text-gray-600 mb-6">Create your first AI-drafted campaign. Nothing sends until you approve it.</p>
+            <button
+              onClick={() => setShowWizard(true)}
+              disabled={!workspaceId}
+              className="px-5 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm rounded-lg inline-flex items-center gap-2"
+            >
+              <Sparkles className="w-4 h-4" /> Draft a campaign with AI
+            </button>
+          </div>
+        ) : (
+          <CampaignList
+            campaigns={campaigns}
+            workspaceId={workspaceId!}
+            onChanged={fetchCampaigns}
+          />
+        )}
+
+        {showWizard && workspaceId && (
+          <CampaignWizard
+            workspaceId={workspaceId}
+            onClose={() => setShowWizard(false)}
+            onDone={() => { setShowWizard(false); fetchCampaigns() }}
+          />
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ─── Campaign list ─────────────────────────────────────────────────────────
+
+function CampaignList({
+  campaigns, workspaceId, onChanged,
+}: { campaigns: Campaign[]; workspaceId: string; onChanged: () => void }) {
+  const [reviewState, setReviewState] = useState<{ artifactId: string; approvalId: string; campaignId: string } | null>(null)
+  const [sendingId, setSendingId] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const openReview = async (c: Campaign) => {
+    if (!c.artifact_id) { setError('Campaign has no source artifact to review'); return }
+    // Look up the approval row for this artifact
+    try {
+      const res = await fetch(`/api/approvals?workspaceId=${workspaceId}`)
+      const rows = await res.json() as Array<{ id: string; artifact_id: string; status: string }>
+      const approval = rows.find(r => r.artifact_id === c.artifact_id && r.status === 'pending')
+      if (!approval) { setError('No pending approval row found. The artifact may already be approved or rejected.'); return }
+      setReviewState({ artifactId: c.artifact_id, approvalId: approval.id, campaignId: c.id })
+    } catch {
+      setError('Failed to load approval')
+    }
+  }
+
+  // Fire the dispatch endpoint once the artifact is approved.
+  const dispatch = useCallback(async (campaignId: string) => {
+    setSendingId(campaignId)
+    setError(null)
+    try {
+      const res = await fetch(`/api/email-campaigns/${campaignId}/send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspaceId }),
+      })
+      const data = await res.json() as { ok?: boolean; error?: string; recipientCount?: number }
+      if (!res.ok || !data.ok) throw new Error(data.error || 'Send failed')
+      onChanged()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSendingId(null)
+    }
+  }, [workspaceId, onChanged])
+
+  return (
+    <>
+      {error && (
+        <div className="mb-3 p-3 bg-rose-950/40 border border-rose-900 rounded-lg text-rose-300 text-sm">
+          {error}
+        </div>
+      )}
+      <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+        <table className="w-full text-sm">
+          <thead className="bg-gray-950 border-b border-gray-800">
+            <tr className="text-left text-xs uppercase text-gray-500">
+              <th className="px-4 py-3 font-medium">Campaign</th>
+              <th className="px-4 py-3 font-medium">Status</th>
+              <th className="px-4 py-3 font-medium">Recipients</th>
+              <th className="px-4 py-3 font-medium">Sent</th>
+              <th className="px-4 py-3 font-medium">Updated</th>
+              <th className="px-4 py-3 font-medium text-right">Action</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-800">
+            {campaigns.map(c => {
+              const isSending = sendingId === c.id || c.status === 'sending'
+              const canReview = c.status === 'draft' && c.artifact_id
+              const canDispatch = c.status === 'draft' || c.status === 'scheduled'
+              return (
+                <tr key={c.id} className="hover:bg-gray-950/50">
+                  <td className="px-4 py-3">
+                    <div className="text-white font-medium">{c.name}</div>
+                    {c.subject && <div className="text-xs text-gray-500 truncate max-w-[420px]">{c.subject}</div>}
+                  </td>
+                  <td className="px-4 py-3"><StatusPill status={c.status} /></td>
+                  <td className="px-4 py-3 text-gray-300 tabular-nums">{Number(c.recipient_count).toLocaleString()}</td>
+                  <td className="px-4 py-3 text-gray-300 tabular-nums">
+                    {Number(c.sent_count).toLocaleString()}
+                    {c.failed_count > 0 && <span className="text-rose-400 text-xs ml-1">({c.failed_count} failed)</span>}
+                  </td>
+                  <td className="px-4 py-3 text-xs text-gray-500">{formatRelative(c.updated_at || c.created_at)}</td>
+                  <td className="px-4 py-3 text-right">
+                    {canReview && (
+                      <button
+                        onClick={() => openReview(c)}
+                        className="px-3 py-1 text-xs bg-amber-900/40 hover:bg-amber-900/60 border border-amber-800 text-amber-200 rounded inline-flex items-center gap-1.5 mr-1"
+                      >
+                        <ShieldCheck className="w-3 h-3" /> Review &amp; approve
+                      </button>
+                    )}
+                    {canDispatch && (
+                      <button
+                        onClick={() => dispatch(c.id)}
+                        disabled={isSending}
+                        className="px-3 py-1 text-xs bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white rounded inline-flex items-center gap-1.5"
+                        title={c.artifact_id ? 'Dispatch (requires artifact approval first)' : 'Dispatch (no artifact gate)'}
+                      >
+                        {isSending ? <Loader2 className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />}
+                        {isSending ? 'Sending…' : 'Dispatch'}
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <ReviewRequiredModal
+        isOpen={!!reviewState}
+        approvalId={reviewState?.approvalId || null}
+        artifactId={reviewState?.artifactId || null}
+        workspaceId={workspaceId}
+        publishDestination="email"
+        onApproved={() => {
+          const campaignId = reviewState?.campaignId
+          setReviewState(null)
+          if (campaignId) {
+            // Artifact is now approved → fire the gated dispatch.
+            dispatch(campaignId)
+          }
+        }}
+        onRejected={() => setReviewState(null)}
+        onClose={() => setReviewState(null)}
+      />
+    </>
+  )
+}
+
+// ─── Wizard ────────────────────────────────────────────────────────────────
+
+function CampaignWizard({
+  workspaceId, onClose, onDone,
+}: { workspaceId: string; onClose: () => void; onDone: () => void }) {
+  const [step, setStep] = useState<WizardStep>('audience')
+  const [lists, setLists] = useState<EmailList[]>([])
+  const [selectedListId, setSelectedListId] = useState<string | null>(null)
+  const [campaignName, setCampaignName] = useState('')
+  const [goal, setGoal] = useState('')
+
+  // After drafting:
+  const [drafting, setDrafting] = useState(false)
+  const [draftedCampaignId, setDraftedCampaignId] = useState<string | null>(null)
+  const [draftedArtifactId, setDraftedArtifactId] = useState<string | null>(null)
+  const [draftedApprovalId, setDraftedApprovalId] = useState<string | null>(null)
+  const [content, setContent] = useState<DraftedContent>({ subject: '', body: '' })
+  const [error, setError] = useState<string | null>(null)
+
+  const [savingEdit, setSavingEdit] = useState(false)
+  const [showReview, setShowReview] = useState(false)
+  const [dispatching, setDispatching] = useState(false)
+
+  useEffect(() => {
+    fetch(`/api/email-lists?workspaceId=${workspaceId}&status=active`)
+      .then(r => r.json())
+      .then((rows: EmailList[]) => setLists(Array.isArray(rows) ? rows : []))
+      .catch(() => setLists([]))
+  }, [workspaceId])
+
+  const selectedList = useMemo(
+    () => lists.find(l => l.id === selectedListId) || null,
+    [lists, selectedListId],
+  )
+  const subscriberCount = selectedList
+    ? Number(selectedList.live_subscriber_count ?? selectedList.subscriber_count ?? 0)
+    : 0
+
+  // Step 2: kick off AI drafting (creates artifact + approval row + campaign)
+  const draft = async () => {
+    if (!campaignName.trim()) { setError('Campaign name is required'); return }
+    if (!selectedListId) { setError('Select an audience list'); return }
+    setDrafting(true); setError(null)
+    try {
+      const res = await fetch('/api/agents/email-marketing', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          workspaceId, action: 'generate', campaignName: campaignName.trim(), goal,
+          audience: selectedList?.name || 'Full subscriber list',
+        }),
+      })
+      const data = await res.json() as {
+        ok?: boolean; campaignId?: string; artifactId?: string; approvalId?: string
+        content?: DraftedContent; error?: string
+      }
+      if (!res.ok || !data.ok || !data.campaignId || !data.content) {
+        throw new Error(data.error || 'Drafting failed')
+      }
+      setDraftedCampaignId(data.campaignId)
+      setDraftedArtifactId(data.artifactId || null)
+      setDraftedApprovalId(data.approvalId || null)
+      setContent(data.content)
+      // Attach the list to the campaign now that we have the id back.
+      await fetch('/api/email-campaigns', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: data.campaignId, workspaceId, listId: selectedListId,
+          fromName: selectedList?.default_from_name || undefined,
+          fromEmail: selectedList?.default_from_email || undefined,
+        }),
+      })
+      setStep('review')
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally { setDrafting(false) }
+  }
+
+  // Step 3: save edits to the campaign content_json
+  const persistEdits = async (): Promise<boolean> => {
+    if (!draftedCampaignId) return false
+    setSavingEdit(true); setError(null)
+    try {
+      const res = await fetch('/api/email-campaigns', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: draftedCampaignId, workspaceId,
+          subject: content.subject,
+          contentJson: content,
+        }),
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({})) as { error?: string }
+        throw new Error(data.error || 'Save failed')
+      }
+      return true
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+      return false
+    } finally { setSavingEdit(false) }
+  }
+
+  // Step 4: dispatch (requires approval to be flipped by ReviewRequiredModal)
+  const dispatch = async () => {
+    if (!draftedCampaignId) return
+    setDispatching(true); setError(null)
+    try {
+      const res = await fetch(`/api/email-campaigns/${draftedCampaignId}/send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspaceId, listId: selectedListId }),
+      })
+      const data = await res.json() as { ok?: boolean; error?: string; recipientCount?: number }
+      if (!res.ok || !data.ok) throw new Error(data.error || 'Dispatch failed')
+      onDone()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally { setDispatching(false) }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4">
+      <div className="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-4xl max-h-[90vh] flex flex-col">
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800">
+          <div className="flex items-center gap-2">
+            <Mail className="w-5 h-5 text-indigo-400" />
+            <h3 className="text-white font-semibold">New email campaign</h3>
+          </div>
+          <button onClick={onClose} className="text-gray-500 hover:text-gray-300"><X className="w-4 h-4" /></button>
+        </div>
+
+        {/* Stepper */}
+        <div className="px-6 py-3 border-b border-gray-800 flex items-center gap-2 text-xs">
+          {(['audience', 'compose', 'review', 'dispatch'] as const).map((s, i) => {
+            const active = step === s
+            const done = (['audience', 'compose', 'review', 'dispatch'] as const).indexOf(step) > i
+            const icons = [ListChecks, Sparkles, FileText, Send]
+            const Icon = icons[i]
+            return (
+              <div key={s} className="flex items-center gap-2">
+                <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded ${
+                  active ? 'bg-indigo-900/50 text-indigo-300'
+                  : done ? 'text-emerald-300' : 'text-gray-600'
+                }`}>
+                  {done ? <Check className="w-3 h-3" /> : <Icon className="w-3 h-3" />}
+                  <span className="capitalize font-medium">{s}</span>
                 </div>
-                <p className="text-gray-500 text-xs">{c.sentAt}</p>
-                {c.status === 'sending' && (
-                  <div className="mt-2 w-48 h-1.5 bg-gray-700 rounded-full overflow-hidden">
-                    <div className="h-full bg-indigo-500 rounded-full animate-pulse" style={{ width: '62%' }} />
+                {i < 3 && <ArrowRight className="w-3 h-3 text-gray-700" />}
+              </div>
+            )
+          })}
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-auto p-6">
+          {step === 'audience' && (
+            <div className="space-y-4">
+              <div>
+                <label className="block text-xs uppercase text-gray-500 mb-1.5">Campaign name *</label>
+                <input
+                  value={campaignName} onChange={e => setCampaignName(e.target.value)}
+                  placeholder="e.g. March product launch"
+                  className="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:border-indigo-600 focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="block text-xs uppercase text-gray-500 mb-1.5">Goal (optional — guides AI drafting)</label>
+                <input
+                  value={goal} onChange={e => setGoal(e.target.value)}
+                  placeholder="e.g. Drive 200 demo signups"
+                  className="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:border-indigo-600 focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="block text-xs uppercase text-gray-500 mb-1.5">Audience list *</label>
+                {lists.length === 0 ? (
+                  <div className="p-4 border border-dashed border-gray-800 rounded-lg text-center text-sm text-gray-500">
+                    No active lists. Create one in <a href="/dashboard/email-marketing" className="text-indigo-400 hover:text-indigo-300">Email Marketing → Lists</a> first.
+                  </div>
+                ) : (
+                  <div className="space-y-2 max-h-72 overflow-auto">
+                    {lists.map(l => {
+                      const count = Number(l.live_subscriber_count ?? l.subscriber_count ?? 0)
+                      const active = selectedListId === l.id
+                      return (
+                        <button
+                          key={l.id}
+                          onClick={() => setSelectedListId(l.id)}
+                          className={`w-full text-left p-3 border rounded-lg transition-colors ${
+                            active ? 'border-indigo-600 bg-indigo-900/20'
+                            : 'border-gray-800 hover:border-gray-700 bg-gray-950'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <div className="text-white font-medium text-sm">{l.name}</div>
+                              {l.description && <div className="text-xs text-gray-500 mt-0.5">{l.description}</div>}
+                            </div>
+                            <div className="text-right">
+                              <div className="text-indigo-300 font-mono text-sm">{count.toLocaleString()}</div>
+                              <div className="text-[10px] text-gray-600 uppercase">subscribers</div>
+                            </div>
+                          </div>
+                        </button>
+                      )
+                    })}
                   </div>
                 )}
               </div>
-              {/* Mini stats */}
-              {c.status === 'sent' && (
-                <div className="flex items-center gap-4 flex-wrap">
-                  <div className="text-center">
-                    <p className="text-gray-500 text-xs">Sent</p>
-                    <p className="text-white font-bold text-sm">{c.stats.sent.toLocaleString()}</p>
-                  </div>
-                  <div className="text-center">
-                    <p className="text-gray-500 text-xs">Opens</p>
-                    <p className="text-emerald-400 font-bold text-sm">{c.stats.opens}%</p>
-                  </div>
-                  <div className="text-center">
-                    <p className="text-gray-500 text-xs">Clicks</p>
-                    <p className="text-indigo-400 font-bold text-sm">{c.stats.clicks}%</p>
-                  </div>
-                  <div className="text-center">
-                    <p className="text-gray-500 text-xs">Unsubs</p>
-                    <p className="text-gray-400 font-bold text-sm">{c.stats.unsubs}</p>
-                  </div>
-                  <div className="text-center">
-                    <p className="text-gray-500 text-xs">Revenue</p>
-                    <p className="text-white font-bold text-sm">${c.stats.revenue.toLocaleString()}</p>
-                  </div>
-                </div>
-              )}
-              {(c.status === 'draft' || c.status === 'scheduled') && (
-                <div className="text-right">
-                  <p className="text-gray-500 text-xs">{c.list}</p>
-                  <p className="text-white text-sm font-medium">{c.listCount.toLocaleString()} contacts</p>
-                </div>
-              )}
             </div>
-            {/* Actions */}
-            <div className="flex items-center gap-2 mt-4 pt-3 border-t border-gray-800 flex-wrap">
-              {c.status === 'sent' && (
-                <>
-                  <button
-                    onClick={() => setReportCampaign(c)}
-                    className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium transition-colors"
-                  >
-                    View Report
-                  </button>
-                  <button className="px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs transition-colors">
-                    Resend to Unopened ({Math.round(c.stats.sent * (1 - c.stats.opens / 100))})
-                  </button>
-                </>
-              )}
+          )}
+
+          {step === 'compose' && (
+            <div className="space-y-4 text-center py-8">
+              <Sparkles className="w-10 h-10 mx-auto text-indigo-400" />
+              <p className="text-white text-lg">Ready to draft with AI</p>
+              <p className="text-sm text-gray-500 max-w-md mx-auto">
+                Claude will write subject, preview text, body, and CTA tuned to your brand voice
+                and the audience you selected.
+              </p>
+              <div className="bg-gray-950 border border-gray-800 rounded-lg p-4 max-w-md mx-auto text-left text-sm">
+                <div className="flex justify-between"><span className="text-gray-500">Campaign:</span> <span className="text-white">{campaignName}</span></div>
+                <div className="flex justify-between mt-1"><span className="text-gray-500">Audience:</span> <span className="text-white">{selectedList?.name}</span></div>
+                <div className="flex justify-between mt-1"><span className="text-gray-500">Recipients:</span> <span className="text-indigo-300 tabular-nums">{subscriberCount.toLocaleString()}</span></div>
+              </div>
               <button
-                onClick={() => handleDuplicate(c)}
-                className="px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs transition-colors"
+                onClick={draft} disabled={drafting}
+                className="px-5 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm rounded-lg inline-flex items-center gap-2"
               >
-                Duplicate
+                {drafting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+                {drafting ? 'Drafting…' : 'Draft with AI'}
               </button>
-              {c.status !== 'archived' && (
+            </div>
+          )}
+
+          {step === 'review' && (
+            <div className="space-y-4">
+              <div className="flex items-center gap-2 px-3 py-2 bg-emerald-950/30 border border-emerald-900/50 rounded-lg text-xs text-emerald-300">
+                <Check className="w-3.5 h-3.5" /> Draft saved as artifact. You can edit below — changes save when you continue.
+              </div>
+              <div>
+                <label className="block text-xs uppercase text-gray-500 mb-1.5">Subject line</label>
+                <input
+                  value={content.subject || ''} onChange={e => setContent({ ...content, subject: e.target.value })}
+                  className="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-white focus:border-indigo-600 focus:outline-none"
+                />
+              </div>
+              {content.previewText !== undefined && (
+                <div>
+                  <label className="block text-xs uppercase text-gray-500 mb-1.5">Preview text</label>
+                  <input
+                    value={content.previewText} onChange={e => setContent({ ...content, previewText: e.target.value })}
+                    className="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-white focus:border-indigo-600 focus:outline-none"
+                  />
+                </div>
+              )}
+              {content.headline !== undefined && (
+                <div>
+                  <label className="block text-xs uppercase text-gray-500 mb-1.5">Headline</label>
+                  <input
+                    value={content.headline} onChange={e => setContent({ ...content, headline: e.target.value })}
+                    className="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-white focus:border-indigo-600 focus:outline-none"
+                  />
+                </div>
+              )}
+              <div>
+                <label className="block text-xs uppercase text-gray-500 mb-1.5">Body</label>
+                <textarea
+                  value={content.body || ''} onChange={e => setContent({ ...content, body: e.target.value })}
+                  rows={10}
+                  className="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-white focus:border-indigo-600 focus:outline-none font-mono"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                {content.cta !== undefined && (
+                  <div>
+                    <label className="block text-xs uppercase text-gray-500 mb-1.5">CTA</label>
+                    <input
+                      value={content.cta} onChange={e => setContent({ ...content, cta: e.target.value })}
+                      className="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-white focus:border-indigo-600 focus:outline-none"
+                    />
+                  </div>
+                )}
+                {content.ctaUrl !== undefined && (
+                  <div>
+                    <label className="block text-xs uppercase text-gray-500 mb-1.5">CTA URL</label>
+                    <input
+                      value={content.ctaUrl} onChange={e => setContent({ ...content, ctaUrl: e.target.value })}
+                      className="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-white focus:border-indigo-600 focus:outline-none font-mono"
+                    />
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {step === 'dispatch' && (
+            <div className="space-y-4 text-center py-6">
+              <ShieldCheck className="w-12 h-12 mx-auto text-amber-400" />
+              <p className="text-white text-lg">Human approval required before send</p>
+              <p className="text-sm text-gray-500 max-w-md mx-auto">
+                Click below to open the review modal. Once you approve, the campaign will dispatch
+                to <span className="text-indigo-300">{subscriberCount.toLocaleString()}</span> subscribers
+                automatically.
+              </p>
+              <div className="flex justify-center gap-2">
                 <button
-                  onClick={() => handleArchive(c.id)}
-                  className="px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-400 text-xs transition-colors"
+                  onClick={() => setShowReview(true)}
+                  disabled={!draftedArtifactId || !draftedApprovalId || dispatching}
+                  className="px-5 py-2 bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white text-sm rounded-lg inline-flex items-center gap-2"
                 >
-                  Archive
+                  <ShieldCheck className="w-4 h-4" /> Open review &amp; approve
                 </button>
+              </div>
+              {dispatching && (
+                <div className="text-sm text-indigo-300 inline-flex items-center gap-2 mt-3">
+                  <Loader2 className="w-4 h-4 animate-spin" /> Dispatching campaign…
+                </div>
               )}
             </div>
-          </div>
-        ))}
+          )}
+
+          {error && (
+            <div className="mt-4 p-3 bg-rose-950/40 border border-rose-900 rounded-lg text-rose-300 text-sm">
+              {error}
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="px-6 py-4 border-t border-gray-800 flex items-center justify-between">
+          <button
+            onClick={() => {
+              if (step === 'compose') setStep('audience')
+              else if (step === 'review') setStep('compose')
+              else if (step === 'dispatch') setStep('review')
+            }}
+            disabled={step === 'audience' || drafting || savingEdit || dispatching}
+            className="px-3 py-1.5 text-sm text-gray-400 hover:text-gray-200 disabled:opacity-40 inline-flex items-center gap-2"
+          >
+            <ArrowLeft className="w-4 h-4" /> Back
+          </button>
+
+          {step === 'audience' && (
+            <button
+              onClick={() => setStep('compose')}
+              disabled={!campaignName.trim() || !selectedListId}
+              className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm rounded-lg inline-flex items-center gap-2"
+            >
+              Continue <ArrowRight className="w-4 h-4" />
+            </button>
+          )}
+
+          {step === 'review' && (
+            <button
+              onClick={async () => { if (await persistEdits()) setStep('dispatch') }}
+              disabled={savingEdit || !content.subject?.trim() || !content.body?.trim()}
+              className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm rounded-lg inline-flex items-center gap-2"
+            >
+              {savingEdit ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowRight className="w-4 h-4" />}
+              {savingEdit ? 'Saving…' : 'Save & continue'}
+            </button>
+          )}
+        </div>
       </div>
 
-      {/* ══════════════════════════════════════════════════════════
-          NEW CAMPAIGN MODAL
-      ══════════════════════════════════════════════════════════ */}
-      {showNew && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-950/80 backdrop-blur-sm p-4">
-          <div className="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-2xl max-h-[90vh] overflow-hidden shadow-2xl flex flex-col">
-            {/* Modal header */}
-            <div className="flex items-center justify-between px-6 py-5 border-b border-gray-800 flex-shrink-0">
-              <div>
-                <h2 className="text-white font-semibold">New Campaign</h2>
-                <div className="flex items-center gap-2 mt-2">
-                  {[1, 2, 3, 4].map(s => (
-                    <div key={s} className="flex items-center gap-1.5">
-                      <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold ${step >= s ? 'bg-indigo-600 text-white' : 'bg-gray-700 text-gray-500'}`}>{s}</div>
-                      {s < 4 && <div className={`w-8 h-px ${step > s ? 'bg-indigo-600' : 'bg-gray-700'}`} />}
-                    </div>
-                  ))}
-                  <span className="text-gray-500 text-xs ml-2">{['Setup', 'Audience', 'Content', 'Schedule'][step - 1]}</span>
-                </div>
-              </div>
-              <button onClick={() => { setShowNew(false); setStep(1) }} className="text-gray-500 hover:text-white text-xl leading-none transition-colors">x</button>
-            </div>
-
-            <div className="overflow-y-auto flex-1 p-6">
-              {/* ── Step 1: Setup ── */}
-              {step === 1 && (
-                <div className="space-y-4">
-                  <div>
-                    <label className="block text-gray-400 text-xs font-semibold uppercase tracking-wide mb-2">Campaign Name *</label>
-                    <input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. June Newsletter" className={inputCls} />
-                  </div>
-                  <div>
-                    <label className="block text-gray-400 text-xs font-semibold uppercase tracking-wide mb-2">Campaign Type</label>
-                    <div className="grid grid-cols-2 gap-2">
-                      {['Newsletter', 'Promotional', 'Announcement', 'Re-engagement'].map(t => (
-                        <button
-                          key={t}
-                          onClick={() => setForm(f => ({ ...f, type: t }))}
-                          className={`px-4 py-2.5 rounded-lg border text-sm font-medium transition-colors ${form.type === t ? 'border-indigo-500 bg-indigo-900/30 text-white' : 'border-gray-700 bg-gray-800 text-gray-400 hover:border-gray-600 hover:text-white'}`}
-                        >
-                          {t}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-gray-400 text-xs font-semibold uppercase tracking-wide mb-2">From Name</label>
-                      <input value={form.fromName} onChange={e => setForm(f => ({ ...f, fromName: e.target.value }))} className={inputCls} />
-                    </div>
-                    <div>
-                      <label className="block text-gray-400 text-xs font-semibold uppercase tracking-wide mb-2">From Email</label>
-                      <input value={form.fromEmail} onChange={e => setForm(f => ({ ...f, fromEmail: e.target.value }))} className={inputCls} />
-                    </div>
-                  </div>
-                  <div>
-                    <label className="block text-gray-400 text-xs font-semibold uppercase tracking-wide mb-2">Reply-to Email</label>
-                    <input value={form.replyTo} onChange={e => setForm(f => ({ ...f, replyTo: e.target.value }))} className={inputCls} />
-                  </div>
-                  <div className="border border-gray-800 rounded-xl p-4 space-y-3">
-                    <p className="text-gray-400 text-xs font-semibold uppercase tracking-wide">Tracking</p>
-                    {[
-                      { key: 'trackOpens', label: 'Open Tracking' },
-                      { key: 'trackClicks', label: 'Click Tracking' },
-                    ].map(({ key, label }) => (
-                      <label key={key} className="flex items-center justify-between cursor-pointer">
-                        <span className="text-gray-300 text-sm">{label}</span>
-                        <button
-                          onClick={() => setForm(f => ({ ...f, [key]: !f[key as keyof typeof f] }))}
-                          className={`w-10 h-6 rounded-full transition-colors relative ${(form as Record<string, unknown>)[key] ? 'bg-indigo-600' : 'bg-gray-700'}`}
-                        >
-                          <span className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-all ${(form as Record<string, unknown>)[key] ? 'left-5' : 'left-1'}`} />
-                        </button>
-                      </label>
-                    ))}
-                    <div className="grid grid-cols-2 gap-3 pt-1">
-                      <div>
-                        <label className="block text-gray-500 text-xs mb-1">UTM Source</label>
-                        <input value={form.utmSource} onChange={e => setForm(f => ({ ...f, utmSource: e.target.value }))} className={inputCls} />
-                      </div>
-                      <div>
-                        <label className="block text-gray-500 text-xs mb-1">UTM Medium</label>
-                        <input value={form.utmMedium} onChange={e => setForm(f => ({ ...f, utmMedium: e.target.value }))} className={inputCls} />
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* ── Step 2: Audience ── */}
-              {step === 2 && (
-                <div className="space-y-4">
-                  <div>
-                    <label className="block text-gray-400 text-xs font-semibold uppercase tracking-wide mb-2">Send To *</label>
-                    <select value={form.list} onChange={e => setForm(f => ({ ...f, list: e.target.value }))} className={inputCls}>
-                      <option value="">Select a list or segment...</option>
-                      {LISTS.map(l => <option key={l} value={l}>{l}</option>)}
-                    </select>
-                    {form.list && (
-                      <p className="text-indigo-300 text-xs mt-1.5">Estimated reach: ~{estimatedReach} contacts</p>
-                    )}
-                  </div>
-                  <div>
-                    <label className="block text-gray-400 text-xs font-semibold uppercase tracking-wide mb-2">Exclude Contacts</label>
-                    <div className="flex items-center gap-2">
-                      <span className="text-gray-400 text-sm">Who received a campaign in the last</span>
-                      <input
-                        type="number"
-                        value={form.excludeDays}
-                        onChange={e => setForm(f => ({ ...f, excludeDays: parseInt(e.target.value) || 30 }))}
-                        className="w-16 px-2 py-1.5 rounded-lg bg-gray-800 border border-gray-700 text-white text-sm focus:outline-none focus:border-indigo-500 text-center"
-                        min={1}
-                        max={365}
-                      />
-                      <span className="text-gray-400 text-sm">days</span>
-                    </div>
-                  </div>
-                  <label className="flex items-center justify-between cursor-pointer border border-gray-800 rounded-xl p-4">
-                    <div>
-                      <p className="text-gray-300 text-sm font-medium">Send in recipient&apos;s timezone</p>
-                      <p className="text-gray-500 text-xs mt-0.5">Delivers at the same local time for each subscriber</p>
-                    </div>
-                    <button
-                      onClick={() => setForm(f => ({ ...f, recipientTimezone: !f.recipientTimezone }))}
-                      className={`w-10 h-6 rounded-full transition-colors relative flex-shrink-0 ${form.recipientTimezone ? 'bg-indigo-600' : 'bg-gray-700'}`}
-                    >
-                      <span className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-all ${form.recipientTimezone ? 'left-5' : 'left-1'}`} />
-                    </button>
-                  </label>
-                </div>
-              )}
-
-              {/* ── Step 3: Content ── */}
-              {step === 3 && (
-                <div className="space-y-4">
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <label className="text-gray-400 text-xs font-semibold uppercase tracking-wide">Subject Line *</label>
-                      <span className={`text-xs ${form.subject.length > 60 ? 'text-red-400' : 'text-gray-500'}`}>{form.subject.length}/60</span>
-                    </div>
-                    <input
-                      value={form.subject}
-                      onChange={e => setForm(f => ({ ...f, subject: e.target.value }))}
-                      placeholder="Write a compelling subject line..."
-                      className={inputCls}
-                    />
-                    <button
-                      onClick={() => setShowAiSubjects(s => !s)}
-                      className="mt-2 px-3 py-1.5 rounded-lg bg-indigo-900/30 border border-indigo-800/40 text-indigo-300 text-xs font-medium hover:bg-indigo-900/50 transition-colors"
-                    >
-                      AI Subject Line Suggestions
-                    </button>
-                    {showAiSubjects && (
-                      <div className="mt-2 space-y-1.5">
-                        {AI_SUBJECTS.map((s, i) => (
-                          <button
-                            key={i}
-                            onClick={() => { setForm(f => ({ ...f, subject: s })); setShowAiSubjects(false) }}
-                            className="w-full text-left px-3 py-2.5 rounded-lg bg-gray-800 border border-gray-700 text-gray-300 hover:border-indigo-600 hover:text-white text-sm transition-colors"
-                          >
-                            {s}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                  <div>
-                    <label className="block text-gray-400 text-xs font-semibold uppercase tracking-wide mb-2">Preview Text</label>
-                    <input
-                      value={form.previewText}
-                      onChange={e => setForm(f => ({ ...f, previewText: e.target.value }))}
-                      placeholder="Short preview shown in inbox..."
-                      className={inputCls}
-                    />
-                  </div>
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <label className="text-gray-400 text-xs font-semibold uppercase tracking-wide">Email Template</label>
-                      <button
-                        onClick={() => setForm(f => ({ ...f, useHtml: !f.useHtml }))}
-                        className="text-gray-500 hover:text-indigo-300 text-xs transition-colors"
-                      >
-                        {form.useHtml ? 'Use Template' : 'Write HTML'}
-                      </button>
-                    </div>
-                    {!form.useHtml ? (
-                      <div className="grid grid-cols-2 gap-2">
-                        {TEMPLATES.map(t => (
-                          <button
-                            key={t}
-                            onClick={() => setForm(f => ({ ...f, template: t }))}
-                            className={`px-3 py-2.5 rounded-lg border text-sm text-left transition-colors ${form.template === t ? 'border-indigo-500 bg-indigo-900/30 text-white' : 'border-gray-700 bg-gray-800 text-gray-400 hover:border-gray-600 hover:text-white'}`}
-                          >
-                            {t}
-                          </button>
-                        ))}
-                      </div>
-                    ) : (
-                      <textarea
-                        value={form.htmlContent}
-                        onChange={e => setForm(f => ({ ...f, htmlContent: e.target.value }))}
-                        rows={8}
-                        placeholder="<html>...</html>"
-                        className={inputCls + ' font-mono text-xs resize-y'}
-                      />
-                    )}
-                  </div>
-                  <button
-                    onClick={() => setShowEmailPreview(true)}
-                    className="px-4 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm transition-colors"
-                  >
-                    Preview Email
-                  </button>
-                </div>
-              )}
-
-              {/* ── Step 4: Schedule ── */}
-              {step === 4 && (
-                <div className="space-y-5">
-                  {/* Send options */}
-                  <div className="grid grid-cols-2 gap-3">
-                    <button
-                      onClick={() => setForm(f => ({ ...f, sendNow: true }))}
-                      className={`p-4 rounded-xl border text-left transition-colors ${form.sendNow ? 'border-indigo-500 bg-indigo-900/20' : 'border-gray-700 bg-gray-800 hover:border-gray-600'}`}
-                    >
-                      <p className={`font-semibold text-sm ${form.sendNow ? 'text-white' : 'text-gray-300'}`}>Send Now</p>
-                      <p className="text-gray-500 text-xs mt-0.5">Dispatch immediately</p>
-                    </button>
-                    <button
-                      onClick={() => setForm(f => ({ ...f, sendNow: false }))}
-                      className={`p-4 rounded-xl border text-left transition-colors ${!form.sendNow ? 'border-indigo-500 bg-indigo-900/20' : 'border-gray-700 bg-gray-800 hover:border-gray-600'}`}
-                    >
-                      <p className={`font-semibold text-sm ${!form.sendNow ? 'text-white' : 'text-gray-300'}`}>Schedule</p>
-                      <p className="text-gray-500 text-xs mt-0.5">Pick date and time</p>
-                    </button>
-                  </div>
-                  {!form.sendNow && (
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <label className="block text-gray-400 text-xs mb-1.5">Date</label>
-                        <input type="date" value={form.scheduleDate} onChange={e => setForm(f => ({ ...f, scheduleDate: e.target.value }))} className={inputCls} />
-                      </div>
-                      <div>
-                        <label className="block text-gray-400 text-xs mb-1.5">Time</label>
-                        <input type="time" value={form.scheduleTime} onChange={e => setForm(f => ({ ...f, scheduleTime: e.target.value }))} className={inputCls} />
-                      </div>
-                    </div>
-                  )}
-                  <div className="flex items-center justify-between border border-gray-800 rounded-xl p-4">
-                    <div>
-                      <p className="text-gray-300 text-sm font-medium">Best Time (AI Recommended)</p>
-                      <p className="text-indigo-300 text-xs mt-0.5">Tuesday 9:00 AM — based on your past campaigns</p>
-                    </div>
-                    <button
-                      onClick={() => setForm(f => ({ ...f, sendNow: false, scheduleDate: '2026-06-10', scheduleTime: '09:00' }))}
-                      className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium transition-colors"
-                    >
-                      Use
-                    </button>
-                  </div>
-                  {/* A/B Test */}
-                  <label className="flex items-center justify-between cursor-pointer border border-gray-800 rounded-xl p-4">
-                    <div>
-                      <p className="text-gray-300 text-sm font-medium">A/B Test</p>
-                      <p className="text-gray-500 text-xs mt-0.5">Split-test subject lines or send times</p>
-                    </div>
-                    <button
-                      onClick={() => setForm(f => ({ ...f, abTest: !f.abTest }))}
-                      className={`w-10 h-6 rounded-full transition-colors relative flex-shrink-0 ${form.abTest ? 'bg-indigo-600' : 'bg-gray-700'}`}
-                    >
-                      <span className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-all ${form.abTest ? 'left-5' : 'left-1'}`} />
-                    </button>
-                  </label>
-                  {form.abTest && (
-                    <div>
-                      <label className="block text-gray-400 text-xs mb-1.5">Variant B Subject Line</label>
-                      <input value={form.abSubjectB} onChange={e => setForm(f => ({ ...f, abSubjectB: e.target.value }))} placeholder="Alternative subject..." className={inputCls} />
-                    </div>
-                  )}
-                  {/* Summary */}
-                  <div className="bg-gray-800 border border-gray-700 rounded-xl p-4 space-y-2">
-                    <p className="text-gray-400 text-xs font-semibold uppercase tracking-wide mb-3">Campaign Summary</p>
-                    {[
-                      { label: 'Name', value: form.name || 'Untitled' },
-                      { label: 'Type', value: form.type },
-                      { label: 'From', value: `${form.fromName} <${form.fromEmail}>` },
-                      { label: 'List', value: form.list || '—' },
-                      { label: 'Subject', value: form.subject || '—' },
-                      { label: 'Template', value: form.template || (form.useHtml ? 'Custom HTML' : '—') },
-                      { label: 'Send', value: form.sendNow ? 'Immediately' : `${form.scheduleDate} at ${form.scheduleTime}` },
-                    ].map(row => (
-                      <div key={row.label} className="flex items-start gap-3">
-                        <span className="text-gray-500 text-xs w-20 flex-shrink-0">{row.label}</span>
-                        <span className="text-gray-200 text-xs">{row.value}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Modal footer */}
-            <div className="flex items-center justify-between px-6 py-4 border-t border-gray-800 flex-shrink-0">
-              <button
-                onClick={() => setStep(s => Math.max(1, s - 1))}
-                disabled={step === 1}
-                className="px-4 py-2 rounded-lg border border-gray-700 text-gray-400 hover:text-white disabled:opacity-40 text-sm transition-colors"
-              >
-                Back
-              </button>
-              {step < 4 ? (
-                <button
-                  onClick={() => setStep(s => s + 1)}
-                  disabled={step === 1 && !form.name}
-                  className="px-6 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-sm font-medium transition-colors"
-                >
-                  Continue
-                </button>
-              ) : (
-                <button
-                  onClick={handleLaunch}
-                  disabled={launched || !form.name || !form.subject}
-                  className="px-6 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white text-sm font-semibold transition-colors"
-                >
-                  {launched ? 'Launching...' : form.sendNow ? 'Send Campaign' : 'Schedule Campaign'}
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ══════════════════════════════════════════════════════════
-          EMAIL PREVIEW MODAL
-      ══════════════════════════════════════════════════════════ */}
-      {showEmailPreview && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-gray-950/80 backdrop-blur-sm p-4">
-          <div className="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden">
-            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800">
-              <h3 className="text-white font-semibold">Email Preview</h3>
-              <button onClick={() => setShowEmailPreview(false)} className="text-gray-500 hover:text-white text-xl leading-none transition-colors">x</button>
-            </div>
-            <div className="p-4 bg-gray-950 overflow-y-auto max-h-[70vh]">
-              <div className="max-w-sm mx-auto bg-white rounded-xl overflow-hidden shadow-lg">
-                <div className="bg-gray-100 px-4 py-2 border-b border-gray-200">
-                  <p className="text-gray-700 text-xs"><span className="font-medium">From:</span> {form.fromName} &lt;{form.fromEmail}&gt;</p>
-                  <p className="text-gray-700 text-xs mt-0.5"><span className="font-medium">Subject:</span> {form.subject || '(No subject)'}</p>
-                  {form.previewText && <p className="text-gray-500 text-xs mt-0.5 italic">{form.previewText}</p>}
-                </div>
-                <div className="bg-indigo-700 px-6 py-4 text-center">
-                  <p className="text-white font-bold text-lg">Ooumph</p>
-                </div>
-                <div className="bg-gray-100 h-28 flex items-center justify-center">
-                  <p className="text-gray-400 text-xs">[Hero Image: {form.template || 'Template'}]</p>
-                </div>
-                <div className="p-6">
-                  <h2 className="text-gray-900 font-bold text-base mb-3">{form.subject || 'Your Email Headline'}</h2>
-                  <p className="text-gray-600 text-sm leading-relaxed mb-4">
-                    Hi {'{{first_name}}'},<br /><br />
-                    Your personalized email content will appear here. This preview shows how your email will look to subscribers.
-                  </p>
-                  <div className="text-center">
-                    <span className="inline-block px-6 py-2.5 rounded-lg bg-indigo-600 text-white text-sm font-medium">View Now</span>
-                  </div>
-                </div>
-                <div className="bg-gray-200 px-6 py-3 text-center space-y-1">
-                  <p className="text-gray-500 text-xs">{form.fromName} · {form.fromEmail}</p>
-                  <p className="text-gray-400 text-xs">Unsubscribe | View in browser | Privacy Policy</p>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ══════════════════════════════════════════════════════════
-          CAMPAIGN REPORT
-      ══════════════════════════════════════════════════════════ */}
-      {reportCampaign && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-950/80 backdrop-blur-sm p-4">
-          <div className="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-3xl max-h-[90vh] overflow-hidden shadow-2xl flex flex-col">
-            <div className="flex items-center justify-between px-6 py-5 border-b border-gray-800 flex-shrink-0">
-              <div>
-                <h2 className="text-white font-semibold">{reportCampaign.name}</h2>
-                <p className="text-gray-500 text-xs mt-0.5">{reportCampaign.sentAt}</p>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => {
-                    const blob = new Blob([JSON.stringify(reportCampaign, null, 2)], { type: 'application/json' })
-                    const url = URL.createObjectURL(blob)
-                    const a = document.createElement('a'); a.href = url; a.download = `report_${reportCampaign.id}.json`; a.click()
-                  }}
-                  className="px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs transition-colors"
-                >
-                  Export Report
-                </button>
-                <button onClick={() => setReportCampaign(null)} className="text-gray-500 hover:text-white text-xl leading-none transition-colors">x</button>
-              </div>
-            </div>
-            <div className="overflow-y-auto flex-1 p-6 space-y-6">
-              {/* KPI Header */}
-              <div className="grid grid-cols-3 sm:grid-cols-6 gap-3">
-                {[
-                  { label: 'Delivered', value: reportCampaign.stats.sent.toLocaleString(), color: 'text-white' },
-                  { label: 'Opens', value: `${reportCampaign.stats.opens}%`, color: 'text-emerald-400' },
-                  { label: 'Clicks', value: `${reportCampaign.stats.clicks}%`, color: 'text-indigo-400' },
-                  { label: 'Unsubscribes', value: reportCampaign.stats.unsubs.toString(), color: 'text-red-400' },
-                  { label: 'Bounces', value: Math.round(reportCampaign.stats.sent * 0.014).toString(), color: 'text-yellow-400' },
-                  { label: 'Revenue', value: `$${reportCampaign.stats.revenue.toLocaleString()}`, color: 'text-white' },
-                ].map(k => (
-                  <div key={k.label} className="bg-gray-800 border border-gray-700 rounded-xl p-3 text-center">
-                    <p className="text-gray-500 text-xs">{k.label}</p>
-                    <p className={`font-bold text-base mt-0.5 ${k.color}`}>{k.value}</p>
-                  </div>
-                ))}
-              </div>
-
-              {/* Opens over time (hourly) */}
-              {reportCampaign.opensByHour.length > 0 && (
-                <div className="bg-gray-800 border border-gray-700 rounded-xl p-5">
-                  <h3 className="text-white font-medium text-sm mb-4">Open Rate Over Time — First 24 Hours</h3>
-                  <div className="flex items-end gap-0.5 h-20">
-                    {reportCampaign.opensByHour.map((v, i) => (
-                      <div key={i} className="flex-1 flex flex-col justify-end" style={{ height: '100%' }}>
-                        <div
-                          className="bg-indigo-500 rounded-t-sm w-full"
-                          style={{ height: `${(v / maxHourly) * 100}%` }}
-                          title={`Hour ${i}: ${v} opens`}
-                        />
-                      </div>
-                    ))}
-                  </div>
-                  <div className="flex justify-between text-gray-600 text-xs mt-1">
-                    <span>12am</span><span>6am</span><span>12pm</span><span>6pm</span><span>12am</span>
-                  </div>
-                </div>
-              )}
-
-              {/* Click map + Device breakdown */}
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                {/* Clicked links */}
-                <div className="bg-gray-800 border border-gray-700 rounded-xl p-5">
-                  <h3 className="text-white font-medium text-sm mb-3">Link Click Map</h3>
-                  {reportCampaign.clickedLinks.length > 0 ? (
-                    <div className="space-y-2">
-                      {reportCampaign.clickedLinks.map((link, i) => (
-                        <div key={i}>
-                          <div className="flex justify-between text-xs mb-1">
-                            <span className="text-gray-400 truncate max-w-[180px]">{link.url}</span>
-                            <span className="text-white font-medium">{link.clicks}</span>
-                          </div>
-                          <div className="h-1.5 bg-gray-700 rounded-full overflow-hidden">
-                            <div className="h-full bg-indigo-500 rounded-full" style={{ width: `${(link.clicks / reportCampaign.clickedLinks[0].clicks) * 100}%` }} />
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  ) : <p className="text-gray-600 text-sm">No click data available</p>}
-                </div>
-
-                {/* Device breakdown */}
-                <div className="bg-gray-800 border border-gray-700 rounded-xl p-5">
-                  <h3 className="text-white font-medium text-sm mb-3">Device Breakdown</h3>
-                  <div className="space-y-2">
-                    {[
-                      { device: 'Desktop', pct: reportCampaign.devices.desktop, color: 'bg-indigo-500' },
-                      { device: 'Mobile', pct: reportCampaign.devices.mobile, color: 'bg-emerald-500' },
-                      { device: 'Tablet', pct: reportCampaign.devices.tablet, color: 'bg-yellow-500' },
-                    ].map(d => (
-                      <div key={d.device}>
-                        <div className="flex justify-between text-xs mb-1">
-                          <span className="text-gray-400">{d.device}</span>
-                          <span className="text-white font-medium">{d.pct}%</span>
-                        </div>
-                        <div className="h-2 bg-gray-700 rounded-full overflow-hidden">
-                          <div className={`h-full ${d.color} rounded-full`} style={{ width: `${d.pct}%` }} />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                  {/* Simulated pie */}
-                  <div className="flex gap-2 mt-3">
-                    {[
-                      { device: 'Desktop', color: 'bg-indigo-500', pct: reportCampaign.devices.desktop },
-                      { device: 'Mobile', color: 'bg-emerald-500', pct: reportCampaign.devices.mobile },
-                      { device: 'Tablet', color: 'bg-yellow-500', pct: reportCampaign.devices.tablet },
-                    ].map(d => (
-                      <div key={d.device} className={`h-3 rounded-full ${d.color}`} style={{ flex: d.pct }} />
-                    ))}
-                  </div>
-                </div>
-              </div>
-
-              {/* Geographic spread */}
-              {reportCampaign.geo.length > 0 && (
-                <div className="bg-gray-800 border border-gray-700 rounded-xl p-5">
-                  <h3 className="text-white font-medium text-sm mb-3">Geographic Spread</h3>
-                  <table className="w-full">
-                    <thead>
-                      <tr className="border-b border-gray-700">
-                        <th className="text-left text-xs text-gray-500 pb-2">Country / City</th>
-                        <th className="text-right text-xs text-gray-500 pb-2">Clicks</th>
-                        <th className="text-right text-xs text-gray-500 pb-2">Share</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {reportCampaign.geo.map((g, i) => {
-                        const total = reportCampaign.geo.reduce((a, x) => a + x.clicks, 0)
-                        return (
-                          <tr key={i} className="border-b border-gray-700 last:border-0">
-                            <td className="py-2 text-gray-300 text-sm">{g.name}</td>
-                            <td className="py-2 text-right text-white text-sm font-medium">{g.clicks}</td>
-                            <td className="py-2 text-right text-gray-500 text-xs">{((g.clicks / total) * 100).toFixed(0)}%</td>
-                          </tr>
-                        )
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-
-              {/* Subscriber Activity */}
-              <div className="bg-gray-800 border border-gray-700 rounded-xl overflow-hidden">
-                <div className="flex items-center justify-between px-5 py-4 border-b border-gray-700">
-                  <h3 className="text-white font-medium text-sm">Subscriber Activity</h3>
-                  <button className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium transition-colors">
-                    Resend to Unopened ({Math.round(reportCampaign.stats.sent * (1 - reportCampaign.stats.opens / 100))})
-                  </button>
-                </div>
-                <table className="w-full">
-                  <thead>
-                    <tr className="border-b border-gray-700">
-                      {['Subscriber', 'Opened', 'Clicked', 'Unsubscribed'].map(h => (
-                        <th key={h} className="text-left px-4 py-3 text-xs text-gray-500 font-semibold">{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {SUBSCRIBER_ACTIVITY.map((sub, i) => (
-                      <tr key={i} className="border-b border-gray-700 last:border-0">
-                        <td className="px-4 py-2.5">
-                          <p className="text-white text-sm">{sub.name}</p>
-                          <p className="text-gray-500 text-xs">{sub.email}</p>
-                        </td>
-                        <td className="px-4 py-2.5">
-                          {sub.opened ? <span className="text-emerald-400 text-xs font-medium">Yes</span> : <span className="text-gray-600 text-xs">No</span>}
-                        </td>
-                        <td className="px-4 py-2.5">
-                          {sub.clicked ? <span className="text-indigo-400 text-xs font-medium">Yes</span> : <span className="text-gray-600 text-xs">No</span>}
-                        </td>
-                        <td className="px-4 py-2.5">
-                          {sub.unsubbed ? <span className="text-red-400 text-xs font-medium">Yes</span> : <span className="text-gray-600 text-xs">No</span>}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Review modal — fires the dispatch endpoint once approved */}
+      <ReviewRequiredModal
+        isOpen={showReview && !!draftedArtifactId && !!draftedApprovalId}
+        approvalId={draftedApprovalId}
+        artifactId={draftedArtifactId}
+        workspaceId={workspaceId}
+        publishDestination="email"
+        onApproved={() => {
+          setShowReview(false)
+          dispatch()
+        }}
+        onRejected={() => setShowReview(false)}
+        onClose={() => setShowReview(false)}
+      />
     </div>
   )
 }

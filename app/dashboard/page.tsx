@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation'
 import { useAgentStream } from '@/lib/use-agent-stream'
 import AgentConsole from '@/components/AgentConsole'
 import ReviewRequiredModal from '@/components/ReviewRequiredModal'
+import LinkClickROIWidget from '@/components/LinkClickROIWidget'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -1757,6 +1758,12 @@ export default function DashboardPage() {
                   <p className="text-gray-700 text-[11px]">this week</p>
                 </div>
               </div>
+            </div>
+
+            {/* Link Click ROI — total clicks + 7-day sparkline */}
+            <div className="p-4 border-b border-gray-800">
+              <p className="text-xs text-gray-500 uppercase tracking-wider font-medium mb-3">Click ROI</p>
+              <LinkClickROIWidget workspaceId={workspaceId} compact />
             </div>
 
             {/* Agent Status */}

@@ -1,880 +1,648 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+/**
+ * /dashboard/reputation
+ *
+ * Brand-mention triage stream + PR Circuit Breaker control + inline AI
+ * Mention Replier. Polls every 20s; the crisis banner reacts to scanner
+ * trips in real time.
+ */
 
-interface Review {
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import {
+  ShieldAlert, RefreshCw, AlertCircle, Search, ExternalLink, Sparkles,
+  CheckCircle2, XCircle, Loader2, Bird, Globe, MessageSquare,
+  Hash, Award, Send, Copy, ClipboardCheck,
+} from 'lucide-react'
+
+// ─── Types ────────────────────────────────────────────────────────────────
+
+interface BrandMention {
   id: string
-  contact_name: string | null
-  contact_email: string | null
-  source: string
-  rating: number | null
-  title: string | null
-  body: string | null
-  sentiment: string
-  status: string
-  response_text: string | null
-  response_sent_at: string | null
-  external_url: string | null
-  reviewed_at: string | null
+  workspace_id: string
+  source_platform: string
+  source_url: string | null
+  author_handle: string | null
+  content_text: string
+  sentiment_score: number | string
+  severity_level: 'low' | 'medium' | 'high' | 'critical' | string
+  status: 'unread' | 'flagged_crisis' | 'addressed' | 'dismissed' | string
+  detected_at: string | null
   created_at: string
 }
 
-interface ReviewRequest {
-  id: string
-  contact_name: string | null
-  contact_email: string
-  booking_id: string | null
-  status: string
-  sent_at: string | null
-  review_platform: string
-  review_link: string | null
-  created_at: string
+interface CrisisState {
+  workspaceId: string
+  crisisStatus: 'clear' | 'tripped' | 'recovering' | string
+  crisisTrippedAt: string | null
+  criticalUnreadCount: number
 }
 
-interface Summary {
-  avgRating: number
-  totalReviews: number
-  starBreakdown: Record<number, number>
-  reviews: Array<{ sentiment: string; status: string; total: number }>
-  requests: Array<{ status: string; total: number }>
+interface AIDraft {
+  reply: string
+  tone: string
+  reasoning: string
+  platform: string
+  charLimit: number
+  isHardLimit: boolean
 }
 
-interface ReputationAnalysis {
-  health: string
-  score: number
-  summary: string
-  strengths: string[]
-  issues: string[]
-  actions: string[]
-  avgRating: number
-  totalReviews: number
-  unansweredNegative: number
+type SeverityFilter = 'all' | 'critical' | 'high' | 'medium' | 'low'
+type StatusFilter = 'all' | 'unread' | 'flagged_crisis' | 'addressed' | 'dismissed'
+
+// ─── Helpers ──────────────────────────────────────────────────────────────
+
+function formatRelative(iso: string | null): string {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso
+  const diff = Date.now() - d.getTime()
+  const s = Math.floor(diff / 1000)
+  if (s < 60) return `${s}s ago`
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`
+  if (s < 86400 * 7) return `${Math.floor(s / 86400)}d ago`
+  return d.toLocaleDateString()
 }
 
-interface Platform {
-  name: string
-  rating: number
-  icon: string
-  color: string
+const SEVERITY_PILL: Record<string, string> = {
+  critical: 'bg-rose-900/40 text-rose-200 border-rose-800',
+  high:     'bg-amber-900/40 text-amber-200 border-amber-800',
+  medium:   'bg-yellow-900/40 text-yellow-200 border-yellow-800',
+  low:      'bg-gray-800 text-gray-400 border-gray-700',
+}
+const STATUS_PILL: Record<string, string> = {
+  unread:         'bg-indigo-900/40 text-indigo-200 border-indigo-800',
+  flagged_crisis: 'bg-rose-900/40 text-rose-200 border-rose-800',
+  addressed:      'bg-emerald-900/40 text-emerald-200 border-emerald-800',
+  dismissed:      'bg-gray-800 text-gray-500 border-gray-700',
 }
 
-const DEMO_PLATFORMS: Platform[] = [
-  { name: 'Google', rating: 4.5, icon: '🟡', color: 'text-yellow-400' },
-  { name: 'Yelp', rating: 3.9, icon: '🔴', color: 'text-red-400' },
-  { name: 'Facebook', rating: 4.4, icon: '🔵', color: 'text-blue-400' },
-  { name: 'TrustPilot', rating: 4.6, icon: '🟢', color: 'text-green-400' },
-  { name: 'G2', rating: 4.1, icon: '⭕', color: 'text-orange-400' },
-]
-
-const SCORE_TREND = [3.8, 4.0, 4.1, 4.2, 4.1, 4.3]
-const SCORE_MONTHS = ['Dec', 'Jan', 'Feb', 'Mar', 'Apr', 'May']
-
-const SENTIMENT_COLOR: Record<string, string> = {
-  positive: 'text-green-400',
-  neutral: 'text-yellow-400',
-  negative: 'text-red-400',
+function PlatformIcon({ p, className = 'w-3.5 h-3.5' }: { p: string; className?: string }) {
+  const k = p.toLowerCase()
+  if (k === 'twitter' || k === 'x') return <Bird className={`${className} text-gray-300`} />
+  if (k === 'reddit') return <Hash className={`${className} text-orange-400`} />
+  if (k === 'instagram') return <Hash className={`${className} text-pink-400`} />
+  if (k === 'linkedin') return <Award className={`${className} text-sky-400`} />
+  if (k === 'news' || k === 'blog' || k === 'brave_search') return <Globe className={`${className} text-emerald-400`} />
+  return <MessageSquare className={`${className} text-gray-500`} />
 }
 
-const SENTIMENT_BADGE: Record<string, string> = {
-  positive: 'bg-green-900/40 text-green-300 border border-green-700/50',
-  neutral: 'bg-yellow-900/40 text-yellow-300 border border-yellow-700/50',
-  negative: 'bg-red-900/40 text-red-300 border border-red-700/50',
-}
-
-const STATUS_BADGE: Record<string, string> = {
-  new: 'bg-blue-500/20 text-blue-300',
-  urgent: 'bg-red-500/20 text-red-300',
-  responded: 'bg-green-500/20 text-green-300',
-  ignored: 'bg-gray-500/20 text-gray-400',
-}
-
-const SOURCE_ICON: Record<string, string> = {
-  google: '🟡',
-  trustpilot: '🟢',
-  facebook: '🔵',
-  yelp: '🔴',
-  manual: '📝',
-  internal: '🏠',
-  g2: '⭕',
-}
-
-function StarRating({ rating }: { rating: number | null }) {
-  if (!rating) return <span className="text-gray-600 text-xs">No rating</span>
-  const full = Math.floor(rating)
-  const half = rating % 1 >= 0.5
+function SentimentDot({ score }: { score: number }) {
+  const color = score >= 0.7 ? 'bg-emerald-500'
+    : score >= 0.5 ? 'bg-yellow-400'
+    : score >= 0.3 ? 'bg-amber-500'
+    : 'bg-rose-500'
   return (
-    <span className="text-yellow-400 text-sm">
-      {'★'.repeat(full)}{half ? '½' : ''}{'☆'.repeat(5 - full - (half ? 1 : 0))}
+    <span className="inline-flex items-center gap-1.5" title={`Sentiment ${score.toFixed(2)}`}>
+      <span className={`w-2 h-2 rounded-full ${color}`} />
+      <span className="text-[11px] text-gray-400 tabular-nums">{score.toFixed(2)}</span>
     </span>
   )
 }
 
-function timeAgo(ts: string | null) {
-  if (!ts) return ''
-  const d = Date.now() - new Date(ts).getTime()
-  const h = Math.floor(d / 3600000)
-  if (h < 1) return 'just now'
-  if (h < 24) return `${h}h ago`
-  return `${Math.floor(h / 24)}d ago`
-}
-
-const POSITIVE_PLATFORMS_DEFAULT = ['Google', 'Yelp', 'Facebook']
-const NEGATIVE_PLATFORMS_DEFAULT = ['Private Feedback Form']
+// ─── Page ──────────────────────────────────────────────────────────────────
 
 export default function ReputationPage() {
-  const [workspaceId, setWorkspaceId] = useState('')
-  const [reviews, setReviews] = useState<Review[]>([])
-  const [requests, setRequests] = useState<ReviewRequest[]>([])
-  const [summary, setSummary] = useState<Summary | null>(null)
+  const [workspaceId, setWorkspaceId] = useState<string | null>(null)
+  const [crisis, setCrisis] = useState<CrisisState | null>(null)
+  const [mentions, setMentions] = useState<BrandMention[]>([])
   const [loading, setLoading] = useState(true)
-  const [activeTab, setActiveTab] = useState<'reviews' | 'requests' | 'analyze'>('reviews')
-  const [sentimentFilter, setSentimentFilter] = useState('all')
-  const [statusFilter, setStatusFilter] = useState('all')
-  const [selectedReview, setSelectedReview] = useState<Review | null>(null)
-  const [analysis, setAnalysis] = useState<ReputationAnalysis | null>(null)
-  const [analyzing, setAnalyzing] = useState(false)
-
-  // Draft response state
-  const [drafting, setDrafting] = useState(false)
-  const [draftText, setDraftText] = useState('')
-  const [savingResponse, setSavingResponse] = useState(false)
-  const [responseModalReview, setResponseModalReview] = useState<Review | null>(null)
-
-  // Add review modal
-  const [addModal, setAddModal] = useState(false)
-  const [newReview, setNewReview] = useState({ contactName: '', contactEmail: '', source: 'manual', rating: 5, body: '', title: '' })
-  const [submitting, setSubmitting] = useState(false)
-
-  // Request review modal
-  const [reqModal, setReqModal] = useState(false)
-  const [reqEmail, setReqEmail] = useState('')
-  const [reqName, setReqName] = useState('')
-  const [reqPlatform, setReqPlatform] = useState('google')
-  const [reqLink, setReqLink] = useState('')
-  const [sending, setSending] = useState(false)
-  const [reqMsg, setReqMsg] = useState('')
-
-  // Review Gating state
-  const [gatingEnabled, setGatingEnabled] = useState(true)
-  const [gatingThreshold, setGatingThreshold] = useState(4)
-  const [positivePlatforms] = useState<string[]>(POSITIVE_PLATFORMS_DEFAULT)
-  const [negativePlatforms] = useState<string[]>(NEGATIVE_PLATFORMS_DEFAULT)
-
-  // CMO Feed state
-  const [cmoLastUpdated] = useState('2 hours ago')
-  const [autoBriefEnabled, setAutoBriefEnabled] = useState(true)
-  const [sendingCMOBrief, setSendingCMOBrief] = useState(false)
-
-  // Alerts
-  const [alerts] = useState([
-    { id: 'a1', type: 'new_review', message: '3 new reviews in the last 24h — 2 positive, 1 negative', level: 'info' },
-    { id: 'a2', type: 'score_drop', message: 'Yelp score dropped from 4.1 to 3.9 this week', level: 'warning' },
-    { id: 'a3', type: 'competitor', message: 'Competitor "RivalCo" received 12 new 5-star reviews on Google', level: 'info' },
-  ])
-
-  // Toast
-  const [toast, setToast] = useState('')
-
-  const showToast = (msg: string) => {
-    setToast(msg)
-    setTimeout(() => setToast(''), 3000)
-  }
+  const [error, setError] = useState<string | null>(null)
+  const [search, setSearch] = useState('')
+  const [severityFilter, setSeverityFilter] = useState<SeverityFilter>('all')
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('unread')
 
   useEffect(() => {
-    const raw = localStorage.getItem('ooumph_workspace')
-    const wid = raw ? (JSON.parse(raw) as { id: string }).id : (localStorage.getItem('workspaceId') || '')
-    setWorkspaceId(wid)
+    let cancelled = false
+    fetch('/api/auth/me')
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (cancelled) return
+        const id: string | null = data?.user?.workspaceId
+          || (typeof window !== 'undefined' ? localStorage.getItem('workspaceId') : null)
+        setWorkspaceId(id)
+        if (!id) setError('No workspace selected — finish onboarding first.')
+      })
+      .catch(() => { if (!cancelled) setError('Failed to load session') })
+    return () => { cancelled = true }
   }, [])
 
-  const load = useCallback(async () => {
+  const fetchAll = useCallback(async () => {
     if (!workspaceId) return
-    setLoading(true)
     try {
-      const [revRes, reqRes, sumRes] = await Promise.all([
-        fetch(`/api/reputation?workspaceId=${workspaceId}`),
-        fetch(`/api/reputation?workspaceId=${workspaceId}&type=requests`),
-        fetch(`/api/reputation?workspaceId=${workspaceId}&type=summary`),
+      const [crisisRes, mentionsRes] = await Promise.all([
+        fetch(`/api/crisis-status?workspaceId=${workspaceId}`),
+        fetch(`/api/brand-mentions?workspaceId=${workspaceId}&limit=200`),
       ])
-      const [revData, reqData, sumData] = await Promise.all([
-        revRes.json() as Promise<Review[]>,
-        reqRes.json() as Promise<ReviewRequest[]>,
-        sumRes.json() as Promise<Summary>,
-      ])
-      setReviews(revData)
-      setRequests(reqData)
-      setSummary(sumData)
-    } catch { /* ignore */ }
-    setLoading(false)
+      const crisisData = await crisisRes.json() as CrisisState
+      const mentionsData = await mentionsRes.json() as BrandMention[]
+      setCrisis(crisisData)
+      setMentions(Array.isArray(mentionsData) ? mentionsData : [])
+      setError(null)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setLoading(false)
+    }
   }, [workspaceId])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => { fetchAll() }, [fetchAll])
+  useEffect(() => {
+    if (!workspaceId) return
+    const t = setInterval(fetchAll, 20_000)
+    return () => clearInterval(t)
+  }, [workspaceId, fetchAll])
 
-  const filteredReviews = reviews.filter(r => {
-    if (sentimentFilter !== 'all' && r.sentiment !== sentimentFilter) return false
-    if (statusFilter !== 'all' && r.status !== statusFilter) return false
-    return true
-  })
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    return mentions.filter(m => {
+      if (severityFilter !== 'all' && m.severity_level !== severityFilter) return false
+      if (statusFilter !== 'all' && m.status !== statusFilter) return false
+      if (q) {
+        const hay = [m.content_text, m.author_handle, m.source_url, m.source_platform]
+          .filter(Boolean).join(' ').toLowerCase()
+        if (!hay.includes(q)) return false
+      }
+      return true
+    })
+  }, [mentions, search, severityFilter, statusFilter])
 
-  const handleDraftResponse = async (review: Review) => {
-    setResponseModalReview(review)
-    setSelectedReview(review)
-    setDraftText('')
-    setDrafting(true)
-    try {
-      const res = await fetch('/api/agents/reputation', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspaceId, mode: 'draft_response', reviewId: review.id }),
-      })
-      const data = await res.json() as { draft?: string }
-      setDraftText(data.draft || `Thank you for your review! We appreciate your feedback and are constantly working to improve our service. Please don't hesitate to reach out if there's anything more we can help with.`)
-    } catch {
-      setDraftText(`Thank you for your review! We appreciate your feedback and are constantly working to improve our service.`)
+  const counts = useMemo(() => {
+    const c = {
+      unread: 0, flagged_crisis: 0, addressed: 0, dismissed: 0,
+      critical: 0, high: 0, sumScore: 0, scored: 0,
     }
-    setDrafting(false)
-  }
+    for (const m of mentions) {
+      const stat = m.status as keyof typeof c
+      if (stat in c) c[stat]++
+      const sev = m.severity_level as keyof typeof c
+      if (sev in c) c[sev]++
+      const score = Number(m.sentiment_score || 0)
+      if (Number.isFinite(score)) { c.sumScore += score; c.scored++ }
+    }
+    return c
+  }, [mentions])
 
-  const handleSaveResponse = async () => {
-    if (!selectedReview || !draftText) return
-    setSavingResponse(true)
-    await fetch('/api/reputation', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: selectedReview.id, status: 'responded', responseText: draftText }),
-    })
-    setSavingResponse(false)
-    setSelectedReview(null)
-    setResponseModalReview(null)
-    setDraftText('')
-    showToast('Response sent successfully')
-    await load()
-  }
+  const avgSentiment = counts.scored > 0 ? counts.sumScore / counts.scored : 1
+  const isInCrisis = (crisis?.crisisStatus || 'clear') !== 'clear'
 
-  const handleAnalyze = async () => {
-    setAnalyzing(true)
+  const updateMentionStatus = async (id: string, status: BrandMention['status']) => {
+    if (!workspaceId) return
+    setMentions(prev => prev.map(m => m.id === id ? { ...m, status } : m))
     try {
-      const res = await fetch('/api/agents/reputation', {
+      await fetch('/api/brand-mentions', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, workspaceId, status }),
+      })
+    } catch { /* refresh will reconcile */ }
+  }
+
+  const overrideCrisis = async (newStatus: 'clear' | 'recovering' | 'tripped') => {
+    if (!workspaceId) return
+    if (newStatus === 'clear' && (crisis?.criticalUnreadCount || 0) > 0) {
+      if (!confirm(`There are still ${crisis?.criticalUnreadCount} unaddressed critical mentions. Clear anyway?`)) return
+    }
+    try {
+      await fetch('/api/crisis-status', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspaceId, mode: 'analyze' }),
+        body: JSON.stringify({ workspaceId, status: newStatus, note: 'Manual override from /dashboard/reputation' }),
       })
-      const data = await res.json() as { analysis?: ReputationAnalysis }
-      setAnalysis(data.analysis || null)
-    } catch { /* ignore */ }
-    setAnalyzing(false)
-  }
-
-  const handleAddReview = async () => {
-    setSubmitting(true)
-    await fetch('/api/reputation', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workspaceId, ...newReview }),
-    })
-    setSubmitting(false)
-    setAddModal(false)
-    setNewReview({ contactName: '', contactEmail: '', source: 'manual', rating: 5, body: '', title: '' })
-    await load()
-  }
-
-  const handleSendRequest = async () => {
-    if (!reqEmail) return
-    setSending(true)
-    setReqMsg('')
-    try {
-      const res = await fetch('/api/agents/reputation', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspaceId, mode: 'request_review', contactEmail: reqEmail, contactName: reqName, reviewPlatform: reqPlatform, reviewLink: reqLink || undefined }),
-      })
-      const data = await res.json() as { ok?: boolean; skipped?: string; error?: string }
-      if (data.ok) { setReqMsg('Review request sent!'); await load() }
-      else setReqMsg(data.skipped || data.error || 'Unknown error')
-    } catch { setReqMsg('Failed to send') }
-    setSending(false)
-  }
-
-  const sendReputationBriefToCMO = async () => {
-    setSendingCMOBrief(true)
-    await new Promise(r => setTimeout(r, 800))
-    const avgRating = summary?.avgRating ?? 4.3
-    const totalReviews = summary?.totalReviews ?? 0
-    const brief = `Reputation Brief (${new Date().toLocaleDateString()}): Overall score 4.3/5 across 5 platforms. ${totalReviews} total reviews. Avg rating: ${avgRating.toFixed(1)}★. Yelp dropped to 3.9 this week — needs attention. 2 urgent unanswered negative reviews require response.`
-    const existing = JSON.parse(localStorage.getItem('pendingCMOInsights') || '[]')
-    existing.push({ context: brief, timestamp: new Date().toISOString(), source: 'reputation' })
-    localStorage.setItem('pendingCMOInsights', JSON.stringify(existing))
-    setSendingCMOBrief(false)
-    showToast('Reputation brief sent to CMO')
-  }
-
-  const avgRating = summary?.avgRating ?? 0
-  const totalReviews = summary?.totalReviews ?? 0
-  const urgentCount = reviews.filter(r => r.status === 'urgent').length
-  const sentReqs = requests.filter(r => r.status === 'sent').length
-
-  const overallScore = 4.3
-  const scoreTrendMax = Math.max(...SCORE_TREND)
-
-  const healthColor: Record<string, string> = {
-    excellent: 'text-green-400', good: 'text-blue-400', fair: 'text-yellow-400', poor: 'text-red-400', no_data: 'text-gray-400',
+      fetchAll()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
   }
 
   return (
-    <div className="p-6 max-w-7xl mx-auto space-y-6">
-      {/* Toast */}
-      {toast && (
-        <div className="fixed bottom-6 right-6 z-50 bg-gray-800 border border-gray-700 text-white text-sm px-4 py-3 rounded-xl shadow-lg">
-          {toast}
-        </div>
-      )}
-
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-bold text-white">Reputation Management</h1>
-          <p className="text-gray-400 text-sm">Unified score, review gating, smart routing, and CMO briefs</p>
-        </div>
-        <div className="flex gap-2">
-          <button onClick={() => setReqModal(true)}
-            className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm rounded-lg transition-colors">
-            + Request Review
-          </button>
-          <button onClick={() => setAddModal(true)}
-            className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm rounded-lg transition-colors">
-            + Add Review
-          </button>
-        </div>
-      </div>
-
-      {/* ── Hero Score Card ─────────────────────────────────────────────────────── */}
-      <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6">
-        <div className="flex flex-col lg:flex-row gap-8">
-          {/* Overall score */}
-          <div className="text-center lg:w-48 flex-shrink-0">
-            <p className="text-gray-400 text-xs uppercase tracking-wider mb-2">Overall Reputation</p>
-            <p className="text-6xl font-bold text-white">{overallScore}</p>
-            <p className="text-gray-400 text-sm">/5.0</p>
-            <div className="flex justify-center mt-2">
-              <span className="text-yellow-400 text-xl">{'★'.repeat(4)}½</span>
-            </div>
-            <div className="flex items-center justify-center gap-1.5 mt-2">
-              <span className="text-green-400 text-sm font-semibold">↑ 0.2</span>
-              <span className="text-gray-500 text-xs">vs last month</span>
-            </div>
-          </div>
-
-          {/* Platform sub-scores */}
-          <div className="flex-1">
-            <p className="text-gray-400 text-xs uppercase tracking-wider mb-3">Platform Scores</p>
-            <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
-              {DEMO_PLATFORMS.map(p => (
-                <div key={p.name} className="bg-gray-800 rounded-xl p-3 text-center">
-                  <p className="text-xl mb-1">{p.icon}</p>
-                  <p className={`text-lg font-bold ${p.color}`}>{p.rating}</p>
-                  <p className="text-gray-500 text-xs">{p.name}</p>
-                </div>
-              ))}
-            </div>
-
-            {/* Score trend graph */}
-            <div className="mt-4">
-              <p className="text-gray-500 text-xs mb-2">6-Month Trend</p>
-              <div className="flex items-end gap-2 h-14">
-                {SCORE_TREND.map((score, i) => {
-                  const pct = (score / scoreTrendMax) * 100
-                  return (
-                    <div key={i} className="flex-1 flex flex-col items-center gap-1">
-                      <div className="w-full rounded-t flex items-end justify-center" style={{ height: '48px' }}>
-                        <div
-                          className="w-full rounded bg-indigo-600/60 hover:bg-indigo-500/80 transition-colors relative group"
-                          style={{ height: `${pct}%` }}
-                        >
-                          <span className="absolute -top-5 left-1/2 -translate-x-1/2 text-white text-xs opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap">{score}</span>
-                        </div>
-                      </div>
-                      <p className="text-gray-600 text-xs">{SCORE_MONTHS[i]}</p>
-                    </div>
-                  )
-                })}
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* ── Smart Review Gating Panel ──────────────────────────────────────────── */}
-      <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 space-y-4">
-        <div className="flex items-center justify-between">
+    <div className="min-h-screen bg-gray-950 text-gray-100">
+      <div className="max-w-7xl mx-auto px-6 py-8">
+        {/* Header */}
+        <div className="flex items-start justify-between mb-6 gap-4 flex-wrap">
           <div>
-            <h2 className="text-white font-semibold">Smart Review Routing</h2>
-            <p className="text-gray-400 text-xs mt-0.5">Route happy customers to public platforms, unhappy customers to private feedback</p>
+            <h1 className="text-2xl font-bold text-white flex items-center gap-2">
+              <ShieldAlert className="w-6 h-6 text-indigo-400" /> Reputation
+            </h1>
+            <p className="text-sm text-gray-500 mt-1">
+              Live brand-mention triage + PR Circuit Breaker. Inline AI drafts respect platform length budgets.
+            </p>
           </div>
           <button
-            onClick={() => setGatingEnabled(p => !p)}
-            className={`w-12 h-6 rounded-full transition-colors relative flex-shrink-0 ${gatingEnabled ? 'bg-green-600' : 'bg-gray-700'}`}
+            onClick={fetchAll}
+            className="px-3 py-1.5 bg-gray-900 hover:bg-gray-800 border border-gray-700 text-gray-300 text-sm rounded-lg flex items-center gap-2"
           >
-            <span className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${gatingEnabled ? 'left-7' : 'left-1'}`} />
+            <RefreshCw className="w-3.5 h-3.5" /> Refresh
           </button>
         </div>
 
-        {gatingEnabled && (
-          <div className="space-y-4">
-            <div>
-              <label className="text-gray-400 text-xs block mb-2">
-                Threshold: <span className="text-white font-semibold">{gatingThreshold}+ stars → Public platforms</span>
-              </label>
-              <input type="range" min={1} max={5} step={1} value={gatingThreshold} onChange={e => setGatingThreshold(Number(e.target.value))}
-                className="w-full accent-indigo-500 max-w-xs" />
-              <div className="flex justify-between text-xs text-gray-600 max-w-xs mt-1">
-                <span>1★</span><span>2★</span><span>3★</span><span>4★</span><span>5★</span>
-              </div>
-            </div>
+        {/* Crisis banner */}
+        {crisis && isInCrisis && (
+          <CrisisBanner crisis={crisis} onOverride={overrideCrisis} />
+        )}
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div className="bg-green-950/30 border border-green-800/40 rounded-xl p-4">
-                <div className="flex items-center gap-2 mb-2">
-                  <span className="text-green-400">✓</span>
-                  <p className="text-green-300 text-sm font-semibold">{gatingThreshold}–5 Stars</p>
-                </div>
-                <p className="text-green-400 text-xs mb-2">Directed to: Public Review Platforms</p>
-                <div className="flex flex-wrap gap-1.5">
-                  {positivePlatforms.map(p => (
-                    <span key={p} className="px-2 py-0.5 rounded bg-green-900/40 text-green-300 text-xs border border-green-700/40">{p}</span>
-                  ))}
-                </div>
-              </div>
-              <div className="bg-red-950/30 border border-red-800/40 rounded-xl p-4">
-                <div className="flex items-center gap-2 mb-2">
-                  <span className="text-red-400">✕</span>
-                  <p className="text-red-300 text-sm font-semibold">1–{gatingThreshold - 1} Stars</p>
-                </div>
-                <p className="text-red-400 text-xs mb-2">Directed to: Private Channels</p>
-                <div className="flex flex-wrap gap-1.5">
-                  {negativePlatforms.map(p => (
-                    <span key={p} className="px-2 py-0.5 rounded bg-red-900/40 text-red-300 text-xs border border-red-700/40">{p}</span>
-                  ))}
-                </div>
-              </div>
-            </div>
+        {/* Stat cards */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+          <StatCard label="Unread" value={String(counts.unread)} accent="text-indigo-300" />
+          <StatCard label="Flagged crisis" value={String(counts.flagged_crisis)} accent={counts.flagged_crisis > 0 ? 'text-rose-300' : 'text-gray-300'} />
+          <StatCard label="Addressed" value={String(counts.addressed)} accent="text-emerald-300" />
+          <StatCard
+            label="Avg sentiment"
+            value={avgSentiment.toFixed(2)}
+            accent={avgSentiment >= 0.7 ? 'text-emerald-300' : avgSentiment >= 0.5 ? 'text-yellow-300' : 'text-rose-300'}
+          />
+        </div>
+
+        {/* Filters */}
+        <div className="flex flex-wrap items-center gap-2 mb-4">
+          <div className="relative flex-1 max-w-md">
+            <Search className="w-4 h-4 text-gray-600 absolute left-3 top-1/2 -translate-y-1/2" />
+            <input
+              value={search} onChange={e => setSearch(e.target.value)}
+              placeholder="Search content, author, platform…"
+              className="w-full bg-gray-900 border border-gray-800 rounded-lg pl-9 pr-3 py-2 text-sm text-white placeholder-gray-600 focus:border-indigo-600 focus:outline-none"
+            />
+          </div>
+          <select
+            value={severityFilter} onChange={e => setSeverityFilter(e.target.value as SeverityFilter)}
+            className="bg-gray-900 border border-gray-800 text-gray-200 text-sm rounded-lg px-3 py-2 focus:border-indigo-600 focus:outline-none"
+          >
+            <option value="all">All severities</option>
+            <option value="critical">Critical</option>
+            <option value="high">High</option>
+            <option value="medium">Medium</option>
+            <option value="low">Low</option>
+          </select>
+          <select
+            value={statusFilter} onChange={e => setStatusFilter(e.target.value as StatusFilter)}
+            className="bg-gray-900 border border-gray-800 text-gray-200 text-sm rounded-lg px-3 py-2 focus:border-indigo-600 focus:outline-none"
+          >
+            <option value="all">All statuses</option>
+            <option value="unread">Unread</option>
+            <option value="flagged_crisis">Flagged crisis</option>
+            <option value="addressed">Addressed</option>
+            <option value="dismissed">Dismissed</option>
+          </select>
+        </div>
+
+        {error && (
+          <div className="mb-4 p-3 bg-rose-950/40 border border-rose-900 rounded-lg text-rose-300 text-sm flex items-center gap-2">
+            <AlertCircle className="w-4 h-4" /> {error}
           </div>
         )}
 
-        {!gatingEnabled && (
-          <div className="bg-gray-800 rounded-xl p-4 text-center">
-            <p className="text-gray-500 text-sm">Review gating is disabled — all reviews are directed to public platforms</p>
+        <div className="text-xs text-gray-500 mb-3">
+          {filtered.length} of {mentions.length} mentions
+        </div>
+
+        {loading ? (
+          <div className="text-center py-16 text-gray-500 text-sm">Loading mention stream…</div>
+        ) : filtered.length === 0 ? (
+          <div className="text-center py-16 border border-dashed border-gray-800 rounded-xl">
+            <ShieldAlert className="w-12 h-12 mx-auto mb-3 text-gray-700" />
+            <p className="text-gray-300 text-lg mb-1">
+              {mentions.length === 0 ? 'No mentions captured yet' : 'No mentions match your filters'}
+            </p>
+            <p className="text-sm text-gray-600">
+              {mentions.length === 0
+                ? 'The brand-monitor cron scans every 10 minutes. Add competitor names + ensure BRAVE_SEARCH_API_KEY is configured.'
+                : 'Try clearing the search or switching status filter to All.'}
+            </p>
           </div>
-        )}
-      </div>
-
-      {/* ── CMO Feed Panel ───────────────────────────────────────────────────────── */}
-      <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 space-y-3">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <h2 className="text-white font-semibold">CMO Reputation Brief</h2>
-            <p className="text-gray-500 text-xs mt-0.5">CMO Last Updated: {cmoLastUpdated}</p>
-          </div>
-          <button onClick={sendReputationBriefToCMO} disabled={sendingCMOBrief}
-            className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold rounded-lg transition-colors disabled:opacity-50 flex items-center gap-2 flex-shrink-0">
-            {sendingCMOBrief ? (
-              <><span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin inline-block" /> Sending...</>
-            ) : '📤 Send Reputation Brief to CMO'}
-          </button>
-        </div>
-        <label className="flex items-center gap-2.5 cursor-pointer">
-          <button
-            onClick={() => setAutoBriefEnabled(p => !p)}
-            className={`w-10 h-5 rounded-full transition-colors relative flex-shrink-0 ${autoBriefEnabled ? 'bg-indigo-600' : 'bg-gray-700'}`}
-          >
-            <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${autoBriefEnabled ? 'left-5.5' : 'left-0.5'}`} />
-          </button>
-          <span className="text-gray-400 text-sm">Automatically brief CMO when overall score drops below 4.0</span>
-        </label>
-      </div>
-
-      {/* ── Alerts ───────────────────────────────────────────────────────────────── */}
-      <div className="space-y-2">
-        {alerts.map(alert => (
-          <div key={alert.id} className={`flex items-start gap-3 p-3 rounded-xl border ${alert.level === 'warning' ? 'bg-yellow-950/30 border-yellow-800/50' : 'bg-blue-950/30 border-blue-800/50'}`}>
-            <span className="text-lg">{alert.type === 'score_drop' ? '⚠️' : alert.type === 'competitor' ? '🏢' : '🔔'}</span>
-            <p className={`text-sm flex-1 ${alert.level === 'warning' ? 'text-yellow-200' : 'text-blue-200'}`}>{alert.message}</p>
-          </div>
-        ))}
-      </div>
-
-      {/* Stats row */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-        <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 text-center">
-          <p className="text-3xl font-bold text-yellow-400">{avgRating > 0 ? avgRating.toFixed(1) : '4.3'}</p>
-          <p className="text-xs text-gray-400 mt-1">Avg Rating</p>
-          <StarRating rating={avgRating > 0 ? Math.round(avgRating) : 4} />
-        </div>
-        <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 text-center">
-          <p className="text-3xl font-bold text-white">{totalReviews || 47}</p>
-          <p className="text-xs text-gray-400 mt-1">Total Reviews</p>
-        </div>
-        <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 text-center">
-          <p className={`text-3xl font-bold ${urgentCount > 0 ? 'text-red-400' : 'text-gray-500'}`}>{urgentCount}</p>
-          <p className="text-xs text-gray-400 mt-1">Urgent (unanswered neg.)</p>
-        </div>
-        <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 text-center">
-          <p className="text-3xl font-bold text-indigo-400">{sentReqs || 12}</p>
-          <p className="text-xs text-gray-400 mt-1">Requests Sent</p>
-        </div>
-      </div>
-
-      {/* Star breakdown */}
-      {summary && totalReviews > 0 && (
-        <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-          <p className="text-sm font-medium text-gray-300 mb-3">Rating Breakdown</p>
-          <div className="space-y-1.5">
-            {[5, 4, 3, 2, 1].map(star => {
-              const count = summary.starBreakdown[star] || 0
-              const pct = totalReviews > 0 ? (count / totalReviews) * 100 : 0
-              return (
-                <div key={star} className="flex items-center gap-3">
-                  <span className="text-yellow-400 text-xs w-6">{star}★</span>
-                  <div className="flex-1 h-2 bg-gray-800 rounded-full overflow-hidden">
-                    <div className="h-full bg-yellow-400 rounded-full" style={{ width: `${pct}%` }} />
-                  </div>
-                  <span className="text-gray-500 text-xs w-6 text-right">{count}</span>
-                </div>
-              )
-            })}
-          </div>
-        </div>
-      )}
-
-      {/* Tabs */}
-      <div className="flex gap-1 border-b border-gray-800">
-        {(['reviews', 'requests', 'analyze'] as const).map(tab => (
-          <button key={tab} onClick={() => setActiveTab(tab)}
-            className={`px-4 py-2 text-sm font-medium transition-colors capitalize border-b-2 -mb-px ${activeTab === tab ? 'border-indigo-500 text-white' : 'border-transparent text-gray-500 hover:text-gray-300'}`}>
-            {tab === 'reviews' ? `Reviews (${filteredReviews.length})` : tab === 'requests' ? `Requests (${requests.length})` : '🤖 AI Analysis'}
-          </button>
-        ))}
-      </div>
-
-      {loading && <div className="text-center py-12 text-gray-500">Loading...</div>}
-
-      {/* ── Reviews tab ─────────────────────────────────────────────────────────── */}
-      {!loading && activeTab === 'reviews' && (
-        <div className="space-y-4">
-          <div className="flex flex-wrap gap-2">
-            {(['all', 'positive', 'neutral', 'negative'] as const).map(s => (
-              <button key={s} onClick={() => setSentimentFilter(s)}
-                className={`px-3 py-1 rounded-full text-xs font-medium transition-colors capitalize ${sentimentFilter === s ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'}`}>
-                {s}
-              </button>
-            ))}
-            <span className="text-gray-700 px-1">|</span>
-            {(['all', 'new', 'urgent', 'responded'] as const).map(s => (
-              <button key={s} onClick={() => setStatusFilter(s)}
-                className={`px-3 py-1 rounded-full text-xs font-medium transition-colors capitalize ${statusFilter === s ? 'bg-purple-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'}`}>
-                {s}
-              </button>
-            ))}
-          </div>
-
-          {filteredReviews.length === 0 && (
-            <div className="text-center py-16 text-gray-600">
-              <p className="text-4xl mb-3">⭐</p>
-              <p className="text-sm">No reviews yet. Send review requests to start collecting feedback.</p>
-            </div>
-          )}
-
-          {filteredReviews.map(review => (
-            <div key={review.id} className={`bg-gray-900 border rounded-xl p-5 space-y-3 ${review.status === 'urgent' ? 'border-red-500/50' : 'border-gray-800'}`}>
-              <div className="flex items-start justify-between gap-4">
-                <div className="flex items-center gap-3">
-                  <span className="text-xl">{SOURCE_ICON[review.source] || '📝'}</span>
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <p className="text-white text-sm font-medium">{review.contact_name || 'Anonymous'}</p>
-                      {review.contact_email && <p className="text-gray-500 text-xs">{review.contact_email}</p>}
-                    </div>
-                    <div className="flex items-center gap-2 mt-0.5">
-                      <StarRating rating={review.rating} />
-                      <span className={`px-2 py-0.5 rounded-full text-xs ${SENTIMENT_BADGE[review.sentiment] || 'bg-gray-700 text-gray-400'}`}>{review.sentiment}</span>
-                      <span className="text-gray-600 text-xs capitalize">{review.source}</span>
-                    </div>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2 flex-shrink-0">
-                  <span className={`px-2 py-0.5 rounded-full text-xs ${STATUS_BADGE[review.status] || 'bg-gray-700 text-gray-400'}`}>{review.status}</span>
-                  <span className="text-gray-600 text-xs">{timeAgo(review.reviewed_at || review.created_at)}</span>
-                </div>
-              </div>
-
-              {review.title && <p className="text-gray-200 text-sm font-medium">{review.title}</p>}
-              {review.body && <p className="text-gray-400 text-sm leading-relaxed">{review.body}</p>}
-              {review.external_url && (
-                <a href={review.external_url} target="_blank" rel="noopener noreferrer" className="text-indigo-400 text-xs hover:underline">View on platform →</a>
-              )}
-
-              {review.response_text && (
-                <div className="bg-gray-800 rounded-lg p-3 border-l-2 border-green-500">
-                  <p className="text-xs text-green-400 mb-1">Your response · {timeAgo(review.response_sent_at)}</p>
-                  <p className="text-gray-300 text-sm">{review.response_text}</p>
-                </div>
-              )}
-
-              {review.status !== 'responded' && (
-                <div className="flex gap-2 pt-1">
-                  <button onClick={() => handleDraftResponse(review)}
-                    className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs rounded-lg transition-colors">
-                    🤖 Draft AI Response
-                  </button>
-                  <button onClick={async () => {
-                    await fetch('/api/reputation', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: review.id, status: 'ignored' }) })
-                    await load()
-                  }} className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white text-xs rounded-lg transition-colors">
-                    Ignore
-                  </button>
-                  <button onClick={async () => {
-                    showToast('Review reported')
-                  }} className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-gray-400 text-xs rounded-lg transition-colors">
-                    Report Review
-                  </button>
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* ── Requests tab ────────────────────────────────────────────────────────── */}
-      {!loading && activeTab === 'requests' && (
-        <div className="space-y-3">
-          {requests.length === 0 && (
-            <div className="text-center py-16 text-gray-600">
-              <p className="text-4xl mb-3">📧</p>
-              <p className="text-sm">No review requests sent yet. Click &quot;+ Request Review&quot; to start.</p>
-            </div>
-          )}
-          {requests.map(req => (
-            <div key={req.id} className="bg-gray-900 border border-gray-800 rounded-xl p-4 flex items-center justify-between gap-4">
-              <div>
-                <p className="text-white text-sm font-medium">{req.contact_name || req.contact_email}</p>
-                <p className="text-gray-500 text-xs">{req.contact_email}</p>
-                <p className="text-gray-600 text-xs mt-0.5 capitalize">{req.review_platform} · {timeAgo(req.sent_at || req.created_at)}</p>
-              </div>
-              <div className="flex items-center gap-3">
-                {req.review_link && (
-                  <a href={req.review_link} target="_blank" rel="noopener noreferrer" className="text-indigo-400 text-xs hover:underline">Review link</a>
-                )}
-                <span className={`px-2 py-0.5 rounded-full text-xs capitalize ${
-                  req.status === 'sent' ? 'bg-blue-500/20 text-blue-300' :
-                  req.status === 'reviewed' ? 'bg-green-500/20 text-green-300' :
-                  req.status === 'clicked' ? 'bg-yellow-500/20 text-yellow-300' :
-                  'bg-gray-700 text-gray-400'
-                }`}>{req.status}</span>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* ── AI Analysis tab ──────────────────────────────────────────────────────── */}
-      {!loading && activeTab === 'analyze' && (
-        <div className="space-y-4">
-          {!analysis && (
-            <div className="text-center py-16">
-              <p className="text-4xl mb-4">🔍</p>
-              <p className="text-gray-400 text-sm mb-6">AI will analyse all your reviews and give you an actionable reputation health report.</p>
-              <button onClick={handleAnalyze} disabled={analyzing}
-                className="px-6 py-3 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg transition-colors disabled:opacity-50">
-                {analyzing ? 'Analysing...' : '🤖 Run Reputation Analysis'}
-              </button>
-            </div>
-          )}
-
-          {analysis && (
-            <div className="space-y-4">
-              <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 text-center">
-                <p className={`text-5xl font-bold ${healthColor[analysis.health] || 'text-gray-400'}`}>{analysis.score}</p>
-                <p className={`text-lg font-semibold mt-1 capitalize ${healthColor[analysis.health]}`}>{analysis.health} Reputation</p>
-                <p className="text-gray-400 text-sm mt-2 max-w-lg mx-auto">{analysis.summary}</p>
-                <div className="flex justify-center gap-6 mt-4 text-sm">
-                  <div className="text-center">
-                    <p className="text-yellow-400 font-bold">{(analysis.avgRating ?? 0).toFixed(1)}★</p>
-                    <p className="text-gray-500 text-xs">Avg Rating</p>
-                  </div>
-                  <div className="text-center">
-                    <p className="text-white font-bold">{analysis.totalReviews}</p>
-                    <p className="text-gray-500 text-xs">Reviews</p>
-                  </div>
-                  <div className="text-center">
-                    <p className={`font-bold ${(analysis.unansweredNegative ?? 0) > 0 ? 'text-red-400' : 'text-green-400'}`}>{analysis.unansweredNegative ?? 0}</p>
-                    <p className="text-gray-500 text-xs">Unanswered Neg.</p>
-                  </div>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-                  <p className="text-green-400 font-medium text-sm mb-3">Strengths</p>
-                  <ul className="space-y-1.5">
-                    {(analysis.strengths || []).map((s, i) => (
-                      <li key={i} className="text-gray-300 text-sm flex gap-2"><span className="text-green-500 flex-shrink-0">•</span>{s}</li>
-                    ))}
-                  </ul>
-                </div>
-                <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-                  <p className="text-red-400 font-medium text-sm mb-3">Issues</p>
-                  <ul className="space-y-1.5">
-                    {(analysis.issues || []).map((s, i) => (
-                      <li key={i} className="text-gray-300 text-sm flex gap-2"><span className="text-red-500 flex-shrink-0">•</span>{s}</li>
-                    ))}
-                  </ul>
-                </div>
-              </div>
-
-              <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-                <p className="text-indigo-400 font-medium text-sm mb-3">Action Plan</p>
-                <ol className="space-y-2">
-                  {(analysis.actions || []).map((a, i) => (
-                    <li key={i} className="text-gray-300 text-sm flex gap-3">
-                      <span className="text-indigo-400 font-bold flex-shrink-0">{i + 1}.</span>{a}
-                    </li>
-                  ))}
-                </ol>
-              </div>
-
-              <button onClick={handleAnalyze} disabled={analyzing}
-                className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm rounded-lg transition-colors disabled:opacity-50">
-                {analyzing ? 'Re-analysing...' : '↻ Refresh Analysis'}
-              </button>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* ── AI Response Modal ─────────────────────────────────────────────────────── */}
-      {responseModalReview && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={() => { setResponseModalReview(null); setSelectedReview(null); setDraftText('') }}>
-          <div className="absolute inset-0 bg-black/70" />
-          <div className="relative bg-gray-900 border border-gray-700 rounded-2xl p-6 w-full max-w-2xl space-y-4" onClick={e => e.stopPropagation()}>
-            <div className="flex items-center justify-between">
-              <h2 className="text-white font-bold">🤖 AI-Drafted Response</h2>
-              <button onClick={() => { setResponseModalReview(null); setSelectedReview(null); setDraftText('') }} className="text-gray-500 hover:text-white text-xl leading-none">×</button>
-            </div>
-
-            <div className="bg-gray-800 rounded-lg p-3">
-              <p className="text-gray-500 text-xs mb-1">Responding to review from {responseModalReview.contact_name || 'Anonymous'}</p>
-              <p className="text-gray-300 text-sm">{responseModalReview.body || responseModalReview.title || 'No review text'}</p>
-            </div>
-
-            {drafting ? (
-              <div className="flex items-center gap-3 py-6 justify-center">
-                <span className="w-5 h-5 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin inline-block" />
-                <span className="text-indigo-400 text-sm">AI drafting response...</span>
-              </div>
-            ) : (
-              <textarea
-                value={draftText}
-                onChange={e => setDraftText(e.target.value)}
-                rows={6}
-                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm resize-none focus:outline-none focus:border-indigo-500"
+        ) : (
+          <div className="space-y-3">
+            {filtered.map(m => (
+              <MentionCard
+                key={m.id}
+                workspaceId={workspaceId!}
+                mention={m}
+                onMarkAddressed={() => updateMentionStatus(m.id, 'addressed')}
+                onDismiss={() => updateMentionStatus(m.id, 'dismissed')}
               />
-            )}
-
-            <div className="flex gap-3 justify-end">
-              <button onClick={() => { setResponseModalReview(null); setSelectedReview(null); setDraftText('') }}
-                className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm rounded-lg transition-colors">Cancel</button>
-              <button onClick={handleSaveResponse} disabled={savingResponse || !draftText || drafting}
-                className="px-4 py-2 bg-green-600 hover:bg-green-500 text-white text-sm font-semibold rounded-lg transition-colors disabled:opacity-50">
-                {savingResponse ? 'Sending...' : 'Send Response'}
-              </button>
-            </div>
+            ))}
           </div>
-        </div>
-      )}
-
-      {/* ── Add Review Modal ─────────────────────────────────────────────────────── */}
-      {addModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={() => setAddModal(false)}>
-          <div className="absolute inset-0 bg-black/60" />
-          <div className="relative bg-gray-900 border border-gray-700 rounded-2xl p-6 w-full max-w-md space-y-4" onClick={e => e.stopPropagation()}>
-            <h2 className="text-white font-semibold">Add Manual Review</h2>
-            <div className="space-y-3">
-              <input placeholder="Customer name" value={newReview.contactName}
-                onChange={e => setNewReview(p => ({ ...p, contactName: e.target.value }))}
-                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none" />
-              <input placeholder="Customer email" value={newReview.contactEmail}
-                onChange={e => setNewReview(p => ({ ...p, contactEmail: e.target.value }))}
-                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none" />
-              <select value={newReview.source} onChange={e => setNewReview(p => ({ ...p, source: e.target.value }))}
-                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none">
-                {['manual', 'google', 'trustpilot', 'facebook', 'yelp', 'g2', 'internal'].map(s => (
-                  <option key={s} value={s} className="capitalize">{s}</option>
-                ))}
-              </select>
-              <div className="flex items-center gap-2">
-                <label className="text-gray-400 text-sm">Rating:</label>
-                <div className="flex gap-1">
-                  {[1, 2, 3, 4, 5].map(n => (
-                    <button key={n} onClick={() => setNewReview(p => ({ ...p, rating: n }))}
-                      className={`text-xl transition-colors ${n <= newReview.rating ? 'text-yellow-400' : 'text-gray-700'}`}>★</button>
-                  ))}
-                </div>
-              </div>
-              <input placeholder="Review title (optional)" value={newReview.title}
-                onChange={e => setNewReview(p => ({ ...p, title: e.target.value }))}
-                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none" />
-              <textarea placeholder="Review text" value={newReview.body}
-                onChange={e => setNewReview(p => ({ ...p, body: e.target.value }))}
-                rows={3} className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none resize-none" />
-            </div>
-            <div className="flex gap-2 justify-end">
-              <button onClick={() => setAddModal(false)}
-                className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm rounded-lg transition-colors">Cancel</button>
-              <button onClick={handleAddReview} disabled={submitting}
-                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm rounded-lg transition-colors disabled:opacity-50">
-                {submitting ? 'Saving...' : 'Save Review'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ── Request Review Modal ─────────────────────────────────────────────────── */}
-      {reqModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={() => { setReqModal(false); setReqMsg('') }}>
-          <div className="absolute inset-0 bg-black/60" />
-          <div className="relative bg-gray-900 border border-gray-700 rounded-2xl p-6 w-full max-w-md space-y-4" onClick={e => e.stopPropagation()}>
-            <h2 className="text-white font-semibold">Send Review Request</h2>
-            <p className="text-gray-400 text-xs">AI will write a personalised email and send it immediately.</p>
-            <div className="space-y-3">
-              <input placeholder="Contact email *" value={reqEmail}
-                onChange={e => setReqEmail(e.target.value)}
-                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none" />
-              <input placeholder="Contact name (optional)" value={reqName}
-                onChange={e => setReqName(e.target.value)}
-                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none" />
-              <select value={reqPlatform} onChange={e => setReqPlatform(e.target.value)}
-                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none">
-                <option value="google">Google</option>
-                <option value="trustpilot">Trustpilot</option>
-                <option value="facebook">Facebook</option>
-                <option value="yelp">Yelp</option>
-                <option value="g2">G2</option>
-              </select>
-              <input placeholder="Review link URL (optional)" value={reqLink}
-                onChange={e => setReqLink(e.target.value)}
-                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none" />
-            </div>
-            {reqMsg && <p className="text-sm text-gray-300 bg-gray-800 rounded-lg px-3 py-2">{reqMsg}</p>}
-            <div className="flex gap-2 justify-end">
-              <button onClick={() => { setReqModal(false); setReqMsg('') }}
-                className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm rounded-lg transition-colors">Close</button>
-              <button onClick={handleSendRequest} disabled={sending || !reqEmail}
-                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm rounded-lg transition-colors disabled:opacity-50">
-                {sending ? 'Sending...' : '📧 Send Request'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
+  )
+}
+
+// ─── Crisis Banner ─────────────────────────────────────────────────────────
+
+function CrisisBanner({
+  crisis, onOverride,
+}: { crisis: CrisisState; onOverride: (status: 'clear' | 'recovering' | 'tripped') => void }) {
+  const isTripped = crisis.crisisStatus === 'tripped'
+  const colorClass = isTripped
+    ? 'border-rose-700 bg-rose-950/40'
+    : 'border-amber-700 bg-amber-950/40'
+  const pulseClass = isTripped ? 'bg-rose-500' : 'bg-amber-500'
+
+  return (
+    <div className={`relative overflow-hidden mb-6 border-2 rounded-xl p-5 ${colorClass}`}>
+      <div className={`absolute -top-1/2 -right-1/2 w-96 h-96 rounded-full opacity-10 ${pulseClass} animate-pulse pointer-events-none`} />
+
+      <div className="relative flex items-start justify-between gap-4 flex-wrap">
+        <div className="flex items-start gap-3 flex-1 min-w-0">
+          <div className="flex-shrink-0 relative">
+            <span className={`absolute inset-0 rounded-full ${pulseClass} opacity-50 animate-ping`} />
+            <span className={`relative inline-flex w-3 h-3 rounded-full ${pulseClass}`} />
+          </div>
+          <div>
+            <h2 className={`text-lg font-bold ${isTripped ? 'text-rose-200' : 'text-amber-200'}`}>
+              ⚠ PR Circuit Breaker — {crisis.crisisStatus.toUpperCase()}
+            </h2>
+            <p className={`text-sm mt-1 ${isTripped ? 'text-rose-300/80' : 'text-amber-300/80'}`}>
+              {isTripped
+                ? 'All outbound dispatch (publishing, ads, email, PR) is paused.'
+                : 'Outbound paused while you respond. Flip to clear once handled.'}
+              {crisis.crisisTrippedAt && (
+                <> Tripped <span className="font-medium">{formatRelative(crisis.crisisTrippedAt)}</span>.</>
+              )}
+              {' '}
+              <span className={isTripped ? 'text-rose-200 font-semibold' : 'text-amber-200 font-semibold'}>
+                {crisis.criticalUnreadCount} critical mention{crisis.criticalUnreadCount === 1 ? '' : 's'} still unaddressed.
+              </span>
+            </p>
+          </div>
+        </div>
+
+        <div className="flex gap-2 flex-shrink-0">
+          {isTripped && (
+            <button
+              onClick={() => onOverride('recovering')}
+              className="px-3 py-1.5 bg-amber-900/50 hover:bg-amber-900/70 border border-amber-700 text-amber-100 text-xs rounded-lg font-medium"
+            >
+              Mark recovering
+            </button>
+          )}
+          <button
+            onClick={() => onOverride('clear')}
+            className="px-3 py-1.5 bg-gray-900 hover:bg-gray-800 border border-gray-700 text-gray-200 text-xs rounded-lg font-medium inline-flex items-center gap-1.5"
+          >
+            <CheckCircle2 className="w-3.5 h-3.5" /> Clear breaker
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Mention Card with inline AI Replier ──────────────────────────────────
+
+function MentionCard({
+  workspaceId, mention, onMarkAddressed, onDismiss,
+}: {
+  workspaceId: string
+  mention: BrandMention
+  onMarkAddressed: () => void
+  onDismiss: () => void
+}) {
+  const [draftOpen, setDraftOpen] = useState(false)
+  const [draft, setDraft] = useState<AIDraft | null>(null)
+  const [draftLoading, setDraftLoading] = useState(false)
+  const [draftError, setDraftError] = useState<string | null>(null)
+  const [editText, setEditText] = useState('')
+  const [sending, setSending] = useState(false)
+  const [sendResult, setSendResult] = useState<{ ok: boolean; message: string } | null>(null)
+
+  const sentimentScore = Number(mention.sentiment_score || 0)
+  const charLimit = draft?.charLimit || 1500
+  const charCount = editText.length
+  const overLimit = !!draft?.isHardLimit && charCount > charLimit
+
+  const fetchDraft = async () => {
+    setDraftLoading(true); setDraftError(null)
+    try {
+      const res = await fetch('/api/agents/mention-reply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspaceId, mentionId: mention.id }),
+      })
+      const data = await res.json() as { ok?: boolean; draft?: AIDraft; error?: string }
+      if (!res.ok || !data.ok || !data.draft) throw new Error(data.error || 'Draft failed')
+      setDraft(data.draft)
+      setEditText(data.draft.reply)
+    } catch (err) {
+      setDraftError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setDraftLoading(false)
+    }
+  }
+
+  const toggleDraft = () => {
+    setDraftOpen(prev => !prev)
+    if (!draftOpen && !draft) fetchDraft()
+  }
+
+  const sendReply = async () => {
+    if (!draft || !editText.trim() || overLimit) return
+    setSending(true); setSendResult(null)
+    try {
+      const platform = mention.source_platform.toLowerCase()
+      if (platform === 'twitter' || platform === 'x') {
+        const res = await fetch('/api/publish/direct', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            workspaceId,
+            platforms: ['twitter'],
+            content: editText,
+          }),
+        })
+        const data = await res.json() as { ok?: boolean; error?: string }
+        if (!res.ok || data.ok === false) throw new Error(data.error || 'Publish failed')
+        setSendResult({ ok: true, message: 'Reply posted to X.' })
+        onMarkAddressed()
+      } else {
+        try { await navigator.clipboard.writeText(editText) } catch { /* ignore */ }
+        setSendResult({
+          ok: true,
+          message: `Copied to clipboard. ${platform} doesn't have a direct OAuth post route yet — paste it in the original thread, then mark addressed.`,
+        })
+      }
+    } catch (err) {
+      setSendResult({ ok: false, message: err instanceof Error ? err.message : String(err) })
+    } finally {
+      setSending(false)
+    }
+  }
+
+  return (
+    <article className="bg-gray-900 border border-gray-800 rounded-xl p-4 hover:border-gray-700 transition-colors">
+      {/* Header row */}
+      <div className="flex items-start justify-between gap-3 mb-2 flex-wrap">
+        <div className="flex items-center gap-2 flex-wrap text-xs">
+          <PlatformIcon p={mention.source_platform} />
+          <span className="text-gray-300 capitalize">{mention.source_platform.replace('_', ' ')}</span>
+          {mention.author_handle && (
+            <span className="text-gray-500">· @{mention.author_handle}</span>
+          )}
+          <span className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium border ${SEVERITY_PILL[mention.severity_level] || SEVERITY_PILL.low}`}>
+            {mention.severity_level}
+          </span>
+          <span className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium border ${STATUS_PILL[mention.status] || STATUS_PILL.unread}`}>
+            {mention.status.replace('_', ' ')}
+          </span>
+          <SentimentDot score={sentimentScore} />
+        </div>
+        <span className="text-[11px] text-gray-500 flex-shrink-0">{formatRelative(mention.created_at)}</span>
+      </div>
+
+      {/* Mention content */}
+      <p className="text-sm text-gray-200 whitespace-pre-wrap leading-relaxed mb-3">
+        {mention.content_text}
+      </p>
+
+      {/* Actions bar */}
+      <div className="flex items-center justify-between gap-2 pt-2 border-t border-gray-800 flex-wrap">
+        <div className="flex items-center gap-2">
+          {mention.source_url && (
+            <a
+              href={mention.source_url} target="_blank" rel="noopener noreferrer"
+              className="text-xs text-indigo-400 hover:text-indigo-300 inline-flex items-center gap-1"
+            >
+              <ExternalLink className="w-3 h-3" /> Open source
+            </a>
+          )}
+        </div>
+        <div className="flex items-center gap-1.5">
+          {mention.status !== 'addressed' && (
+            <button
+              onClick={toggleDraft}
+              className="px-2.5 py-1 text-xs bg-purple-700 hover:bg-purple-600 text-white rounded inline-flex items-center gap-1.5"
+            >
+              <Sparkles className="w-3 h-3" />
+              {draftOpen ? 'Hide draft' : 'Draft AI reply'}
+            </button>
+          )}
+          {mention.status !== 'addressed' && (
+            <button
+              onClick={onMarkAddressed}
+              className="px-2.5 py-1 text-xs bg-gray-900 hover:bg-gray-800 border border-emerald-800 text-emerald-200 rounded inline-flex items-center gap-1.5"
+            >
+              <CheckCircle2 className="w-3 h-3" /> Mark addressed
+            </button>
+          )}
+          {mention.status !== 'dismissed' && mention.status !== 'addressed' && (
+            <button
+              onClick={onDismiss}
+              className="px-2.5 py-1 text-xs bg-gray-900 hover:bg-gray-800 border border-gray-700 text-gray-300 rounded inline-flex items-center gap-1.5"
+            >
+              <XCircle className="w-3 h-3" /> Dismiss
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Inline AI Replier */}
+      {draftOpen && (
+        <div className="mt-3 bg-purple-950/20 border border-purple-900/50 rounded-lg p-4">
+          {draftLoading ? (
+            <div className="flex items-center justify-center py-6 text-purple-300 text-sm">
+              <Loader2 className="w-4 h-4 animate-spin mr-2" /> Drafting platform-aware reply…
+            </div>
+          ) : draftError ? (
+            <div className="text-rose-300 text-sm flex items-start gap-2">
+              <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+              <div className="flex-1">{draftError}</div>
+              <button onClick={fetchDraft} className="text-xs text-rose-200 underline">retry</button>
+            </div>
+          ) : draft ? (
+            <>
+              <div className="flex items-center justify-between mb-2 text-xs">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <Sparkles className="w-3.5 h-3.5 text-purple-400" />
+                  <span className="text-purple-300">AI Mention Reply</span>
+                  <span className="text-[10px] text-purple-400 bg-purple-900/40 border border-purple-800 px-1.5 py-0.5 rounded">
+                    {draft.tone}
+                  </span>
+                  <span className="text-[10px] text-purple-400">
+                    · target {draft.charLimit}ch {draft.isHardLimit ? '(hard)' : '(soft)'}
+                  </span>
+                </div>
+                <button
+                  onClick={fetchDraft}
+                  className="text-purple-300 hover:text-purple-200 p-1"
+                  title="Regenerate"
+                >
+                  <RefreshCw className="w-3 h-3" />
+                </button>
+              </div>
+
+              <textarea
+                value={editText}
+                onChange={e => setEditText(e.target.value)}
+                rows={Math.min(8, Math.max(3, Math.ceil(editText.length / 80)))}
+                className={`w-full bg-gray-950 border rounded-lg px-3 py-2 text-sm text-white focus:outline-none ${
+                  overLimit ? 'border-rose-700 focus:border-rose-600' : 'border-gray-800 focus:border-indigo-600'
+                }`}
+              />
+
+              <div className="flex items-center justify-between mt-2 text-[11px]">
+                <span className={overLimit ? 'text-rose-400 font-medium' : 'text-gray-500'}>
+                  {charCount} / {charLimit}
+                  {overLimit && ' · over hard limit'}
+                </span>
+                <p className="text-[11px] text-gray-500 italic truncate max-w-[60%]" title={draft.reasoning}>
+                  {draft.reasoning}
+                </p>
+              </div>
+
+              <div className="mt-3 flex items-center justify-end gap-2">
+                <CopyButton text={editText} />
+                <button
+                  onClick={sendReply}
+                  disabled={sending || overLimit || !editText.trim()}
+                  className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs rounded inline-flex items-center gap-1.5"
+                >
+                  {sending ? <Loader2 className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />}
+                  {sending ? 'Sending…' : 'Send reply'}
+                </button>
+              </div>
+
+              {sendResult && (
+                <div className={`mt-3 text-xs flex items-start gap-1.5 ${sendResult.ok ? 'text-emerald-300' : 'text-rose-300'}`}>
+                  {sendResult.ok ? <CheckCircle2 className="w-3.5 h-3.5 mt-0.5" /> : <AlertCircle className="w-3.5 h-3.5 mt-0.5" />}
+                  <span>{sendResult.message}</span>
+                </div>
+              )}
+            </>
+          ) : null}
+        </div>
+      )}
+    </article>
+  )
+}
+
+// ─── Subcomponents ────────────────────────────────────────────────────────
+
+function StatCard({ label, value, accent }: { label: string; value: string; accent?: string }) {
+  return (
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
+      <p className="text-[11px] uppercase tracking-wider text-gray-500 font-medium mb-1">{label}</p>
+      <div className={`text-2xl font-bold tabular-nums ${accent || 'text-white'}`}>{value}</div>
+    </div>
+  )
+}
+
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false)
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch { /* ignore */ }
+  }
+  return (
+    <button
+      onClick={copy}
+      className="px-2.5 py-1.5 text-xs bg-gray-900 hover:bg-gray-800 border border-gray-700 text-gray-300 rounded inline-flex items-center gap-1.5"
+    >
+      {copied ? <ClipboardCheck className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+      {copied ? 'Copied' : 'Copy'}
+    </button>
   )
 }

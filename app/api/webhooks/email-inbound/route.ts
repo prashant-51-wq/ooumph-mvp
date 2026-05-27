@@ -1,12 +1,42 @@
 /**
  * POST /api/webhooks/email-inbound
- * Receives inbound emails forwarded by Resend's inbound routing.
- * Creates inbox_conversations + inbox_messages records.
  *
- * Configure in Resend Dashboard → Inbound → Add route → this URL
+ * Receives inbound subscriber email replies forwarded by Resend's (or any
+ * compatible provider's) inbound routing. Creates inbox_conversations +
+ * inbox_messages records.
+ *
+ *   Configure in Resend Dashboard → Inbound → Add route → this URL
+ *
+ * ─── 🛡️  Auto-Reply Shield ───────────────────────────────────────────────────
+ * Before persisting OR firing any workflow trigger, we run a strict header /
+ * subject inspection gate. The goal is to prevent infinite loops where an
+ * auto-responder on the subscriber's mailbox (out-of-office, vacation reply,
+ * mailbox-full bounce, etc.) replies to an AI-sent email and the AI replies
+ * back, and so on forever burning tokens and provider quota.
+ *
+ * The gate fires on any of:
+ *   - RFC 3834 `Auto-Submitted: auto-replied` (and `auto-generated`, `auto-notified`)
+ *   - Microsoft `X-Auto-Response-Suppress: All / OOF / DR / NRN / RN`
+ *   - Vendor `X-Autoreply: yes` / `X-Autorespond:` (any value)
+ *   - `Precedence: bulk | junk | list | auto_reply`
+ *   - `Return-Path: <>` (null-bouncer envelope)
+ *   - `From:` addresses matching `mailer-daemon@`, `postmaster@`, `no-reply@*`
+ *     or `noreply@*` (with a generous match)
+ *   - Subjects starting with bounce-style phrases (Undelivered, Delivery
+ *     Status Notification, Out of Office, Automatic reply, etc.)
+ *
+ * When the gate triggers we return 200 OK with `{ ok: true, suppressed:
+ * <reason> }` so the provider considers the webhook successful (and won't
+ * retry — retries would just re-evaluate the same headers anyway).
+ *
+ * If the gate does NOT trigger we treat the message as a genuine human
+ * response and forward it into the existing inbox_messages schema.
  */
+
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
+
+export const runtime = 'nodejs'
 
 interface ResendInboundPayload {
   from?: string
@@ -14,17 +44,136 @@ interface ResendInboundPayload {
   subject?: string
   text?: string
   html?: string
-  headers?: Record<string, string>
+  headers?: Record<string, string | string[]>
   messageId?: string
+  envelope?: { from?: string; to?: string[] }
+}
+
+// Subject-line patterns that match common automated reply / bounce styles.
+// Pattern order doesn't matter; matches are case-insensitive.
+const AUTOREPLY_SUBJECT_PATTERNS: RegExp[] = [
+  /^auto(matic)?\s*(reply|response)/i,
+  /^out\s*of\s*office/i,
+  /^away\s*from/i,
+  /^vacation\s*(reply|notice|auto)/i,
+  /^delivery\s*(status\s*)?notification/i,
+  /^undeliverable/i,
+  /^undelivered\s*mail/i,
+  /^returned\s*mail/i,
+  /^mail\s*delivery\s*failed/i,
+  /^mailer-daemon/i,
+  /^failure\s*notice/i,
+  /^postmaster/i,
+  /^non[-\s]?delivery/i,
+]
+
+// From-address local-parts that are virtually always automated senders.
+const AUTOREPLY_FROM_PATTERNS: RegExp[] = [
+  /^mailer-daemon@/i,
+  /^postmaster@/i,
+  /^no[-_.]?reply@/i,
+  /^do[-_.]?not[-_.]?reply@/i,
+  /^bounces?@/i,
+  /^delivery[-_.]?status@/i,
+  /^automated@/i,
+]
+
+/**
+ * Normalise a header-bag (which may have arrays or differently-cased keys) to
+ * a flat lower-case-keyed string→string map.
+ */
+function normaliseHeaders(raw: Record<string, string | string[]> | undefined): Record<string, string> {
+  if (!raw) return {}
+  const out: Record<string, string> = {}
+  for (const [k, v] of Object.entries(raw)) {
+    const lower = k.toLowerCase().trim()
+    out[lower] = Array.isArray(v) ? v.join(', ') : String(v)
+  }
+  return out
+}
+
+/**
+ * Returns a non-null reason string if the message should be suppressed,
+ * or null if it appears to be a genuine human reply.
+ */
+function detectAutoReply(payload: ResendInboundPayload): string | null {
+  const headers = normaliseHeaders(payload.headers)
+  const subject = (payload.subject || '').trim()
+  const fromRaw = payload.from || ''
+  const fromAddr = (fromRaw.match(/<([^>]+)>/)?.[1] || fromRaw).trim().toLowerCase()
+
+  // 1. RFC 3834 — Auto-Submitted
+  const autoSubmitted = (headers['auto-submitted'] || '').toLowerCase()
+  if (autoSubmitted && autoSubmitted !== 'no') {
+    return `auto-submitted:${autoSubmitted}`
+  }
+
+  // 2. Microsoft + vendor flags
+  if (headers['x-autoreply']?.toLowerCase() === 'yes') return 'x-autoreply'
+  if (headers['x-auto-response-suppress']) return `x-auto-response-suppress:${headers['x-auto-response-suppress']}`
+  if (headers['x-autorespond']) return 'x-autorespond-present'
+
+  // 3. Precedence header (legacy but still widely used by mailing lists)
+  const precedence = (headers['precedence'] || '').toLowerCase()
+  if (['bulk', 'junk', 'list', 'auto_reply'].includes(precedence)) {
+    return `precedence:${precedence}`
+  }
+
+  // 4. Null Return-Path → bounce envelope
+  const returnPath = (headers['return-path'] || '').trim()
+  if (returnPath === '<>' || returnPath === '') {
+    if (returnPath === '<>') return 'null-return-path'
+  }
+
+  // 5. From-address local-parts
+  for (const p of AUTOREPLY_FROM_PATTERNS) {
+    if (p.test(fromAddr)) return `from-pattern:${fromAddr}`
+  }
+
+  // 6. Subject-line patterns
+  for (const p of AUTOREPLY_SUBJECT_PATTERNS) {
+    if (p.test(subject)) return `subject-pattern:${p.source}`
+  }
+
+  // 7. List-Unsubscribe headers without a real human In-Reply-To are usually
+  // newsletters/notifications, not real replies. We don't block on this alone
+  // because real users sometimes reply from list-managed mailboxes — but if
+  // it's combined with a no-Subject or empty body we treat it as automated.
+  if (headers['list-unsubscribe'] && !payload.text && !payload.html) {
+    return 'list-unsubscribe-with-empty-body'
+  }
+
+  return null
 }
 
 export async function POST(req: NextRequest) {
+  let payload: ResendInboundPayload
   try {
-    const payload = await req.json() as ResendInboundPayload
+    payload = await req.json() as ResendInboundPayload
+  } catch {
+    return NextResponse.json({ ok: false, error: 'Invalid JSON' }, { status: 400 })
+  }
 
+  // ─── 🛡️  Auto-Reply Shield ──────────────────────────────────────────────
+  // Run this before ANY DB writes or workflow triggers. The 200 OK return
+  // signals success to the provider so it stops retrying — we've deliberately
+  // chosen not to persist the suppressed message at all (no inbox noise, no
+  // potential to accidentally trigger downstream workflows).
+  const suppressionReason = detectAutoReply(payload)
+  if (suppressionReason) {
+    console.log(`[email-inbound] suppressed: ${suppressionReason} | from="${payload.from}" subject="${payload.subject}"`)
+    return NextResponse.json({
+      ok: true,
+      suppressed: suppressionReason,
+      message: 'Auto-reply / bounce detected — message intentionally ignored to prevent loops.',
+    })
+  }
+
+  // ─── Genuine human reply → forward into inbox schema ────────────────────
+  try {
     const fromRaw = payload.from || ''
     const emailMatch = fromRaw.match(/<([^>]+)>/)
-    const contactEmail = emailMatch ? emailMatch[1] : fromRaw.trim()
+    const contactEmail = (emailMatch ? emailMatch[1] : fromRaw).trim().toLowerCase()
     const contactName = emailMatch
       ? fromRaw.replace(/<[^>]+>/, '').replace(/"/g, '').trim()
       : ''
@@ -35,52 +184,51 @@ export async function POST(req: NextRequest) {
     const externalId = payload.messageId || ''
 
     if (!contactEmail || !body) {
-      return NextResponse.json({ ok: true, skipped: 'No email or body' })
+      return NextResponse.json({ ok: true, skipped: 'no_email_or_body' })
     }
 
-    // Find workspace by the receiving email address (stored in integrations)
-    // Fall back to first workspace if no match
+    // Resolve workspace — prefer a workspace that has a Gmail / Resend
+    // integration whose configured inbound address matches `toRaw`.
+    // For MVP simplicity we look at the active gmail integration; fall back
+    // to first workspace.
     const integResult = await sql`
       SELECT workspace_id FROM integrations
-      WHERE platform = 'gmail' AND status = 'active'
+      WHERE platform IN ('gmail', 'resend') AND status = 'active'
       LIMIT 1
     `
-    const workspaceId = integResult.rows[0]
+    let workspaceId: string | null = integResult.rows[0]
       ? String(integResult.rows[0].workspace_id)
       : null
 
     if (!workspaceId) {
-      // Try first workspace as fallback
       const wsResult = await sql`SELECT id FROM workspaces LIMIT 1`
-      if (!wsResult.rows[0]) return NextResponse.json({ ok: true, skipped: 'No workspace' })
+      workspaceId = (wsResult.rows[0] as { id?: string } | undefined)?.id || null
+    }
+    if (!workspaceId) {
+      return NextResponse.json({ ok: true, skipped: 'no_workspace' })
     }
 
-    const wId = workspaceId || (await sql`SELECT id FROM workspaces LIMIT 1`).rows[0]?.id as string
-    if (!wId) return NextResponse.json({ ok: true, skipped: 'No workspace' })
-
-    // Find or create contact in CRM
+    // Find or auto-create contact in CRM
     let contactId: string | null = null
-    const crmResult = await sql`SELECT id FROM leads_captured WHERE workspace_id = ${wId} AND email = ${contactEmail} LIMIT 1`
+    const crmResult = await sql`SELECT id FROM leads_captured WHERE workspace_id = ${workspaceId} AND email = ${contactEmail} LIMIT 1`
     if (crmResult.rows[0]) {
       contactId = String(crmResult.rows[0].id)
     } else {
-      // Auto-create lead
       contactId = newId()
       await sql`
         INSERT INTO leads_captured (id, workspace_id, name, email, source, status, score)
-        VALUES (${contactId}, ${wId}, ${contactName || null}, ${contactEmail}, 'inbound_email', 'new', 0)
+        VALUES (${contactId}, ${workspaceId}, ${contactName || null}, ${contactEmail}, 'inbound_email', 'new', 0)
       `
     }
 
-    // Find or create conversation
+    // Find or open conversation
+    const now = new Date().toISOString()
     let convId: string
     const existingConv = await sql`
       SELECT id FROM inbox_conversations
-      WHERE workspace_id = ${wId} AND contact_email = ${contactEmail} AND channel = 'email' AND status != 'closed'
+      WHERE workspace_id = ${workspaceId} AND contact_email = ${contactEmail} AND channel = 'email' AND status != 'closed'
       LIMIT 1
     `
-    const now = new Date().toISOString()
-
     if (existingConv.rows[0]) {
       convId = String(existingConv.rows[0].id)
       await sql`
@@ -92,23 +240,41 @@ export async function POST(req: NextRequest) {
       convId = newId()
       await sql`
         INSERT INTO inbox_conversations (id, workspace_id, contact_id, contact_email, contact_name, channel, subject, status, tags, last_message_at, unread_count, created_at)
-        VALUES (${convId}, ${wId}, ${contactId}, ${contactEmail}, ${contactName || null}, 'email', ${subject}, 'open', '[]', ${now}, 1, ${now})
+        VALUES (${convId}, ${workspaceId}, ${contactId}, ${contactEmail}, ${contactName || null}, 'email', ${subject}, 'open', '[]', ${now}, 1, ${now})
       `
     }
 
-    // Insert message
     const msgId = newId()
     await sql`
       INSERT INTO inbox_messages (id, conversation_id, workspace_id, direction, from_address, to_address, subject, body, channel, status, external_id, sent_at, created_at)
-      VALUES (${msgId}, ${convId}, ${wId}, 'inbound', ${contactEmail}, ${toRaw}, ${subject}, ${body.slice(0, 10000)}, 'email', 'read', ${externalId}, ${now}, ${now})
+      VALUES (${msgId}, ${convId}, ${workspaceId}, 'inbound', ${contactEmail}, ${toRaw}, ${subject}, ${body.slice(0, 10000)}, 'email', 'read', ${externalId}, ${now}, ${now})
     `
 
-    // Fire email_received workflow trigger
+    // Bump subscriber engagement timestamp if this address is in our list
+    try {
+      await sql`
+        UPDATE email_subscribers
+        SET last_engaged_at = ${now}
+        WHERE workspace_id = ${workspaceId} AND email = ${contactEmail}
+      `
+    } catch { /* column may be missing on legacy installs */ }
+
+    // Fire `email_received` workflow trigger — but only for genuine humans.
+    // The auto-reply shield above is what guarantees this can never loop.
     const appUrl = process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000'
     fetch(`${appUrl}/api/workflows/trigger`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workspaceId: wId, triggerType: 'email_received', leadId: contactId, contactEmail, data: { subject, conversationId: convId } }),
+      headers: {
+        'Content-Type': 'application/json',
+        ...(process.env.ADMIN_SECRET ? { 'x-internal-secret': process.env.ADMIN_SECRET } : {}),
+      },
+      body: JSON.stringify({
+        workspaceId,
+        triggerType: 'email_received',
+        leadId: contactId,
+        contactEmail,
+        data: { subject, conversationId: convId },
+      }),
     }).catch(e => console.error('Workflow trigger (email) failed:', e))
 
     return NextResponse.json({ ok: true, conversationId: convId, messageId: msgId })

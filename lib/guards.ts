@@ -213,6 +213,53 @@ export async function assertArtifactApproved(
 }
 
 /**
+ * PR Circuit Breaker — short-circuits every customer-facing outbound action
+ * when the workspace is in crisis mode. Read once at the top of any dispatch
+ * route; co-located on the `workspaces` row so this is a single index lookup.
+ *
+ * Lifecycle (Sprint 5 Commit 1):
+ *   clear → tripped → recovering → clear
+ *
+ *   tripped    — the scanner found a critical mention; ALL outbound paused
+ *   recovering — human is actively responding; outbound stays paused
+ *   clear      — operations normal
+ *
+ * Usage in any dispatch route:
+ *
+ *   const breaker = await assertCrisisClear(workspaceId)
+ *   if (breaker) return breaker     // 423 Locked with status + tripped_at
+ *
+ * Bonus: `?force=true` query param on the calling request can bypass the
+ * check for admins explicitly acknowledging the crisis (e.g. sending a
+ * legitimate apology email DURING the crisis). The bypass requires the
+ * caller to be a super admin AND to pass the explicit flag.
+ */
+export async function assertCrisisClear(
+  workspaceId: string,
+  opts?: { allowBypass?: boolean },
+): Promise<NextResponse | null> {
+  if (!workspaceId) return null
+  const { sql } = await import('@/lib/db')
+  const result = await sql`
+    SELECT crisis_status, crisis_tripped_at
+    FROM workspaces WHERE id = ${workspaceId} LIMIT 1
+  `
+  const row = result.rows[0] as { crisis_status?: string; crisis_tripped_at?: string | null } | undefined
+  const status = (row?.crisis_status || 'clear').toLowerCase()
+  if (status === 'clear') return null
+  if (opts?.allowBypass) return null  // caller has explicitly handled the override
+  return NextResponse.json(
+    {
+      error: `Workspace is in '${status}' mode — outbound actions paused by the PR Circuit Breaker.`,
+      crisisStatus: status,
+      crisisTrippedAt: row?.crisis_tripped_at ?? null,
+      hint: 'Resolve the active brand-mention thread in /dashboard/brand-monitor, then flip the workspace back to clear.',
+    },
+    { status: 423 },  // 423 Locked
+  )
+}
+
+/**
  * Check if the current session belongs to a super admin (returns boolean, no error response).
  * Used in page-level checks where we want to redirect instead of returning an error.
  */
@@ -230,4 +277,105 @@ export async function isSessionSuperAdmin(req: NextRequest): Promise<boolean> {
     .filter(Boolean)
   if (user.email && adminEmails.includes(user.email.toLowerCase())) return true
   return false
+}
+
+/**
+ * Sprint 9 — Developer API gateway.
+ *
+ * Parses an `Authorization: Bearer oo_…` header, hashes the cleartext with
+ * SHA-256 (single index lookup on developer_tokens.token_hash), enforces the
+ * requested scope, and bumps `last_used_at` for the audit trail.
+ *
+ *   const tokenCtx = await assertDeveloperAccess(req, 'read:leads')
+ *   if (tokenCtx instanceof NextResponse) return tokenCtx   // 401 / 403
+ *   // tokenCtx.workspaceId is now the authenticated workspace.
+ *
+ * Scope grammar: `<verb>:<resource>` e.g. `read:leads`, `write:campaigns`.
+ * A token carrying the wildcard `*` scope passes every check.
+ *
+ * Note: this guard intentionally bypasses the cookie-session pathway because
+ * the API gateway has no session context — programmatic callers authenticate
+ * with the bearer only. Workspace ownership IS implicit because the token
+ * itself is workspace-scoped (`developer_tokens.workspace_id`).
+ */
+export interface DeveloperTokenContext {
+  tokenId: string
+  workspaceId: string
+  scopes: string[]
+}
+
+export async function assertDeveloperAccess(
+  req: NextRequest,
+  requiredScope: string,
+): Promise<DeveloperTokenContext | NextResponse> {
+  const authHeader = req.headers.get('authorization') || ''
+  const match = authHeader.match(/^Bearer\s+(oo_[A-Za-z0-9_-]{16,})$/)
+  if (!match) {
+    return NextResponse.json(
+      { error: 'Missing or malformed Authorization header (expected: Bearer oo_…)' },
+      { status: 401 },
+    )
+  }
+  const plaintext = match[1]
+
+  // Single-index lookup — no compound, no workspace filter, because at this
+  // point the request hasn't been attributed yet. idx_developer_tokens_hash
+  // is the dedicated B-tree on token_hash.
+  const crypto = await import('crypto')
+  const tokenHash = crypto.createHash('sha256').update(plaintext).digest('hex')
+  const { sql } = await import('@/lib/db')
+  const result = await sql`
+    SELECT id, workspace_id, scopes_json
+    FROM developer_tokens
+    WHERE token_hash = ${tokenHash}
+    LIMIT 1
+  `
+  const row = result.rows[0] as { id?: string; workspace_id?: string; scopes_json?: string } | undefined
+  if (!row?.id || !row.workspace_id) {
+    // Constant-ish response time — we already did the hash work above so
+    // there's no easy timing oracle to confirm whether the bearer existed.
+    return NextResponse.json({ error: 'Invalid or revoked token' }, { status: 401 })
+  }
+
+  // Parse scopes (workspace_id is implicit in the token row).
+  let scopes: string[] = []
+  try {
+    const parsed = JSON.parse(row.scopes_json || '[]') as unknown
+    if (Array.isArray(parsed)) {
+      scopes = parsed.filter((s): s is string => typeof s === 'string')
+    }
+  } catch { /* default empty scopes */ }
+
+  const requested = requiredScope.trim().toLowerCase()
+  const hasWildcard = scopes.includes('*')
+  const hasExact = scopes.includes(requested)
+  // Also accept verb wildcard: 'write:*' grants every 'write:<x>' scope.
+  const verb = requested.split(':')[0]
+  const hasVerbWildcard = verb ? scopes.includes(`${verb}:*`) : false
+
+  if (!hasWildcard && !hasExact && !hasVerbWildcard) {
+    return NextResponse.json(
+      {
+        error: `Token lacks required scope '${requested}'`,
+        grantedScopes: scopes,
+      },
+      { status: 403 },
+    )
+  }
+
+  // Fire-and-forget audit stamp. Failure here must NEVER deny the request,
+  // so we await but swallow — the gateway is the critical path.
+  try {
+    await sql`
+      UPDATE developer_tokens
+      SET last_used_at = CURRENT_TIMESTAMP
+      WHERE id = ${row.id}
+    `
+  } catch { /* non-fatal */ }
+
+  return {
+    tokenId: row.id,
+    workspaceId: row.workspace_id,
+    scopes,
+  }
 }

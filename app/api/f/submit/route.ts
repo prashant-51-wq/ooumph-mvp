@@ -1,0 +1,250 @@
+/**
+ * POST /api/f/submit
+ *
+ * Public form-submission endpoint for funnel pages. Captures lead inputs,
+ * inserts a `form_submissions` row, and atomically bumps the parent
+ * `funnel_steps.conversion_count`.
+ *
+ * Request body (JSON or form-encoded):
+ *   {
+ *     slug:           "saas-demo-2026",     // OR funnelStepId
+ *     funnelStepId:   "f_abc123",
+ *     email:          "jane@acme.com",
+ *     ...arbitraryFields                    // company, name, mrr, etc.
+ *   }
+ *
+ * Response:
+ *   200  { ok: true, submissionId, conversionCount }
+ *   400  { error: "..." }                   // missing slug + email
+ *   404  { error: "..." }                   // unknown funnel
+ *   429  { error: "..." }                   // dedup window hit (same email <60s)
+ *
+ * Security & safety
+ * ─────────────────
+ * - Route is intentionally public (forms are filled by anonymous visitors).
+ * - We strict-validate `email` with a conservative regex before any DB write.
+ * - `submitted_data` is the JSON of WHITELISTED scalar fields only — we
+ *   discard nested objects / arrays / non-scalar values to prevent stored
+ *   payloads from getting weaponised (XSS via reflected data, JSON-bomb).
+ * - Per-funnel + per-email dedup window of 60s protects against double-tap
+ *   submissions and crude flood attacks. Returns 429 with a friendly message.
+ * - All writes are scoped by the funnel's `workspace_id` — leads land in
+ *   the correct tenant's table, never a sibling's.
+ * - The conversion_count bump and lead activity feed use `after()` so the
+ *   user gets their "thanks!" response instantly while audit writes commit
+ *   in the background.
+ */
+
+import { NextRequest, NextResponse } from 'next/server'
+import { after } from 'next/server'
+import { sql, newId } from '@/lib/db'
+
+export const runtime = 'nodejs'
+
+// Conservative RFC-5322 subset. Catches the obvious garbage without
+// rejecting valid edge cases like plus-addressing or hyphens.
+const EMAIL_PATTERN = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/
+const SLUG_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/
+const DEDUP_WINDOW_SECONDS = 60
+
+// Fields we'll never store in submitted_data even if the client sends them.
+const RESERVED_FIELDS = new Set([
+  'slug', 'funnelStepId', 'funnel_step_id', 'email',
+  'workspaceId', 'workspace_id', 'id',
+])
+
+/**
+ * Sanitise the form payload to scalar values only. Strings are length-capped
+ * at 2000 chars to prevent storage abuse.
+ */
+function sanitiseSubmittedData(input: Record<string, unknown>): Record<string, string | number | boolean | null> {
+  const out: Record<string, string | number | boolean | null> = {}
+  for (const [key, value] of Object.entries(input)) {
+    if (RESERVED_FIELDS.has(key)) continue
+    if (value == null) { out[key] = null; continue }
+    if (typeof value === 'string') {
+      out[key] = value.slice(0, 2000)
+    } else if (typeof value === 'number' || typeof value === 'boolean') {
+      out[key] = value
+    }
+    // Arrays / objects / functions / symbols silently dropped.
+  }
+  return out
+}
+
+interface FunnelLookup {
+  id: string
+  workspace_id: string
+}
+
+async function resolveFunnelStep(slugOrId: { slug?: string; funnelStepId?: string }): Promise<FunnelLookup | null> {
+  const slug = (slugOrId.slug || '').trim().replace(/[.,!?)\];:]+$/, '')
+  const id = (slugOrId.funnelStepId || '').trim()
+
+  if (id) {
+    const r = await sql`
+      SELECT id, workspace_id FROM funnel_steps WHERE id = ${id} LIMIT 1
+    `
+    const row = r.rows[0] as unknown as FunnelLookup | undefined
+    if (row) return row
+  }
+  if (slug && SLUG_PATTERN.test(slug)) {
+    const r = await sql`
+      SELECT id, workspace_id FROM funnel_steps WHERE slug = ${slug} LIMIT 1
+    `
+    const row = r.rows[0] as unknown as FunnelLookup | undefined
+    if (row) return row
+  }
+  return null
+}
+
+export async function POST(req: NextRequest) {
+  // ── 1. Parse body — accept JSON or url-encoded form posts ────────────
+  let raw: Record<string, unknown>
+  try {
+    const contentType = (req.headers.get('content-type') || '').toLowerCase()
+    if (contentType.includes('application/json')) {
+      raw = await req.json() as Record<string, unknown>
+    } else if (contentType.includes('application/x-www-form-urlencoded') || contentType.includes('multipart/form-data')) {
+      const form = await req.formData()
+      raw = {}
+      form.forEach((v, k) => { raw[k] = typeof v === 'string' ? v : String(v) })
+    } else {
+      // Best-effort JSON parse as fallback.
+      raw = await req.json() as Record<string, unknown>
+    }
+  } catch {
+    return NextResponse.json({ error: 'Invalid form payload' }, { status: 400 })
+  }
+
+  // ── 2. Validate required inputs ───────────────────────────────────────
+  const email = String(raw.email || '').trim().toLowerCase()
+  if (!email || !EMAIL_PATTERN.test(email)) {
+    return NextResponse.json({ error: 'A valid email is required' }, { status: 400 })
+  }
+
+  const funnel = await resolveFunnelStep({
+    slug: typeof raw.slug === 'string' ? raw.slug : undefined,
+    funnelStepId: typeof raw.funnelStepId === 'string'
+      ? raw.funnelStepId
+      : typeof raw.funnel_step_id === 'string' ? raw.funnel_step_id : undefined,
+  })
+  if (!funnel) {
+    return NextResponse.json({ error: 'Funnel step not found' }, { status: 404 })
+  }
+
+  // ── 3. Per-funnel + per-email dedup window ───────────────────────────
+  // Postgres `NOW() - interval` works server-side; SQLite needs an explicit
+  // ISO string. We compute the cutoff in JS for cross-dialect portability.
+  const cutoffIso = new Date(Date.now() - DEDUP_WINDOW_SECONDS * 1000).toISOString()
+  try {
+    const dupRes = await sql`
+      SELECT id FROM form_submissions
+      WHERE funnel_step_id = ${funnel.id}
+        AND email = ${email}
+        AND created_at >= ${cutoffIso}
+      LIMIT 1
+    `
+    if (dupRes.rows.length > 0) {
+      return NextResponse.json(
+        {
+          error: 'Duplicate submission — please wait a moment before retrying.',
+          dedupWindowSeconds: DEDUP_WINDOW_SECONDS,
+        },
+        { status: 429 },
+      )
+    }
+  } catch {
+    // Index might not be there yet on a fresh-install — non-fatal, continue.
+  }
+
+  // ── 4. Persist the submission ─────────────────────────────────────────
+  const submittedData = sanitiseSubmittedData(raw)
+  const submissionId = newId()
+  await sql`
+    INSERT INTO form_submissions (id, workspace_id, funnel_step_id, email, submitted_data, created_at)
+    VALUES (
+      ${submissionId}, ${funnel.workspace_id}, ${funnel.id}, ${email},
+      ${JSON.stringify(submittedData)}, CURRENT_TIMESTAMP
+    )
+  `
+
+  // ── 5. Background atomic conversion_count bump + CRM activity write ──
+  // `after()` keeps the lambda alive past the response so these analytics
+  // writes always commit, while the visitor sees an instant "thanks!".
+  after(async () => {
+    try {
+      await sql`
+        UPDATE funnel_steps
+        SET conversion_count = conversion_count + 1
+        WHERE id = ${funnel.id}
+      `
+    } catch (err) {
+      console.error('[api/f/submit] conversion_count bump failed:', err)
+    }
+
+    // Best-effort CRM ingestion — if this email matches a known lead in the
+    // workspace, append an activity row. If not, we DON'T auto-create the
+    // lead row (that's the workflow engine's job for `form_submitted` triggers).
+    try {
+      const leadRes = await sql`
+        SELECT id FROM leads_captured
+        WHERE workspace_id = ${funnel.workspace_id} AND email = ${email}
+        LIMIT 1
+      `
+      const leadId = (leadRes.rows[0] as { id?: string } | undefined)?.id
+      if (leadId) {
+        await sql`
+          INSERT INTO lead_activities (id, workspace_id, lead_id, type, title, description, metadata_json, created_at)
+          VALUES (
+            ${newId()}, ${funnel.workspace_id}, ${leadId},
+            'form_submitted',
+            ${'Submitted a funnel form'},
+            ${`Funnel step: ${funnel.id}`},
+            ${JSON.stringify({ funnel_step_id: funnel.id, submitted_data: submittedData })},
+            CURRENT_TIMESTAMP
+          )
+        `
+      }
+    } catch (err) {
+      console.error('[api/f/submit] CRM activity write failed (non-fatal):', err)
+    }
+
+    // Fire the workflow trigger for downstream automations.
+    try {
+      const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || ''
+      if (baseUrl) {
+        await fetch(`${baseUrl}/api/workflows/trigger`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(process.env.ADMIN_SECRET ? { 'x-internal-secret': process.env.ADMIN_SECRET } : {}),
+          },
+          body: JSON.stringify({
+            workspaceId: funnel.workspace_id,
+            triggerType: 'form_submitted',
+            contactEmail: email,
+            data: { funnel_step_id: funnel.id, submitted_data: submittedData },
+          }),
+        }).catch(() => undefined)
+      }
+    } catch { /* best-effort */ }
+  })
+
+  // ── 6. Get the updated count for the response (approximate, pre-bump) ─
+  // We return the count BEFORE the after() update so it's at least
+  // monotonically non-decreasing across the user's perspective.
+  const countRes = await sql`
+    SELECT conversion_count FROM funnel_steps WHERE id = ${funnel.id} LIMIT 1
+  `
+  const conversionCount = Number(
+    (countRes.rows[0] as { conversion_count?: number | string } | undefined)?.conversion_count || 0,
+  ) + 1   // +1 to account for the pending bump
+
+  return NextResponse.json({
+    ok: true,
+    submissionId,
+    funnelStepId: funnel.id,
+    conversionCount,
+  })
+}

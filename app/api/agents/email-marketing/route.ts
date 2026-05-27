@@ -47,13 +47,30 @@ Write a marketing email campaign. Return JSON:
 
       await sql`UPDATE agent_runs SET status = 'completed', completed_at = CURRENT_TIMESTAMP WHERE id = ${runId}`
 
-      const campaignId = newId()
+      // ─── Artifact + approval row (so the campaign can pass through HITL) ──
+      // Creating an artifact + pending approval row here means the email body
+      // gets the same human-governance gate as every other generated asset.
+      // The campaign row links back via artifact_id so the send route can run
+      // assertArtifactApproved() before dispatching.
+      const artifactId = newId()
+      const artifactTitle = `Email: ${content.subject || campaignName || 'Untitled'}`
       await sql`
-        INSERT INTO email_campaigns (id, workspace_id, name, subject, status, content_json)
-        VALUES (${campaignId}, ${workspaceId}, ${campaignName || 'New Campaign'}, ${content.subject}, 'draft', ${JSON.stringify(content)})
+        INSERT INTO artifacts (id, workspace_id, agent_run_id, type, title, content_json, status)
+        VALUES (${artifactId}, ${workspaceId}, ${runId}, 'emailDraft', ${artifactTitle}, ${JSON.stringify(content)}, 'pending')
+      `
+      const approvalId = newId()
+      await sql`
+        INSERT INTO approvals (id, workspace_id, artifact_id, status)
+        VALUES (${approvalId}, ${workspaceId}, ${artifactId}, 'pending')
       `
 
-      return NextResponse.json({ ok: true, campaignId, content })
+      const campaignId = newId()
+      await sql`
+        INSERT INTO email_campaigns (id, workspace_id, name, subject, status, content_json, artifact_id)
+        VALUES (${campaignId}, ${workspaceId}, ${campaignName || 'New Campaign'}, ${content.subject}, 'draft', ${JSON.stringify(content)}, ${artifactId})
+      `
+
+      return NextResponse.json({ ok: true, campaignId, artifactId, approvalId, content })
     }
 
     if (action === 'send' && campaignId && recipients?.length) {

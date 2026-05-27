@@ -1,998 +1,654 @@
 'use client'
 
-import { useState, useRef, useEffect } from 'react'
+/**
+ * /dashboard/inbox
+ *
+ * Unified inbox with three columns:
+ *   1. Conversation list   — live data from /api/inbox
+ *   2. Message thread      — live data from /api/inbox/[id]
+ *   3. Contact context     — name, email, last engaged, source
+ *
+ * Reply composer at the bottom of the thread pane POSTs to
+ * /api/inbox/[id]/reply (workspace-ownership headers are forwarded by
+ * Next.js middleware via the session cookie).
+ *
+ * ─── AI Drafting Assistant ────────────────────────────────────────────────
+ * Toggle per-conversation. When ON, every time the latest inbound message
+ * changes we fetch /api/agents/inbox?mode=compose_reply and surface the
+ * proposed reply inline above the composer with a single click to "Insert
+ * into composer". Nothing is sent automatically — the human still controls
+ * the send button.
+ */
 
-// ── Types ──────────────────────────────────────────────────────────────────────
-type Channel = 'email' | 'livechat' | 'sms' | 'facebook' | 'instagram' | 'linkedin' | 'twitter' | 'all'
-type ConvFilter = 'all' | 'unread' | 'mine' | 'drafts' | 'escalated'
-type MsgType = 'inbound' | 'outbound' | 'ai_draft' | 'system'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  Mail, MessageSquare, Send, RefreshCw, Sparkles, ChevronRight,
+  AlertCircle, Loader2, Search, User, Clock, X, Check, Bot,
+} from 'lucide-react'
+
+// ─── Types ─────────────────────────────────────────────────────────────────
 
 interface Conversation {
   id: string
-  contactName: string
-  contactEmail: string
-  contactAvatar: string
-  channel: Exclude<Channel, 'all'>
-  subject: string
-  preview: string
-  timeAgo: string
-  unread: number
-  hasAIDraft: boolean
-  escalated: boolean
-  assignedTo: string | null
-  tags: string[]
-}
-
-interface Message {
-  id: string
-  type: MsgType
-  from: string
-  body: string
-  timeAgo: string
-  aiConfidence?: number
-  aiReasoning?: string
-}
-
-interface AIQueueItem {
-  id: string
-  contactName: string
-  channel: Exclude<Channel, 'all'>
-  preview: string
-  confidence: number
-  waitingFor: string
-}
-
-// ── Mock data ──────────────────────────────────────────────────────────────────
-const MOCK_CONVOS: Conversation[] = [
-  { id: '1', contactName: 'Sarah Chen', contactEmail: 'sarah@techcorp.com', contactAvatar: 'SC', channel: 'email', subject: 'Re: Product Demo Request', preview: 'Hi, I wanted to follow up on our call yesterday about the enterprise plan...', timeAgo: '2m ago', unread: 3, hasAIDraft: true, escalated: false, assignedTo: null, tags: ['enterprise', 'warm-lead'] },
-  { id: '2', contactName: 'Marcus Johnson', contactEmail: 'marcus@startup.io', contactAvatar: 'MJ', channel: 'livechat', subject: 'Pricing question', preview: 'What is the difference between the Pro and Enterprise plans?', timeAgo: '5m ago', unread: 1, hasAIDraft: false, escalated: false, assignedTo: 'Alex R.', tags: ['pricing'] },
-  { id: '3', contactName: 'Priya Patel', contactEmail: 'priya@agency.com', contactAvatar: 'PP', channel: 'instagram', subject: 'DM from @priyamarketing', preview: 'Love your content! Is there a way to get a free trial?', timeAgo: '12m ago', unread: 0, hasAIDraft: true, escalated: false, assignedTo: null, tags: ['trial'] },
-  { id: '4', contactName: 'Tom Williams', contactEmail: 'tom@ecommerce.co', contactAvatar: 'TW', channel: 'sms', subject: 'SMS Conversation', preview: 'URGENT: My account was charged twice this month!', timeAgo: '18m ago', unread: 2, hasAIDraft: false, escalated: true, assignedTo: null, tags: ['billing', 'urgent'] },
-  { id: '5', contactName: 'Aisha Rahman', contactEmail: 'aisha@consulting.biz', contactAvatar: 'AR', channel: 'linkedin', subject: 'Connection Message', preview: 'Hi! I saw your post about AI marketing automation...', timeAgo: '34m ago', unread: 1, hasAIDraft: true, escalated: false, assignedTo: null, tags: ['outreach'] },
-  { id: '6', contactName: 'Jake Morris', contactEmail: 'jake@saas.co', contactAvatar: 'JM', channel: 'twitter', subject: 'Twitter/X DM', preview: 'Hey, does your tool support bulk scheduling for Twitter threads?', timeAgo: '1h ago', unread: 0, hasAIDraft: false, escalated: false, assignedTo: 'Jordan K.', tags: ['feature-request'] },
-  { id: '7', contactName: 'Elena Russo', contactEmail: 'elena@design.studio', contactAvatar: 'ER', channel: 'facebook', subject: 'Facebook Message', preview: 'Interested in your agency plan. Can we schedule a call?', timeAgo: '2h ago', unread: 5, hasAIDraft: true, escalated: false, assignedTo: null, tags: ['agency', 'hot-lead'] },
-  { id: '8', contactName: 'David Kim', contactEmail: 'david@fintech.com', contactAvatar: 'DK', channel: 'email', subject: 'Refund Request - Invoice #2847', preview: 'I need to request a refund for last months subscription due to...', timeAgo: '3h ago', unread: 0, hasAIDraft: false, escalated: true, assignedTo: null, tags: ['refund', 'escalated'] },
-]
-
-const MOCK_MESSAGES: Record<string, Message[]> = {
-  '1': [
-    { id: 'm1', type: 'inbound', from: 'Sarah Chen', body: 'Hi there, I wanted to reach out after our initial conversation about Ooumph for our marketing team.', timeAgo: '1 day ago' },
-    { id: 'm2', type: 'outbound', from: 'You', body: 'Thanks for reaching out Sarah! I would love to show you what Ooumph can do for TechCorp. When would be a good time for a 30-minute demo?', timeAgo: '23h ago' },
-    { id: 'm3', type: 'system', from: 'System', body: 'Conversation assigned to AI Agent', timeAgo: '22h ago' },
-    { id: 'm4', type: 'inbound', from: 'Sarah Chen', body: 'Tuesday at 2pm works great for me! Also, do you have case studies from B2B SaaS companies? Our CEO will want to see ROI numbers.', timeAgo: '5h ago' },
-    { id: 'm5', type: 'inbound', from: 'Sarah Chen', body: 'Also, what is the minimum contract length? We might need to start with a pilot.', timeAgo: '3h ago' },
-    { id: 'm6', type: 'inbound', from: 'Sarah Chen', body: 'Hi, I wanted to follow up on our call yesterday about the enterprise plan...', timeAgo: '2m ago' },
-    { id: 'm7', type: 'ai_draft', from: 'AI Agent', body: 'Hi Sarah,\n\nThank you for your continued interest! I have confirmed Tuesday at 2pm in your calendar.\n\nRegarding your questions:\n- Yes, we have several B2B SaaS case studies showing 3-5x ROI within 90 days. I will send them over before our call.\n- Our minimum contract is month-to-month, with discounts for annual. A pilot program is absolutely an option we can discuss.\n\nLooking forward to Tuesday!\n\nBest,\nAlex', timeAgo: 'Just now', aiConfidence: 87, aiReasoning: 'Identified intent as demo scheduling + pricing inquiry. Responded to both questions with accurate plan details from workspace knowledge base. Tone set to Professional. Confidence reduced slightly due to pilot program nuance which may require human judgment on specific terms.' },
-  ],
-  '2': [
-    { id: 'm1', type: 'inbound', from: 'Marcus Johnson', body: 'Hey! Quick question - what is the main difference between Pro and Enterprise? Trying to figure out which plan my startup needs.', timeAgo: '5m ago' },
-  ],
-  '3': [
-    { id: 'm1', type: 'inbound', from: 'Priya Patel', body: 'Love your content! Is there a way to get a free trial?', timeAgo: '15m ago' },
-    { id: 'm2', type: 'ai_draft', from: 'AI Agent', body: 'Hey Priya! Thanks so much for the kind words 🙏\n\nYes! We offer a 14-day free trial with full access to all Pro features - no credit card required.\n\nYou can start here: ooumph.ai/trial\n\nFeel free to DM if you have any questions!', timeAgo: 'Just now', aiConfidence: 94, aiReasoning: 'High confidence. Instagram DM detected — adjusted tone to casual/friendly. Trial information is standard from knowledge base. CTA included with trial link. No sensitive topics detected.' },
-  ],
-  '7': [
-    { id: 'm1', type: 'inbound', from: 'Elena Russo', body: 'Hi! I manage social media for about 15 clients and I am looking for a tool that can help me scale. Interested in your agency plan.', timeAgo: '2h ago' },
-    { id: 'm2', type: 'inbound', from: 'Elena Russo', body: 'Can we schedule a call? I have some specific questions about white-labeling.', timeAgo: '2h ago' },
-    { id: 'm3', type: 'ai_draft', from: 'AI Agent', body: 'Hi Elena,\n\nGreat to hear from you! Managing 15 clients is impressive — Ooumph was built with agencies like yours in mind.\n\nOur Agency plan includes:\n✓ Up to 50 client workspaces\n✓ White-label dashboard (your branding)\n✓ Bulk content generation across all accounts\n✓ Client reporting portal\n\nI would love to show you a demo. Here is my calendar link: cal.ooumph.ai/agency-demo\n\nTalk soon!', timeAgo: 'Just now', aiConfidence: 91, aiReasoning: 'Strong match with agency plan inquiry. White-labeling is available in Agency tier — confirmed from pricing knowledge base. Scheduled demo CTA appropriate. High confidence response.' },
-  ],
-}
-
-const MOCK_AI_QUEUE: AIQueueItem[] = [
-  { id: 'q1', contactName: 'Sarah Chen', channel: 'email', preview: 'Hi Sarah, Thank you for your continued interest! I have confirmed Tuesday at 2pm...', confidence: 87, waitingFor: '2m' },
-  { id: 'q2', contactName: 'Priya Patel', channel: 'instagram', preview: 'Hey Priya! Thanks so much for the kind words. Yes! We offer a 14-day free trial...', confidence: 94, waitingFor: '12m' },
-  { id: 'q3', contactName: 'Aisha Rahman', channel: 'linkedin', preview: 'Hi Aisha, Thanks for connecting! I saw you liked our post on AI marketing. I would love to...', confidence: 82, waitingFor: '34m' },
-  { id: 'q4', contactName: 'Elena Russo', channel: 'facebook', preview: 'Hi Elena, Great to hear from you! Managing 15 clients is impressive...', confidence: 91, waitingFor: '2h' },
-]
-
-// ── Helpers ────────────────────────────────────────────────────────────────────
-const CHANNEL_META: Record<Exclude<Channel, 'all'>, { icon: string; label: string; color: string }> = {
-  email:     { icon: '📧', label: 'Email',         color: 'text-blue-400' },
-  livechat:  { icon: '💬', label: 'Live Chat',     color: 'text-green-400' },
-  sms:       { icon: '📱', label: 'SMS',           color: 'text-yellow-400' },
-  facebook:  { icon: '📘', label: 'Facebook DMs',  color: 'text-blue-500' },
-  instagram: { icon: '📸', label: 'Instagram DMs', color: 'text-pink-400' },
-  linkedin:  { icon: '💼', label: 'LinkedIn',      color: 'text-sky-400' },
-  twitter:   { icon: '🐦', label: 'Twitter/X',     color: 'text-gray-300' },
-}
-
-const CHANNEL_UNREAD: Record<Exclude<Channel, 'all'>, number> = {
-  email: 12, livechat: 3, sms: 7, facebook: 5, instagram: 8, linkedin: 2, twitter: 4,
-}
-
-const AVATAR_COLORS = ['bg-indigo-600', 'bg-purple-600', 'bg-pink-600', 'bg-sky-600', 'bg-emerald-600', 'bg-orange-600', 'bg-rose-600', 'bg-teal-600']
-function avatarColor(name: string) { return AVATAR_COLORS[name.charCodeAt(0) % AVATAR_COLORS.length] }
-
-function confidenceColor(n: number) {
-  if (n >= 90) return 'text-green-400'
-  if (n >= 75) return 'text-yellow-400'
-  return 'text-red-400'
-}
-
-// ── DB row types ───────────────────────────────────────────────────────────────
-interface DBConversation {
-  id: string
   workspace_id: string
-  contact_id: string | null
   contact_email: string | null
   contact_name: string | null
   contact_phone: string | null
   channel: string
   subject: string | null
   status: string
-  tags: string | null
-  assigned_to: string | null
-  last_message_at: string | null
   unread_count: number
+  last_message_at: string | null
   created_at: string
   last_message_body?: string | null
   last_message_dir?: string | null
 }
 
-interface DBMessage {
+interface ThreadMessage {
   id: string
   conversation_id: string
-  workspace_id: string
-  direction: string
+  direction: 'inbound' | 'outbound' | string
   from_address: string | null
   to_address: string | null
   subject: string | null
   body: string
   channel: string
   status: string
-  ai_generated: number
+  ai_generated: number | boolean
   sent_at: string
   created_at: string
 }
 
-function timeAgoFromISO(iso: string | null | undefined): string {
+interface ThreadResponse {
+  conversation: Conversation
+  messages: ThreadMessage[]
+}
+
+interface AIReply {
+  subject: string
+  body: string
+  tone: string
+  reasoning: string
+}
+
+// ─── Helpers ───────────────────────────────────────────────────────────────
+
+function initials(name: string | null, email: string | null): string {
+  const src = (name || email || '?').trim()
+  const parts = src.split(/[\s@.]+/).filter(Boolean)
+  return (parts[0]?.[0] || '?') + (parts[1]?.[0] || '')
+}
+
+function formatTime(iso: string | null): string {
   if (!iso) return ''
-  const diff = Date.now() - new Date(iso).getTime()
-  const mins = Math.floor(diff / 60000)
-  if (mins < 1) return 'Just now'
-  if (mins < 60) return `${mins}m ago`
-  const hrs = Math.floor(mins / 60)
-  if (hrs < 24) return `${hrs}h ago`
-  return `${Math.floor(hrs / 24)}d ago`
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  const diff = Date.now() - d.getTime()
+  if (diff < 60_000) return 'just now'
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m`
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h`
+  if (diff < 7 * 86_400_000) return `${Math.floor(diff / 86_400_000)}d`
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
 }
 
-function normalizeChannel(ch: string | null | undefined): Exclude<Channel, 'all'> {
-  const c = (ch || 'email').toLowerCase()
-  if (c === 'email' || c === 'livechat' || c === 'sms' || c === 'facebook' || c === 'instagram' || c === 'linkedin' || c === 'twitter') return c
-  return 'email'
-}
-
-function dbConvToUI(c: DBConversation): Conversation {
-  const name = c.contact_name || c.contact_email || 'Unknown'
-  let tags: string[] = []
-  try { tags = c.tags ? JSON.parse(c.tags) as string[] : [] } catch { tags = [] }
-  const initials = name.split(/\s+/).map(p => p[0]).join('').slice(0, 2).toUpperCase()
-  return {
-    id: c.id,
-    contactName: name,
-    contactEmail: c.contact_email || '',
-    contactAvatar: initials || '??',
-    channel: normalizeChannel(c.channel),
-    subject: c.subject || '',
-    preview: (c.last_message_body || '').slice(0, 160),
-    timeAgo: timeAgoFromISO(c.last_message_at || c.created_at),
-    unread: Number(c.unread_count || 0),
-    hasAIDraft: false, // updated after we fetch messages
-    escalated: false,
-    assignedTo: c.assigned_to,
-    tags,
+function StatusPill({ status }: { status: string }) {
+  const map: Record<string, string> = {
+    open: 'bg-emerald-900/40 text-emerald-300 border-emerald-800',
+    pending: 'bg-amber-900/40 text-amber-300 border-amber-800',
+    closed: 'bg-gray-800 text-gray-500 border-gray-700',
+    snoozed: 'bg-blue-900/40 text-blue-300 border-blue-800',
   }
+  return (
+    <span className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium border ${map[status] || 'bg-gray-800 text-gray-400 border-gray-700'}`}>
+      {status}
+    </span>
+  )
 }
 
-function dbMsgToUI(m: DBMessage): Message {
-  let type: MsgType = m.direction === 'inbound' ? 'inbound' : 'outbound'
-  if (m.direction === 'outbound' && m.ai_generated && m.status === 'draft') type = 'ai_draft'
-  return {
-    id: m.id,
-    type,
-    from: m.direction === 'inbound' ? (m.from_address || 'Contact') : (m.ai_generated ? 'AI Agent' : 'You'),
-    body: m.body,
-    timeAgo: timeAgoFromISO(m.sent_at || m.created_at),
-  }
-}
+// ─── Page ──────────────────────────────────────────────────────────────────
 
-// ── Main Component ─────────────────────────────────────────────────────────────
 export default function InboxPage() {
   const [workspaceId, setWorkspaceId] = useState<string | null>(null)
   const [conversations, setConversations] = useState<Conversation[]>([])
-  const [convosLoading, setConvosLoading] = useState(true)
-  const [convosError, setConvosError] = useState<string | null>(null)
-  const [messagesLoading, setMessagesLoading] = useState(false)
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [thread, setThread] = useState<ThreadResponse | null>(null)
+  const [loadingList, setLoadingList] = useState(true)
+  const [loadingThread, setLoadingThread] = useState(false)
+  const [search, setSearch] = useState('')
+  const [error, setError] = useState<string | null>(null)
 
-  const [activeChannel, setActiveChannel] = useState<Channel>('all')
-  const [convFilter, setConvFilter] = useState<ConvFilter>('all')
-  const [convSearch, setConvSearch] = useState('')
-  const [selectedConvId, setSelectedConvId] = useState<string | null>(null)
-  const [autoReplyOn, setAutoReplyOn] = useState(true)
-  const [hitlMode, setHitlMode] = useState(true)
-  const [confidenceThreshold, setConfidenceThreshold] = useState(80)
-  const [showAIQueue, setShowAIQueue] = useState(false)
-  const [showAISettings, setShowAISettings] = useState(false)
-  const [replyText, setReplyText] = useState('')
-  const [sendingReply, setSendingReply] = useState(false)
-  const [expandedReasoning, setExpandedReasoning] = useState(false)
-  const [aiDraftEditing, setAIDraftEditing] = useState(false)
-  const [editedDraft, setEditedDraft] = useState('')
-  const [approvedDrafts, setApprovedDrafts] = useState<Set<string>>(new Set())
-  const [rejectedDrafts, setRejectedDrafts] = useState<Set<string>>(new Set())
-  const [aiSuggestLoading, setAISuggestLoading] = useState(false)
-  const [queueItems, setQueueItems] = useState<AIQueueItem[]>([])
-  const [settingsTone, setSettingsTone] = useState<'professional' | 'friendly' | 'concise'>('professional')
-  const [maxAutoReplies, setMaxAutoReplies] = useState(3)
-  const [escalateTopics, setEscalateTopics] = useState({ complaints: true, refunds: true, pricing: false, legal: true })
-  const [businessHoursOnly, setBusinessHoursOnly] = useState(false)
-  const [perChannelAI, setPerChannelAI] = useState<Record<string, boolean>>({ email: true, livechat: true, sms: false, facebook: true, instagram: true, linkedin: true, twitter: true })
-  const [messages, setMessages] = useState<Message[]>([])
-  const threadEndRef = useRef<HTMLDivElement>(null)
-
-  const selectedConv = conversations.find(c => c.id === selectedConvId) || null
-
-  // ── Load conversations ─────────────────────────────────────────────────────
-  const loadConversations = (wsId: string) => {
-    setConvosLoading(true); setConvosError(null)
-    return fetch(`/api/inbox?workspaceId=${wsId}`)
-      .then(r => r.ok ? r.json() as Promise<DBConversation[] | { error: string }> : Promise.reject(new Error('Failed to fetch inbox')))
-      .then(data => {
-        if (!Array.isArray(data)) throw new Error((data as { error?: string }).error || 'Bad response')
-        const ui = data.map(dbConvToUI)
-        setConversations(ui)
-      })
-      .catch(err => setConvosError(err instanceof Error ? err.message : String(err)))
-      .finally(() => setConvosLoading(false))
-  }
+  // AI assistant per-conversation toggle (persisted in localStorage)
+  const [aiAssistantEnabled, setAiAssistantEnabled] = useState<Record<string, boolean>>({})
 
   useEffect(() => {
-    const wsId = typeof window !== 'undefined' ? localStorage.getItem('workspaceId') : null
-    setWorkspaceId(wsId)
-
-    // Restore AI auto-reply preference from localStorage
-    const stored = typeof window !== 'undefined' ? localStorage.getItem('inbox_auto_reply_on') : null
-    if (stored !== null) setAutoReplyOn(stored === 'true')
-
-    if (wsId) loadConversations(wsId)
-    else setConvosLoading(false)
+    let cancelled = false
+    fetch('/api/auth/me')
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (cancelled) return
+        const id: string | null = data?.user?.workspaceId
+          || (typeof window !== 'undefined' ? localStorage.getItem('workspaceId') : null)
+        setWorkspaceId(id)
+        if (!id) setError('No workspace selected — finish onboarding first.')
+      })
+      .catch(() => { if (!cancelled) setError('Failed to load session') })
+    return () => { cancelled = true }
   }, [])
 
-  // Persist auto-reply preference + try to PATCH workspace extra_settings
+  // Hydrate AI toggle preferences from localStorage
   useEffect(() => {
-    if (typeof window === 'undefined') return
-    localStorage.setItem('inbox_auto_reply_on', String(autoReplyOn))
-  }, [autoReplyOn])
-
-  // ── Load messages for selected conversation ─────────────────────────────────
-  useEffect(() => {
-    if (!selectedConvId) { setMessages([]); return }
-    setMessagesLoading(true)
-    fetch(`/api/inbox/${selectedConvId}`)
-      .then(r => r.ok ? r.json() as Promise<{ conversation?: DBConversation; messages?: DBMessage[]; error?: string }> : Promise.reject(new Error('Failed to fetch thread')))
-      .then(data => {
-        if (data.error) throw new Error(data.error)
-        const ms = (data.messages || []).map(dbMsgToUI)
-        setMessages(ms)
-        setExpandedReasoning(false)
-        setAIDraftEditing(false)
-        // Mark the convo as read locally
-        setConversations(prev => prev.map(c => c.id === selectedConvId ? { ...c, unread: 0 } : c))
-      })
-      .catch(() => setMessages([]))
-      .finally(() => setMessagesLoading(false))
-  }, [selectedConvId])
-
-  useEffect(() => {
-    threadEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages])
-
-  const filteredConvos = conversations.filter(c => {
-    if (activeChannel !== 'all' && c.channel !== activeChannel) return false
-    if (convFilter === 'unread' && c.unread === 0) return false
-    if (convFilter === 'mine' && !c.assignedTo) return false
-    if (convFilter === 'drafts' && !c.hasAIDraft) return false
-    if (convFilter === 'escalated' && !c.escalated) return false
-    if (convSearch && !c.contactName.toLowerCase().includes(convSearch.toLowerCase()) && !c.preview.toLowerCase().includes(convSearch.toLowerCase())) return false
-    return true
-  })
-
-  // Real per-channel unread counts
-  const channelUnread: Record<Exclude<Channel, 'all'>, number> = {
-    email: 0, livechat: 0, sms: 0, facebook: 0, instagram: 0, linkedin: 0, twitter: 0,
-  }
-  conversations.forEach(c => { channelUnread[c.channel] = (channelUnread[c.channel] || 0) + c.unread })
-  const totalUnread = conversations.reduce((s, c) => s + c.unread, 0)
-
-  const aiDraftMsg = messages.find(m => m.type === 'ai_draft' && !approvedDrafts.has(m.id) && !rejectedDrafts.has(m.id))
-
-  async function handleApprove(msgId: string) {
-    // Optimistic: mark approved locally so UI updates
-    setApprovedDrafts(prev => new Set([...prev, msgId]))
-    const msg = messages.find(m => m.id === msgId)
-    if (msg) {
-      setMessages(prev => prev.map(m => m.id === msgId ? { ...m, type: 'outbound' as MsgType, from: 'You (via AI)', timeAgo: 'Just now' } : m))
-    }
-    setQueueItems(prev => prev.filter(q => q.id !== msgId))
-    // Persist: re-send body via reply endpoint (which marks as sent + actually emails)
-    if (msg && selectedConvId) {
-      try {
-        await fetch(`/api/inbox/${selectedConvId}/reply`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ body: msg.body, aiGenerated: true }),
-        })
-        if (workspaceId) loadConversations(workspaceId)
-      } catch { /* keep optimistic state */ }
-    }
-  }
-
-  async function handleReject(msgId: string) {
-    setRejectedDrafts(prev => new Set([...prev, msgId]))
-    setMessages(prev => prev.filter(m => m.id !== msgId))
-    setQueueItems(prev => prev.filter(q => q.id !== msgId))
-  }
-
-  async function handleEditSend(msgId: string) {
-    const newBody = editedDraft
-    setMessages(prev => prev.map(m => m.id === msgId ? { ...m, type: 'outbound' as MsgType, body: newBody || m.body, from: 'You (edited AI)', timeAgo: 'Just now' } : m))
-    setApprovedDrafts(prev => new Set([...prev, msgId]))
-    setAIDraftEditing(false)
-    setQueueItems(prev => prev.filter(q => q.id !== msgId))
-    if (selectedConvId && newBody) {
-      try {
-        await fetch(`/api/inbox/${selectedConvId}/reply`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ body: newBody, aiGenerated: true }),
-        })
-        if (workspaceId) loadConversations(workspaceId)
-      } catch { /* keep optimistic state */ }
-    }
-  }
-
-  async function handleSend() {
-    if (!replyText.trim() || !selectedConvId) return
-    const body = replyText
-    const optimisticMsg: Message = { id: `m${Date.now()}`, type: 'outbound', from: 'You', body, timeAgo: 'Just now' }
-    setMessages(prev => [...prev, optimisticMsg])
-    setReplyText('')
-    setSendingReply(true)
     try {
-      const res = await fetch(`/api/inbox/${selectedConvId}/reply`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ body }),
-      })
-      if (!res.ok) {
-        // Rollback
-        setMessages(prev => prev.filter(m => m.id !== optimisticMsg.id))
-        setReplyText(body)
-      } else if (workspaceId) {
-        loadConversations(workspaceId)
-      }
-    } catch {
-      setMessages(prev => prev.filter(m => m.id !== optimisticMsg.id))
-      setReplyText(body)
-    } finally {
-      setSendingReply(false)
-    }
-  }
+      const raw = localStorage.getItem('inbox_ai_assistant_enabled')
+      if (raw) setAiAssistantEnabled(JSON.parse(raw) as Record<string, boolean>)
+    } catch { /* ignore */ }
+  }, [])
 
-  // Load AI draft queue when modal opens
-  async function loadAIQueue() {
-    if (!workspaceId) return
-    try {
-      // Fetch conversations whose latest message is an AI draft (status=draft, ai_generated=1)
-      const res = await fetch(`/api/inbox?workspaceId=${workspaceId}`)
-      const data = await res.json() as DBConversation[]
-      if (!Array.isArray(data)) return
-      // We don't have a per-conversation draft endpoint, so fetch each thread in parallel and check
-      const items: AIQueueItem[] = []
-      await Promise.all(data.slice(0, 30).map(async c => {
-        try {
-          const tr = await fetch(`/api/inbox/${c.id}`)
-          if (!tr.ok) return
-          const td = await tr.json() as { messages?: DBMessage[] }
-          const drafts = (td.messages || []).filter(m => m.direction === 'outbound' && m.status === 'draft' && m.ai_generated)
-          drafts.forEach(d => {
-            items.push({
-              id: d.id,
-              contactName: c.contact_name || c.contact_email || 'Unknown',
-              channel: normalizeChannel(c.channel),
-              preview: d.body.slice(0, 160),
-              confidence: 85,
-              waitingFor: timeAgoFromISO(d.created_at),
-            })
-          })
-        } catch { /* noop */ }
-      }))
-      setQueueItems(items)
-    } catch { /* noop */ }
-  }
-
-  function handleAISuggest() {
-    setAISuggestLoading(true)
-    setTimeout(() => {
-      setReplyText('Thank you for reaching out! I would be happy to help with your inquiry. Could you share a bit more detail so I can provide the most accurate information for your situation?')
-      setAISuggestLoading(false)
-    }, 1200)
-  }
-
-  function handleQueueApproveAll() {
-    const highConf = queueItems.filter(q => q.confidence >= 90)
-    setQueueItems(prev => prev.filter(q => q.confidence < 90))
-    highConf.forEach(q => {
-      if (q.id === 'q2' || q.id === 'q4') {
-        // These map to conversations with AI drafts
-      }
+  const toggleAi = (convId: string) => {
+    setAiAssistantEnabled(prev => {
+      const next = { ...prev, [convId]: !prev[convId] }
+      try { localStorage.setItem('inbox_ai_assistant_enabled', JSON.stringify(next)) } catch { /* ignore */ }
+      return next
     })
   }
 
+  const fetchConvos = useCallback(() => {
+    if (!workspaceId) return
+    setLoadingList(true)
+    const params = new URLSearchParams({ workspaceId })
+    if (search.trim()) params.set('search', search.trim())
+    fetch(`/api/inbox?${params.toString()}`)
+      .then(r => r.json())
+      .then((rows: Conversation[]) => {
+        setConversations(Array.isArray(rows) ? rows : [])
+        if (rows.length > 0 && !selectedId) setSelectedId(rows[0].id)
+      })
+      .catch(() => setConversations([]))
+      .finally(() => setLoadingList(false))
+  }, [workspaceId, search, selectedId])
+
+  useEffect(() => { fetchConvos() }, [fetchConvos])
+
+  const fetchThread = useCallback(() => {
+    if (!selectedId) { setThread(null); return }
+    setLoadingThread(true)
+    fetch(`/api/inbox/${selectedId}`)
+      .then(r => r.json())
+      .then((data: ThreadResponse | { error?: string }) => {
+        if ('error' in data && data.error) { setThread(null); return }
+        setThread(data as ThreadResponse)
+      })
+      .catch(() => setThread(null))
+      .finally(() => setLoadingThread(false))
+  }, [selectedId])
+
+  useEffect(() => { fetchThread() }, [fetchThread])
+
+  // Light polling — refresh thread every 8s for the open conversation
+  useEffect(() => {
+    if (!selectedId) return
+    const t = setInterval(fetchThread, 8000)
+    return () => clearInterval(t)
+  }, [selectedId, fetchThread])
+
   return (
-    <div className="flex h-[calc(100vh-64px)] bg-gray-950 overflow-hidden">
-
-      {/* ── LEFT: Channel list (w-56) ───────────────────────────────────────── */}
-      <div className="w-56 flex-shrink-0 border-r border-gray-800 bg-gray-900 flex flex-col">
-        <div className="px-4 py-4 border-b border-gray-800">
-          <div className="flex items-center justify-between">
-            <span className="text-sm font-bold text-white">Inbox</span>
-            <span className="bg-indigo-600 text-white text-xs font-bold px-1.5 py-0.5 rounded-full">{totalUnread}</span>
-          </div>
-        </div>
-
-        {/* Channel list */}
-        <div className="flex-1 overflow-y-auto py-2">
-          <button
-            onClick={() => setActiveChannel('all')}
-            className={`w-full flex items-center gap-2 px-4 py-2 text-sm transition-colors ${activeChannel === 'all' ? 'bg-indigo-600/20 text-white' : 'text-gray-400 hover:text-white hover:bg-gray-800'}`}
-          >
-            <span>⭐</span>
-            <span className="flex-1 text-left">All Unread</span>
-            <span className="text-xs font-semibold text-indigo-400">{totalUnread}</span>
-          </button>
-
-          <div className="mt-1 mb-2 px-4">
-            <span className="text-xs font-semibold text-gray-600 uppercase tracking-wider">Channels</span>
-          </div>
-
-          {(Object.entries(CHANNEL_META) as [Exclude<Channel, 'all'>, typeof CHANNEL_META[keyof typeof CHANNEL_META]][]).map(([ch, meta]) => (
-            <button
-              key={ch}
-              onClick={() => setActiveChannel(ch)}
-              className={`w-full flex items-center gap-2 px-4 py-2 text-sm transition-colors ${activeChannel === ch ? 'bg-indigo-600/20 text-white' : 'text-gray-400 hover:text-white hover:bg-gray-800'}`}
-            >
-              <span>{meta.icon}</span>
-              <span className="flex-1 text-left truncate">{meta.label}</span>
-              {channelUnread[ch] > 0 && (
-                <span className="text-xs font-semibold text-gray-500">{channelUnread[ch]}</span>
-              )}
-            </button>
-          ))}
-
-          {/* AI Agent section */}
-          <div className="mt-4 px-4 mb-2">
-            <span className="text-xs font-semibold text-gray-600 uppercase tracking-wider">AI Agent</span>
-          </div>
-
-          <div className="px-4 space-y-3 pb-4">
-            {/* Auto-reply toggle */}
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-1.5">
-                <span className="text-xs text-gray-400">🤖 Auto-Reply</span>
-              </div>
+    <div className="min-h-screen bg-gray-950 text-gray-100">
+      <div className="h-screen flex">
+        {/* ─── Left: conversation list ──────────────────────────────────────── */}
+        <aside className="w-[320px] flex-shrink-0 border-r border-gray-800 flex flex-col bg-gray-950">
+          <div className="p-4 border-b border-gray-800">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-white font-semibold flex items-center gap-2">
+                <Mail className="w-4 h-4 text-indigo-400" /> Inbox
+              </h2>
               <button
-                onClick={() => setAutoReplyOn(v => !v)}
-                className={`relative w-9 h-5 rounded-full transition-colors ${autoReplyOn ? 'bg-indigo-600' : 'bg-gray-700'}`}
+                onClick={fetchConvos}
+                className="text-gray-500 hover:text-gray-200"
+                title="Refresh"
               >
-                <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-all ${autoReplyOn ? 'left-4' : 'left-0.5'}`} />
+                <RefreshCw className="w-3.5 h-3.5" />
               </button>
             </div>
-
-            {/* HITL toggle */}
-            <div className="flex items-center justify-between">
-              <span className="text-xs text-gray-400">HITL Mode</span>
-              <button
-                onClick={() => setHitlMode(v => !v)}
-                className={`relative w-9 h-5 rounded-full transition-colors ${hitlMode ? 'bg-yellow-500' : 'bg-gray-700'}`}
-              >
-                <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-all ${hitlMode ? 'left-4' : 'left-0.5'}`} />
-              </button>
-            </div>
-
-            {/* Confidence threshold */}
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <span className="text-xs text-gray-500">Show if AI &lt;</span>
-                <span className="text-xs font-semibold text-indigo-400">{confidenceThreshold}%</span>
-              </div>
+            <div className="relative">
+              <Search className="w-3.5 h-3.5 text-gray-600 absolute left-2.5 top-1/2 -translate-y-1/2" />
               <input
-                type="range" min={50} max={99} value={confidenceThreshold}
-                onChange={e => setConfidenceThreshold(Number(e.target.value))}
-                className="w-full accent-indigo-500 h-1"
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                placeholder="Search…"
+                className="w-full bg-gray-900 border border-gray-800 rounded-lg pl-8 pr-3 py-1.5 text-xs text-white placeholder-gray-600 focus:border-indigo-600 focus:outline-none"
               />
             </div>
-
-            <button
-              onClick={() => { setShowAIQueue(true); loadAIQueue() }}
-              className="w-full text-xs bg-yellow-500/10 hover:bg-yellow-500/20 border border-yellow-500/30 text-yellow-400 px-3 py-1.5 rounded-lg transition-colors text-left"
-            >
-              View AI Queue ({queueItems.length})
-            </button>
-
-            <button
-              onClick={() => setShowAISettings(true)}
-              className="w-full text-xs bg-gray-800 hover:bg-gray-700 text-gray-400 px-3 py-1.5 rounded-lg transition-colors text-left"
-            >
-              ⚙ AI Settings
-            </button>
           </div>
-        </div>
-      </div>
 
-      {/* ── MIDDLE: Conversation list (w-80) ────────────────────────────────── */}
-      <div className="w-80 flex-shrink-0 border-r border-gray-800 bg-gray-900 flex flex-col">
-        <div className="px-4 py-3 border-b border-gray-800 space-y-2">
-          <input
-            className="w-full bg-gray-800 border border-gray-700 text-white text-sm px-3 py-2 rounded-lg placeholder-gray-500 outline-none focus:border-indigo-500"
-            placeholder="Search conversations..."
-            value={convSearch}
-            onChange={e => setConvSearch(e.target.value)}
-          />
-          <div className="flex gap-1 overflow-x-auto pb-1">
-            {([
-              ['all', 'All'], ['unread', 'Unread'], ['mine', 'Mine'], ['drafts', 'AI Drafts'], ['escalated', 'Escalated']
-            ] as [ConvFilter, string][]).map(([f, label]) => (
-              <button
-                key={f}
-                onClick={() => setConvFilter(f)}
-                className={`flex-shrink-0 text-xs px-2.5 py-1 rounded-full transition-colors ${convFilter === f ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'}`}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="flex-1 overflow-y-auto">
-          {convosLoading && (
-            <div className="p-6 text-center text-gray-600 text-sm">
-              <div className="inline-block w-6 h-6 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin" />
-            </div>
-          )}
-          {!convosLoading && convosError && (
-            <div className="p-6 text-center text-red-400 text-sm">
-              {convosError}
-              <button onClick={() => workspaceId && loadConversations(workspaceId)} className="block mt-2 mx-auto text-xs text-indigo-400 hover:text-indigo-300">Retry</button>
-            </div>
-          )}
-          {!convosLoading && !convosError && conversations.length === 0 && (
-            <div className="p-6 text-center text-gray-500 text-sm">
-              <div className="text-4xl mb-2">📭</div>
-              <p className="text-gray-300">No conversations yet</p>
-              <p className="text-gray-600 text-xs mt-1">Connect a channel in <a href="/dashboard/integrations" className="text-indigo-400 hover:text-indigo-300">Integrations</a> to start receiving messages.</p>
-            </div>
-          )}
-          {!convosLoading && !convosError && conversations.length > 0 && filteredConvos.length === 0 && (
-            <div className="p-6 text-center text-gray-600 text-sm">No conversations match this filter</div>
-          )}
-          {filteredConvos.map(c => (
-            <div
-              key={c.id}
-              onClick={() => setSelectedConvId(c.id)}
-              className={`group relative px-4 py-3 border-b border-gray-800 cursor-pointer transition-colors ${
-                selectedConvId === c.id ? 'bg-indigo-600/10 border-l-2 border-l-indigo-500' : 'hover:bg-gray-800/50'
-              }`}
-            >
-              <div className="flex items-start gap-3">
-                {/* Avatar */}
-                <div className={`w-9 h-9 rounded-full flex-shrink-0 flex items-center justify-center text-white text-xs font-bold ${avatarColor(c.contactName)}`}>
-                  {c.contactAvatar}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center justify-between mb-0.5">
-                    <div className="flex items-center gap-1.5">
-                      <span className={`text-sm font-semibold ${c.unread > 0 ? 'text-white' : 'text-gray-300'}`}>
-                        {c.contactName}
-                      </span>
-                      <span className="text-xs">{CHANNEL_META[c.channel].icon}</span>
-                    </div>
-                    <span className="text-xs text-gray-600">{c.timeAgo}</span>
-                  </div>
-                  <p className="text-xs text-gray-400 truncate mb-1">{c.preview}</p>
-                  <div className="flex items-center gap-1.5 flex-wrap">
-                    {c.unread > 0 && (
-                      <span className="bg-indigo-600 text-white text-xs font-bold px-1.5 py-0.5 rounded-full">{c.unread}</span>
-                    )}
-                    {c.hasAIDraft && !c.escalated && (
-                      <span className="bg-yellow-500/20 border border-yellow-500/40 text-yellow-400 text-xs px-1.5 py-0.5 rounded-full font-medium">AI Draft</span>
-                    )}
-                    {c.escalated && (
-                      <span className="bg-red-500/20 border border-red-500/40 text-red-400 text-xs px-1.5 py-0.5 rounded-full font-medium">Escalated</span>
-                    )}
-                    {c.assignedTo && (
-                      <span className="bg-gray-700 text-gray-400 text-xs px-1.5 py-0.5 rounded-full">{c.assignedTo}</span>
-                    )}
-                  </div>
-                </div>
-              </div>
-              {/* Assign on hover */}
-              <button className="absolute right-3 bottom-3 opacity-0 group-hover:opacity-100 text-xs text-indigo-400 hover:text-indigo-300 transition-opacity">
-                Assign to Me
-              </button>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* ── RIGHT: Message thread (flex-1) ──────────────────────────────────── */}
-      <div className="flex-1 flex flex-col min-w-0">
-        {!selectedConv ? (
-          <div className="flex-1 flex items-center justify-center flex-col gap-4 text-gray-600">
-            <span className="text-5xl">💬</span>
-            <span className="text-lg font-semibold">Select a conversation</span>
-            <span className="text-sm text-gray-700">Choose from the list to start replying</span>
-          </div>
-        ) : (
-          <>
-            {/* Thread header */}
-            <div className="flex items-center justify-between px-6 py-3 border-b border-gray-800 bg-gray-900">
-              <div className="flex items-center gap-3">
-                <div className={`w-9 h-9 rounded-full flex-shrink-0 flex items-center justify-center text-white text-xs font-bold ${avatarColor(selectedConv.contactName)}`}>
-                  {selectedConv.contactAvatar}
-                </div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-semibold text-white">{selectedConv.contactName}</span>
-                    <span className="text-sm">{CHANNEL_META[selectedConv.channel].icon}</span>
-                    <span className={`text-xs ${CHANNEL_META[selectedConv.channel].color}`}>{CHANNEL_META[selectedConv.channel].label}</span>
-                  </div>
-                  <div className="flex items-center gap-2 mt-0.5">
-                    <span className="text-xs text-gray-500">{selectedConv.contactEmail}</span>
-                    <a href="/dashboard/leads-crm" className="text-xs text-indigo-400 hover:text-indigo-300">View in CRM →</a>
-                  </div>
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <select className="bg-gray-800 border border-gray-700 text-gray-300 text-xs px-2 py-1.5 rounded-lg outline-none">
-                  <option>Assign to...</option>
-                  <option>Alex R.</option>
-                  <option>Jordan K.</option>
-                  <option>Sam T.</option>
-                  <option>AI Agent</option>
-                </select>
-                <div className="flex gap-1">
-                  {selectedConv.tags.map(tag => (
-                    <span key={tag} className="bg-gray-800 text-gray-400 text-xs px-2 py-0.5 rounded-full border border-gray-700">{tag}</span>
-                  ))}
-                </div>
-                <button className="bg-gray-800 hover:bg-gray-700 text-gray-400 text-xs px-3 py-1.5 rounded-lg border border-gray-700 transition-colors">
-                  ✓ Close
-                </button>
-              </div>
-            </div>
-
-            {/* HITL banner */}
-            {hitlMode && aiDraftMsg && (
-              <div className="mx-6 mt-4 bg-yellow-500/10 border border-yellow-500/40 rounded-xl p-4">
-                <div className="flex items-center justify-between mb-3">
-                  <div className="flex items-center gap-2">
-                    <span className="text-yellow-400 font-semibold text-sm">🤖 AI wants to send this reply</span>
-                    <span className={`text-xs font-bold ${confidenceColor(aiDraftMsg.aiConfidence || 0)}`}>
-                      confidence: {aiDraftMsg.aiConfidence}%
-                    </span>
-                  </div>
-                </div>
-
-                {aiDraftEditing ? (
-                  <textarea
-                    className="w-full bg-gray-900 border border-yellow-500/30 text-gray-200 text-sm px-3 py-2 rounded-lg outline-none resize-none min-h-[100px] mb-3"
-                    value={editedDraft || aiDraftMsg.body}
-                    onChange={e => setEditedDraft(e.target.value)}
-                  />
-                ) : (
-                  <div className="bg-gray-900/60 rounded-lg p-3 mb-3 text-sm text-gray-300 whitespace-pre-wrap">
-                    {aiDraftMsg.body}
-                  </div>
-                )}
-
-                <div className="flex items-center gap-2 flex-wrap">
-                  {aiDraftEditing ? (
-                    <button onClick={() => handleEditSend(aiDraftMsg.id)} className="bg-green-600 hover:bg-green-500 text-white text-xs px-3 py-1.5 rounded-lg font-medium transition-colors">
-                      ✅ Send Edited
-                    </button>
-                  ) : (
-                    <button onClick={() => handleApprove(aiDraftMsg.id)} className="bg-green-600 hover:bg-green-500 text-white text-xs px-3 py-1.5 rounded-lg font-medium transition-colors">
-                      ✅ Approve & Send
-                    </button>
-                  )}
-                  <button
-                    onClick={() => { setAIDraftEditing(v => !v); setEditedDraft(aiDraftMsg.body) }}
-                    className="bg-gray-700 hover:bg-gray-600 text-gray-300 text-xs px-3 py-1.5 rounded-lg font-medium transition-colors"
-                  >
-                    ✏ {aiDraftEditing ? 'Cancel Edit' : 'Edit & Send'}
-                  </button>
-                  <button onClick={() => handleReject(aiDraftMsg.id)} className="bg-red-900/50 hover:bg-red-900 text-red-400 text-xs px-3 py-1.5 rounded-lg font-medium transition-colors">
-                    ❌ Reject
-                  </button>
-                  <button
-                    onClick={() => setExpandedReasoning(v => !v)}
-                    className="text-xs text-gray-500 hover:text-gray-300 transition-colors ml-auto"
-                  >
-                    Why this response? {expandedReasoning ? '▲' : '▼'}
-                  </button>
-                </div>
-
-                {expandedReasoning && aiDraftMsg.aiReasoning && (
-                  <div className="mt-3 bg-gray-900/80 rounded-lg p-3 text-xs text-gray-400 leading-relaxed border border-gray-800">
-                    <span className="font-semibold text-gray-300">AI Reasoning: </span>
-                    {aiDraftMsg.aiReasoning}
-                  </div>
-                )}
+          <div className="flex-1 overflow-auto">
+            {error && (
+              <div className="m-3 p-3 bg-rose-950/40 border border-rose-900 rounded-lg text-rose-300 text-xs flex items-start gap-2">
+                <AlertCircle className="w-3 h-3 mt-0.5 flex-shrink-0" /> {error}
               </div>
             )}
-
-            {/* Message thread */}
-            <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
-              {messages.map(m => {
-                const isApproved = approvedDrafts.has(m.id)
-                const isRejected = rejectedDrafts.has(m.id)
-                if (isRejected) return null
-
-                if (m.type === 'system') {
-                  return (
-                    <div key={m.id} className="flex items-center gap-3 justify-center">
-                      <div className="h-px bg-gray-800 flex-1" />
-                      <span className="text-xs text-gray-600 px-2">{m.body}</span>
-                      <div className="h-px bg-gray-800 flex-1" />
+            {loadingList ? (
+              <div className="p-6 text-center text-xs text-gray-500">Loading…</div>
+            ) : conversations.length === 0 ? (
+              <div className="p-6 text-center">
+                <MessageSquare className="w-8 h-8 mx-auto mb-2 text-gray-700" />
+                <p className="text-xs text-gray-500">No conversations yet</p>
+              </div>
+            ) : conversations.map(c => {
+              const active = selectedId === c.id
+              return (
+                <button
+                  key={c.id}
+                  onClick={() => setSelectedId(c.id)}
+                  className={`w-full text-left px-3 py-3 border-b border-gray-900 transition-colors ${
+                    active ? 'bg-indigo-900/20 border-l-2 border-l-indigo-500'
+                    : 'hover:bg-gray-900/50'
+                  }`}
+                >
+                  <div className="flex items-start gap-2.5">
+                    <div className="w-8 h-8 rounded-full bg-indigo-900/50 border border-indigo-800 flex items-center justify-center text-xs text-indigo-300 font-semibold flex-shrink-0">
+                      {initials(c.contact_name, c.contact_email)}
                     </div>
-                  )
-                }
-
-                const effectiveType = (m.type === 'ai_draft' && isApproved) ? 'outbound' : m.type
-
-                return (
-                  <div key={m.id} className={`flex ${effectiveType === 'outbound' ? 'justify-end' : 'justify-start'}`}>
-                    <div className={`max-w-[72%] ${effectiveType === 'ai_draft' ? 'w-full max-w-full' : ''}`}>
-                      {effectiveType === 'ai_draft' && !hitlMode && (
-                        <div className="mb-1 flex items-center gap-2">
-                          <span className="text-xs font-semibold text-yellow-400 border border-yellow-500/40 px-2 py-0.5 rounded-full bg-yellow-500/10">AI Draft — Review Before Sending</span>
-                          <span className={`text-xs font-bold ${confidenceColor(m.aiConfidence || 0)}`}>{m.aiConfidence}%</span>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="text-sm text-white truncate font-medium">
+                          {c.contact_name || c.contact_email || 'Unknown'}
+                        </div>
+                        <div className="text-[10px] text-gray-500 flex-shrink-0">{formatTime(c.last_message_at || c.created_at)}</div>
+                      </div>
+                      {c.subject && (
+                        <div className="text-xs text-gray-400 truncate mt-0.5">{c.subject}</div>
+                      )}
+                      {c.last_message_body && (
+                        <div className="text-xs text-gray-600 truncate mt-0.5">
+                          {c.last_message_dir === 'outbound' && <span className="text-gray-500">You: </span>}
+                          {c.last_message_body}
                         </div>
                       )}
-                      <div className={`px-4 py-3 rounded-2xl text-sm leading-relaxed whitespace-pre-wrap ${
-                        effectiveType === 'outbound'
-                          ? 'bg-indigo-600 text-white rounded-tr-sm'
-                          : effectiveType === 'ai_draft'
-                          ? 'bg-yellow-500/5 border border-yellow-500/30 text-gray-300 rounded-tl-sm'
-                          : 'bg-gray-800 text-gray-200 rounded-tl-sm'
-                      }`}>
-                        {m.body}
+                      <div className="flex items-center gap-1.5 mt-1.5">
+                        <StatusPill status={c.status} />
+                        {c.unread_count > 0 && (
+                          <span className="bg-indigo-600 text-white text-[10px] font-semibold px-1.5 py-0.5 rounded-full">
+                            {c.unread_count}
+                          </span>
+                        )}
+                        {aiAssistantEnabled[c.id] && (
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] text-purple-300 bg-purple-900/30 border border-purple-800 rounded">
+                            <Bot className="w-2.5 h-2.5" /> AI
+                          </span>
+                        )}
                       </div>
-                      <div className={`text-xs text-gray-600 mt-1 ${effectiveType === 'outbound' ? 'text-right' : ''}`}>
-                        {m.from} · {m.timeAgo}
-                        {(effectiveType === 'outbound' && m.from.includes('AI')) && <span className="ml-1 text-indigo-400">✨ AI</span>}
-                      </div>
-                      {effectiveType === 'ai_draft' && !hitlMode && (
-                        <div className="flex gap-2 mt-2">
-                          <button onClick={() => handleApprove(m.id)} className="bg-green-600 hover:bg-green-500 text-white text-xs px-3 py-1.5 rounded-lg transition-colors">✅ Approve</button>
-                          <button onClick={() => { setAIDraftEditing(true); setEditedDraft(m.body) }} className="bg-gray-700 hover:bg-gray-600 text-gray-300 text-xs px-3 py-1.5 rounded-lg transition-colors">✏ Edit</button>
-                          <button onClick={() => handleReject(m.id)} className="bg-red-900/50 text-red-400 text-xs px-3 py-1.5 rounded-lg transition-colors">❌ Reject</button>
-                        </div>
-                      )}
                     </div>
                   </div>
-                )
-              })}
-              <div ref={threadEndRef} />
-            </div>
-
-            {/* Message composer */}
-            <div className="px-6 py-4 border-t border-gray-800 bg-gray-900">
-              {autoReplyOn && perChannelAI[selectedConv.channel] && (
-                <div className="mb-2 flex items-center gap-2">
-                  <span className="text-xs bg-indigo-600/20 border border-indigo-500/30 text-indigo-400 px-2 py-0.5 rounded-full">🤖 AI will auto-reply to this channel</span>
-                </div>
-              )}
-              <textarea
-                className="w-full bg-gray-800 border border-gray-700 text-gray-200 text-sm px-4 py-3 rounded-xl outline-none focus:border-indigo-500 resize-none placeholder-gray-600"
-                placeholder="Reply..."
-                rows={3}
-                value={replyText}
-                onChange={e => setReplyText(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter' && e.metaKey) handleSend() }}
-              />
-              <div className="flex items-center justify-between mt-2">
-                <div className="flex items-center gap-2">
-                  <button className="text-gray-500 hover:text-gray-300 text-sm transition-colors px-1">😊</button>
-                  <button className="text-gray-500 hover:text-gray-300 text-sm transition-colors px-1">📎</button>
-                  <button className="text-gray-500 hover:text-gray-300 text-xs transition-colors px-2 py-1 bg-gray-800 rounded-lg border border-gray-700 hover:border-gray-600">Templates</button>
-                  <button
-                    onClick={handleAISuggest}
-                    disabled={aiSuggestLoading}
-                    className="text-xs bg-purple-600/20 hover:bg-purple-600/30 border border-purple-500/30 text-purple-400 px-3 py-1 rounded-lg transition-colors flex items-center gap-1"
-                  >
-                    {aiSuggestLoading ? <span className="animate-pulse">⏳</span> : '🤖'} Suggest Reply
-                  </button>
-                </div>
-                <button
-                  onClick={handleSend}
-                  disabled={!replyText.trim() || sendingReply}
-                  className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors"
-                >
-                  {sendingReply ? 'Sending…' : 'Send ↗'}
                 </button>
+              )
+            })}
+          </div>
+        </aside>
+
+        {/* ─── Middle: thread pane ──────────────────────────────────────────── */}
+        <main className="flex-1 flex flex-col min-w-0 bg-gray-950">
+          {!selectedId ? (
+            <div className="flex-1 flex items-center justify-center text-center text-gray-500">
+              <div>
+                <MessageSquare className="w-12 h-12 mx-auto mb-3 text-gray-700" />
+                <p className="text-sm">Select a conversation to view its thread</p>
               </div>
             </div>
-          </>
+          ) : loadingThread && !thread ? (
+            <div className="flex-1 flex items-center justify-center text-gray-500 text-sm">
+              <Loader2 className="w-4 h-4 animate-spin mr-2" /> Loading thread…
+            </div>
+          ) : thread ? (
+            <ThreadView
+              workspaceId={workspaceId || ''}
+              thread={thread}
+              aiAssistantEnabled={!!aiAssistantEnabled[thread.conversation.id]}
+              onToggleAi={() => toggleAi(thread.conversation.id)}
+              onSent={() => fetchThread()}
+              onStatusChanged={() => { fetchConvos(); fetchThread() }}
+            />
+          ) : (
+            <div className="flex-1 flex items-center justify-center text-rose-400 text-sm">
+              Failed to load thread.
+            </div>
+          )}
+        </main>
+
+        {/* ─── Right: contact panel ─────────────────────────────────────────── */}
+        {thread && (
+          <ContactPanel conversation={thread.conversation} />
         )}
       </div>
+    </div>
+  )
+}
 
-      {/* ── AI QUEUE MODAL ───────────────────────────────────────────────────── */}
-      {showAIQueue && (
-        <div className="fixed inset-0 bg-gray-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-2xl shadow-2xl">
-            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800">
-              <div>
-                <h2 className="text-white font-bold text-lg">AI Reply Queue</h2>
-                <p className="text-gray-500 text-xs mt-0.5">{queueItems.length} draft{queueItems.length !== 1 ? 's' : ''} awaiting human review</p>
-              </div>
-              <div className="flex items-center gap-3">
-                <button
-                  onClick={handleQueueApproveAll}
-                  className="bg-green-600/20 hover:bg-green-600/30 border border-green-500/30 text-green-400 text-sm px-4 py-2 rounded-lg transition-colors"
-                >
-                  ✅ Approve All High Confidence (&gt;90%)
-                </button>
-                <button onClick={() => setShowAIQueue(false)} className="text-gray-500 hover:text-gray-300 text-xl">✕</button>
+// ─── Thread + composer + AI assistant ─────────────────────────────────────
+
+function ThreadView({
+  workspaceId, thread, aiAssistantEnabled, onToggleAi, onSent, onStatusChanged,
+}: {
+  workspaceId: string
+  thread: ThreadResponse
+  aiAssistantEnabled: boolean
+  onToggleAi: () => void
+  onSent: () => void
+  onStatusChanged: () => void
+}) {
+  const conv = thread.conversation
+  const messages = thread.messages
+  const [reply, setReply] = useState('')
+  const [replySubject, setReplySubject] = useState('')
+  const [sending, setSending] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [aiDraft, setAiDraft] = useState<AIReply | null>(null)
+  const [aiLoading, setAiLoading] = useState(false)
+  const [aiError, setAiError] = useState<string | null>(null)
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const lastInboundIdRef = useRef<string | null>(null)
+
+  // Default reply subject = "Re: ..." once
+  useEffect(() => {
+    if (conv.subject && !replySubject) {
+      setReplySubject(conv.subject.startsWith('Re:') ? conv.subject : `Re: ${conv.subject}`)
+    }
+  }, [conv.subject, replySubject])
+
+  // Scroll to bottom when thread updates
+  useEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+  }, [messages.length])
+
+  const lastInbound = useMemo(
+    () => [...messages].reverse().find(m => m.direction === 'inbound') || null,
+    [messages],
+  )
+
+  // Auto-fetch AI draft when assistant is on AND the last inbound message changed
+  const fetchAiDraft = useCallback(async () => {
+    if (!aiAssistantEnabled || !lastInbound) return
+    setAiLoading(true); setAiError(null)
+    try {
+      const res = await fetch('/api/agents/inbox', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          workspaceId, mode: 'compose_reply', conversationId: conv.id,
+        }),
+      })
+      const data = await res.json() as { ok?: boolean; reply?: AIReply; error?: string }
+      if (!res.ok || !data.ok || !data.reply) throw new Error(data.error || 'AI draft failed')
+      setAiDraft(data.reply)
+    } catch (e) {
+      setAiError(e instanceof Error ? e.message : String(e))
+    } finally { setAiLoading(false) }
+  }, [aiAssistantEnabled, lastInbound, workspaceId, conv.id])
+
+  useEffect(() => {
+    if (!aiAssistantEnabled) { setAiDraft(null); return }
+    if (lastInbound && lastInbound.id !== lastInboundIdRef.current) {
+      lastInboundIdRef.current = lastInbound.id
+      fetchAiDraft()
+    }
+  }, [aiAssistantEnabled, lastInbound, fetchAiDraft])
+
+  const send = async () => {
+    if (!reply.trim()) return
+    setSending(true); setError(null)
+    try {
+      const res = await fetch(`/api/inbox/${conv.id}/reply`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          body: reply, subject: replySubject || conv.subject || 'Reply',
+          aiGenerated: !!aiDraft && reply === aiDraft.body,
+        }),
+      })
+      const data = await res.json() as { ok?: boolean; error?: string }
+      if (!res.ok || !data.ok) throw new Error(data.error || 'Send failed')
+      setReply(''); setAiDraft(null)
+      onSent()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally { setSending(false) }
+  }
+
+  const closeConv = async () => {
+    if (!confirm('Close this conversation?')) return
+    await fetch(`/api/inbox/${conv.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'closed' }),
+    })
+    onStatusChanged()
+  }
+
+  return (
+    <>
+      {/* Thread header */}
+      <div className="px-6 py-3 border-b border-gray-800 flex items-center justify-between">
+        <div className="min-w-0">
+          <div className="text-white font-semibold truncate">{conv.contact_name || conv.contact_email}</div>
+          <div className="text-xs text-gray-500 truncate">{conv.subject || `${conv.channel} conversation`}</div>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={onToggleAi}
+            className={`px-2.5 py-1 text-xs rounded-lg border inline-flex items-center gap-1.5 transition-colors ${
+              aiAssistantEnabled
+                ? 'bg-purple-900/40 border-purple-700 text-purple-200 hover:bg-purple-900/60'
+                : 'bg-gray-900 border-gray-700 text-gray-400 hover:text-gray-200'
+            }`}
+            title="Toggle AI Drafting Assistant"
+          >
+            <Bot className="w-3 h-3" />
+            AI Drafting Assistant {aiAssistantEnabled ? 'on' : 'off'}
+          </button>
+          {conv.status !== 'closed' && (
+            <button
+              onClick={closeConv}
+              className="px-2.5 py-1 text-xs bg-gray-900 hover:bg-gray-800 border border-gray-700 text-gray-300 rounded-lg"
+            >
+              Close
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Message list */}
+      <div ref={scrollRef} className="flex-1 overflow-auto px-6 py-4 space-y-3">
+        {messages.length === 0 ? (
+          <div className="text-center text-gray-500 text-sm py-10">No messages yet.</div>
+        ) : messages.map(m => {
+          const isOutbound = m.direction === 'outbound'
+          const isAi = !!m.ai_generated
+          return (
+            <div key={m.id} className={`flex ${isOutbound ? 'justify-end' : 'justify-start'}`}>
+              <div className={`max-w-[80%] rounded-lg px-3.5 py-2.5 ${
+                isOutbound
+                  ? 'bg-indigo-600 text-white'
+                  : 'bg-gray-900 border border-gray-800 text-gray-100'
+              }`}>
+                {!isOutbound && (
+                  <div className="text-[10px] text-gray-500 mb-1 uppercase tracking-wide">
+                    {m.from_address || 'Inbound'}
+                  </div>
+                )}
+                <div className="text-sm whitespace-pre-wrap leading-relaxed">{m.body}</div>
+                <div className={`text-[10px] mt-1.5 flex items-center gap-1 ${
+                  isOutbound ? 'text-indigo-200' : 'text-gray-500'
+                }`}>
+                  {isAi && <Sparkles className="w-2.5 h-2.5" />}
+                  {isAi && <span>AI-drafted ·</span>}
+                  <Clock className="w-2.5 h-2.5" />
+                  {formatTime(m.sent_at)}
+                </div>
               </div>
             </div>
-            <div className="p-6 space-y-3 max-h-[60vh] overflow-y-auto">
-              {queueItems.length === 0 && (
-                <div className="text-center py-8 text-gray-600">
-                  <div className="text-3xl mb-2">✅</div>
-                  <p className="text-sm">All caught up! No drafts waiting.</p>
+          )
+        })}
+      </div>
+
+      {/* AI draft preview (when assistant is on) */}
+      {aiAssistantEnabled && (
+        <div className="mx-6 mb-3 rounded-lg border border-purple-800 bg-purple-950/30 px-3.5 py-3">
+          <div className="flex items-center justify-between mb-2">
+            <div className="text-xs text-purple-300 uppercase tracking-wide flex items-center gap-1.5 font-medium">
+              <Bot className="w-3.5 h-3.5" /> Claude suggests this reply
+            </div>
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={fetchAiDraft}
+                disabled={aiLoading}
+                className="text-purple-300 hover:text-purple-200 p-1 disabled:opacity-50"
+                title="Regenerate"
+              >
+                {aiLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+              </button>
+              <button
+                onClick={() => setAiDraft(null)}
+                className="text-purple-300 hover:text-purple-200 p-1"
+                title="Dismiss"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            </div>
+          </div>
+          {aiLoading && !aiDraft ? (
+            <div className="text-xs text-gray-500 inline-flex items-center gap-2">
+              <Loader2 className="w-3 h-3 animate-spin" /> Drafting reply…
+            </div>
+          ) : aiError ? (
+            <div className="text-xs text-rose-400">{aiError}</div>
+          ) : aiDraft ? (
+            <>
+              <div className="text-sm text-gray-100 whitespace-pre-wrap leading-relaxed">{aiDraft.body}</div>
+              {aiDraft.reasoning && (
+                <div className="text-[11px] text-gray-500 mt-2 pt-2 border-t border-purple-900/50">
+                  <span className="text-purple-400">Reasoning:</span> {aiDraft.reasoning}
                 </div>
               )}
-              {queueItems.map(item => (
-                <div key={item.id} className="bg-gray-800 border border-gray-700 rounded-xl p-4">
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-2">
-                        <div className={`w-7 h-7 rounded-full flex items-center justify-center text-white text-xs font-bold ${avatarColor(item.contactName)}`}>
-                          {item.contactName.split(' ').map(n => n[0]).join('')}
-                        </div>
-                        <span className="text-white text-sm font-semibold">{item.contactName}</span>
-                        <span className="text-xs">{CHANNEL_META[item.channel].icon}</span>
-                        <span className={`text-xs font-bold ${confidenceColor(item.confidence)}`}>{item.confidence}% confidence</span>
-                        <span className="text-xs text-gray-600">waiting {item.waitingFor}</span>
-                      </div>
-                      <p className="text-gray-400 text-xs leading-relaxed line-clamp-2">{item.preview}</p>
-                    </div>
-                    <div className="flex flex-col gap-1.5 flex-shrink-0">
-                      <button
-                        onClick={() => setQueueItems(prev => prev.filter(q => q.id !== item.id))}
-                        className="bg-green-600 hover:bg-green-500 text-white text-xs px-3 py-1.5 rounded-lg transition-colors"
-                      >
-                        ✅ Approve
-                      </button>
-                      <button className="bg-gray-700 hover:bg-gray-600 text-gray-300 text-xs px-3 py-1.5 rounded-lg transition-colors">
-                        ✏ Edit
-                      </button>
-                      <button
-                        onClick={() => setQueueItems(prev => prev.filter(q => q.id !== item.id))}
-                        className="bg-red-900/50 hover:bg-red-900 text-red-400 text-xs px-3 py-1.5 rounded-lg transition-colors"
-                      >
-                        ❌ Reject
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ── AI SETTINGS MODAL ───────────────────────────────────────────────── */}
-      {showAISettings && (
-        <div className="fixed inset-0 bg-gray-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-lg shadow-2xl">
-            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800">
-              <h2 className="text-white font-bold text-lg">⚙ AI Auto-Reply Settings</h2>
-              <button onClick={() => setShowAISettings(false)} className="text-gray-500 hover:text-gray-300 text-xl">✕</button>
-            </div>
-            <div className="p-6 space-y-6 max-h-[70vh] overflow-y-auto">
-              {/* Per-channel toggles */}
-              <div>
-                <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">Enable AI Per Channel</h3>
-                <div className="space-y-2">
-                  {(Object.entries(CHANNEL_META) as [string, typeof CHANNEL_META[keyof typeof CHANNEL_META]][]).map(([ch, meta]) => (
-                    <div key={ch} className="flex items-center justify-between py-1">
-                      <span className="text-sm text-gray-300">{meta.icon} {meta.label}</span>
-                      <button
-                        onClick={() => setPerChannelAI(prev => ({ ...prev, [ch]: !prev[ch] }))}
-                        className={`relative w-9 h-5 rounded-full transition-colors ${perChannelAI[ch] ? 'bg-indigo-600' : 'bg-gray-700'}`}
-                      >
-                        <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-all ${perChannelAI[ch] ? 'left-4' : 'left-0.5'}`} />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* Tone */}
-              <div>
-                <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">Response Tone</h3>
-                <div className="flex gap-2">
-                  {(['professional', 'friendly', 'concise'] as const).map(tone => (
-                    <button
-                      key={tone}
-                      onClick={() => setSettingsTone(tone)}
-                      className={`flex-1 py-2 rounded-lg text-sm capitalize transition-colors border ${settingsTone === tone ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-gray-800 border-gray-700 text-gray-400 hover:border-gray-600'}`}
-                    >
-                      {tone}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Max auto-replies */}
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider">Max Auto-Replies Before Escalating</h3>
-                  <span className="text-indigo-400 font-bold text-sm">{maxAutoReplies}</span>
-                </div>
-                <input type="range" min={1} max={10} value={maxAutoReplies} onChange={e => setMaxAutoReplies(Number(e.target.value))} className="w-full accent-indigo-500 h-1" />
-                <div className="flex justify-between text-xs text-gray-600 mt-1"><span>1</span><span>10</span></div>
-              </div>
-
-              {/* Always escalate */}
-              <div>
-                <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">Always Escalate to Human</h3>
-                <div className="space-y-2">
-                  {(Object.entries(escalateTopics) as [keyof typeof escalateTopics, boolean][]).map(([topic, on]) => (
-                    <label key={topic} className="flex items-center gap-3 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={on}
-                        onChange={() => setEscalateTopics(prev => ({ ...prev, [topic]: !prev[topic] }))}
-                        className="w-4 h-4 rounded accent-indigo-500"
-                      />
-                      <span className="text-sm text-gray-300 capitalize">{topic}</span>
-                    </label>
-                  ))}
-                </div>
-              </div>
-
-              {/* Business hours */}
-              <div className="flex items-center justify-between">
-                <div>
-                  <span className="text-sm text-gray-300">Business Hours Only</span>
-                  <p className="text-xs text-gray-600">AI only replies Mon–Fri, 9am–6pm</p>
-                </div>
+              <div className="mt-3 flex items-center justify-end gap-2">
                 <button
-                  onClick={() => setBusinessHoursOnly(v => !v)}
-                  className={`relative w-9 h-5 rounded-full transition-colors ${businessHoursOnly ? 'bg-indigo-600' : 'bg-gray-700'}`}
+                  onClick={() => setReply(prev => prev ? `${prev}\n\n${aiDraft.body}` : aiDraft.body)}
+                  className="px-3 py-1 text-xs bg-purple-700 hover:bg-purple-600 text-white rounded inline-flex items-center gap-1.5"
                 >
-                  <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-all ${businessHoursOnly ? 'left-4' : 'left-0.5'}`} />
+                  <Check className="w-3 h-3" /> Insert into composer
                 </button>
               </div>
-
-              <button className="w-full bg-gray-800 hover:bg-gray-700 text-gray-400 text-sm py-2.5 rounded-lg border border-gray-700 transition-colors">
-                🧠 Train on Past Replies
-              </button>
-
-              <button
-                onClick={() => setShowAISettings(false)}
-                className="w-full bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium py-2.5 rounded-lg transition-colors"
-              >
-                Save Settings
-              </button>
-            </div>
-          </div>
+            </>
+          ) : (
+            <div className="text-xs text-gray-500">Toggle off and back on, or wait for the next inbound message.</div>
+          )}
         </div>
       )}
+
+      {/* Composer */}
+      <div className="border-t border-gray-800 px-6 py-3 bg-gray-950">
+        {error && (
+          <div className="mb-2 px-3 py-2 bg-rose-950/40 border border-rose-900 rounded text-rose-300 text-xs">
+            {error}
+          </div>
+        )}
+        <input
+          value={replySubject}
+          onChange={e => setReplySubject(e.target.value)}
+          placeholder="Subject"
+          className="w-full bg-gray-900 border border-gray-800 rounded-lg px-3 py-1.5 text-sm text-white placeholder-gray-600 focus:border-indigo-600 focus:outline-none mb-2"
+        />
+        <div className="flex items-end gap-2">
+          <textarea
+            value={reply}
+            onChange={e => setReply(e.target.value)}
+            placeholder={aiAssistantEnabled ? 'Write your reply, or insert Claude\'s suggestion above…' : 'Type your reply…'}
+            rows={3}
+            className="flex-1 bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:border-indigo-600 focus:outline-none resize-none"
+            onKeyDown={e => {
+              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) send()
+            }}
+          />
+          <button
+            onClick={send}
+            disabled={sending || !reply.trim()}
+            className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm rounded-lg inline-flex items-center gap-2"
+            title="Send (Cmd/Ctrl + Enter)"
+          >
+            {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+            Send
+          </button>
+        </div>
+        <div className="text-[10px] text-gray-600 mt-1.5">
+          {aiAssistantEnabled
+            ? 'AI draft regenerates automatically whenever a new inbound message arrives. You always confirm the send.'
+            : 'Tip: turn on the AI Drafting Assistant above to preview suggested replies.'}
+        </div>
+      </div>
+    </>
+  )
+}
+
+// ─── Right rail: contact details ──────────────────────────────────────────
+
+function ContactPanel({ conversation }: { conversation: Conversation }) {
+  const [details, setDetails] = useState<{
+    last_engaged_at?: string | null
+    source?: string | null
+    bounce_count?: number
+    consent_given_at?: string | null
+  } | null>(null)
+
+  useEffect(() => {
+    if (!conversation.contact_email) return
+    fetch(`/api/email-subscribers?workspaceId=${conversation.workspace_id}`)
+      .then(r => r.json())
+      .then((rows: Array<{ email: string; last_engaged_at?: string; source?: string; bounce_count?: number; consent_given_at?: string }>) => {
+        const me = rows.find(r => r.email?.toLowerCase() === conversation.contact_email?.toLowerCase())
+        if (me) setDetails(me)
+      })
+      .catch(() => { /* non-fatal */ })
+  }, [conversation.workspace_id, conversation.contact_email])
+
+  return (
+    <aside className="w-[280px] flex-shrink-0 border-l border-gray-800 bg-gray-950 p-4 overflow-auto">
+      <div className="flex flex-col items-center text-center mb-4">
+        <div className="w-14 h-14 rounded-full bg-indigo-900/50 border border-indigo-800 flex items-center justify-center text-lg text-indigo-300 font-semibold mb-3">
+          {initials(conversation.contact_name, conversation.contact_email)}
+        </div>
+        <div className="text-white font-semibold">{conversation.contact_name || conversation.contact_email}</div>
+        <div className="text-xs text-gray-500">{conversation.contact_email}</div>
+      </div>
+
+      <div className="space-y-3 text-sm">
+        <Row icon={MessageSquare} label="Channel" value={conversation.channel} />
+        <Row icon={ChevronRight} label="Status" value={conversation.status} />
+        {details?.source && <Row icon={User} label="Source" value={details.source} />}
+        {details?.last_engaged_at && (
+          <Row icon={Clock} label="Last engaged" value={formatTime(details.last_engaged_at)} />
+        )}
+        {details?.consent_given_at && (
+          <Row icon={Check} label="Consent" value={new Date(details.consent_given_at).toLocaleDateString()} />
+        )}
+        {details && (details.bounce_count ?? 0) > 0 && (
+          <Row icon={AlertCircle} label="Bounces" value={String(details.bounce_count)} valueClass="text-rose-400" />
+        )}
+      </div>
+    </aside>
+  )
+}
+
+function Row({
+  icon: Icon, label, value, valueClass,
+}: {
+  icon: typeof MessageSquare
+  label: string
+  value: string
+  valueClass?: string
+}) {
+  return (
+    <div className="flex items-center justify-between text-xs">
+      <span className="text-gray-500 inline-flex items-center gap-1.5">
+        <Icon className="w-3 h-3" /> {label}
+      </span>
+      <span className={`text-gray-300 ${valueClass || ''}`}>{value}</span>
     </div>
   )
 }

@@ -1,760 +1,901 @@
 'use client'
 
-import { useState } from 'react'
+/**
+ * /dashboard/leads
+ *
+ * Lead directory with live enrichment status. Three interactive surfaces:
+ *
+ *   1. Master directory grid — fetches /api/leads-captured, polls every 8s
+ *      while any row is in 'enriching' state so status pills flip live.
+ *
+ *   2. Detail Drawer — slide-out for the selected lead. Renders Claude's
+ *      enrichment_summary, the firmographic block (company, size, industry,
+ *      revenue, links), and the tech_stack as clickable badges.
+ *
+ *   3. Tech-stack lookalike filter — clicking any tech badge inside the
+ *      drawer instantly narrows the master grid to leads sharing that tool.
+ *      A chip above the table makes the active filter dismissible.
+ *
+ * Transparency: when a lead's `conflicts_resolved` log shows a field was
+ * overridden by a live Brave Search signal, a small "Live News Signal"
+ * radar pulse appears next to that field in the drawer.
+ */
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import {
+  Users, Search, RefreshCw, Plus, Sparkles, Filter, X,
+  Building2, Briefcase, Bird, ExternalLink, AlertCircle,
+  CheckCircle2, Loader2, Clock, XCircle, Radar, Layers,
+  Mail, Phone, DollarSign, Tag, ChevronRight,
+} from 'lucide-react'
 
-type LeadTab = 'plan' | 'capture' | 'feed' | 'integrations'
-type LeadFilter = 'all' | 'hot' | 'warm' | 'cold' | 'unqualified'
-
-interface Tactic {
-  id: string
-  action: string
-  owner: string
-  status: 'Not Started' | 'In Progress' | 'Done'
-  deadline: string
-}
-
-interface LeadPlan {
-  name: string
-  goal: string
-  status: 'Active' | 'Draft' | 'Completed'
-  lastUpdatedBy: string
-  summary: string[]
-  channels: string[]
-  tactics: Tactic[]
-  createdAt: string
-}
-
-interface PastPlan {
-  id: string
-  date: string
-  goal: string
-  result: number
-  status: string
-}
+// ─── Types ─────────────────────────────────────────────────────────────────
 
 interface Lead {
   id: string
-  name: string
-  company: string
-  email: string
-  source: string
-  sourceIcon: string
+  workspace_id: string
+  name: string | null
+  email: string | null
+  phone: string | null
+  source: string | null
+  campaign: string | null
+  status: string
   score: number
-  time: string
-  tagged: boolean
+  notes: string | null
+  // Sprint-4 enrichment columns
+  enrichment_status: 'pending' | 'enriching' | 'completed' | 'failed' | string | null
+  company_name: string | null
+  company_size: string | null
+  estimated_revenue: string | null
+  industry: string | null
+  linkedin_url: string | null
+  twitter_url: string | null
+  tech_stack: string | string[] | null
+  enrichment_summary: string | null
+  created_at: string
 }
 
-interface ScoringRule {
+interface ActivityRow {
   id: string
-  condition: string
-  points: number
-  type: 'add' | 'subtract'
+  lead_id: string
+  type: string
+  activity_type: string | null
+  title: string
+  description: string | null
+  metadata_json: string | null
+  created_at: string
 }
 
-interface Integration {
-  id: string
-  name: string
-  icon: string
-  status: 'Connected' | 'Disconnected'
-  leadsImported: number
-  lastSync: string
+interface EnrichmentMetaConflict {
+  field?: string
+  loser?: string
+  winner?: string
+  reason?: string
 }
 
-// ─── Mock Data ────────────────────────────────────────────────────────────────
+// ─── Helpers ───────────────────────────────────────────────────────────────
 
-const ACTIVE_PLAN: LeadPlan = {
-  name: 'Q2 2026 Lead Generation Strategy',
-  goal: 'Generate 500 MQLs in 30 days',
-  status: 'Active',
-  lastUpdatedBy: 'CMO Agent',
-  summary: [
-    'Focus on LinkedIn + Content as primary inbound channels to attract B2B SaaS decision-makers',
-    'Run targeted Google & Meta ads with lead magnet as the primary conversion offer',
-    'Launch weekly webinar series to qualify prospects and build pipeline',
-    'Activate cold email outreach to 200 ICP companies per week using personalized sequences',
-  ],
-  channels: ['Content', 'Email', 'LinkedIn Ads', 'SEO', 'Webinar', 'Cold Outreach'],
-  tactics: [
-    { id: '1', action: 'Publish 3x SEO blog posts targeting "AI marketing tools" keywords', owner: 'Content Agent', status: 'Done', deadline: 'Jun 1' },
-    { id: '2', action: 'Launch LinkedIn lead gen form campaign with free template offer', owner: 'Ads Agent', status: 'In Progress', deadline: 'Jun 5' },
-    { id: '3', action: 'Build and publish lead magnet landing page with Klaviyo integration', owner: 'Funnel Agent', status: 'Done', deadline: 'Jun 3' },
-    { id: '4', action: 'Set up 7-email nurture sequence for all new opt-ins', owner: 'Email Agent', status: 'In Progress', deadline: 'Jun 7' },
-    { id: '5', action: 'Source 500 ICP contacts for cold email campaign', owner: 'Outreach Agent', status: 'Not Started', deadline: 'Jun 10' },
-    { id: '6', action: 'Host live webinar: "AI Marketing in 2026" with 200-attendee target', owner: 'Events Agent', status: 'Not Started', deadline: 'Jun 20' },
-    { id: '7', action: 'Optimize Google Ads keyword bids for lead gen campaign', owner: 'Ads Agent', status: 'In Progress', deadline: 'Jun 8' },
-  ],
-  createdAt: '2026-05-24',
-}
-
-const PAST_PLANS: PastPlan[] = [
-  { id: '1', date: 'Q1 2026', goal: 'Generate 300 MQLs in 30 days', result: 347, status: 'Completed' },
-  { id: '2', date: 'Dec 2025', goal: 'Generate 200 MQLs in 30 days', result: 189, status: 'Completed' },
-  { id: '3', date: 'Oct 2025', goal: 'Generate 150 MQLs — holiday push', result: 201, status: 'Completed' },
-]
-
-const CAPTURE_METHODS = [
-  { id: 'forms', name: 'Forms', icon: '📋', status: true, leads: 1240, convRate: 24.4 },
-  { id: 'landing', name: 'Landing Pages', icon: '🌐', status: true, leads: 3820, convRate: 12.1 },
-  { id: 'chat', name: 'Chat Widget', icon: '💬', status: false, leads: 0, convRate: 0 },
-  { id: 'email', name: 'Email Opt-in', icon: '📧', status: true, leads: 890, convRate: 31.2 },
-]
-
-const INITIAL_SCORING_RULES: ScoringRule[] = [
-  { id: '1', condition: 'Email opened', points: 5, type: 'add' },
-  { id: '2', condition: 'Visited pricing page', points: 20, type: 'add' },
-  { id: '3', condition: 'Downloaded whitepaper', points: 15, type: 'add' },
-  { id: '4', condition: 'Started free trial', points: 40, type: 'add' },
-  { id: '5', condition: 'Attended webinar', points: 25, type: 'add' },
-  { id: '6', condition: 'Clicked email CTA', points: 10, type: 'add' },
-  { id: '7', condition: 'Unsubscribed', points: 50, type: 'subtract' },
-  { id: '8', condition: 'Inactive 30 days', points: 20, type: 'subtract' },
-]
-
-const MOCK_LEADS: Lead[] = [
-  { id: '1', name: 'Sarah Chen', company: 'Acme Corp', email: 'sarah@acme.com', source: 'LinkedIn', sourceIcon: 'in', score: 88, time: '2 min ago', tagged: false },
-  { id: '2', name: 'Marcus Williams', company: 'GrowthLabs', email: 'marcus@growthlabs.io', source: 'Meta Ad', sourceIcon: 'f', score: 74, time: '8 min ago', tagged: false },
-  { id: '3', name: 'Priya Patel', company: 'SaaSify', email: 'priya@saasify.co', source: 'Organic', sourceIcon: 'G', score: 92, time: '14 min ago', tagged: false },
-  { id: '4', name: 'James O\'Brien', company: 'Startup Hub', email: 'james@startuphub.com', source: 'Webinar', sourceIcon: '🎙', score: 61, time: '22 min ago', tagged: false },
-  { id: '5', name: 'Elena Kozlov', company: 'TechScale', email: 'elena@techscale.com', source: 'Cold Email', sourceIcon: '📧', score: 45, time: '1 hr ago', tagged: false },
-  { id: '6', name: 'David Park', company: 'DataVibe', email: 'david@datavibe.io', source: 'Referral', sourceIcon: '🔗', score: 81, time: '2 hrs ago', tagged: false },
-  { id: '7', name: 'Amara Osei', company: 'Momentum Co', email: 'amara@momentumco.com', source: 'LinkedIn', sourceIcon: 'in', score: 29, time: '3 hrs ago', tagged: false },
-  { id: '8', name: 'Tom Bergmann', company: 'Flex Digital', email: 'tom@flexdigital.de', source: 'Google Ad', sourceIcon: 'G', score: 67, time: '5 hrs ago', tagged: false },
-  { id: '9', name: 'Yuki Tanaka', company: 'LaunchPad', email: 'yuki@launchpad.jp', source: 'Organic', sourceIcon: 'G', score: 95, time: '6 hrs ago', tagged: false },
-  { id: '10', name: 'Carlos Rivera', company: 'VentureX', email: 'carlos@venturex.co', source: 'Meta Ad', sourceIcon: 'f', score: 18, time: '8 hrs ago', tagged: false },
-]
-
-const INTEGRATIONS: Integration[] = [
-  { id: '1', name: 'Facebook Lead Ads', icon: 'f', status: 'Connected', leadsImported: 1240, lastSync: '5 min ago' },
-  { id: '2', name: 'LinkedIn Lead Gen Forms', icon: 'in', status: 'Connected', leadsImported: 890, lastSync: '2 hrs ago' },
-  { id: '3', name: 'Google Ads', icon: 'G', status: 'Connected', leadsImported: 560, lastSync: '1 hr ago' },
-  { id: '4', name: 'Typeform', icon: 'T', status: 'Disconnected', leadsImported: 0, lastSync: '—' },
-  { id: '5', name: 'Calendly', icon: '📅', status: 'Disconnected', leadsImported: 0, lastSync: '—' },
-  { id: '6', name: 'Drift / Intercom', icon: '💬', status: 'Disconnected', leadsImported: 0, lastSync: '—' },
-]
-
-// ─── Lead Plan Tab ────────────────────────────────────────────────────────────
-
-function LeadPlanTab() {
-  const [plan, setPlan] = useState<LeadPlan>(ACTIVE_PLAN)
-  const [tactics, setTactics] = useState<Tactic[]>(ACTIVE_PLAN.tactics)
-  const [deployed, setDeployed] = useState(false)
-  const [showGenerateForm, setShowGenerateForm] = useState(false)
-  const [generateParams, setGenerateParams] = useState({ targetLeads: 500, budget: 5000, industry: 'SaaS', timeframe: 30 })
-  const [generating, setGenerating] = useState(false)
-
-  async function deployToCMO() {
-    setDeployed(true)
-    setTimeout(() => setDeployed(false), 4000)
+function parseTechStack(raw: unknown): string[] {
+  if (Array.isArray(raw)) return raw.map(String)
+  if (typeof raw !== 'string') return []
+  if (!raw.trim()) return []
+  try {
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed.map(String) : []
+  } catch {
+    // legacy CSV / loose strings
+    return raw.split(',').map(s => s.trim()).filter(Boolean)
   }
+}
 
-  function updateTacticStatus(id: string, status: Tactic['status']) {
-    setTactics(prev => prev.map(t => t.id === id ? { ...t, status } : t))
-  }
+function parseMeta(raw: string | null): Record<string, unknown> | null {
+  if (!raw) return null
+  try { return JSON.parse(raw) as Record<string, unknown> } catch { return null }
+}
 
-  async function generateNewPlan() {
-    setGenerating(true)
-    await new Promise(r => setTimeout(r, 2400))
-    const generated: LeadPlan = {
-      ...plan,
-      name: `${generateParams.timeframe}-Day ${generateParams.industry} Lead Generation Sprint`,
-      goal: `Generate ${generateParams.targetLeads} MQLs in ${generateParams.timeframe} days`,
-      status: 'Draft',
-      lastUpdatedBy: 'CMO Agent',
-      summary: [
-        `Target ${generateParams.targetLeads} MQLs with $${generateParams.budget.toLocaleString()} budget across paid and organic channels`,
-        `Focus on ${generateParams.industry} decision-makers using intent-based targeting`,
-        'Combine top-of-funnel content with bottom-of-funnel conversion campaigns',
-        'Weekly performance reviews and budget reallocation based on ROAS data',
-      ],
-      createdAt: new Date().toISOString().split('T')[0],
+function formatRelative(iso: string | null): string {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso
+  const diff = Date.now() - d.getTime()
+  const s = Math.floor(diff / 1000)
+  if (s < 60) return `${s}s ago`
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`
+  if (s < 86400 * 7) return `${Math.floor(s / 86400)}d ago`
+  return d.toLocaleDateString()
+}
+
+const ENRICH_PILL: Record<string, { cls: string; Icon: typeof Clock; label: string }> = {
+  pending:   { cls: 'bg-gray-800 text-gray-400 border-gray-700',                   Icon: Clock,         label: 'Pending' },
+  enriching: { cls: 'bg-blue-900/40 text-blue-200 border-blue-800',                Icon: Loader2,       label: 'Enriching' },
+  completed: { cls: 'bg-emerald-900/40 text-emerald-200 border-emerald-800',      Icon: CheckCircle2,  label: 'Enriched' },
+  failed:    { cls: 'bg-rose-900/40 text-rose-200 border-rose-800',                Icon: XCircle,       label: 'Failed' },
+}
+function EnrichmentPill({ status }: { status: string | null }) {
+  const key = status || 'pending'
+  const cfg = ENRICH_PILL[key] || ENRICH_PILL.pending
+  const Icon = cfg.Icon
+  return (
+    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium border ${cfg.cls}`}>
+      <Icon className={`w-3 h-3 ${key === 'enriching' ? 'animate-spin' : ''}`} />
+      {cfg.label}
+    </span>
+  )
+}
+
+const LEAD_STATUS_PILL: Record<string, string> = {
+  new:        'bg-indigo-900/40 text-indigo-200 border-indigo-800',
+  qualified:  'bg-emerald-900/40 text-emerald-200 border-emerald-800',
+  contacted:  'bg-blue-900/40 text-blue-200 border-blue-800',
+  unqualified:'bg-gray-800 text-gray-400 border-gray-700',
+  lost:       'bg-rose-900/40 text-rose-200 border-rose-800',
+}
+
+// ─── Page ──────────────────────────────────────────────────────────────────
+
+export default function LeadsPage() {
+  const [workspaceId, setWorkspaceId] = useState<string | null>(null)
+  const [leads, setLeads] = useState<Lead[]>([])
+  const [loading, setLoading] = useState(true)
+  const [search, setSearch] = useState('')
+  const [statusFilter, setStatusFilter] = useState<'all' | 'pending' | 'enriching' | 'completed' | 'failed'>('all')
+  const [techFilter, setTechFilter] = useState<string | null>(null)
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [enrichingId, setEnrichingId] = useState<string | null>(null)
+  const [showNew, setShowNew] = useState(false)
+
+  // Resolve workspace
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/auth/me')
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (cancelled) return
+        const id: string | null = data?.user?.workspaceId
+          || (typeof window !== 'undefined' ? localStorage.getItem('workspaceId') : null)
+        setWorkspaceId(id)
+        if (!id) setError('No workspace selected — finish onboarding first.')
+      })
+      .catch(() => { if (!cancelled) setError('Failed to load session') })
+    return () => { cancelled = true }
+  }, [])
+
+  const fetchLeads = useCallback(async () => {
+    if (!workspaceId) return
+    try {
+      const res = await fetch(`/api/leads-captured?workspaceId=${workspaceId}`)
+      const rows = await res.json() as Lead[]
+      setLeads(Array.isArray(rows) ? rows : [])
+      setError(null)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setLoading(false)
     }
-    setPlan(generated)
-    setTactics(ACTIVE_PLAN.tactics.map(t => ({ ...t, status: 'Not Started' })))
-    setGenerating(false)
-    setShowGenerateForm(false)
+  }, [workspaceId])
+
+  useEffect(() => { fetchLeads() }, [fetchLeads])
+
+  // Poll faster while anything is enriching
+  useEffect(() => {
+    if (!workspaceId) return
+    const anyEnriching = leads.some(l => l.enrichment_status === 'enriching')
+    const interval = anyEnriching ? 4_000 : 30_000
+    const t = setInterval(fetchLeads, interval)
+    return () => clearInterval(t)
+  }, [workspaceId, leads, fetchLeads])
+
+  // Filtered grid
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    return leads.filter(l => {
+      if (statusFilter !== 'all' && (l.enrichment_status || 'pending') !== statusFilter) return false
+      if (techFilter) {
+        const stack = parseTechStack(l.tech_stack).map(s => s.toLowerCase())
+        if (!stack.includes(techFilter.toLowerCase())) return false
+      }
+      if (q) {
+        const hay = [
+          l.name, l.email, l.phone, l.company_name, l.industry,
+          parseTechStack(l.tech_stack).join(' '),
+        ].filter(Boolean).join(' ').toLowerCase()
+        if (!hay.includes(q)) return false
+      }
+      return true
+    })
+  }, [leads, search, statusFilter, techFilter])
+
+  const selected = useMemo(
+    () => leads.find(l => l.id === selectedId) || null,
+    [leads, selectedId],
+  )
+
+  const triggerEnrichment = async (leadId: string) => {
+    if (!workspaceId) return
+    setEnrichingId(leadId)
+    setError(null)
+    try {
+      const res = await fetch('/api/agents/enrich-lead', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspaceId, leadId }),
+      })
+      const data = await res.json() as { ok?: boolean; error?: string }
+      if (!res.ok || !data.ok) throw new Error(data.error || 'Enrichment failed')
+      fetchLeads()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setEnrichingId(null)
+    }
   }
 
-  const done = tactics.filter(t => t.status === 'Done').length
-  const progress = Math.round((done / tactics.length) * 100)
+  const enrichmentCounts = useMemo(() => {
+    const c = { all: leads.length, pending: 0, enriching: 0, completed: 0, failed: 0 }
+    for (const l of leads) {
+      const s = (l.enrichment_status || 'pending') as keyof typeof c
+      if (s in c) c[s]++
+    }
+    return c
+  }, [leads])
 
   return (
-    <div className="space-y-6">
-      {/* Active Plan */}
-      <div className="bg-gray-900 border border-indigo-800 rounded-2xl p-6">
-        <div className="flex items-start justify-between mb-4">
+    <div className="min-h-screen bg-gray-950 text-gray-100">
+      <div className="max-w-7xl mx-auto px-6 py-8">
+        {/* Header */}
+        <div className="flex items-start justify-between mb-6 gap-4 flex-wrap">
           <div>
-            <div className="flex items-center gap-2 mb-1">
-              <h2 className="text-white font-bold text-lg">{plan.name}</h2>
-              <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${plan.status === 'Active' ? 'bg-green-400/10 text-green-400' : plan.status === 'Draft' ? 'bg-amber-400/10 text-amber-400' : 'bg-gray-500/10 text-gray-500'}`}>
-                {plan.status}
-              </span>
-            </div>
-            <p className="text-indigo-400 text-sm font-medium">{plan.goal}</p>
-            <p className="text-gray-500 text-xs mt-1">Last updated by: <span className="text-gray-400">{plan.lastUpdatedBy}</span></p>
+            <h1 className="text-2xl font-bold text-white flex items-center gap-2">
+              <Users className="w-6 h-6 text-indigo-400" /> Leads
+            </h1>
+            <p className="text-sm text-gray-500 mt-1">
+              AI enrichment uses Parallel Multi-Source Synthesis: Brave Search · Apollo · Clearbit · Hunter.
+            </p>
           </div>
-          <button onClick={deployToCMO}
-            className={`px-4 py-2.5 text-sm font-semibold rounded-lg transition-all ${deployed ? 'bg-green-600 text-white' : 'bg-indigo-600 hover:bg-indigo-500 text-white'}`}>
-            {deployed ? '✓ Deployed to CMO!' : 'Deploy to CMO'}
-          </button>
-        </div>
-
-        {/* Progress */}
-        <div className="mb-4">
-          <div className="flex justify-between text-xs mb-1">
-            <span className="text-gray-400">Plan Progress</span>
-            <span className="text-white font-medium">{done}/{tactics.length} tactics complete</span>
-          </div>
-          <div className="w-full bg-gray-800 rounded-full h-2">
-            <div style={{ width: `${progress}%` }} className="bg-indigo-600 h-2 rounded-full transition-all" />
-          </div>
-        </div>
-
-        {/* Channels */}
-        <div className="mb-4">
-          <p className="text-gray-500 text-xs mb-2 font-medium">Channels</p>
-          <div className="flex flex-wrap gap-2">
-            {plan.channels.map(c => (
-              <span key={c} className="text-xs px-2.5 py-1 bg-indigo-600/20 border border-indigo-700 text-indigo-300 rounded-full">{c}</span>
-            ))}
-          </div>
-        </div>
-
-        {/* Strategy Summary */}
-        <div className="mb-5">
-          <p className="text-gray-500 text-xs mb-2 font-medium uppercase tracking-wide">Strategy Summary</p>
-          <ul className="space-y-1.5">
-            {plan.summary.map((s, i) => (
-              <li key={i} className="flex items-start gap-2 text-gray-300 text-sm">
-                <span className="text-indigo-400 mt-0.5">•</span>
-                <span>{s}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-
-        {/* Tactics */}
-        <div>
-          <p className="text-gray-500 text-xs mb-3 font-medium uppercase tracking-wide">Tactics</p>
-          <div className="space-y-2">
-            {tactics.map((t, i) => (
-              <div key={t.id} className={`flex items-start gap-3 p-3 rounded-lg border transition-colors ${t.status === 'Done' ? 'border-green-800/50 bg-green-900/10' : 'border-gray-800 bg-gray-800/50'}`}>
-                <span className="text-gray-500 text-xs font-mono mt-0.5 w-4 shrink-0">{i + 1}.</span>
-                <div className="flex-1 min-w-0">
-                  <p className={`text-sm ${t.status === 'Done' ? 'text-gray-400 line-through' : 'text-white'}`}>{t.action}</p>
-                  <div className="flex items-center gap-2 mt-1">
-                    <span className="text-gray-600 text-xs">{t.owner}</span>
-                    <span className="text-gray-700 text-xs">·</span>
-                    <span className="text-gray-600 text-xs">Due {t.deadline}</span>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  <select value={t.status} onChange={e => updateTacticStatus(t.id, e.target.value as Tactic['status'])}
-                    className={`text-xs px-2 py-1 rounded border focus:outline-none ${t.status === 'Done' ? 'bg-green-900/30 border-green-700 text-green-400' : t.status === 'In Progress' ? 'bg-amber-900/30 border-amber-700 text-amber-400' : 'bg-gray-800 border-gray-700 text-gray-400'}`}>
-                    <option>Not Started</option>
-                    <option>In Progress</option>
-                    <option>Done</option>
-                  </select>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      {/* Generate New Plan */}
-      <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-white font-semibold text-sm">Generate New Plan</h3>
-          <button onClick={() => setShowGenerateForm(v => !v)}
-            className="text-indigo-400 hover:text-indigo-300 text-xs transition-colors">
-            {showGenerateForm ? 'Collapse' : 'Expand'}
-          </button>
-        </div>
-        {showGenerateForm && (
-          <div className="space-y-4">
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="text-gray-400 text-xs block mb-1">Target Leads/Month</label>
-                <input type="number" value={generateParams.targetLeads} onChange={e => setGenerateParams(p => ({ ...p, targetLeads: parseInt(e.target.value) }))}
-                  className="w-full px-3 py-2 bg-gray-800 border border-gray-700 text-white text-sm rounded-lg focus:outline-none focus:border-indigo-500" />
-              </div>
-              <div>
-                <label className="text-gray-400 text-xs block mb-1">Budget (USD)</label>
-                <input type="number" value={generateParams.budget} onChange={e => setGenerateParams(p => ({ ...p, budget: parseInt(e.target.value) }))}
-                  className="w-full px-3 py-2 bg-gray-800 border border-gray-700 text-white text-sm rounded-lg focus:outline-none focus:border-indigo-500" />
-              </div>
-              <div>
-                <label className="text-gray-400 text-xs block mb-1">Industry / Niche</label>
-                <select value={generateParams.industry} onChange={e => setGenerateParams(p => ({ ...p, industry: e.target.value }))}
-                  className="w-full px-3 py-2 bg-gray-800 border border-gray-700 text-white text-sm rounded-lg focus:outline-none focus:border-indigo-500">
-                  <option>SaaS</option>
-                  <option>E-commerce</option>
-                  <option>Agency</option>
-                  <option>Consulting</option>
-                  <option>Health & Wellness</option>
-                  <option>Finance</option>
-                </select>
-              </div>
-              <div>
-                <label className="text-gray-400 text-xs block mb-1">Timeframe</label>
-                <div className="flex gap-2">
-                  {[30, 60, 90].map(d => (
-                    <button key={d} onClick={() => setGenerateParams(p => ({ ...p, timeframe: d }))}
-                      className={`flex-1 py-2 rounded-lg border text-xs font-medium transition-all ${generateParams.timeframe === d ? 'bg-indigo-600/20 border-indigo-500 text-white' : 'bg-gray-800 border-gray-700 text-gray-400 hover:border-gray-600'}`}>
-                      {d}d
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-            <button onClick={generateNewPlan} disabled={generating}
-              className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-70 text-white text-sm font-medium rounded-lg transition-colors flex items-center justify-center gap-2">
-              {generating ? (
-                <><span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />Generating Plan...</>
-              ) : 'Generate Lead Plan'}
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* Plan History */}
-      <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-        <h3 className="text-white font-semibold text-sm mb-3">Plan History</h3>
-        <div className="space-y-2">
-          {PAST_PLANS.map(p => (
-            <div key={p.id} className="flex items-center justify-between p-3 bg-gray-800 rounded-lg">
-              <div>
-                <p className="text-gray-300 text-sm font-medium">{p.date}</p>
-                <p className="text-gray-500 text-xs">{p.goal}</p>
-              </div>
-              <div className="flex items-center gap-3">
-                <div className="text-right">
-                  <p className="text-green-400 text-sm font-semibold">{p.result} leads</p>
-                  <p className="text-gray-600 text-xs">{p.status}</p>
-                </div>
-                <button className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-gray-300 text-xs rounded-lg transition-colors">Restore</button>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-// ─── Lead Capture Tab ─────────────────────────────────────────────────────────
-
-function LeadCaptureTab() {
-  const [methods, setMethods] = useState(CAPTURE_METHODS)
-  const [rules, setRules] = useState<ScoringRule[]>(INITIAL_SCORING_RULES)
-  const [showAddRule, setShowAddRule] = useState(false)
-  const [newRule, setNewRule] = useState({ condition: '', points: 10, type: 'add' as 'add' | 'subtract' })
-  const [scoringUpdated, setScoringUpdated] = useState(false)
-
-  function toggleMethod(id: string) {
-    setMethods(prev => prev.map(m => m.id === id ? { ...m, status: !m.status } : m))
-  }
-
-  function addRule() {
-    if (!newRule.condition) return
-    setRules(prev => [...prev, { id: Date.now().toString(), ...newRule }])
-    setNewRule({ condition: '', points: 10, type: 'add' })
-    setShowAddRule(false)
-  }
-
-  function removeRule(id: string) {
-    setRules(prev => prev.filter(r => r.id !== id))
-  }
-
-  async function runScoringUpdate() {
-    setScoringUpdated(true)
-    setTimeout(() => setScoringUpdated(false), 3000)
-  }
-
-  return (
-    <div className="space-y-6">
-      {/* Capture Methods */}
-      <div>
-        <h3 className="text-white font-semibold text-sm mb-3">Lead Capture Methods</h3>
-        <div className="grid grid-cols-2 gap-4">
-          {methods.map(m => (
-            <div key={m.id} className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-              <div className="flex items-center justify-between mb-3">
-                <div className="flex items-center gap-2">
-                  <span className="text-xl">{m.icon}</span>
-                  <p className="text-white font-medium text-sm">{m.name}</p>
-                </div>
-                <button onClick={() => toggleMethod(m.id)}
-                  className={`w-10 h-5 rounded-full transition-colors relative ${m.status ? 'bg-indigo-600' : 'bg-gray-700'}`}>
-                  <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full transition-transform ${m.status ? 'translate-x-5' : 'translate-x-0.5'}`} />
-                </button>
-              </div>
-              <div className="grid grid-cols-2 gap-2 mb-3">
-                <div>
-                  <p className="text-white text-sm font-semibold">{m.leads > 0 ? m.leads.toLocaleString() : '—'}</p>
-                  <p className="text-gray-500 text-xs">Leads</p>
-                </div>
-                <div>
-                  <p className={`text-sm font-semibold ${m.convRate > 0 ? 'text-green-400' : 'text-gray-500'}`}>{m.convRate > 0 ? `${m.convRate}%` : '—'}</p>
-                  <p className="text-gray-500 text-xs">Conv. Rate</p>
-                </div>
-              </div>
-              <button className="w-full py-1.5 bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs rounded-lg transition-colors">Configure</button>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Lead Scoring */}
-      <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-white font-semibold text-sm">Lead Scoring Rules</h3>
           <div className="flex gap-2">
-            <button onClick={() => setShowAddRule(v => !v)}
-              className="px-3 py-1.5 bg-indigo-600/20 border border-indigo-600 text-indigo-400 text-xs rounded-lg hover:bg-indigo-600/30 transition-colors">
-              + Add Rule
+            <button
+              onClick={fetchLeads}
+              className="px-3 py-1.5 bg-gray-900 hover:bg-gray-800 border border-gray-700 text-gray-300 text-sm rounded-lg flex items-center gap-2"
+            >
+              <RefreshCw className="w-3.5 h-3.5" /> Refresh
             </button>
-            <button onClick={runScoringUpdate}
-              className={`px-3 py-1.5 text-xs rounded-lg border transition-colors ${scoringUpdated ? 'bg-green-900/20 border-green-700 text-green-400' : 'bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-700'}`}>
-              {scoringUpdated ? '✓ Scoring Updated' : 'Run Scoring Update'}
+            <button
+              onClick={() => setShowNew(true)}
+              disabled={!workspaceId}
+              className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm rounded-lg flex items-center gap-2"
+            >
+              <Plus className="w-4 h-4" /> New lead
             </button>
           </div>
         </div>
 
-        {showAddRule && (
-          <div className="mb-4 p-3 bg-gray-800 rounded-xl border border-gray-700 space-y-3">
-            <div className="grid grid-cols-3 gap-2">
-              <div className="col-span-2">
-                <label className="text-gray-500 text-xs block mb-1">Condition</label>
-                <input value={newRule.condition} onChange={e => setNewRule(p => ({ ...p, condition: e.target.value }))}
-                  placeholder="e.g. Clicked pricing page"
-                  className="w-full px-2 py-1.5 bg-gray-700 border border-gray-600 text-white text-xs rounded-lg focus:outline-none focus:border-indigo-500" />
-              </div>
-              <div>
-                <label className="text-gray-500 text-xs block mb-1">Points</label>
-                <input type="number" value={newRule.points} onChange={e => setNewRule(p => ({ ...p, points: parseInt(e.target.value) }))}
-                  className="w-full px-2 py-1.5 bg-gray-700 border border-gray-600 text-white text-xs rounded-lg focus:outline-none focus:border-indigo-500" />
-              </div>
-            </div>
-            <div className="flex gap-2">
-              {(['add', 'subtract'] as const).map(t => (
-                <button key={t} onClick={() => setNewRule(p => ({ ...p, type: t }))}
-                  className={`flex-1 py-1.5 rounded-lg border text-xs font-medium transition-all ${newRule.type === t ? t === 'add' ? 'bg-green-900/30 border-green-700 text-green-400' : 'bg-red-900/30 border-red-700 text-red-400' : 'bg-gray-700 border-gray-600 text-gray-400'}`}>
-                  {t === 'add' ? '+ Add Points' : '- Subtract Points'}
-                </button>
-              ))}
-            </div>
-            <div className="flex gap-2">
-              <button onClick={() => setShowAddRule(false)} className="flex-1 py-1.5 bg-gray-700 hover:bg-gray-600 text-gray-300 text-xs rounded-lg transition-colors">Cancel</button>
-              <button onClick={addRule} disabled={!newRule.condition} className="flex-1 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-medium rounded-lg transition-colors">Add Rule</button>
-            </div>
+        {/* Filter bar */}
+        <div className="flex flex-wrap items-center gap-2 mb-4">
+          <div className="relative flex-1 max-w-md">
+            <Search className="w-4 h-4 text-gray-600 absolute left-3 top-1/2 -translate-y-1/2" />
+            <input
+              value={search} onChange={e => setSearch(e.target.value)}
+              placeholder="Search name, email, company, industry, tech…"
+              className="w-full bg-gray-900 border border-gray-800 rounded-lg pl-9 pr-3 py-2 text-sm text-white placeholder-gray-600 focus:border-indigo-600 focus:outline-none"
+            />
+          </div>
+          <div className="flex gap-1 bg-gray-900 border border-gray-800 rounded-lg p-0.5">
+            {(['all', 'pending', 'enriching', 'completed', 'failed'] as const).map(s => (
+              <button
+                key={s}
+                onClick={() => setStatusFilter(s)}
+                className={`px-3 py-1 text-xs rounded inline-flex items-center gap-1.5 ${
+                  statusFilter === s ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-gray-200'
+                }`}
+              >
+                {s.charAt(0).toUpperCase() + s.slice(1)}
+                <span className="text-[10px] opacity-70 tabular-nums">{enrichmentCounts[s]}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Active filters chip strip */}
+        {techFilter && (
+          <div className="mb-4 inline-flex items-center gap-2 px-3 py-1.5 bg-purple-900/30 border border-purple-800 rounded-lg text-sm">
+            <Layers className="w-3.5 h-3.5 text-purple-300" />
+            <span className="text-purple-200">
+              Showing leads using <span className="font-mono font-semibold">{techFilter}</span>
+            </span>
+            <button
+              onClick={() => setTechFilter(null)}
+              className="ml-2 p-0.5 text-purple-300 hover:text-white hover:bg-purple-800/40 rounded"
+              title="Clear filter"
+            >
+              <X className="w-3 h-3" />
+            </button>
           </div>
         )}
 
-        <div className="space-y-2">
-          {rules.map(r => (
-            <div key={r.id} className="flex items-center justify-between p-3 bg-gray-800 rounded-lg group">
-              <div className="flex items-center gap-3">
-                <span className={`text-xs font-bold ${r.type === 'add' ? 'text-green-400' : 'text-red-400'}`}>
-                  {r.type === 'add' ? '+' : '-'}{r.points}
-                </span>
-                <span className="text-gray-300 text-sm">IF: {r.condition}</span>
-              </div>
-              <button onClick={() => removeRule(r.id)}
-                className="text-gray-600 hover:text-red-400 transition-colors text-sm opacity-0 group-hover:opacity-100">
-                &times;
-              </button>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-// ─── Lead Feed Tab ────────────────────────────────────────────────────────────
-
-function LeadFeedTab() {
-  const [filter, setFilter] = useState<LeadFilter>('all')
-  const [leads, setLeads] = useState<Lead[]>(MOCK_LEADS)
-
-  const filtered = leads.filter(l => {
-    if (filter === 'all') return true
-    if (filter === 'hot') return l.score >= 70
-    if (filter === 'warm') return l.score >= 40 && l.score < 70
-    if (filter === 'cold') return l.score >= 20 && l.score < 40
-    if (filter === 'unqualified') return l.score < 20
-    return true
-  })
-
-  function tagLead(id: string) {
-    setLeads(prev => prev.map(l => l.id === id ? { ...l, tagged: !l.tagged } : l))
-  }
-
-  function dismissLead(id: string) {
-    setLeads(prev => prev.filter(l => l.id !== id))
-  }
-
-  function scoreColor(score: number) {
-    if (score >= 70) return 'bg-green-400/10 text-green-400 border-green-700'
-    if (score >= 40) return 'bg-amber-400/10 text-amber-400 border-amber-700'
-    return 'bg-red-400/10 text-red-400 border-red-700'
-  }
-
-  const filterCounts = {
-    all: leads.length,
-    hot: leads.filter(l => l.score >= 70).length,
-    warm: leads.filter(l => l.score >= 40 && l.score < 70).length,
-    cold: leads.filter(l => l.score >= 20 && l.score < 40).length,
-    unqualified: leads.filter(l => l.score < 20).length,
-  }
-
-  return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div className="flex gap-1 p-1 bg-gray-800 rounded-lg">
-          {([
-            { id: 'all', label: 'All' },
-            { id: 'hot', label: 'Hot' },
-            { id: 'warm', label: 'Warm' },
-            { id: 'cold', label: 'Cold' },
-            { id: 'unqualified', label: 'Unqualified' },
-          ] as const).map(f => (
-            <button key={f.id} onClick={() => setFilter(f.id)}
-              className={`px-3 py-1.5 rounded text-xs font-medium transition-colors ${filter === f.id ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-white'}`}>
-              {f.label} <span className="ml-1 text-[10px] opacity-60">{filterCounts[f.id]}</span>
-            </button>
-          ))}
-        </div>
-        <button className="px-3 py-1.5 bg-gray-800 border border-gray-700 text-gray-300 text-xs rounded-lg hover:bg-gray-700 transition-colors">Export All</button>
-      </div>
-
-      <div className="space-y-2">
-        {filtered.map(lead => (
-          <div key={lead.id} className="bg-gray-900 border border-gray-800 rounded-xl p-4 hover:border-gray-700 transition-colors">
-            <div className="flex items-start gap-3">
-              <div className="w-9 h-9 rounded-full bg-indigo-600/30 border border-indigo-600/50 flex items-center justify-center text-indigo-300 text-sm font-bold shrink-0">
-                {lead.name.charAt(0)}
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span className="text-white text-sm font-medium">{lead.name}</span>
-                  <span className="text-gray-500 text-xs">{lead.company}</span>
-                  <span className="text-gray-600 text-xs">·</span>
-                  <span className="text-gray-500 text-xs">{lead.time}</span>
-                  {lead.tagged && <span className="text-xs bg-amber-400/10 border border-amber-700 text-amber-400 px-1.5 py-0.5 rounded-full">Tagged</span>}
-                </div>
-                <div className="flex items-center gap-2 mt-1">
-                  <span className="flex items-center gap-1 text-xs text-gray-500">
-                    <span className={`text-xs font-bold w-4 h-4 flex items-center justify-center rounded bg-gray-700`}>{lead.sourceIcon}</span>
-                    {lead.source}
-                  </span>
-                  <span className="text-gray-600 text-xs">·</span>
-                  <span className="text-gray-500 text-xs">{lead.email}</span>
-                </div>
-              </div>
-              <div className="flex items-center gap-2 shrink-0">
-                <span className={`text-xs font-bold px-2 py-1 rounded-lg border ${scoreColor(lead.score)}`}>
-                  {lead.score}
-                </span>
-              </div>
-            </div>
-            <div className="flex gap-2 mt-3">
-              <button className="px-3 py-1.5 bg-indigo-600/20 border border-indigo-700 text-indigo-400 text-xs rounded-lg hover:bg-indigo-600/30 transition-colors">Add to CRM</button>
-              <button onClick={() => tagLead(lead.id)}
-                className={`px-3 py-1.5 border text-xs rounded-lg transition-colors ${lead.tagged ? 'bg-amber-900/20 border-amber-700 text-amber-400' : 'bg-gray-800 border-gray-700 text-gray-400 hover:bg-gray-700'}`}>
-                {lead.tagged ? 'Untag' : 'Tag'}
-              </button>
-              <button className="px-3 py-1.5 bg-gray-800 border border-gray-700 text-gray-400 text-xs rounded-lg hover:bg-gray-700 transition-colors">Email</button>
-              <button onClick={() => dismissLead(lead.id)}
-                className="px-3 py-1.5 bg-gray-800 border border-gray-700 text-gray-500 text-xs rounded-lg hover:bg-red-900/20 hover:border-red-800 hover:text-red-400 transition-colors">
-                Dismiss
-              </button>
-            </div>
+        {error && (
+          <div className="mb-4 p-3 bg-rose-950/40 border border-rose-900 rounded-lg text-rose-300 text-sm flex items-center gap-2">
+            <AlertCircle className="w-4 h-4" /> {error}
           </div>
-        ))}
-        {filtered.length === 0 && (
-          <div className="text-center py-12 text-gray-500 text-sm">No leads matching this filter.</div>
         )}
-      </div>
-    </div>
-  )
-}
 
-// ─── Integrations Tab ─────────────────────────────────────────────────────────
+        <div className="text-xs text-gray-500 mb-3">
+          {filtered.length} of {leads.length} leads
+        </div>
 
-function IntegrationsTab() {
-  const [integrations, setIntegrations] = useState<Integration[]>(INTEGRATIONS)
-  const [showModal, setShowModal] = useState(false)
-
-  function connectIntegration(id: string) {
-    setIntegrations(prev => prev.map(i => i.id === id ? { ...i, status: 'Connected' } : i))
-  }
-
-  const AVAILABLE = [
-    { name: 'HubSpot', icon: '🟠' },
-    { name: 'Salesforce', icon: '☁' },
-    { name: 'Pipedrive', icon: '🟢' },
-    { name: 'ActiveCampaign', icon: '🔵' },
-    { name: 'Zapier', icon: '⚡' },
-    { name: 'Make.com', icon: '🔷' },
-  ]
-
-  return (
-    <div className="space-y-5">
-      <div className="flex items-center justify-between">
-        <p className="text-gray-400 text-sm">Connect lead sources to automatically import new leads.</p>
-        <button onClick={() => setShowModal(true)}
-          className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium rounded-lg transition-colors">
-          + Add Integration
-        </button>
-      </div>
-
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-        {integrations.map(integration => (
-          <div key={integration.id} className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-            <div className="flex items-center gap-3 mb-4">
-              <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-lg font-bold ${integration.status === 'Connected' ? 'bg-indigo-600/20' : 'bg-gray-800'}`}>
-                {integration.icon}
-              </div>
-              <div>
-                <p className="text-white text-sm font-medium">{integration.name}</p>
-                <p className={`text-xs ${integration.status === 'Connected' ? 'text-green-400' : 'text-gray-500'}`}>
-                  {integration.status}
-                </p>
-              </div>
-            </div>
-            <div className="grid grid-cols-2 gap-2 mb-4">
-              <div>
-                <p className="text-white text-sm font-semibold">{integration.leadsImported > 0 ? integration.leadsImported.toLocaleString() : '—'}</p>
-                <p className="text-gray-500 text-xs">Leads Imported</p>
-              </div>
-              <div>
-                <p className="text-gray-300 text-sm">{integration.lastSync}</p>
-                <p className="text-gray-500 text-xs">Last Sync</p>
-              </div>
-            </div>
-            {integration.status === 'Connected' ? (
-              <button className="w-full py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs rounded-lg transition-colors">Manage</button>
-            ) : (
-              <button onClick={() => connectIntegration(integration.id)}
-                className="w-full py-2 bg-indigo-600/20 border border-indigo-600 text-indigo-400 text-xs font-medium rounded-lg hover:bg-indigo-600/30 transition-colors">
-                Connect
+        {/* Grid */}
+        {loading ? (
+          <div className="text-center py-16 text-gray-500 text-sm">Loading leads…</div>
+        ) : filtered.length === 0 ? (
+          <div className="text-center py-16 border border-dashed border-gray-800 rounded-xl">
+            <Users className="w-12 h-12 mx-auto mb-3 text-gray-700" />
+            <p className="text-gray-300 text-lg mb-1">
+              {leads.length === 0 ? 'No leads yet' : 'No leads match your filters'}
+            </p>
+            <p className="text-sm text-gray-600 mb-4">
+              {leads.length === 0
+                ? 'Capture leads via funnel forms, AI outreach campaigns, or manual entry.'
+                : 'Clear filters or adjust your search to see more.'}
+            </p>
+            {leads.length === 0 && (
+              <button
+                onClick={() => setShowNew(true)}
+                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm rounded-lg inline-flex items-center gap-2"
+              >
+                <Plus className="w-4 h-4" /> Add first lead
               </button>
             )}
           </div>
-        ))}
+        ) : (
+          <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-950 border-b border-gray-800">
+                <tr className="text-left text-xs uppercase text-gray-500">
+                  <th className="px-4 py-3 font-medium">Contact</th>
+                  <th className="px-4 py-3 font-medium">Company</th>
+                  <th className="px-4 py-3 font-medium">Industry</th>
+                  <th className="px-4 py-3 font-medium">Size</th>
+                  <th className="px-4 py-3 font-medium">Enrichment</th>
+                  <th className="px-4 py-3 font-medium">Captured</th>
+                  <th className="px-4 py-3 font-medium text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-800">
+                {filtered.map(l => {
+                  const enrichStatus = l.enrichment_status || 'pending'
+                  const canEnrich = enrichStatus === 'pending' || enrichStatus === 'failed'
+                  const isEnriching = enrichingId === l.id || enrichStatus === 'enriching'
+                  const techStack = parseTechStack(l.tech_stack)
+                  return (
+                    <tr
+                      key={l.id}
+                      onClick={() => setSelectedId(l.id)}
+                      className={`cursor-pointer transition-colors ${selectedId === l.id ? 'bg-indigo-900/15' : 'hover:bg-gray-950/50'}`}
+                    >
+                      <td className="px-4 py-3">
+                        <div className="text-white font-medium">{l.name || '—'}</div>
+                        <div className="text-xs text-gray-500">{l.email || '—'}</div>
+                      </td>
+                      <td className="px-4 py-3 text-gray-300">
+                        {l.company_name || (
+                          <span className="text-gray-600 italic text-xs">
+                            {enrichStatus === 'completed' ? 'unknown' : 'pending enrichment'}
+                          </span>
+                        )}
+                        {techStack.length > 0 && (
+                          <div className="mt-1 flex flex-wrap gap-1">
+                            {techStack.slice(0, 3).map(t => (
+                              <span key={t} className="text-[10px] px-1.5 py-0.5 bg-gray-950 border border-gray-800 rounded text-gray-400">
+                                {t}
+                              </span>
+                            ))}
+                            {techStack.length > 3 && (
+                              <span className="text-[10px] text-gray-600">+{techStack.length - 3}</span>
+                            )}
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-gray-400">{l.industry || '—'}</td>
+                      <td className="px-4 py-3 text-gray-400 text-xs">{l.company_size || '—'}</td>
+                      <td className="px-4 py-3"><EnrichmentPill status={enrichStatus} /></td>
+                      <td className="px-4 py-3 text-xs text-gray-500">{formatRelative(l.created_at)}</td>
+                      <td className="px-4 py-3 text-right" onClick={e => e.stopPropagation()}>
+                        {canEnrich && (
+                          <button
+                            onClick={() => triggerEnrichment(l.id)}
+                            disabled={isEnriching}
+                            className="px-3 py-1 text-xs bg-purple-700 hover:bg-purple-600 disabled:opacity-50 text-white rounded inline-flex items-center gap-1.5"
+                            title="Run Parallel Multi-Source Synthesis"
+                          >
+                            {isEnriching ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+                            {isEnriching ? 'Working…' : 'Enrich'}
+                          </button>
+                        )}
+                        {enrichStatus === 'completed' && (
+                          <button
+                            onClick={() => setSelectedId(l.id)}
+                            className="px-3 py-1 text-xs bg-gray-900 hover:bg-gray-800 border border-gray-700 text-gray-300 rounded inline-flex items-center gap-1.5"
+                          >
+                            <ChevronRight className="w-3 h-3" /> Open
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
-      {showModal && (
-        <div className="fixed inset-0 bg-gray-950/80 backdrop-blur-sm z-50 flex items-center justify-center">
-          <div className="bg-gray-900 border border-gray-700 rounded-2xl p-6 w-full max-w-md">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-white font-semibold">Add Integration</h3>
-              <button onClick={() => setShowModal(false)} className="text-gray-500 hover:text-white transition-colors">&times;</button>
-            </div>
-            <div className="grid grid-cols-3 gap-3">
-              {AVAILABLE.map(a => (
-                <button key={a.name} onClick={() => {
-                  setIntegrations(prev => [...prev, {
-                    id: Date.now().toString(), name: a.name, icon: a.icon,
-                    status: 'Disconnected', leadsImported: 0, lastSync: '—',
-                  }])
-                  setShowModal(false)
-                }}
-                  className="p-4 bg-gray-800 hover:bg-gray-700 border border-gray-700 hover:border-gray-600 rounded-xl flex flex-col items-center gap-2 transition-colors">
-                  <span className="text-2xl">{a.icon}</span>
-                  <span className="text-gray-300 text-xs font-medium">{a.name}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
+      {/* Detail drawer */}
+      {selected && workspaceId && (
+        <LeadDrawer
+          lead={selected}
+          workspaceId={workspaceId}
+          onClose={() => setSelectedId(null)}
+          onApplyTechFilter={(tool) => { setTechFilter(tool); setSelectedId(null) }}
+          onTriggerEnrich={() => triggerEnrichment(selected.id)}
+          isEnriching={enrichingId === selected.id || selected.enrichment_status === 'enriching'}
+        />
+      )}
+
+      {/* New lead modal */}
+      {showNew && workspaceId && (
+        <NewLeadModal
+          workspaceId={workspaceId}
+          onClose={() => setShowNew(false)}
+          onCreated={() => { setShowNew(false); fetchLeads() }}
+        />
       )}
     </div>
   )
 }
 
-// ─── Main Page ────────────────────────────────────────────────────────────────
+// ─── Lead Detail Drawer ────────────────────────────────────────────────────
 
-export default function LeadsPage() {
-  const [activeTab, setActiveTab] = useState<LeadTab>('plan')
-  const [deployToast, setDeployToast] = useState(false)
+function LeadDrawer({
+  lead, workspaceId, onClose, onApplyTechFilter, onTriggerEnrich, isEnriching,
+}: {
+  lead: Lead
+  workspaceId: string
+  onClose: () => void
+  onApplyTechFilter: (tool: string) => void
+  onTriggerEnrich: () => void
+  isEnriching: boolean
+}) {
+  const [activities, setActivities] = useState<ActivityRow[]>([])
+  const [loadingActivities, setLoadingActivities] = useState(true)
 
-  function handleDeployToCMO() {
-    setDeployToast(true)
-    setTimeout(() => setDeployToast(false), 4000)
-  }
+  useEffect(() => {
+    let cancelled = false
+    setLoadingActivities(true)
+    fetch(`/api/lead-activities?workspaceId=${workspaceId}&leadId=${lead.id}&limit=50`)
+      .then(r => r.json())
+      .then((rows: ActivityRow[]) => { if (!cancelled) setActivities(Array.isArray(rows) ? rows : []) })
+      .catch(() => { if (!cancelled) setActivities([]) })
+      .finally(() => { if (!cancelled) setLoadingActivities(false) })
+    return () => { cancelled = true }
+  }, [workspaceId, lead.id])
 
-  const tabs: { id: LeadTab; label: string }[] = [
-    { id: 'plan', label: 'Lead Plan' },
-    { id: 'capture', label: 'Lead Capture' },
-    { id: 'feed', label: 'Lead Feed' },
-    { id: 'integrations', label: 'Integrations' },
-  ]
+  // Pull conflicts_resolved out of the most recent enrichment activity so we
+  // can render the "Live News Signal" pulse on the right fields.
+  const liveSignalFields = useMemo<Set<string>>(() => {
+    const result = new Set<string>()
+    const enrichActivity = activities.find(a =>
+      (a.activity_type === 'agent_enrichment' || a.type === 'agent_enrichment'),
+    )
+    if (!enrichActivity) return result
+    const meta = parseMeta(enrichActivity.metadata_json)
+    const conflicts = meta?.conflicts_resolved
+    if (!Array.isArray(conflicts)) return result
+    for (const raw of conflicts) {
+      if (typeof raw === 'string') {
+        // Best-effort: pattern match "newer signal for X" / "X overridden"
+        const m = raw.toLowerCase().match(/(company_name|company_size|industry|estimated_revenue|linkedin_url|twitter_url|tech_stack)/)
+        if (m) result.add(m[1])
+        // Also accept "newer signal" / "live signal" / "brave search" as a hint
+        if (/brave|live signal|news signal/i.test(raw)) {
+          // mark any field name found in the string
+          for (const k of ['company_name','company_size','industry','estimated_revenue','linkedin_url','twitter_url','tech_stack']) {
+            if (raw.toLowerCase().includes(k.replace('_', ' ')) || raw.toLowerCase().includes(k)) result.add(k)
+          }
+        }
+      } else if (raw && typeof raw === 'object') {
+        const c = raw as EnrichmentMetaConflict
+        if (c.field) result.add(String(c.field))
+      }
+    }
+    return result
+  }, [activities])
 
-  const stats = [
-    { label: 'Leads This Month', value: '1,847' },
-    { label: 'MQL', value: '423', highlight: true },
-    { label: 'SQL', value: '189' },
-    { label: 'Conv. Rate', value: '22.9%', highlight: true },
-    { label: 'Cost per Lead', value: '$12.40' },
-    { label: 'Pipeline Value', value: '$284K' },
-  ]
+  const techStack = parseTechStack(lead.tech_stack)
+
+  // Pull provider performance from the most recent enrichment for the audit row.
+  const providers = useMemo(() => {
+    const enrichActivity = activities.find(a =>
+      (a.activity_type === 'agent_enrichment' || a.type === 'agent_enrichment'),
+    )
+    if (!enrichActivity) return [] as Array<{ provider: string; ok: boolean; durationMs: number }>
+    const meta = parseMeta(enrichActivity.metadata_json)
+    const arr = meta?.providers
+    if (!Array.isArray(arr)) return []
+    return arr.map(p => {
+      const o = (p && typeof p === 'object') ? p as Record<string, unknown> : {}
+      return {
+        provider: String(o.provider || 'unknown'),
+        ok: !!o.ok,
+        durationMs: Number(o.durationMs || 0),
+      }
+    })
+  }, [activities])
 
   return (
-    <div className="p-6 max-w-7xl mx-auto space-y-6">
-      {/* Header */}
-      <div className="flex items-start justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-white">Lead Generation</h1>
-          <p className="text-gray-400 text-sm mt-1">AI-powered lead acquisition and qualification command center</p>
-        </div>
-        <div className="flex items-center gap-2">
-          <button className="px-4 py-2.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 text-sm font-medium rounded-lg transition-colors">
-            Lead Report
-          </button>
-          <button onClick={handleDeployToCMO}
-            className="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-bold rounded-lg transition-colors">
-            Deploy to CMO
-          </button>
-        </div>
-      </div>
+    <div className="fixed inset-0 z-40">
+      {/* Backdrop */}
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
 
-      {/* Stats Bar */}
-      <div className="grid grid-cols-3 lg:grid-cols-6 gap-3">
-        {stats.map(s => (
-          <div key={s.label} className="bg-gray-900 border border-gray-800 rounded-xl p-3 text-center">
-            <p className={`text-xl font-bold ${s.highlight ? 'text-indigo-400' : 'text-white'}`}>{s.value}</p>
-            <p className="text-gray-500 text-xs mt-0.5">{s.label}</p>
+      {/* Slide-out drawer */}
+      <aside className="absolute top-0 right-0 h-full w-full max-w-2xl bg-gray-950 border-l border-gray-800 shadow-2xl overflow-y-auto">
+        {/* Header */}
+        <div className="sticky top-0 bg-gray-950 border-b border-gray-800 px-6 py-4 flex items-start justify-between">
+          <div>
+            <h2 className="text-lg font-semibold text-white">{lead.name || lead.email || 'Unnamed lead'}</h2>
+            <div className="flex items-center gap-2 mt-1 flex-wrap">
+              <EnrichmentPill status={lead.enrichment_status} />
+              <span className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium border ${LEAD_STATUS_PILL[lead.status] || LEAD_STATUS_PILL.new}`}>
+                {lead.status}
+              </span>
+              {lead.source && (
+                <span className="text-[11px] text-gray-500">via {lead.source}</span>
+              )}
+            </div>
           </div>
-        ))}
-      </div>
-
-      {/* Tabs */}
-      <div className="flex gap-1 border-b border-gray-800">
-        {tabs.map(t => (
-          <button key={t.id} onClick={() => setActiveTab(t.id)}
-            className={`px-5 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px ${activeTab === t.id ? 'border-indigo-500 text-white' : 'border-transparent text-gray-500 hover:text-gray-300'}`}>
-            {t.label}
+          <button onClick={onClose} className="text-gray-500 hover:text-gray-300 p-1">
+            <X className="w-4 h-4" />
           </button>
-        ))}
-      </div>
-
-      {activeTab === 'plan' && <LeadPlanTab />}
-      {activeTab === 'capture' && <LeadCaptureTab />}
-      {activeTab === 'feed' && <LeadFeedTab />}
-      {activeTab === 'integrations' && <IntegrationsTab />}
-
-      {/* Deploy toast */}
-      {deployToast && (
-        <div className="fixed bottom-6 right-6 bg-indigo-600 text-white text-sm font-medium px-5 py-3 rounded-xl shadow-xl z-50 flex items-center gap-2">
-          <span>✓</span>
-          Active lead plan deployed to CMO Agent with full brief
         </div>
-      )}
+
+        <div className="p-6 space-y-6">
+          {/* Enrichment summary */}
+          {lead.enrichment_status === 'completed' && lead.enrichment_summary ? (
+            <section>
+              <h3 className="text-xs uppercase tracking-wider text-gray-500 font-medium mb-2 flex items-center gap-1.5">
+                <Sparkles className="w-3.5 h-3.5 text-purple-400" /> AI Enrichment Summary
+              </h3>
+              <div className="bg-purple-950/20 border border-purple-900/50 rounded-lg p-4">
+                <p className="text-sm text-gray-200 leading-relaxed whitespace-pre-wrap">
+                  {lead.enrichment_summary}
+                </p>
+                {providers.length > 0 && (
+                  <div className="mt-3 pt-3 border-t border-purple-900/40 flex flex-wrap gap-1.5">
+                    {providers.map(p => (
+                      <span
+                        key={p.provider}
+                        className={`text-[10px] px-1.5 py-0.5 rounded border ${
+                          p.ok
+                            ? 'bg-emerald-900/30 text-emerald-300 border-emerald-800'
+                            : 'bg-gray-900 text-gray-500 border-gray-800'
+                        }`}
+                        title={`${p.provider}: ${p.ok ? 'success' : 'failed'} (${p.durationMs}ms)`}
+                      >
+                        {p.provider} · {p.durationMs}ms
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </section>
+          ) : lead.enrichment_status === 'failed' ? (
+            <section>
+              <div className="bg-rose-950/30 border border-rose-900 rounded-lg p-4">
+                <h3 className="text-sm text-rose-200 font-medium mb-1 flex items-center gap-1.5">
+                  <XCircle className="w-4 h-4" /> Enrichment failed
+                </h3>
+                {lead.enrichment_summary && (
+                  <p className="text-xs text-rose-300/80 mb-3">{lead.enrichment_summary}</p>
+                )}
+                <button
+                  onClick={onTriggerEnrich}
+                  disabled={isEnriching}
+                  className="px-3 py-1.5 bg-purple-700 hover:bg-purple-600 disabled:opacity-50 text-white text-xs rounded inline-flex items-center gap-1.5"
+                >
+                  {isEnriching ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+                  {isEnriching ? 'Working…' : 'Retry enrichment'}
+                </button>
+              </div>
+            </section>
+          ) : lead.enrichment_status === 'pending' ? (
+            <section>
+              <div className="bg-gray-900 border border-gray-800 rounded-lg p-4 text-center">
+                <Sparkles className="w-6 h-6 mx-auto mb-2 text-purple-400" />
+                <p className="text-sm text-gray-300 mb-3">
+                  Run Parallel Multi-Source Synthesis to enrich this lead with firmographic and tech-stack data.
+                </p>
+                <button
+                  onClick={onTriggerEnrich}
+                  disabled={isEnriching}
+                  className="px-4 py-2 bg-purple-700 hover:bg-purple-600 disabled:opacity-50 text-white text-sm rounded inline-flex items-center gap-2"
+                >
+                  {isEnriching ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+                  {isEnriching ? 'Synthesising…' : 'Enrich now'}
+                </button>
+                <p className="text-[11px] text-gray-600 mt-2">
+                  Brave Search · Apollo · Clearbit · Hunter — fired in parallel
+                </p>
+              </div>
+            </section>
+          ) : (
+            <section>
+              <div className="bg-blue-950/30 border border-blue-900 rounded-lg p-4 text-center">
+                <Loader2 className="w-6 h-6 mx-auto mb-2 text-blue-300 animate-spin" />
+                <p className="text-sm text-blue-200">Synthesising sources…</p>
+                <p className="text-[11px] text-blue-300/70 mt-1">
+                  Status will update automatically when complete (~10-20s).
+                </p>
+              </div>
+            </section>
+          )}
+
+          {/* Firmographic block */}
+          <section>
+            <h3 className="text-xs uppercase tracking-wider text-gray-500 font-medium mb-2">
+              Firmographics
+            </h3>
+            <dl className="bg-gray-900 border border-gray-800 rounded-lg divide-y divide-gray-800">
+              <FieldRow
+                Icon={Building2} label="Company"
+                value={lead.company_name}
+                liveSignal={liveSignalFields.has('company_name')}
+              />
+              <FieldRow
+                Icon={Briefcase} label="Industry"
+                value={lead.industry}
+                liveSignal={liveSignalFields.has('industry')}
+              />
+              <FieldRow
+                Icon={Users} label="Company size"
+                value={lead.company_size}
+                liveSignal={liveSignalFields.has('company_size')}
+              />
+              <FieldRow
+                Icon={DollarSign} label="Est. revenue"
+                value={lead.estimated_revenue}
+                liveSignal={liveSignalFields.has('estimated_revenue')}
+              />
+              <FieldRow
+                Icon={Briefcase} label="LinkedIn"
+                value={lead.linkedin_url}
+                liveSignal={liveSignalFields.has('linkedin_url')}
+                href={lead.linkedin_url || undefined}
+              />
+              <FieldRow
+                Icon={Bird} label="Twitter / X"
+                value={lead.twitter_url}
+                liveSignal={liveSignalFields.has('twitter_url')}
+                href={lead.twitter_url || undefined}
+              />
+            </dl>
+          </section>
+
+          {/* Tech stack — clickable badges */}
+          {techStack.length > 0 && (
+            <section>
+              <h3 className="text-xs uppercase tracking-wider text-gray-500 font-medium mb-2 flex items-center gap-1.5">
+                <Layers className="w-3.5 h-3.5" /> Tech stack
+                {liveSignalFields.has('tech_stack') && (
+                  <LiveSignalIcon title="Updated via live news signal" />
+                )}
+              </h3>
+              <div className="flex flex-wrap gap-1.5">
+                {techStack.map(t => (
+                  <button
+                    key={t}
+                    onClick={() => onApplyTechFilter(t)}
+                    className="px-2 py-1 text-xs bg-gray-900 hover:bg-purple-900/40 border border-gray-800 hover:border-purple-700 text-gray-300 hover:text-purple-200 rounded transition-colors inline-flex items-center gap-1"
+                    title={`Find all leads using ${t}`}
+                  >
+                    {t}
+                    <Filter className="w-2.5 h-2.5 opacity-60" />
+                  </button>
+                ))}
+              </div>
+              <p className="text-[11px] text-gray-600 mt-2">
+                Click any tool to filter the directory to other leads using it.
+              </p>
+            </section>
+          )}
+
+          {/* Contact */}
+          <section>
+            <h3 className="text-xs uppercase tracking-wider text-gray-500 font-medium mb-2">
+              Contact
+            </h3>
+            <dl className="bg-gray-900 border border-gray-800 rounded-lg divide-y divide-gray-800">
+              <FieldRow Icon={Mail} label="Email" value={lead.email} href={lead.email ? `mailto:${lead.email}` : undefined} />
+              <FieldRow Icon={Phone} label="Phone" value={lead.phone} href={lead.phone ? `tel:${lead.phone}` : undefined} />
+              <FieldRow Icon={Tag} label="Source" value={lead.source} />
+              <FieldRow Icon={Tag} label="Campaign" value={lead.campaign} />
+            </dl>
+          </section>
+
+          {/* Activity timeline */}
+          <section>
+            <h3 className="text-xs uppercase tracking-wider text-gray-500 font-medium mb-2">
+              Activity timeline
+            </h3>
+            {loadingActivities ? (
+              <div className="text-xs text-gray-500 py-3">Loading…</div>
+            ) : activities.length === 0 ? (
+              <div className="text-xs text-gray-600 py-3 italic">No activity logged yet.</div>
+            ) : (
+              <div className="space-y-2">
+                {activities.map(a => (
+                  <div key={a.id} className="bg-gray-900 border border-gray-800 rounded-lg p-3">
+                    <div className="flex items-start justify-between gap-2 mb-1">
+                      <div className="text-sm text-white font-medium">{a.title}</div>
+                      <span className="text-[10px] text-gray-500 flex-shrink-0">{formatRelative(a.created_at)}</span>
+                    </div>
+                    <div className="text-[10px] text-gray-500 uppercase tracking-wider">
+                      {a.activity_type || a.type}
+                    </div>
+                    {a.description && (
+                      <p className="text-xs text-gray-400 mt-1 line-clamp-3">{a.description}</p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+        </div>
+      </aside>
+    </div>
+  )
+}
+
+function FieldRow({
+  Icon, label, value, href, liveSignal,
+}: {
+  Icon: typeof Building2
+  label: string
+  value: string | null
+  href?: string
+  liveSignal?: boolean
+}) {
+  return (
+    <div className="px-4 py-2.5 flex items-center justify-between gap-3 text-sm">
+      <div className="flex items-center gap-2 text-gray-500 flex-shrink-0">
+        <Icon className="w-3.5 h-3.5" />
+        <span className="text-xs">{label}</span>
+      </div>
+      <div className="flex-1 text-right min-w-0">
+        {value ? (
+          href ? (
+            <a
+              href={href} target="_blank" rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 text-indigo-300 hover:text-indigo-200 truncate max-w-full"
+              title={value}
+            >
+              <span className="truncate">{value}</span>
+              <ExternalLink className="w-3 h-3 flex-shrink-0" />
+            </a>
+          ) : (
+            <span className="text-gray-200">{value}</span>
+          )
+        ) : (
+          <span className="text-gray-600">—</span>
+        )}
+      </div>
+      {liveSignal && <LiveSignalIcon />}
+    </div>
+  )
+}
+
+function LiveSignalIcon({ title = 'Updated via live Brave Search signal — newer than structured snapshot' }: { title?: string }) {
+  return (
+    <span title={title} className="relative inline-flex items-center text-emerald-400 flex-shrink-0">
+      <Radar className="w-3.5 h-3.5" />
+      <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-emerald-500 rounded-full animate-ping opacity-75" />
+      <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-emerald-500 rounded-full" />
+    </span>
+  )
+}
+
+// ─── New Lead Modal ────────────────────────────────────────────────────────
+
+function NewLeadModal({
+  workspaceId, onClose, onCreated,
+}: { workspaceId: string; onClose: () => void; onCreated: () => void }) {
+  const [name, setName] = useState('')
+  const [email, setEmail] = useState('')
+  const [phone, setPhone] = useState('')
+  const [companyName, setCompanyName] = useState('')
+  const [source, setSource] = useState('manual')
+  const [saving, setSaving] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  const submit = async () => {
+    if (!email.trim() && !name.trim()) {
+      setErr('At least one of name or email is required')
+      return
+    }
+    setSaving(true); setErr(null)
+    try {
+      const res = await fetch('/api/leads-captured', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          workspaceId,
+          name: name.trim() || undefined,
+          email: email.trim().toLowerCase() || undefined,
+          phone: phone.trim() || undefined,
+          source: source.trim() || 'manual',
+        }),
+      })
+      const data = await res.json() as { ok?: boolean; error?: string; id?: string }
+      if (!res.ok) throw new Error(data.error || `Create failed (${res.status})`)
+      // If user supplied company_name, PATCH it in via a follow-up.
+      // (POST endpoint doesn't currently accept it.)
+      if (companyName.trim() && data.id) {
+        try {
+          await fetch(`/api/leads-captured/${data.id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ workspaceId, company_name: companyName.trim() }),
+          })
+        } catch { /* non-fatal */ }
+      }
+      onCreated()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    } finally { setSaving(false) }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4">
+      <div className="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-md">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-800">
+          <h3 className="text-white font-semibold">New lead</h3>
+          <button onClick={onClose} className="text-gray-500 hover:text-gray-300"><X className="w-4 h-4" /></button>
+        </div>
+        <div className="p-5 space-y-3">
+          <Field label="Name" value={name} onChange={setName} placeholder="Jane Doe" />
+          <Field label="Email" value={email} onChange={setEmail} placeholder="jane@acme.com" />
+          <Field label="Phone" value={phone} onChange={setPhone} placeholder="optional" />
+          <Field label="Company name" value={companyName} onChange={setCompanyName} placeholder="optional · improves enrichment quality" />
+          <Field label="Source" value={source} onChange={setSource} placeholder="manual" />
+          <p className="text-[11px] text-gray-600">
+            Lead lands as <span className="text-gray-400">enrichment_status='pending'</span>. Run AI enrichment from the directory once saved.
+          </p>
+          {err && <div className="text-rose-400 text-sm">{err}</div>}
+        </div>
+        <div className="px-5 py-4 border-t border-gray-800 flex justify-end gap-2">
+          <button onClick={onClose} className="px-3 py-1.5 text-sm text-gray-400 hover:text-gray-200">Cancel</button>
+          <button
+            onClick={submit} disabled={saving}
+            className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm rounded-lg"
+          >
+            {saving ? 'Saving…' : 'Create lead'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function Field({ label, value, onChange, placeholder }: {
+  label: string; value: string; onChange: (v: string) => void; placeholder?: string
+}) {
+  return (
+    <div>
+      <label className="block text-xs uppercase text-gray-500 mb-1.5">{label}</label>
+      <input
+        value={value} onChange={e => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:border-indigo-600 focus:outline-none"
+      />
     </div>
   )
 }
