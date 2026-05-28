@@ -320,16 +320,157 @@ function UserAvatar({ letter }: { letter: string }) {
   )
 }
 
+// ─── Sprint 14A: Agent dependency graph ──────────────────────────────────────
+//
+// Replaces the flat "Team assembled" list on the proposal card with a tiered
+// dependency graph. Each agent slug is mapped to one of four tiers based on
+// its conventional position in the marketing-agency workflow:
+//
+//   Tier 0 (Foundation):  strategy, brand, brand-monitor, intelligence
+//   Tier 1 (Plan):        funnel, content, calendar, leads, sales, scheduling
+//   Tier 2 (Make):        creative, image, video, voiceover, blog, ads,
+//                         retargeting, branding/*, email, growth
+//   Tier 3 (Publish):     publish, social, engagement
+//   Tier 4 (Measure):     analytics, reputation, mention-reply
+//
+// Lines connect every Tier N node to every Tier N+1 node — the CMO's actual
+// dependency edges aren't surfaced in the proposal shape today (TeamMember
+// has no dependsOn field), so we infer a "previous tier feeds into next
+// tier" rendering. This communicates the agency-style workflow even before
+// the CMO API exposes real edges.
+//
+// When live agent_runs data is available (post-approval), each node is
+// painted by its current status: pending=gray, running=indigo-pulse,
+// completed=emerald, failed=red.
+
+const AGENT_TIERS: Record<string, number> = {
+  // Tier 0 — foundational thinking
+  'strategy': 0, 'strategy-sup': 0, 'brand': 0, 'branding': 0, 'brand-monitor': 0,
+  'intelligence': 0, 'intelligence-sup': 0, 'research': 0, 'memory': 0,
+  // Tier 1 — planning
+  'funnel': 1, 'funnel-sup': 1, 'content-plan': 1, 'calendar': 1, 'leads': 1,
+  'lead-gen': 1, 'sales': 1, 'sales-sup': 1, 'scheduling': 1, 'scheduling-sup': 1,
+  // Tier 2 — making
+  'content': 2, 'creative': 2, 'creative-sup': 2, 'image-gen': 2, 'video': 2,
+  'voiceover': 2, 'blog': 2, 'ads': 2, 'ads-sup': 2, 'retargeting': 2,
+  'retargeting-sup': 2, 'email': 2, 'email-sup': 2, 'growth': 2, 'growth-sup': 2,
+  'pr': 2, 'cmo': 2,
+  // Tier 3 — publishing
+  'publish': 3, 'publish-sup': 3, 'social': 3, 'engagement': 3,
+  'engagement-sup': 3, 'outreach': 3, 'outreach-sup': 3,
+  // Tier 4 — measuring
+  'analytics': 4, 'analytics-sup': 4, 'reputation': 4, 'mention-reply': 4,
+  'inbox': 4, 'inbox-sup': 4,
+}
+
+const TIER_LABELS = ['Foundation', 'Plan', 'Make', 'Publish', 'Measure']
+
+/** Conservative slug normaliser — strips "-agent" suffix, lowercases, returns
+ *  tier 2 (Make) as the safe fallback so unknown agents still render. */
+function tierFor(agent: string): number {
+  const slug = agent.toLowerCase().trim().replace(/-agent$/, '').replace(/_/g, '-')
+  return AGENT_TIERS[slug] ?? 2
+}
+
+function statusFor(team: TeamMember, runs: AgentRun[]): 'pending' | 'running' | 'completed' | 'failed' {
+  // Match runs by agent_name (loose — slug variations). Most recent wins.
+  const matched = runs
+    .filter(r => r.agent_name && r.agent_name.toLowerCase().includes(team.agent.toLowerCase().slice(0, 8)))
+    .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''))[0]
+  return matched?.status ?? 'pending'
+}
+
+function AgentDependencyGraph({ team, runs }: { team: TeamMember[]; runs: AgentRun[] }) {
+  // Bucket the team by tier. Keep CMO order within each tier so the user's
+  // proposal order shows through even after grouping.
+  const byTier: Record<number, TeamMember[]> = {}
+  team.forEach(m => {
+    const t = tierFor(m.agent)
+    if (!byTier[t]) byTier[t] = []
+    byTier[t].push(m)
+  })
+  // Only render tiers that have at least one agent — skip empty columns.
+  const usedTiers = Array.from({ length: TIER_LABELS.length }, (_, i) => i)
+    .filter(t => (byTier[t] || []).length > 0)
+
+  if (usedTiers.length === 0) return null
+
+  return (
+    <div className="px-4 py-4 border-b border-gray-800">
+      <div className="flex items-baseline justify-between mb-3">
+        <p className="text-xs text-gray-500 uppercase tracking-wider font-medium">Agent workflow</p>
+        <p className="text-[10px] text-gray-600">{team.length} agents · {usedTiers.length} tiers</p>
+      </div>
+      {/* Horizontal scroll on small screens so long workflows don't squish. */}
+      <div className="overflow-x-auto">
+        <div className="flex items-stretch gap-3 min-w-fit pb-1">
+          {usedTiers.map((tier, tierIdx) => {
+            const members = byTier[tier] || []
+            const isLastTier = tierIdx === usedTiers.length - 1
+            return (
+              <div key={tier} className="flex items-start gap-2">
+                {/* Tier column */}
+                <div className="flex flex-col gap-2 min-w-[160px]">
+                  <p className="text-[10px] text-gray-500 uppercase tracking-wider font-semibold">{TIER_LABELS[tier]}</p>
+                  {members.map(m => {
+                    const status = statusFor(m, runs)
+                    const palette = status === 'completed' ? 'border-emerald-700 bg-emerald-950/40'
+                      : status === 'running' ? 'border-indigo-600 bg-indigo-950/40 ring-2 ring-indigo-500/30 animate-pulse'
+                      : status === 'failed' ? 'border-red-800 bg-red-950/40'
+                      : 'border-gray-700 bg-gray-900/60'
+                    const dot = status === 'completed' ? 'bg-emerald-400'
+                      : status === 'running' ? 'bg-indigo-400'
+                      : status === 'failed' ? 'bg-red-400'
+                      : 'bg-gray-600'
+                    return (
+                      <div
+                        key={m.agent}
+                        className={`rounded-lg border px-3 py-2 ${palette} transition-colors`}
+                        title={m.description}
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className={`w-1.5 h-1.5 rounded-full ${dot}`} />
+                          <p className="text-white text-xs font-semibold truncate flex-1">{m.role}</p>
+                        </div>
+                        <p className="text-gray-500 text-[10px] mt-0.5 font-mono truncate">{m.agent}</p>
+                        {status === 'running' && <p className="text-indigo-300 text-[10px] mt-0.5">⟳ Running…</p>}
+                        {status === 'completed' && <p className="text-emerald-400 text-[10px] mt-0.5">✓ Done</p>}
+                        {status === 'failed' && <p className="text-red-400 text-[10px] mt-0.5">✗ Failed</p>}
+                      </div>
+                    )
+                  })}
+                </div>
+                {/* Connector arrow to next tier. Hide on the last column. */}
+                {!isLastTier && (
+                  <div className="flex items-center pt-6">
+                    <svg width="20" height="60" viewBox="0 0 20 60" className="text-gray-700">
+                      <path d="M 0 30 L 16 30 M 12 26 L 16 30 L 12 34" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function ProposalCard({
   proposal,
   onApprove,
   onRephrase,
   executing,
+  runs,
 }: {
   proposal: { project: ProjectProposal; team: TeamMember[]; firstAction: string }
   onApprove: (firstAction: string) => void
   onRephrase: () => void
   executing: boolean
+  /** Sprint 14A: live agent runs so the graph nodes color-code in real
+   *  time as agents execute. Empty array during the proposal phase. */
+  runs: AgentRun[]
 }) {
   const { project, team, firstAction } = proposal
 
@@ -377,20 +518,10 @@ function ProposalCard({
         </ol>
       </div>
 
-      {/* Team */}
-      <div className="px-4 py-3 border-b border-gray-800 space-y-2">
-        <p className="text-xs text-gray-500 uppercase tracking-wider font-medium mb-2">Team assembled</p>
-        {team.map((member) => (
-          <div key={member.agent} className="flex items-start gap-2.5">
-            <div className="w-1.5 h-1.5 rounded-full bg-indigo-500 mt-1.5 flex-shrink-0" />
-            <div>
-              <span className="text-gray-200 text-sm font-medium">{member.role}</span>
-              <span className="text-gray-600 text-xs"> · {member.agent}</span>
-              <p className="text-gray-500 text-xs">{member.description}</p>
-            </div>
-          </div>
-        ))}
-      </div>
+      {/* Sprint 14A: tiered dependency graph replaces the flat team list.
+          Shows the agency-style workflow with status colors that light up
+          live as agents run. */}
+      <AgentDependencyGraph team={team} runs={runs} />
 
       {/* Actions */}
       <div className="px-4 py-3 flex gap-2">
@@ -429,6 +560,7 @@ function MessageBubble({
   executingMsgId,
   streamingText,
   isLive,
+  runs,
 }: {
   msg: Message
   userLetter: string
@@ -441,6 +573,8 @@ function MessageBubble({
   streamingText?: string
   /** True when this specific message is actively receiving token deltas. */
   isLive?: boolean
+  /** Sprint 14A: live agent runs (passed through to ProposalCard's graph). */
+  runs: AgentRun[]
 }) {
   const isCmo = msg.role === 'cmo'
   const [copied, setCopied] = useState(false)
@@ -501,6 +635,7 @@ function MessageBubble({
             onApprove={(firstAction) => onApprove(firstAction, msg.id)}
             onRephrase={onRephrase}
             executing={executing && executingMsgId === msg.id}
+            runs={runs}
           />
         )}
 
@@ -1688,6 +1823,7 @@ export default function DashboardPage() {
                   executingMsgId={executingMsgId}
                   streamingText={stream.streamingText}
                   isLive={msg.id === streamingMsgId && msg.isStreaming === true}
+                  runs={runs}
                 />
               ))}
               {/* Show typing indicator only when waiting BEFORE the first token */}
