@@ -108,6 +108,31 @@ export async function POST(req: NextRequest) {
       if (!video) {
         return NextResponse.json({ ok: false, error: 'Video not found or status check failed.' }, { status: 404 })
       }
+      // Sprint 15D (P0 #4): on completion, flip the linked artifact and
+      // mirror to media_assets so the result is reachable from /media-library.
+      if (video.status === 'completed' && video.video_url) {
+        try {
+          await sql`
+            UPDATE artifacts
+            SET status = 'approved',
+                content_json = ${JSON.stringify({ videoId, status: 'completed', videoUrl: video.video_url, provider: 'heygen' })}
+            WHERE workspace_id = ${workspaceId}
+              AND content_json LIKE ${'%' + videoId + '%'}
+          `
+          const { recordMediaAsset } = await import('@/lib/media-assets')
+          const dupe = await sql`SELECT id FROM media_assets WHERE workspace_id = ${workspaceId} AND metadata_json LIKE ${'%"videoId":"' + videoId + '"%'} LIMIT 1`
+          if (!dupe.rows[0]) {
+            await recordMediaAsset({
+              workspaceId, url: video.video_url, filename: 'heygen-' + videoId + '.mp4',
+              assetType: 'video', mimeType: 'video/mp4', sourceProvider: 'heygen',
+              durationSeconds: typeof video.duration === 'number' ? video.duration : null,
+              metadata: { videoId },
+            })
+          }
+        } catch (err) {
+          console.error('[heygen status] dual-write failed (non-fatal):', err)
+        }
+      }
       return NextResponse.json({
         ok: true,
         video: {

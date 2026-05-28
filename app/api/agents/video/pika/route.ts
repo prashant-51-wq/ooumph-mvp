@@ -119,6 +119,16 @@ export async function POST(req: NextRequest) {
           WHERE workspace_id = ${workspaceId}
             AND content_json LIKE ${'%' + task.id + '%'}
         `
+        // Sprint 15D (P0 #4): media_assets dual-write (idempotent by taskId).
+        const { recordMediaAsset } = await import('@/lib/media-assets')
+        const dupe = await sql`SELECT id FROM media_assets WHERE workspace_id = ${workspaceId} AND metadata_json LIKE ${'%"taskId":"' + task.id + '"%'} LIMIT 1`
+        if (!dupe.rows[0]) {
+          await recordMediaAsset({
+            workspaceId, url: task.videoUrl, filename: 'pika-' + task.id + '.mp4',
+            assetType: 'video', mimeType: 'video/mp4', sourceProvider: 'pika',
+            metadata: { taskId: task.id },
+          })
+        }
       }
       return NextResponse.json({
         ok: true,

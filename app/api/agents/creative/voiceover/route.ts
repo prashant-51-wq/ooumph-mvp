@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
+import { assertWorkspaceOwnership } from '@/lib/guards'
+import { assertAgentRunQuota } from '@/lib/quota'
+import { recordMediaAsset } from '@/lib/media-assets'
+
+export const runtime = 'nodejs'
 
 export async function POST(req: NextRequest) {
   try {
@@ -25,6 +30,11 @@ export async function POST(req: NextRequest) {
     if (text.length > 5000) {
       return NextResponse.json({ error: 'Text must be 5,000 characters or fewer' }, { status: 400 })
     }
+    // Sprint 15D (P2 #21): ownership + quota gates.
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
+    const overQuota = await assertAgentRunQuota(req, workspaceId)
+    if (overQuota) return overQuota
 
     // 1. Fetch workspace model_settings and inject API keys
     const ws = await sql`SELECT model_settings FROM workspaces WHERE id=${workspaceId}`
@@ -86,12 +96,40 @@ export async function POST(req: NextRequest) {
       )
     `
 
+    // Sprint 15D (P0 #4): dual-write into media_assets so the audio appears
+    // in /dashboard/media-library and can be attached to scheduled posts.
+    // Audio base64 is too large to inline as a data URL, so we upload to
+    // Cloudinary (raw resource type) when configured. If Cloudinary isn't
+    // available, we skip the media_assets row — the artifact still exists
+    // and the page-level audio preview still works.
+    let mediaAssetId: string | null = null
+    try {
+      const { uploadBase64, isCloudinaryAvailable } = await import('@/lib/tools/cloudinary')
+      if (isCloudinaryAvailable()) {
+        const uploaded = await uploadBase64(result.audioBase64, 'ooumph/voiceovers', 'audio/mpeg')
+        if (uploaded) {
+          mediaAssetId = await recordMediaAsset({
+            workspaceId,
+            url: uploaded.secureUrl,
+            filename: ('voiceover-' + text.slice(0, 60).replace(/[^a-z0-9-_ ]/gi, '-')).slice(0, 200) + '.mp3',
+            assetType: 'audio',
+            mimeType: 'audio/mpeg',
+            sourceProvider: 'elevenlabs',
+            metadata: { artifactId, voiceId: voiceId || settings.elevenLabsVoiceId, charCount: text.length },
+          })
+        }
+      }
+    } catch (err) {
+      console.error('[voiceover] media_assets dual-write failed (non-fatal):', err)
+    }
+
     return NextResponse.json({
       ok: true,
       audioBase64: result.audioBase64,
       mimeType: 'audio/mpeg',
       charCount: text.length,
       artifactId,
+      mediaAssetId,
     })
   } catch (error) {
     console.error('Voiceover agent error:', error)

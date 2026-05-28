@@ -1,5 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
+import { assertWorkspaceOwnership } from '@/lib/guards'
+import { assertAgentRunQuota } from '@/lib/quota'
+
+export const runtime = 'nodejs'
 
 export async function POST(req: NextRequest) {
   try {
@@ -19,6 +23,11 @@ export async function POST(req: NextRequest) {
     if (!workspaceId || !audioUrl) {
       return NextResponse.json({ error: 'workspaceId and audioUrl are required' }, { status: 400 })
     }
+    // Sprint 15D (P2 #21): ownership + quota gate.
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
+    const overQuota = await assertAgentRunQuota(req, workspaceId)
+    if (overQuota) return overQuota
 
     // 1. Fetch workspace model_settings and inject API key
     const ws = await sql`SELECT model_settings FROM workspaces WHERE id=${workspaceId}`
