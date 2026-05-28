@@ -417,6 +417,14 @@ export default function StrategyPage() {
   const router = useRouter()
   const [workspaceId, setWorkspaceId] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState<Timeframe>('daily')
+  // Sprint 14B: in-place edit state for the strategy card.
+  // editingId tracks which artifact is open for edit (null = read-only view).
+  // editBuffer holds the unsaved positioning + objective so Cancel can
+  // revert without re-fetching. savingEdit/editError gate the Save UX.
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editBuffer, setEditBuffer] = useState<{ positioning: string; objective: string }>({ positioning: '', objective: '' })
+  const [savingEdit, setSavingEdit] = useState(false)
+  const [editError, setEditError] = useState<string | null>(null)
   const [cards, setCards] = useState<Record<Timeframe, StrategyCard | null>>({
     daily: null,
     weekly: null,
@@ -603,6 +611,74 @@ export default function StrategyPage() {
     }
   }
 
+  // Sprint 14B: in-place editor for the displayed positioning + objective.
+  // Avoids burning another agent run for small text tweaks. We round-trip
+  // through /api/artifacts PATCH which merges the new fields into the
+  // existing content_json (so we don't blow away ICP, KPIs, contentPillars,
+  // etc.). After save we update local state in place — no full reload.
+  function startEditing(card: StrategyCard) {
+    setEditingId(card.id)
+    setEditBuffer({
+      positioning: card.positioning || '',
+      objective: card.objective || '',
+    })
+    setEditError(null)
+  }
+  function cancelEditing() {
+    setEditingId(null)
+    setEditError(null)
+  }
+  async function saveEdit() {
+    if (!editingId || !workspaceId) return
+    setSavingEdit(true); setEditError(null)
+    try {
+      // Pull the current artifact JSON so we can merge instead of replace.
+      const artRes = await fetch(`/api/artifacts?workspaceId=${workspaceId}&id=${editingId}`)
+      if (!artRes.ok) throw new Error(`Could not load artifact (${artRes.status})`)
+      const art = await artRes.json() as { content_json?: AIStrategy | string | null } | null
+      const currentJson: AIStrategy =
+        art && typeof art.content_json === 'string' ? JSON.parse(art.content_json) as AIStrategy
+        : (art?.content_json as AIStrategy) || {}
+
+      const updated: AIStrategy = {
+        ...currentJson,
+        positioning: editBuffer.positioning.trim(),
+        thirtyDayObjective: editBuffer.objective.trim(),
+      }
+
+      const patchRes = await fetch('/api/artifacts', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ artifactId: editingId, content_json: updated }),
+      })
+      if (!patchRes.ok) {
+        const j = await patchRes.json().catch(() => ({})) as { error?: string }
+        throw new Error(j.error || `Save failed (${patchRes.status})`)
+      }
+
+      // Update local card state in place.
+      setCards(prev => {
+        const next = { ...prev }
+        for (const tf of Object.keys(next) as Timeframe[]) {
+          const c = next[tf]
+          if (c && c.id === editingId) {
+            next[tf] = {
+              ...c,
+              positioning: editBuffer.positioning.trim(),
+              objective: editBuffer.objective.trim(),
+            }
+          }
+        }
+        return next
+      })
+      setEditingId(null)
+    } catch (e) {
+      setEditError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSavingEdit(false)
+    }
+  }
+
   const kanbanCols: Array<{ key: StrategyProject['status']; label: string; color: string }> = [
     { key: 'planning', label: 'Planning', color: 'border-blue-800' },
     { key: 'active', label: 'Active', color: 'border-indigo-800' },
@@ -722,28 +798,94 @@ export default function StrategyPage() {
                   </div>
                   <p className="text-gray-500 text-xs">Last generated {formatDate(activeCard.generatedAt)}</p>
                 </div>
-                <button
-                  onClick={() => generateStrategy(activeTab)}
-                  disabled={generating === activeTab}
-                  className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-medium transition-colors flex items-center gap-2"
-                >
-                  {generating === activeTab ? (
-                    <><div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" /> Generating with Claude...</>
-                  ) : (
-                    `⚡ Generate ${TF_LABELS[activeTab]} Strategy`
+                <div className="flex items-center gap-2">
+                  {/* Sprint 14B: in-place edit button (small text tweaks
+                      shouldn't burn a fresh agent run). Hidden while
+                      editing so it doesn't steal focus. */}
+                  {editingId !== activeCard.id && (
+                    <button
+                      onClick={() => startEditing(activeCard)}
+                      className="px-3 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 border border-gray-700 text-sm font-medium transition-colors flex items-center gap-2"
+                    >
+                      ✎ Edit
+                    </button>
                   )}
-                </button>
+                  <button
+                    onClick={() => generateStrategy(activeTab)}
+                    disabled={generating === activeTab || editingId === activeCard.id}
+                    className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-medium transition-colors flex items-center gap-2"
+                  >
+                    {generating === activeTab ? (
+                      <><div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" /> Generating with Claude...</>
+                    ) : (
+                      `⚡ Regenerate ${TF_LABELS[activeTab]} Strategy`
+                    )}
+                  </button>
+                </div>
               </div>
 
+              {/* Sprint 14B: positioning + objective split.
+                  In edit mode: textareas + Save / Cancel.
+                  Read-only mode: rendered text.
+                  Tactics + Channels stay read-only here — they're derived
+                  from contentPillars / channelStrategy and a future
+                  sprint can add a dedicated structured editor. */}
               <div className="grid grid-cols-2 gap-4 mb-4">
-                <div>
-                  <p className="text-gray-500 text-xs uppercase tracking-wide mb-1.5">Positioning</p>
-                  <p className="text-gray-200 text-sm leading-relaxed">{activeCard.positioning || '—'}</p>
-                </div>
-                <div>
-                  <p className="text-gray-500 text-xs uppercase tracking-wide mb-1.5">Objective</p>
-                  <p className="text-gray-200 text-sm leading-relaxed">{activeCard.objective || '—'}</p>
-                </div>
+                {editingId === activeCard.id ? (
+                  <>
+                    <div>
+                      <p className="text-gray-500 text-xs uppercase tracking-wide mb-1.5">Positioning</p>
+                      <textarea
+                        value={editBuffer.positioning}
+                        onChange={e => setEditBuffer(b => ({ ...b, positioning: e.target.value }))}
+                        rows={4}
+                        className="w-full bg-gray-800 border border-gray-700 text-gray-100 text-sm rounded-lg px-3 py-2 resize-y focus:outline-none focus:border-indigo-500"
+                        placeholder="How the brand stands apart in the market."
+                      />
+                    </div>
+                    <div>
+                      <p className="text-gray-500 text-xs uppercase tracking-wide mb-1.5">Objective</p>
+                      <textarea
+                        value={editBuffer.objective}
+                        onChange={e => setEditBuffer(b => ({ ...b, objective: e.target.value }))}
+                        rows={4}
+                        className="w-full bg-gray-800 border border-gray-700 text-gray-100 text-sm rounded-lg px-3 py-2 resize-y focus:outline-none focus:border-indigo-500"
+                        placeholder="What success looks like in the next 30 days."
+                      />
+                    </div>
+                    <div className="col-span-2 flex items-center gap-2 pt-1">
+                      <button
+                        onClick={saveEdit}
+                        disabled={savingEdit}
+                        className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-sm font-medium transition-colors"
+                      >
+                        {savingEdit ? 'Saving…' : 'Save changes'}
+                      </button>
+                      <button
+                        onClick={cancelEditing}
+                        disabled={savingEdit}
+                        className="px-4 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 border border-gray-700 text-sm font-medium transition-colors"
+                      >
+                        Cancel
+                      </button>
+                      <p className="text-[11px] text-gray-500 ml-2">
+                        Free edit — no agent run consumed.
+                      </p>
+                      {editError && <p className="text-xs text-red-400 ml-auto">{editError}</p>}
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div>
+                      <p className="text-gray-500 text-xs uppercase tracking-wide mb-1.5">Positioning</p>
+                      <p className="text-gray-200 text-sm leading-relaxed">{activeCard.positioning || '—'}</p>
+                    </div>
+                    <div>
+                      <p className="text-gray-500 text-xs uppercase tracking-wide mb-1.5">Objective</p>
+                      <p className="text-gray-200 text-sm leading-relaxed">{activeCard.objective || '—'}</p>
+                    </div>
+                  </>
+                )}
               </div>
 
               <div className="grid grid-cols-2 gap-4 mb-4">
