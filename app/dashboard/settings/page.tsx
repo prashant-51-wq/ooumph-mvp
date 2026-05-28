@@ -1523,29 +1523,130 @@ export default function SettingsPage() {
               <p>Ooumph staff will never ask you for any API key. Never paste a production key into a test environment.</p>
             </div>
 
-            {/* Quick-start status row */}
+            {/* Sprint 11C: prominent Quick Start hero. The previous version
+                was a small 3-card row that non-technical users skimmed
+                past. This treatment makes the 3-key setup feel like
+                a guided onboarding step: numbered actions, time estimate
+                per provider, direct "Get key ↗" link, progress meter, and
+                a celebratory CTA once all 3 are in. */}
             {(() => {
               const ess = [
-                { key: 'anthropicApiKey', label: 'AI brain (Claude)', uc: 'ai-text' },
-                { key: 'resendApiKey',    label: 'Email (Resend)',   uc: 'email' },
-                { key: 'braveSearchApiKey', label: 'Research (Brave)', uc: 'research' },
+                {
+                  key: 'anthropicApiKey',
+                  label: 'Anthropic (Claude)',
+                  why: 'Powers every AI agent — CMO chat, content drafts, strategy, brand voice scoring',
+                  uc: 'ai-text',
+                  signupUrl: 'https://console.anthropic.com/settings/keys',
+                  timeMin: 2,
+                },
+                {
+                  key: 'openaiApiKey',
+                  label: 'OpenAI',
+                  why: 'Unlocks DALL-E image generation + GPT-4o as a backup for Claude',
+                  uc: 'image-gen',
+                  signupUrl: 'https://platform.openai.com/api-keys',
+                  timeMin: 2,
+                },
+                {
+                  key: 'resendApiKey',
+                  label: 'Resend',
+                  why: 'Sends approval confirmations, reminders, and lead nurture emails',
+                  uc: 'email',
+                  signupUrl: 'https://resend.com/api-keys',
+                  timeMin: 1,
+                },
               ]
+              const filledCount = ess.filter(e => !!(modelSettings as unknown as Record<string, string>)[e.key]?.trim()).length
+              const allDone = filledCount === ess.length
               return (
-                <div className="rounded-xl border border-gray-800 bg-gray-900 p-5">
-                  <p className="text-white font-semibold text-sm mb-3">🟢 Quick-start essentials (start here)</p>
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                    {ess.map(e => {
+                <div className={`rounded-2xl border p-6 ${allDone ? 'border-green-700 bg-gradient-to-br from-green-950/40 to-emerald-950/30' : 'border-indigo-800 bg-gradient-to-br from-indigo-950/40 to-purple-950/30'}`}>
+                  <div className="flex items-start justify-between gap-4 mb-1">
+                    <div>
+                      <p className="text-white font-bold text-lg">
+                        {allDone ? '🎉 You\'re ready to use Ooumph' : '🚀 Unlock the demo in 3 keys'}
+                      </p>
+                      <p className={`text-sm mt-1 ${allDone ? 'text-green-300' : 'text-indigo-300'}`}>
+                        {allDone
+                          ? 'All essential providers are connected. Open the CMO chat and try a real prompt.'
+                          : 'Paste these three API keys and the AI agents start working end-to-end. ~5 minutes total.'}
+                      </p>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <p className="text-3xl font-bold text-white">{filledCount}<span className="text-base text-gray-500">/3</span></p>
+                      <p className="text-xs text-gray-500 uppercase tracking-wide mt-0.5">complete</p>
+                    </div>
+                  </div>
+
+                  {/* Progress bar */}
+                  <div className="w-full bg-gray-800 rounded-full h-2 my-4 overflow-hidden">
+                    <div
+                      className={`h-2 rounded-full transition-all ${allDone ? 'bg-green-500' : 'bg-indigo-500'}`}
+                      style={{ width: `${(filledCount / ess.length) * 100}%` }}
+                    />
+                  </div>
+
+                  {/* Step cards */}
+                  <div className="space-y-2.5">
+                    {ess.map((e, idx) => {
                       const filled = !!(modelSettings as unknown as Record<string, string>)[e.key]?.trim()
                       return (
-                        <a key={e.key} href={`#uc-${e.uc}`} className={`rounded-lg border px-3 py-2.5 text-xs transition-colors ${filled ? 'border-green-800 bg-green-950/30' : 'border-gray-700 bg-gray-800 hover:border-indigo-700'}`}>
-                          <p className="text-gray-300 font-medium">{e.label}</p>
-                          <p className={`mt-0.5 ${filled ? 'text-green-400' : 'text-yellow-400'}`}>
-                            {filled ? '✓ Connected' : '⚠ Not set — click to add'}
-                          </p>
-                        </a>
+                        <div
+                          key={e.key}
+                          className={`flex items-start gap-3 rounded-lg border px-4 py-3 transition-colors ${
+                            filled
+                              ? 'border-green-800/60 bg-green-950/30'
+                              : 'border-gray-700 bg-gray-900/60 hover:border-indigo-700'
+                          }`}
+                        >
+                          <div className={`shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold ${
+                            filled ? 'bg-green-700 text-white' : 'bg-gray-800 text-gray-400 border border-gray-700'
+                          }`}>
+                            {filled ? '✓' : idx + 1}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-baseline justify-between gap-2 flex-wrap">
+                              <p className="text-white text-sm font-semibold">{e.label}</p>
+                              <span className="text-[11px] text-gray-500">~{e.timeMin} min</span>
+                            </div>
+                            <p className="text-gray-400 text-xs mt-0.5">{e.why}</p>
+                          </div>
+                          <div className="shrink-0 flex flex-col items-end gap-1">
+                            <a
+                              href={`#uc-${e.uc}`}
+                              className={`text-xs font-medium ${filled ? 'text-green-400' : 'text-indigo-300 hover:text-indigo-200'}`}
+                            >
+                              {filled ? 'Connected' : 'Paste key ↓'}
+                            </a>
+                            {!filled && (
+                              <a
+                                href={e.signupUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-[11px] text-gray-500 hover:text-gray-300"
+                              >
+                                Get key ↗
+                              </a>
+                            )}
+                          </div>
+                        </div>
                       )
                     })}
                   </div>
+
+                  {allDone && (
+                    <a
+                      href="/dashboard"
+                      className="mt-5 inline-flex items-center gap-2 bg-green-600 hover:bg-green-500 text-white px-5 py-2.5 rounded-lg text-sm font-semibold transition-colors"
+                    >
+                      Try the CMO chat now →
+                    </a>
+                  )}
+
+                  <p className="text-[11px] text-gray-500 mt-4 leading-relaxed">
+                    Beyond these 3, you can connect OAuth platforms (LinkedIn / Twitter / WordPress) for publishing,
+                    and dozens of other providers grouped by use case below. The 3 above are the minimum to unlock
+                    the core AI agency demo.
+                  </p>
                 </div>
               )
             })()}
