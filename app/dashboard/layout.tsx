@@ -43,7 +43,10 @@ const ADVANCED_NAV = [
   {
     label: 'CREATE',
     items: [
-      { href: '/dashboard/content', label: 'Content', icon: '📝' },
+      // Hidden /dashboard/content (redirect stub — Sprint 11E). It was a
+      // searchable grid of scheduled + published rows, which exactly
+      // duplicates the "Queue" tab on /dashboard/publishing. Page still
+      // exists as a server redirect for old bookmarks.
       // Swapped /dashboard/creative (fake) → /dashboard/creative-studio (real) — Sprint 1E
       { href: '/dashboard/creative-studio', label: 'Creative Studio', icon: '🎨' },
       { href: '/dashboard/blog', label: 'Blog Drafts', icon: '✍️' },
@@ -122,7 +125,8 @@ function getPageTitle(pathname: string): string {
     '/dashboard': 'CMO Dashboard',
     '/dashboard/activity': 'Activity Feed',
     '/dashboard/strategy': 'Strategy',
-    '/dashboard/content': 'Content Calendar',
+    // /dashboard/content redirects to /dashboard/publishing (Sprint 11E) —
+    // no breadcrumb entry needed since it's never the resolved URL.
     '/dashboard/approvals': 'Approvals',
     '/dashboard/agents': 'Agents',
     '/dashboard/integrations': 'Integrations',
