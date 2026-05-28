@@ -15,6 +15,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
 import { fetchWithTimeout } from '@/lib/fetch-with-timeout'
 import { assertWorkspaceOwnership } from '@/lib/guards'
+import { readAccessToken, prepareAccessTokenWrite } from '@/lib/integrations'
 
 type Platform = 'linkedin' | 'twitter' | 'facebook'
 
@@ -206,9 +207,12 @@ export async function POST(req: NextRequest) {
   const denied = assertWorkspaceOwnership(req, workspaceId)
   if (denied) return denied
 
-  // Load current integration
+  // Load current integration.
+  // Sprint 9C: select both token columns. Use readAccessToken() so we
+  // can refresh integrations whose token was stored via Sprint 9B's
+  // encrypted_access_token path.
   const integResult = await sql`
-    SELECT id, access_token, metadata FROM integrations
+    SELECT id, access_token, encrypted_access_token, metadata FROM integrations
     WHERE workspace_id = ${workspaceId} AND platform = ${platform}
     LIMIT 1
   `
@@ -221,7 +225,10 @@ export async function POST(req: NextRequest) {
   }
 
   const integId = String(integResult.rows[0].id)
-  const currentAccessToken = String(integResult.rows[0].access_token || '')
+  const currentAccessToken = readAccessToken({
+    access_token: integResult.rows[0].access_token as string | null,
+    encrypted_access_token: integResult.rows[0].encrypted_access_token as string | null,
+  }) || ''
 
   let meta: Record<string, unknown> = {}
   try {
@@ -246,12 +253,18 @@ export async function POST(req: NextRequest) {
       ;({ newAccessToken, newMeta } = await refreshTwitter(currentAccessToken, meta))
     }
 
-    // Update DB with new token
+    // Sprint 9C: write the rotated token to BOTH columns. Without
+    // updating encrypted_access_token, publish/direct + publish (which
+    // moved to readAccessToken in 9B and prefer encrypted) would keep
+    // returning the OLD token and hit 401 from the provider — exactly
+    // the latent drift the post-Sprint-8 audit flagged.
+    const tokenWrite = prepareAccessTokenWrite(newAccessToken)
     await sql`
       UPDATE integrations
-      SET access_token = ${newAccessToken},
-          metadata     = ${JSON.stringify(newMeta)},
-          status       = 'active'
+      SET access_token           = ${tokenWrite.plaintext},
+          encrypted_access_token = ${tokenWrite.encrypted},
+          metadata               = ${JSON.stringify(newMeta)},
+          status                 = 'active'
       WHERE id = ${integId}
     `
 
