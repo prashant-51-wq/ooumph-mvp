@@ -6,6 +6,7 @@
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
+import { isAgentActive } from '@/lib/agents'
 
 export async function GET(req: NextRequest) {
   // Sprint 7E: align with every other cron in the project — fall open in
@@ -24,6 +25,27 @@ export async function GET(req: NextRequest) {
 
   let requestsSent = 0
   let negativesAlerted = 0
+  let skippedPaused = 0
+
+  // Sprint 10D: per-workspace pause cache, matching the pattern in
+  // daily-brief / extract-knowledge / auto-approve / workflow-steps.
+  // The `reputation` worker agent owns review-request sending; if the
+  // operator paused it, we skip BOTH the review-request fanout AND the
+  // negative-review urgency flagging for that workspace. Flagging is
+  // surface-only (status update) so skipping it when paused matches
+  // "don't act on this workspace right now" intent.
+  const pauseCache = new Map<string, boolean>()
+  async function isReputationAllowedFor(workspaceId: string): Promise<boolean> {
+    if (pauseCache.has(workspaceId)) return pauseCache.get(workspaceId)!
+    let active: boolean
+    try {
+      active = await isAgentActive(workspaceId, 'reputation')
+    } catch {
+      active = true   // fail-open on agent-table issues
+    }
+    pauseCache.set(workspaceId, active)
+    return active
+  }
 
   try {
     // ── 1. Auto-send review requests for completed bookings ──────────────────
@@ -47,6 +69,11 @@ export async function GET(req: NextRequest) {
     const appUrl = process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000'
 
     for (const booking of eligibleBookings.rows) {
+      // Sprint 10D: respect pause.
+      if (!(await isReputationAllowedFor(String(booking.workspace_id)))) {
+        skippedPaused++
+        continue
+      }
       try {
         // Get workspace review link from integrations or brand settings
         const intResult = await sql`
@@ -96,17 +123,28 @@ export async function GET(req: NextRequest) {
         AND created_at < ${h48ago}
       LIMIT 50
     `
-    negativesAlerted = urgentNegatives.rows.length
+    // negativesAlerted is set AFTER the loop now — see urgentMarked below.
 
-    // For each flagged review, update status to 'urgent'
+    // For each flagged review, update status to 'urgent' — unless that
+    // workspace has paused the reputation worker.
+    let urgentMarked = 0
     for (const review of urgentNegatives.rows) {
+      if (!(await isReputationAllowedFor(String(review.workspace_id)))) {
+        skippedPaused++
+        continue
+      }
       await sql`UPDATE reputation_reviews SET status = 'urgent' WHERE id = ${String(review.id)}`
+      urgentMarked++
     }
+    // negativesAlerted reflects what we ACTUALLY marked, not just what we
+    // saw — keeps the counter honest under partial pause.
+    negativesAlerted = urgentMarked
 
     return NextResponse.json({
       ok: true,
       requestsSent,
       negativesAlerted,
+      skippedPaused,
       timestamp: now.toISOString(),
     })
   } catch (error) {
