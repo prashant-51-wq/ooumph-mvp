@@ -355,7 +355,23 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   // which meant a stale value in any one tab could silently fetch the
   // wrong tenant's notifications. Now sourced via the session-derived
   // hook so the layout's polling is always pointed at the current session.
-  const { workspaceId: sessionWorkspaceId } = useWorkspaceId()
+  const { workspaceId: sessionWorkspaceId, onboardingCompletedAt, resolved: meResolved } = useWorkspaceId()
+
+  // Sprint 16B (audit P0 #3): redirect users with no completed onboarding
+  // to the wizard. The flag is now persisted (Sprint 15F) AND read (here),
+  // closing the audit gap where the wizard reloaded on every visit. We
+  // wait for /me to resolve before deciding so a transient cache miss
+  // doesn't kick a fully-onboarded user out of the dashboard.
+  useEffect(() => {
+    if (!meResolved) return
+    if (typeof window === 'undefined') return
+    // Allow the onboarding wizard itself + the workspace switcher to render
+    // without being kicked back to themselves.
+    if (pathname === '/dashboard/onboarding' || pathname?.startsWith('/dashboard/onboarding/')) return
+    if (sessionWorkspaceId && !onboardingCompletedAt) {
+      router.replace('/dashboard/onboarding')
+    }
+  }, [meResolved, sessionWorkspaceId, onboardingCompletedAt, pathname, router])
   const [businessName, setBusinessName] = useState('')
   const [userName, setUserName] = useState('')
   const [agentRuns, setAgentRuns] = useState<AgentRun[]>([])

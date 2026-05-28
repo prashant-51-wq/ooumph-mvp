@@ -16,8 +16,17 @@ export async function GET(req: NextRequest) {
     const user = result.rows[0] as { id: string; email: string; name: string; is_admin?: number } | undefined
     if (!user) return NextResponse.json({ user: null })
 
-    const wsResult = await sql`SELECT id, name FROM workspaces WHERE user_id = ${user.id} ORDER BY created_at ASC LIMIT 1`
-    const workspace = wsResult.rows[0] as { id?: string; name?: string } | undefined
+    // Sprint 16B (audit P0 #3): also return onboarding_completed_at so the
+    // dashboard layout can redirect users with no flag set to /onboarding.
+    const wsResult = await sql`
+      SELECT id, name, onboarding_completed_at FROM workspaces
+      WHERE user_id = ${user.id} ORDER BY created_at ASC LIMIT 1
+    `
+    const workspace = wsResult.rows[0] as {
+      id?: string
+      name?: string
+      onboarding_completed_at?: string | null
+    } | undefined
 
     // Compute isAdmin: column flag OR env allowlist
     const adminEmails = (process.env.SUPER_ADMIN_EMAILS || '')
@@ -34,6 +43,7 @@ export async function GET(req: NextRequest) {
         isAdmin: !!isAdmin,
         workspaceId: workspace?.id || null,
         workspaceName: workspace?.name || null,
+        onboardingCompletedAt: workspace?.onboarding_completed_at || null,
       },
     })
   } catch (error) {

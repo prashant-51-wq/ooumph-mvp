@@ -51,6 +51,11 @@ interface MeResponse {
     isAdmin: boolean
     workspaceId: string | null
     workspaceName: string | null
+    // Sprint 16B (audit P0 #3): expose the onboarding-complete flag so
+    // the dashboard layout can redirect new users without an extra
+    // /api/workspaces round-trip. /api/auth/me already joins workspaces
+    // — it just wasn't returning this column.
+    onboardingCompletedAt?: string | null
   } | null
 }
 
@@ -60,6 +65,8 @@ export interface UseWorkspaceIdResult {
   error: string | null
   /** True once /api/auth/me responded — the workspaceId is final. */
   resolved: boolean
+  /** Sprint 16B: null if the workspace has not yet completed onboarding. */
+  onboardingCompletedAt?: string | null
 }
 
 let _cachedMe: MeResponse['user'] | null = null
@@ -98,7 +105,10 @@ export function useWorkspaceId(): UseWorkspaceIdResult {
       const wsId = _cachedMe.workspaceId || null
       if (wsId) window.localStorage.setItem('workspaceId', wsId)
       else window.localStorage.removeItem('workspaceId')
-      setState({ workspaceId: wsId, loading: false, error: null, resolved: true })
+      setState({
+        workspaceId: wsId, loading: false, error: null, resolved: true,
+        onboardingCompletedAt: _cachedMe.onboardingCompletedAt || null,
+      })
       return
     }
 
@@ -114,7 +124,10 @@ export function useWorkspaceId(): UseWorkspaceIdResult {
         // here, because /api/auth/me legitimately returns user=null on
         // 401 (e.g. expired session) and we don't want to wipe state
         // that the next sign-in will overwrite anyway.
-        setState({ workspaceId: wsId, loading: false, error: null, resolved: true })
+        setState({
+          workspaceId: wsId, loading: false, error: null, resolved: true,
+          onboardingCompletedAt: j.user?.onboardingCompletedAt || null,
+        })
       })
       .catch(e => {
         if (cancelled) return

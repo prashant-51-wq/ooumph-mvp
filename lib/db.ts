@@ -644,6 +644,85 @@ async function postgresQuery(strings: TemplateStringsArray, ...values: unknown[]
       )
     `
     await pgSql`CREATE INDEX IF NOT EXISTS lead_segments_ws ON lead_segments(workspace_id)`
+
+    // Sprint 16A: multi-stage funnels.
+    //   - funnels parent table groups multiple landing pages/forms.
+    //   - funnel_steps gets funnel_id + stage + sequence + is_active so the
+    //     awareness→retention narrative (audit Promise D) is finally modeled.
+    //   - The implicit-always-live behaviour where every saved funnel_steps
+    //     row was publicly resolvable from /api/f/[slug] is closed by adding
+    //     is_active=false default. The publish flow flips it true.
+    await pgSql`
+      CREATE TABLE IF NOT EXISTS funnels (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+        name VARCHAR(255) NOT NULL,
+        goal VARCHAR(100),
+        is_active BOOLEAN NOT NULL DEFAULT FALSE,
+        archived_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `
+    await pgSql`CREATE INDEX IF NOT EXISTS funnels_ws ON funnels(workspace_id)`
+    await pgSql`ALTER TABLE funnel_steps ADD COLUMN IF NOT EXISTS funnel_id TEXT`
+    await pgSql`ALTER TABLE funnel_steps ADD COLUMN IF NOT EXISTS stage VARCHAR(40) NOT NULL DEFAULT 'awareness'`
+    await pgSql`ALTER TABLE funnel_steps ADD COLUMN IF NOT EXISTS sequence INTEGER NOT NULL DEFAULT 0`
+    await pgSql`ALTER TABLE funnel_steps ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE`
+    await pgSql`CREATE INDEX IF NOT EXISTS funnel_steps_funnel ON funnel_steps(funnel_id, sequence)`
+
+    // Sprint 16A: ad campaigns gain an objective enum so the deploy route can
+    // map to Meta's PAGE_LIKES / awareness / conversions etc instead of the
+    // hardcoded 'leads' that the audit found in deploy/route.ts:119.
+    await pgSql`ALTER TABLE ad_campaigns ADD COLUMN IF NOT EXISTS objective VARCHAR(40) NOT NULL DEFAULT 'leads'`
+    await pgSql`ALTER TABLE ad_campaigns ADD COLUMN IF NOT EXISTS targeting_json TEXT DEFAULT '{}'`
+
+    // Sprint 16A: follower-growth tracking. The audit found post_metrics had
+    // no follower column, so J4 step 8 (track follower growth) was impossible.
+    await pgSql`ALTER TABLE post_metrics ADD COLUMN IF NOT EXISTS followers_delta INTEGER NOT NULL DEFAULT 0`
+    await pgSql`ALTER TABLE post_metrics ADD COLUMN IF NOT EXISTS total_followers INTEGER`
+
+    // Sprint 16A: approval audit trail. approvals table previously overwrote
+    // status/notes in place on PATCH — no record of WHO approved WHEN. We add
+    // approved_by + approved_at + an append-only approval_events log.
+    await pgSql`ALTER TABLE approvals ADD COLUMN IF NOT EXISTS approved_by TEXT`
+    await pgSql`ALTER TABLE approvals ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ`
+    await pgSql`
+      CREATE TABLE IF NOT EXISTS approval_events (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        approval_id TEXT NOT NULL,
+        artifact_id TEXT,
+        actor_id TEXT,
+        actor_email VARCHAR(255),
+        action VARCHAR(40) NOT NULL,
+        notes TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `
+    await pgSql`CREATE INDEX IF NOT EXISTS approval_events_approval ON approval_events(approval_id, created_at DESC)`
+
+    // Sprint 16A: brand_profiles gains structured ICP + logo_url so the
+    // strategy/research agents stop hallucinating these from prose.
+    await pgSql`ALTER TABLE brand_profiles ADD COLUMN IF NOT EXISTS icp_json TEXT DEFAULT '{}'`
+    await pgSql`ALTER TABLE brand_profiles ADD COLUMN IF NOT EXISTS logo_url TEXT`
+
+    // Sprint 16A: lead_magnet artifact lineage table — gives downloads a
+    // resolvable hosted URL + tracks fulfilment counts independently of
+    // form submissions.
+    await pgSql`
+      CREATE TABLE IF NOT EXISTS lead_magnets (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+        title VARCHAR(255) NOT NULL,
+        description TEXT,
+        asset_url TEXT NOT NULL,
+        funnel_id TEXT,
+        download_count INTEGER NOT NULL DEFAULT 0,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `
+    await pgSql`CREATE INDEX IF NOT EXISTS lead_magnets_ws ON lead_magnets(workspace_id)`
   }
 
   const rows = await pgSql(strings, ...values) as Record<string, unknown>[]
@@ -1227,6 +1306,26 @@ function initSQLiteSync(db: import('better-sqlite3').Database) {
     'ALTER TABLE workspaces ADD COLUMN onboarding_step INTEGER NOT NULL DEFAULT 0',
     'CREATE TABLE IF NOT EXISTS lead_segments (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT, rule_json TEXT NOT NULL, member_count INTEGER NOT NULL DEFAULT 0, created_at TEXT DEFAULT (datetime(\'now\')), updated_at TEXT DEFAULT (datetime(\'now\')))',
     'CREATE INDEX IF NOT EXISTS lead_segments_ws ON lead_segments(workspace_id)',
+    // Sprint 16A: multi-stage funnels + ad objective + follower metrics + approval audit + ICP/logo + lead magnets.
+    'CREATE TABLE IF NOT EXISTS funnels (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, name TEXT NOT NULL, goal TEXT, is_active INTEGER NOT NULL DEFAULT 0, archived_at TEXT, created_at TEXT DEFAULT (datetime(\'now\')), updated_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE INDEX IF NOT EXISTS funnels_ws ON funnels(workspace_id)',
+    'ALTER TABLE funnel_steps ADD COLUMN funnel_id TEXT',
+    'ALTER TABLE funnel_steps ADD COLUMN stage TEXT NOT NULL DEFAULT \'awareness\'',
+    'ALTER TABLE funnel_steps ADD COLUMN sequence INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE funnel_steps ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1',
+    'CREATE INDEX IF NOT EXISTS funnel_steps_funnel ON funnel_steps(funnel_id, sequence)',
+    'ALTER TABLE ad_campaigns ADD COLUMN objective TEXT NOT NULL DEFAULT \'leads\'',
+    'ALTER TABLE ad_campaigns ADD COLUMN targeting_json TEXT DEFAULT \'{}\'',
+    'ALTER TABLE post_metrics ADD COLUMN followers_delta INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE post_metrics ADD COLUMN total_followers INTEGER',
+    'ALTER TABLE approvals ADD COLUMN approved_by TEXT',
+    'ALTER TABLE approvals ADD COLUMN approved_at TEXT',
+    'CREATE TABLE IF NOT EXISTS approval_events (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, approval_id TEXT NOT NULL, artifact_id TEXT, actor_id TEXT, actor_email TEXT, action TEXT NOT NULL, notes TEXT, created_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE INDEX IF NOT EXISTS approval_events_approval ON approval_events(approval_id, created_at DESC)',
+    'ALTER TABLE brand_profiles ADD COLUMN icp_json TEXT DEFAULT \'{}\'',
+    'ALTER TABLE brand_profiles ADD COLUMN logo_url TEXT',
+    'CREATE TABLE IF NOT EXISTS lead_magnets (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, title TEXT NOT NULL, description TEXT, asset_url TEXT NOT NULL, funnel_id TEXT, download_count INTEGER NOT NULL DEFAULT 0, created_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE INDEX IF NOT EXISTS lead_magnets_ws ON lead_magnets(workspace_id)',
     // === Phase Remediation: BYOK secrets + notifications + agent configs ===
     'CREATE TABLE IF NOT EXISTS workspace_secrets (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, provider TEXT NOT NULL, encrypted_value TEXT NOT NULL, label TEXT, status TEXT DEFAULT \'active\', last_tested_at TEXT, test_result TEXT, created_at TEXT DEFAULT (datetime(\'now\')), updated_at TEXT DEFAULT (datetime(\'now\')))',
     'CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_secrets_unique ON workspace_secrets(workspace_id, provider)',
@@ -1850,5 +1949,25 @@ export async function initializeDatabase() {
   await pgSql`ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS onboarding_step INTEGER NOT NULL DEFAULT 0`
   await pgSql`CREATE TABLE IF NOT EXISTS lead_segments (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), name VARCHAR(255) NOT NULL, description TEXT, rule_json TEXT NOT NULL, member_count INTEGER NOT NULL DEFAULT 0, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
   await pgSql`CREATE INDEX IF NOT EXISTS lead_segments_ws ON lead_segments(workspace_id)`
+  // Sprint 16A: multi-stage funnels + ad objective + follower metrics + approval audit + ICP/logo + lead magnets.
+  await pgSql`CREATE TABLE IF NOT EXISTS funnels (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), name VARCHAR(255) NOT NULL, goal VARCHAR(100), is_active BOOLEAN NOT NULL DEFAULT FALSE, archived_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE INDEX IF NOT EXISTS funnels_ws ON funnels(workspace_id)`
+  await pgSql`ALTER TABLE funnel_steps ADD COLUMN IF NOT EXISTS funnel_id TEXT`
+  await pgSql`ALTER TABLE funnel_steps ADD COLUMN IF NOT EXISTS stage VARCHAR(40) NOT NULL DEFAULT 'awareness'`
+  await pgSql`ALTER TABLE funnel_steps ADD COLUMN IF NOT EXISTS sequence INTEGER NOT NULL DEFAULT 0`
+  await pgSql`ALTER TABLE funnel_steps ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE`
+  await pgSql`CREATE INDEX IF NOT EXISTS funnel_steps_funnel ON funnel_steps(funnel_id, sequence)`
+  await pgSql`ALTER TABLE ad_campaigns ADD COLUMN IF NOT EXISTS objective VARCHAR(40) NOT NULL DEFAULT 'leads'`
+  await pgSql`ALTER TABLE ad_campaigns ADD COLUMN IF NOT EXISTS targeting_json TEXT DEFAULT '{}'`
+  await pgSql`ALTER TABLE post_metrics ADD COLUMN IF NOT EXISTS followers_delta INTEGER NOT NULL DEFAULT 0`
+  await pgSql`ALTER TABLE post_metrics ADD COLUMN IF NOT EXISTS total_followers INTEGER`
+  await pgSql`ALTER TABLE approvals ADD COLUMN IF NOT EXISTS approved_by TEXT`
+  await pgSql`ALTER TABLE approvals ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ`
+  await pgSql`CREATE TABLE IF NOT EXISTS approval_events (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, approval_id TEXT NOT NULL, artifact_id TEXT, actor_id TEXT, actor_email VARCHAR(255), action VARCHAR(40) NOT NULL, notes TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE INDEX IF NOT EXISTS approval_events_approval ON approval_events(approval_id, created_at DESC)`
+  await pgSql`ALTER TABLE brand_profiles ADD COLUMN IF NOT EXISTS icp_json TEXT DEFAULT '{}'`
+  await pgSql`ALTER TABLE brand_profiles ADD COLUMN IF NOT EXISTS logo_url TEXT`
+  await pgSql`CREATE TABLE IF NOT EXISTS lead_magnets (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), title VARCHAR(255) NOT NULL, description TEXT, asset_url TEXT NOT NULL, funnel_id TEXT, download_count INTEGER NOT NULL DEFAULT 0, created_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE INDEX IF NOT EXISTS lead_magnets_ws ON lead_magnets(workspace_id)`
   console.log('✅ Neon Postgres DB initialized')
 }

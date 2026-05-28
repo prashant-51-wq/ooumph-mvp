@@ -89,6 +89,8 @@ export async function PATCH(req: NextRequest) {
       modelSettings?: Record<string, unknown>; extraSettings?: Record<string, unknown>;
       // Sprint 15F (P0 #8): onboarding completion fields.
       onboardingCompletedAt?: string; onboardingStep?: number;
+      // Sprint 16H (P1 #15, #21): logo + structured ICP persistence.
+      logoUrl?: string; icpJson?: Record<string, unknown>;
     }
     const { workspaceId } = body
     if (!workspaceId) return NextResponse.json({ error: 'workspaceId required' }, { status: 400 })
@@ -112,6 +114,11 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ ok: true, onboardingPatch: true })
     }
 
+    // Sprint 16H (P1 #15, #21): include logo_url + icp_json in the update.
+    // icp_json column is TEXT (Sprint 16A) — store as serialised JSON.
+    const icpJsonSerialized = body.icpJson !== undefined
+      ? JSON.stringify(body.icpJson)
+      : '{}'
     await sql`
       UPDATE brand_profiles SET
         business_name = ${body.businessName}, tagline = ${body.tagline}, offer = ${body.offer},
@@ -119,6 +126,8 @@ export async function PATCH(req: NextRequest) {
         tone = ${body.tone}, competitors = ${body.competitors}, channels = ${body.channels},
         goals = ${body.goals}, monthly_budget = ${body.monthlyBudget},
         prohibited_claims = ${body.prohibitedClaims}, approval_email = ${body.approvalEmail},
+        logo_url = ${body.logoUrl ?? null},
+        icp_json = ${icpJsonSerialized},
         updated_at = CURRENT_TIMESTAMP
       WHERE workspace_id = ${workspaceId}
     `
@@ -157,7 +166,8 @@ export async function GET(req: NextRequest) {
                w.model_settings, w.extra_settings,
                bp.business_name, bp.tagline, bp.offer, bp.unique_value, bp.target_audience,
                bp.tone, bp.competitors, bp.channels, bp.goals, bp.monthly_budget,
-               bp.prohibited_claims, bp.approval_email
+               bp.prohibited_claims, bp.approval_email,
+               bp.logo_url, bp.icp_json
         FROM workspaces w
         LEFT JOIN brand_profiles bp ON bp.workspace_id = w.id
         WHERE w.id = ${workspaceId}
