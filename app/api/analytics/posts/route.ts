@@ -40,6 +40,7 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 
 export const runtime = 'nodejs'
 
@@ -79,6 +80,9 @@ export async function GET(req: NextRequest) {
   if (!workspaceId) {
     return NextResponse.json({ error: 'workspaceId required' }, { status: 400 })
   }
+  // Sprint 7A: prevent cross-workspace engagement-data leak.
+  const denied = assertWorkspaceOwnership(req, workspaceId)
+  if (denied) return denied
 
   const days = rangeToDays(range)
   const sinceISO = new Date(Date.now() - days * 86400000).toISOString()

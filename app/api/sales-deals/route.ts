@@ -4,15 +4,26 @@
  * POST   { workspaceId, contactName, title, value, stage, probability, ... } → create
  * PATCH  { id, stage, value, probability, ... }                              → update
  * DELETE ?id=xxx                                                             → delete
+ *
+ * Sprint 7A — multi-tenant auth gap fix. Previously PATCH/DELETE only
+ * required `id`, which meant any authenticated user who guessed a deal
+ * id could mutate or delete it. Now every mutating handler asserts the
+ * session owns the workspace the deal belongs to. For PATCH/DELETE we
+ * look up the deal's workspace_id server-side (so the client doesn't
+ * need to change), then call assertWorkspaceOwnership against the
+ * session.
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
   const workspaceId = searchParams.get('workspaceId')
   const stage = searchParams.get('stage')
   if (!workspaceId) return NextResponse.json([])
+  const denied = assertWorkspaceOwnership(req, workspaceId)
+  if (denied) return denied
 
   const result = stage && stage !== 'all'
     ? await sql`SELECT * FROM sales_deals WHERE workspace_id = ${workspaceId} AND stage = ${stage} ORDER BY created_at DESC LIMIT 200`
@@ -44,6 +55,8 @@ export async function POST(req: NextRequest) {
     } = body
 
     if (!workspaceId) return NextResponse.json({ error: 'workspaceId required' }, { status: 400 })
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
     if (!contactName) return NextResponse.json({ error: 'contactName required' }, { status: 400 })
     if (!title) return NextResponse.json({ error: 'title required' }, { status: 400 })
 
@@ -60,6 +73,17 @@ export async function POST(req: NextRequest) {
     console.error('POST sales-deals error:', error)
     return NextResponse.json({ error: String(error) }, { status: 500 })
   }
+}
+
+/**
+ * Resolve the workspace owning a deal so we can assert session ownership
+ * without forcing the client to send workspaceId on every mutation.
+ * Returns null if the deal doesn't exist.
+ */
+async function workspaceForDeal(dealId: string): Promise<string | null> {
+  const r = await sql`SELECT workspace_id FROM sales_deals WHERE id = ${dealId} LIMIT 1`
+  const row = r.rows[0] as { workspace_id?: string } | undefined
+  return row?.workspace_id ?? null
 }
 
 export async function PATCH(req: NextRequest) {
@@ -80,6 +104,14 @@ export async function PATCH(req: NextRequest) {
     }
     const { id } = body
     if (!id) return NextResponse.json({ error: 'id required' }, { status: 400 })
+
+    // Sprint 7A: ownership check. Resolve the deal's workspace, then
+    // assert the session owns it. 404 if the deal doesn't exist —
+    // matches what assertWorkspaceOwnership would do for a phantom id.
+    const wsId = await workspaceForDeal(id)
+    if (!wsId) return NextResponse.json({ error: 'Deal not found' }, { status: 404 })
+    const denied = assertWorkspaceOwnership(req, wsId)
+    if (denied) return denied
 
     if (body.stage !== undefined) {
       await sql`UPDATE sales_deals SET stage = ${body.stage} WHERE id = ${id}`
@@ -136,6 +168,13 @@ export async function DELETE(req: NextRequest) {
   const { searchParams } = new URL(req.url)
   const id = searchParams.get('id')
   if (!id) return NextResponse.json({ error: 'id required' }, { status: 400 })
-  await sql`DELETE FROM sales_deals WHERE id = ${id}`
+
+  // Sprint 7A: same ownership pattern as PATCH.
+  const wsId = await workspaceForDeal(id)
+  if (!wsId) return NextResponse.json({ error: 'Deal not found' }, { status: 404 })
+  const denied = assertWorkspaceOwnership(req, wsId)
+  if (denied) return denied
+
+  await sql`DELETE FROM sales_deals WHERE id = ${id} AND workspace_id = ${wsId}`
   return NextResponse.json({ ok: true })
 }

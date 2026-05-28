@@ -18,6 +18,7 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 
 export const runtime = 'nodejs'
 
@@ -34,6 +35,9 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
   const workspaceId = searchParams.get('workspaceId')
   if (!workspaceId) return NextResponse.json({ error: 'workspaceId required' }, { status: 400 })
+  // Sprint 7A: session must own this workspace.
+  const denied = assertWorkspaceOwnership(req, workspaceId)
+  if (denied) return denied
   const res = await sql`SELECT extra_settings FROM workspaces WHERE id = ${workspaceId} LIMIT 1`
   const row = res.rows[0] as { extra_settings?: string | null } | undefined
   if (!row) return NextResponse.json({ error: 'workspace not found' }, { status: 404 })
@@ -45,6 +49,10 @@ export async function POST(req: NextRequest) {
     const body = await req.json() as { workspaceId?: string; settings?: Record<string, unknown> }
     const { workspaceId, settings } = body
     if (!workspaceId) return NextResponse.json({ error: 'workspaceId required' }, { status: 400 })
+    // Sprint 7A: session must own this workspace. Without this any
+    // logged-in user could flip another tenant's auto-approve settings.
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
     if (!settings || typeof settings !== 'object') {
       return NextResponse.json({ error: 'settings (object) required' }, { status: 400 })
     }
