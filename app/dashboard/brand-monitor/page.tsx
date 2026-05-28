@@ -124,13 +124,54 @@ export default function BrandMonitorPage() {
     mentions: true, sentiment: true, competitors: true, trends: true, actions: true,
   })
 
-  // Auto-scan settings state
+  // Auto-scan settings state — Sprint 4D.
+  //
+  // Persisted to localStorage under `ooumph_brand_monitor_settings_v1`.
+  // This is device-local (NOT cloud-synced) because there's no
+  // /api/brand-monitor/settings endpoint yet. The amber notice in the
+  // settings panel surfaces that limitation so a user never assumes
+  // their config follows them across browsers.
+  //
+  // When a backend endpoint ships, swap loadSettings/saveSettings for
+  // GET/PATCH calls — the rest of this page doesn't need to change.
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [scanFrequency, setScanFrequency] = useState<ScanFrequency>('hourly')
   const [crisisThreshold, setCrisisThreshold] = useState(35)
   const [notifyEmail, setNotifyEmail] = useState(true)
   const [notifyInApp, setNotifyInApp] = useState(true)
   const [notifySlack, setNotifySlack] = useState(false)
+
+  // Hydrate from localStorage on mount.
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    try {
+      const raw = localStorage.getItem('ooumph_brand_monitor_settings_v1')
+      if (!raw) return
+      const s = JSON.parse(raw) as Partial<{
+        scanFrequency: ScanFrequency
+        crisisThreshold: number
+        notifyEmail: boolean
+        notifyInApp: boolean
+        notifySlack: boolean
+      }>
+      if (s.scanFrequency) setScanFrequency(s.scanFrequency)
+      if (typeof s.crisisThreshold === 'number') setCrisisThreshold(s.crisisThreshold)
+      if (typeof s.notifyEmail === 'boolean') setNotifyEmail(s.notifyEmail)
+      if (typeof s.notifyInApp === 'boolean') setNotifyInApp(s.notifyInApp)
+      if (typeof s.notifySlack === 'boolean') setNotifySlack(s.notifySlack)
+    } catch { /* corrupted JSON / disabled storage — fall back to defaults */ }
+  }, [])
+
+  // Persist every change. Cheap enough to run on every setter — the
+  // payload is tiny (5 fields).
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    try {
+      localStorage.setItem('ooumph_brand_monitor_settings_v1', JSON.stringify({
+        scanFrequency, crisisThreshold, notifyEmail, notifyInApp, notifySlack,
+      }))
+    } catch { /* best-effort */ }
+  }, [scanFrequency, crisisThreshold, notifyEmail, notifyInApp, notifySlack])
 
   // Toast
   const [toast, setToast] = useState('')
