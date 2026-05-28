@@ -11,6 +11,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { runAgent } from '@/lib/claude'
+import { readAccessToken, prepareAccessTokenWrite } from '@/lib/integrations'
 
 const SYSTEM = `You are the Unified Inbox Agent for Ooumph AI Marketing OS.
 You manage all inbound and outbound communication across email and SMS.
@@ -67,18 +68,24 @@ async function syncGmail(workspaceId: string): Promise<{ imported: number; error
   const errors: string[] = []
   let imported = 0
 
-  // Get stored Gmail OAuth token
+  // Get stored Gmail OAuth token.
+  // Sprint 10B: select both columns; readAccessToken() prefers
+  // encrypted (decrypted) over legacy plaintext.
   const integResult = await sql`
-    SELECT access_token, metadata FROM integrations
+    SELECT access_token, encrypted_access_token, metadata FROM integrations
     WHERE workspace_id = ${workspaceId} AND platform = 'gmail' AND status = 'active'
     LIMIT 1
   `
   const integ = integResult.rows[0]
-  if (!integ || !integ.access_token) {
+  const _initialToken = readAccessToken({
+    access_token: integ?.access_token as string | null,
+    encrypted_access_token: integ?.encrypted_access_token as string | null,
+  })
+  if (!integ || !_initialToken) {
     return { imported: 0, errors: ['No Gmail integration found. Connect Gmail in Settings → Connections.'] }
   }
 
-  let accessToken = String(integ.access_token)
+  let accessToken = _initialToken
 
   // Try to refresh token if metadata has refresh_token
   try {
@@ -98,7 +105,13 @@ async function syncGmail(workspaceId: string): Promise<{ imported: number; error
         const refreshData = await refreshRes.json() as { access_token?: string }
         if (refreshData.access_token) {
           accessToken = refreshData.access_token
-          await sql`UPDATE integrations SET access_token = ${accessToken} WHERE workspace_id = ${workspaceId} AND platform = 'gmail'`
+          // Sprint 10B: dual-write the refreshed token to both columns
+          // so readAccessToken() reads consistent state on the next call.
+          const tokenWrite = prepareAccessTokenWrite(accessToken)
+          await sql`UPDATE integrations
+                    SET access_token = ${tokenWrite.plaintext},
+                        encrypted_access_token = ${tokenWrite.encrypted}
+                    WHERE workspace_id = ${workspaceId} AND platform = 'gmail'`
         }
       }
     }

@@ -78,9 +78,17 @@ export function prepareAccessTokenWrite(plaintext: string): {
 } {
   if (!plaintext) return { plaintext: '', encrypted: null }
   return {
-    // Sprint 9B dual-write phase: still populate plaintext for legacy
-    // readers. The follow-up sprint will change this to ''.
-    plaintext,
+    // Sprint 10B Phase 2: all 10 readers now go through readAccessToken(),
+    // so new writes can stop populating the plaintext column. We send ''
+    // (rather than NULL) because some Postgres deployments set the
+    // column NOT NULL — defense in depth. The encrypted column is the
+    // sole source of truth for newly-written rows.
+    //
+    // Legacy rows that still have plaintext populated continue to work
+    // because readAccessToken() falls back to access_token when
+    // encrypted_access_token is empty. A future migration can backfill
+    // those legacy rows by reading + re-saving via this helper.
+    plaintext: '',
     encrypted: encryptSecret(plaintext),
   }
 }

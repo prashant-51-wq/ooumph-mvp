@@ -84,10 +84,12 @@ describe('prepareAccessTokenWrite', () => {
     expect(result.encrypted).toBe(null)
   })
 
-  test('produces a round-trippable encrypted blob', () => {
+  test('produces a round-trippable encrypted blob, plaintext column empty (Phase 2)', () => {
     const plaintext = 'sk-ant-test-round-trip-token'
     const result = prepareAccessTokenWrite(plaintext)
-    expect(result.plaintext).toBe(plaintext)   // Phase 1 dual-write — plaintext still populated
+    // Sprint 10B Phase 2: now that every reader uses readAccessToken(),
+    // writers stop populating the plaintext column.
+    expect(result.plaintext).toBe('')
     expect(result.encrypted).toBeTruthy()
     // Verify the encrypted blob, when stored as the encrypted column,
     // is what readAccessToken() unwraps.
