@@ -35,6 +35,7 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
+import { notifyNurtureReplyReceived } from '@/lib/notifications'
 
 export const runtime = 'nodejs'
 
@@ -258,6 +259,41 @@ export async function POST(req: NextRequest) {
         WHERE workspace_id = ${workspaceId} AND email = ${contactEmail}
       `
     } catch { /* column may be missing on legacy installs */ }
+
+    // Sprint 15C (P1 #11): cancel pending nurture steps when a human replies.
+    //
+    // The audit found: an inbound reply did not break any in-flight nurture
+    // sequence — the lead kept receiving scheduled emails after replying,
+    // which is a real footgun. We cancel every pending workflow_pending_step
+    // for this contact_email and emit a notification so the user can see
+    // what got cancelled.
+    try {
+      const cancelRes = await sql`
+        UPDATE workflow_pending_steps
+        SET status = 'cancelled', error_message = ${'Cancelled — contact replied via inbox'}
+        WHERE workspace_id = ${workspaceId}
+          AND contact_email = ${contactEmail}
+          AND status = 'pending'
+      `
+      // SQLite-style rowCount: prefer rowCount, fall back to a count query.
+      const cancelled =
+        (cancelRes as unknown as { rowCount?: number }).rowCount ??
+        await (async () => {
+          const r = await sql`
+            SELECT COUNT(*) as c FROM workflow_pending_steps
+            WHERE workspace_id = ${workspaceId}
+              AND contact_email = ${contactEmail}
+              AND status = 'cancelled'
+              AND error_message = ${'Cancelled — contact replied via inbox'}
+          `
+          return Number((r.rows[0] as { c?: number } | undefined)?.c || 0)
+        })()
+      if (cancelled > 0) {
+        await notifyNurtureReplyReceived(workspaceId, contactEmail, cancelled)
+      }
+    } catch (err) {
+      console.error('[email-inbound] nurture cancel failed (non-fatal):', err)
+    }
 
     // Fire `email_received` workflow trigger — but only for genuine humans.
     // The auto-reply shield above is what guarantees this can never loop.

@@ -38,6 +38,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { after } from 'next/server'
 import { sql, newId } from '@/lib/db'
+import { notifyLeadCaptured } from '@/lib/notifications'
 
 export const runtime = 'nodejs'
 
@@ -75,6 +76,7 @@ function sanitiseSubmittedData(input: Record<string, unknown>): Record<string, s
 interface FunnelLookup {
   id: string
   workspace_id: string
+  slug?: string | null
 }
 
 async function resolveFunnelStep(slugOrId: { slug?: string; funnelStepId?: string }): Promise<FunnelLookup | null> {
@@ -83,14 +85,14 @@ async function resolveFunnelStep(slugOrId: { slug?: string; funnelStepId?: strin
 
   if (id) {
     const r = await sql`
-      SELECT id, workspace_id FROM funnel_steps WHERE id = ${id} LIMIT 1
+      SELECT id, workspace_id, slug FROM funnel_steps WHERE id = ${id} LIMIT 1
     `
     const row = r.rows[0] as unknown as FunnelLookup | undefined
     if (row) return row
   }
   if (slug && SLUG_PATTERN.test(slug)) {
     const r = await sql`
-      SELECT id, workspace_id FROM funnel_steps WHERE slug = ${slug} LIMIT 1
+      SELECT id, workspace_id, slug FROM funnel_steps WHERE slug = ${slug} LIMIT 1
     `
     const row = r.rows[0] as unknown as FunnelLookup | undefined
     if (row) return row
@@ -183,31 +185,55 @@ export async function POST(req: NextRequest) {
       console.error('[api/f/submit] conversion_count bump failed:', err)
     }
 
-    // Best-effort CRM ingestion — if this email matches a known lead in the
-    // workspace, append an activity row. If not, we DON'T auto-create the
-    // lead row (that's the workflow engine's job for `form_submitted` triggers).
+    // Sprint 15C (P0 #2): CRM ingestion is now first-class. If the email
+    // already matches a lead, append a form_submitted activity. If not,
+    // CREATE the lead so submissions through `/api/f/[slug]` funnels show
+    // up in /leads-crm — mirrors lp-submit behaviour and closes the gap
+    // where form-builder funnels silently orphaned submissions.
     try {
       const leadRes = await sql`
         SELECT id FROM leads_captured
         WHERE workspace_id = ${funnel.workspace_id} AND email = ${email}
         LIMIT 1
       `
-      const leadId = (leadRes.rows[0] as { id?: string } | undefined)?.id
-      if (leadId) {
+      let leadId = (leadRes.rows[0] as { id?: string } | undefined)?.id
+      const inferredName =
+        (submittedData.name as string) ||
+        (submittedData.full_name as string) ||
+        (submittedData.first_name as string) ||
+        null
+      const inferredPhone = (submittedData.phone as string) || null
+      if (!leadId) {
+        leadId = newId()
         await sql`
-          INSERT INTO lead_activities (id, workspace_id, lead_id, type, title, description, metadata_json, created_at)
+          INSERT INTO leads_captured (id, workspace_id, name, email, phone, source, campaign, status, score, notes)
           VALUES (
-            ${newId()}, ${funnel.workspace_id}, ${leadId},
-            'form_submitted',
-            ${'Submitted a funnel form'},
-            ${`Funnel step: ${funnel.id}`},
-            ${JSON.stringify({ funnel_step_id: funnel.id, submitted_data: submittedData })},
-            CURRENT_TIMESTAMP
+            ${leadId}, ${funnel.workspace_id}, ${inferredName}, ${email}, ${inferredPhone},
+            'funnel_form', ${funnel.slug || funnel.id}, 'new', 0, ${null}
           )
         `
+        // Fire the notification AFTER the lead is in place so the bell
+        // link resolves to the real row.
+        await notifyLeadCaptured(
+          funnel.workspace_id,
+          leadId,
+          inferredName || email,
+          'funnel form' + (funnel.slug ? ` (${funnel.slug})` : ''),
+        )
       }
+      await sql`
+        INSERT INTO lead_activities (id, workspace_id, lead_id, type, title, description, metadata_json, created_at)
+        VALUES (
+          ${newId()}, ${funnel.workspace_id}, ${leadId},
+          'form_submitted',
+          ${'Submitted a funnel form'},
+          ${`Funnel step: ${funnel.id}`},
+          ${JSON.stringify({ funnel_step_id: funnel.id, submitted_data: submittedData })},
+          CURRENT_TIMESTAMP
+        )
+      `
     } catch (err) {
-      console.error('[api/f/submit] CRM activity write failed (non-fatal):', err)
+      console.error('[api/f/submit] CRM ingestion failed (non-fatal):', err)
     }
 
     // Fire the workflow trigger for downstream automations.
