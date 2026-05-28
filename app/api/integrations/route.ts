@@ -1,10 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
   const workspaceId = searchParams.get('workspaceId')
   if (!workspaceId) return NextResponse.json([], { status: 200 })
+  // Sprint 8A: integrations holds OAuth tokens + account ids — strict
+  // tenant isolation required.
+  const denied = assertWorkspaceOwnership(req, workspaceId)
+  if (denied) return denied
 
   const result = await sql`
     SELECT id, workspace_id, platform, account_id, status, connected_at,
@@ -27,6 +32,9 @@ export async function POST(req: NextRequest) {
     if (!workspaceId || !platform || !accessToken || !accountId) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 })
     }
+    // Sprint 8A: session must own this workspace before storing creds.
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     // Upsert — replace existing integration for this platform
     await sql`DELETE FROM integrations WHERE workspace_id = ${workspaceId} AND platform = ${platform}`
@@ -55,6 +63,9 @@ export async function DELETE(req: NextRequest) {
   const workspaceId = searchParams.get('workspaceId')
   const platform = searchParams.get('platform')
   if (!workspaceId || !platform) return NextResponse.json({ error: 'Missing params' }, { status: 400 })
+  // Sprint 8A: session must own this workspace before deleting creds.
+  const denied = assertWorkspaceOwnership(req, workspaceId)
+  if (denied) return denied
 
   await sql`DELETE FROM integrations WHERE workspace_id = ${workspaceId} AND platform = ${platform}`
   return NextResponse.json({ ok: true })

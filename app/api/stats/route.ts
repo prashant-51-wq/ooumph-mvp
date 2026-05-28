@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 
 function rangeToDays(range: string | null): number {
   switch (range) {
@@ -20,6 +21,10 @@ export async function GET(req: NextRequest) {
   if (!workspaceId) {
     return NextResponse.json({ artifacts: 0, pendingApprovals: 0, learningNotes: 0, completedTypes: [] })
   }
+  // Sprint 8A: session must own this workspace. Without this the home
+  // dashboard would leak any tenant's KPIs by URL-tampering ?workspaceId=.
+  const denied = assertWorkspaceOwnership(req, workspaceId)
+  if (denied) return denied
 
   // ── Default (dashboard) view ────────────────────────────────────────────────
   if (view !== 'analytics') {

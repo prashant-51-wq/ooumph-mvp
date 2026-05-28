@@ -1,11 +1,24 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
+import { assertWorkspaceOwnership } from '@/lib/guards'
+
+// Sprint 8A: workspace ownership guards on the in-dashboard CRM path.
+// Public form submission flows (/api/lp-submit, /api/f/submit) are
+// separate routes and intentionally exempt — they capture leads from
+// anonymous web visitors.
+
+async function workspaceForLead(id: string): Promise<string | null> {
+  const r = await sql`SELECT workspace_id FROM leads_captured WHERE id = ${id} LIMIT 1`
+  return (r.rows[0] as { workspace_id?: string } | undefined)?.workspace_id ?? null
+}
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
   const workspaceId = searchParams.get('workspaceId')
   const status = searchParams.get('status')
   if (!workspaceId) return NextResponse.json([])
+  const denied = assertWorkspaceOwnership(req, workspaceId)
+  if (denied) return denied
 
   const result = status && status !== 'all'
     ? await sql`SELECT * FROM leads_captured WHERE workspace_id = ${workspaceId} AND status = ${status} ORDER BY created_at DESC LIMIT 100`
@@ -28,6 +41,8 @@ export async function POST(req: NextRequest) {
       notes?: string
     }
     if (!workspaceId) return NextResponse.json({ error: 'workspaceId required' }, { status: 400 })
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     const id = newId()
     await sql`
@@ -92,7 +107,11 @@ export async function PATCH(req: NextRequest) {
   try {
     const { id, status, notes, score } = await req.json()
     if (!id) return NextResponse.json({ error: 'id required' }, { status: 400 })
-    await sql`UPDATE leads_captured SET status = ${status}, notes = ${notes || null}, score = ${score || 0} WHERE id = ${id}`
+    const wsId = await workspaceForLead(id)
+    if (!wsId) return NextResponse.json({ error: 'Lead not found' }, { status: 404 })
+    const denied = assertWorkspaceOwnership(req, wsId)
+    if (denied) return denied
+    await sql`UPDATE leads_captured SET status = ${status}, notes = ${notes || null}, score = ${score || 0} WHERE id = ${id} AND workspace_id = ${wsId}`
     return NextResponse.json({ ok: true })
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 })
@@ -103,6 +122,10 @@ export async function DELETE(req: NextRequest) {
   const { searchParams } = new URL(req.url)
   const id = searchParams.get('id')
   if (!id) return NextResponse.json({ error: 'id required' }, { status: 400 })
-  await sql`DELETE FROM leads_captured WHERE id = ${id}`
+  const wsId = await workspaceForLead(id)
+  if (!wsId) return NextResponse.json({ error: 'Lead not found' }, { status: 404 })
+  const denied = assertWorkspaceOwnership(req, wsId)
+  if (denied) return denied
+  await sql`DELETE FROM leads_captured WHERE id = ${id} AND workspace_id = ${wsId}`
   return NextResponse.json({ ok: true })
 }

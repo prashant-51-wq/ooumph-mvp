@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { seedWorkspace } from '@/lib/seed-workspace'
 import { seedDefaultAgents } from '@/lib/agents'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 
 export async function POST(req: NextRequest) {
   try {
@@ -85,6 +86,10 @@ export async function PATCH(req: NextRequest) {
       targetAudience, tone, competitors, channels, goals,
       monthlyBudget, prohibitedClaims, approvalEmail, modelSettings, extraSettings,
     } = await req.json()
+    if (!workspaceId) return NextResponse.json({ error: 'workspaceId required' }, { status: 400 })
+    // Sprint 8A: ownership before mutating brand profile + workspace row.
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     await sql`
       UPDATE brand_profiles SET
@@ -114,6 +119,11 @@ export async function GET(req: NextRequest) {
     const workspaceId = searchParams.get('id')
 
     if (workspaceId) {
+      // Sprint 8A: session must own this workspace. Without this, any
+      // authenticated user could read another tenant's brand profile +
+      // model_settings (which holds plaintext API keys) by URL-tampering.
+      const denied = assertWorkspaceOwnership(req, workspaceId)
+      if (denied) return denied
       const result = await sql`
         SELECT w.id, w.name, w.industry, w.website, w.owner_email, w.status, w.created_at,
                w.model_settings, w.extra_settings,

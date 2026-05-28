@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { publishTweet } from '@/lib/twitter-oauth'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 
 const BASE_URL = process.env.NEXT_PUBLIC_BASE_URL || 'https://ooumph-mvp.vercel.app'
 
@@ -301,6 +302,10 @@ export async function POST(req: NextRequest) {
     if (!workspaceId || !artifactId || !platform) {
       return NextResponse.json({ error: 'Missing workspaceId, artifactId, or platform' }, { status: 400 })
     }
+    // Sprint 8A: ownership before external publish (same protection
+    // /publish/direct got in Sprint 7E).
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     const intResult = await sql`
       SELECT access_token, account_id, platform, metadata FROM integrations
@@ -401,6 +406,9 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
   const workspaceId = searchParams.get('workspaceId')
   if (!workspaceId) return NextResponse.json([], { status: 200 })
+  // Sprint 8A: ownership check.
+  const denied = assertWorkspaceOwnership(req, workspaceId)
+  if (denied) return denied
 
   const result = await sql`
     SELECT pl.*, a.title as artifact_title, a.type as artifact_type

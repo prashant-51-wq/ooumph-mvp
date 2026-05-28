@@ -2,12 +2,17 @@ import { NextRequest, NextResponse } from 'next/server'
 import { after } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { sendApprovalConfirmationEmail } from '@/lib/email'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 
 const BASE_URL = process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000'
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
   const workspaceId = searchParams.get('workspaceId')
+  if (!workspaceId) return NextResponse.json([])
+  // Sprint 8A: ownership check — approvals contain artifact content.
+  const denied = assertWorkspaceOwnership(req, workspaceId)
+  if (denied) return denied
 
   const result = await sql`
     SELECT
@@ -36,6 +41,21 @@ export async function GET(req: NextRequest) {
 export async function PATCH(req: NextRequest) {
   try {
     const { approvalId, action, notes, workspaceId } = await req.json()
+    if (!approvalId || !action || !workspaceId) {
+      return NextResponse.json({ error: 'approvalId, action, workspaceId required' }, { status: 400 })
+    }
+    // Sprint 8A: ownership before approve/reject — controls publish gate.
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
+    // Defense in depth: confirm the approval row actually belongs to this
+    // workspace (so a stolen approvalId from another tenant can't be
+    // approved by spoofing your own workspaceId).
+    const ownerRes = await sql`SELECT workspace_id FROM approvals WHERE id = ${approvalId} LIMIT 1`
+    const ownerRow = ownerRes.rows[0] as { workspace_id?: string } | undefined
+    if (!ownerRow?.workspace_id) return NextResponse.json({ error: 'Approval not found' }, { status: 404 })
+    if (ownerRow.workspace_id !== workspaceId) {
+      return NextResponse.json({ error: 'Approval does not belong to this workspace' }, { status: 403 })
+    }
 
     const status = action === 'approve' ? 'approved' : 'rejected'
 
