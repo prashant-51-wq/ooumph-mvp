@@ -4,6 +4,7 @@ import { runAgent } from '@/lib/claude'
 import { sendApprovalRequestEmail } from '@/lib/email'
 import { generateStaticPost, generateStoryCover, generateVideoBrief } from '@/lib/creative-workers'
 import { assertWorkspaceOwnership } from '@/lib/guards'
+import { assertAgentRunQuota } from '@/lib/quota'
 import type { BrandProfile } from '@/types'
 
 const SYSTEM = `You are a growth hacking strategist and viral content expert.
@@ -39,6 +40,9 @@ export async function POST(req: NextRequest) {
     if (!workspaceId) return NextResponse.json({ error: 'Missing workspaceId' }, { status: 400 })
     const denied = assertWorkspaceOwnership(req, workspaceId)
     if (denied) return denied
+    // Sprint 13B: plan-tier quota.
+    const overQuota = await assertAgentRunQuota(req, workspaceId)
+    if (overQuota) return overQuota
 
     const [brandResult, strategyResult, calendarResult, assetResult] = await Promise.all([
       sql`SELECT * FROM brand_profiles WHERE workspace_id = ${workspaceId} LIMIT 1`,

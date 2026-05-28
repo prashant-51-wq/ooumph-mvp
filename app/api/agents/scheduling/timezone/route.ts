@@ -11,6 +11,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { assertWorkspaceOwnership } from '@/lib/guards'
+import { assertAgentRunQuota } from '@/lib/quota'
 import { optimizeForTimezones } from '@/lib/agents/scheduling'
 import type { BrandProfile } from '@/types'
 
@@ -29,6 +30,9 @@ export async function POST(req: NextRequest) {
 
     const denied = assertWorkspaceOwnership(req, workspaceId)
     if (denied) return denied
+    // Sprint 13B: plan-tier quota.
+    const overQuota = await assertAgentRunQuota(req, workspaceId)
+    if (overQuota) return overQuota
 
     if (!Array.isArray(targetMarkets) || targetMarkets.length === 0) {
       return NextResponse.json({ error: 'targetMarkets must be a non-empty array of market/timezone strings' }, { status: 400 })

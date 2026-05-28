@@ -8,6 +8,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { assertWorkspaceOwnership } from '@/lib/guards'
+import { assertAgentRunQuota } from '@/lib/quota'
 import type { BrandProfile } from '@/types'
 import type { BrandIdentity } from '@/lib/agents/branding'
 
@@ -23,6 +24,9 @@ export async function POST(req: NextRequest) {
     if (!workspaceId) return NextResponse.json({ error: 'workspaceId required' }, { status: 400 })
     const denied = assertWorkspaceOwnership(req, workspaceId)
     if (denied) return denied
+    // Sprint 13B: plan-tier quota.
+    const overQuota = await assertAgentRunQuota(req, workspaceId)
+    if (overQuota) return overQuota
 
     const [brandResult, identityResult] = await Promise.all([
       sql`SELECT * FROM brand_profiles WHERE workspace_id = ${workspaceId} LIMIT 1`,

@@ -27,6 +27,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { after } from 'next/server'
 import { sql } from '@/lib/db'
 import { assertWorkspaceOwnership } from '@/lib/guards'
+import { assertAgentRunQuota } from '@/lib/quota'
 import {
   decomposeStrategyArtifact,
   dispatchPendingTasks,
@@ -59,6 +60,9 @@ export async function POST(req: NextRequest) {
   }
   const denied = assertWorkspaceOwnership(req, workspaceId)
   if (denied) return denied
+    // Sprint 13B: plan-tier quota.
+    const overQuota = await assertAgentRunQuota(req, workspaceId)
+    if (overQuota) return overQuota
 
   // Idempotency guard — if tasks already exist for this artifact, refuse to
   // re-decompose (the caller can DELETE existing tasks first if they want).

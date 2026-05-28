@@ -26,6 +26,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { after } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { assertWorkspaceOwnership } from '@/lib/guards'
+import { assertAgentRunQuota } from '@/lib/quota'
 import { runAgent } from '@/lib/claude'
 import { braveSearch } from '@/lib/tools/brave-search'
 import { enrichPerson, enrichCompany, isApolloAvailable } from '@/lib/tools/apollo'
@@ -258,6 +259,9 @@ export async function POST(req: NextRequest) {
   }
   const denied = assertWorkspaceOwnership(req, workspaceId)
   if (denied) return denied
+    // Sprint 13B: plan-tier quota.
+    const overQuota = await assertAgentRunQuota(req, workspaceId)
+    if (overQuota) return overQuota
 
   // ── 1. Atomic CAS lock: pending → enriching ─────────────────────────────
   // The WHERE predicate makes this race-safe. Two parallel enrich clicks on

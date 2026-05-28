@@ -18,6 +18,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { assertWorkspaceOwnership } from '@/lib/guards'
+import { assertAgentRunQuota } from '@/lib/quota'
 import {
   generateFullBrandIdentity,
   generateBrandVoiceGuide,
@@ -91,6 +92,9 @@ export async function POST(req: NextRequest) {
 
     const denied = assertWorkspaceOwnership(req, workspaceId)
     if (denied) return denied
+    // Sprint 13B: plan-tier quota.
+    const overQuota = await assertAgentRunQuota(req, workspaceId)
+    if (overQuota) return overQuota
 
     const brand = await getBrand(workspaceId)
     if (!brand) return NextResponse.json({ error: 'Complete onboarding first.' }, { status: 400 })
