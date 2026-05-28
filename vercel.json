@@ -2,7 +2,7 @@
   "crons": [
     {
       "path": "/api/cron/publish-scheduled",
-      "schedule": "0 9 * * *"
+      "schedule": "*/15 * * * *"
     },
     {
       "path": "/api/cron/campaign-sync",
@@ -18,7 +18,7 @@
     },
     {
       "path": "/api/cron/workflow-steps",
-      "schedule": "0 10 * * *"
+      "schedule": "*/15 * * * *"
     },
     {
       "path": "/api/cron/reputation-monitor",
