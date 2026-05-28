@@ -22,17 +22,45 @@ export async function POST(req: NextRequest) {
   const body = await req.text()
   const signature = req.headers.get('stripe-signature') || ''
 
+  // Sprint 11D: fail-closed signature verification.
+  //
+  // Previous logic had a dangerous fallback: when `signature` was missing
+  // OR `webhookSecret` was unset, the code accepted ANY JSON body as a
+  // Stripe event. In production with STRIPE_WEBHOOK_SECRET configured but
+  // an attacker simply omitting the stripe-signature header, that meant
+  // they could fake checkout.session.completed events and activate paid
+  // subscriptions, fake commissions, or flip Connect-account statuses.
+  //
+  // Correct rules:
+  //   - If STRIPE_WEBHOOK_SECRET is set (production / staging):
+  //     require BOTH a signature header AND successful verification.
+  //     Reject everything else with 400.
+  //   - If STRIPE_WEBHOOK_SECRET is unset (local dev only):
+  //     skip verification and parse JSON — never run on a deployed
+  //     environment without the secret set.
   let event: import('stripe').Stripe.Event
-  try {
-    if (webhookSecret && signature) {
-      event = stripe.webhooks.constructEvent(body, signature, webhookSecret)
-    } else {
-      // Dev mode: parse without verification
-      event = JSON.parse(body) as import('stripe').Stripe.Event
+  if (webhookSecret) {
+    if (!signature) {
+      console.error('Stripe webhook rejected: STRIPE_WEBHOOK_SECRET set but stripe-signature header missing')
+      return NextResponse.json({ error: 'Missing stripe-signature header' }, { status: 400 })
     }
-  } catch (err) {
-    console.error('Stripe webhook signature failed:', err)
-    return NextResponse.json({ error: 'Invalid signature' }, { status: 400 })
+    try {
+      event = stripe.webhooks.constructEvent(body, signature, webhookSecret)
+    } catch (err) {
+      console.error('Stripe webhook signature verification failed:', err)
+      return NextResponse.json({ error: 'Invalid signature' }, { status: 400 })
+    }
+  } else {
+    // Dev-only path. We log loudly so a missing-secret deployment is
+    // obvious in the logs even if no one's actively watching.
+    if (process.env.NODE_ENV === 'production') {
+      console.error('[stripe-webhook] STRIPE_WEBHOOK_SECRET is unset in production — webhook is INSECURE. Set the env var immediately.')
+    }
+    try {
+      event = JSON.parse(body) as import('stripe').Stripe.Event
+    } catch (err) {
+      return NextResponse.json({ error: `Invalid JSON: ${String(err)}` }, { status: 400 })
+    }
   }
 
   const appUrl = process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000'
