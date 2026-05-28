@@ -156,6 +156,21 @@ export default function VideoGenPage() {
   const [selectedProject, setSelectedProject] = useState<string | null>(null)
   const [apiPanelOpen, setApiPanelOpen] = useState(false)
 
+  // Sprint 12E: real per-model status from /api/agents/video/models.
+  // Replaces the static VIDEO_MODELS constant for picker UX. Each entry
+  // includes whether the workspace has the right keys to use it.
+  interface ModelStatus {
+    id: string
+    name: string
+    whatFor: string
+    status: 'ready' | 'needs_key' | 'beta_access'
+    setupHint: string
+    byokFields: string[]
+    byokAnchor: string
+    missingFields: string[]
+  }
+  const [modelStatus, setModelStatus] = useState<ModelStatus[]>([])
+
   // Past projects
   const [projects, setProjects] = useState<VideoProject[]>([])
   const [projectsLoading, setProjectsLoading] = useState(false)
@@ -216,8 +231,26 @@ export default function VideoGenPage() {
     if (workspaceId) {
       void fetchProjects()
       void fetchStats()
+      void fetchModelStatus()
     }
   }, [workspaceId])
+
+  // Sprint 12E: load real per-model availability so the picker shows
+  // "✓ Ready" / "⚠ Needs key" / "🔒 Beta" instead of guessing.
+  async function fetchModelStatus() {
+    if (!workspaceId) return
+    try {
+      const res = await fetch(`/api/agents/video/models?workspaceId=${encodeURIComponent(workspaceId)}`)
+      if (!res.ok) return
+      const data = await res.json() as { models: ModelStatus[]; defaultModel: string }
+      setModelStatus(data.models)
+      // If the user hasn't manually picked a model yet, default to the
+      // first 'ready' one so they don't start with a broken selection.
+      setSelectedModel(prev => data.models.find(m => m.id === prev) ? prev : data.defaultModel)
+    } catch {
+      // Non-fatal — fall back to the static VIDEO_MODELS list.
+    }
+  }
 
   async function fetchProjects() {
     if (!workspaceId) return
@@ -355,19 +388,48 @@ export default function VideoGenPage() {
     const avgSec = VIDEO_MODELS.find(m => m.id === selectedModel)?.avgSec || 30
     setGenerationStatus(`Submitting to ${VIDEO_MODELS.find(m => m.id === selectedModel)?.name}... est ~${avgSec}s`)
 
+    // Sprint 12E: dispatch to the right provider backend based on
+    // selectedModel. Each provider has its own /api/agents/video/{id}
+    // route built in Sprint 12A and 12E. Body shape differs slightly
+    // per provider (ratio formats, model variants) so we build it
+    // per-branch rather than one giant fetch.
     try {
-      const res = await fetch('/api/agents/video/runway', {
+      let endpoint = '/api/agents/video/runway'
+      let body: Record<string, unknown> = {
+        workspaceId,
+        action: 'text_to_video',
+        prompt,
+      }
+
+      if (selectedModel === 'runway') {
+        body = { ...body, duration, ratio:
+          aspectRatio === '16:9' ? '1280:768' :
+          aspectRatio === '9:16' ? '768:1280' :
+          aspectRatio === '1:1' ? '960:960' : '1280:768' }
+      } else if (selectedModel === 'luma') {
+        endpoint = '/api/agents/video/luma'
+        body = { ...body, aspectRatio, loop: false }
+      } else if (selectedModel === 'kling') {
+        endpoint = '/api/agents/video/kling'
+        body = { ...body, duration, aspectRatio, model: 'kling-v2' }
+      } else if (selectedModel === 'sora') {
+        endpoint = '/api/agents/video/sora'
+        body = { ...body, model: 'sora-2', aspectRatio:
+          aspectRatio === '16:9' ? 'landscape' :
+          aspectRatio === '9:16' ? 'portrait' : 'square',
+          durationSeconds: duration < 10 ? 5 : 10 }
+      } else if (selectedModel === 'pika') {
+        endpoint = '/api/agents/video/pika'
+        body = { ...body, aspectRatio: aspectRatio as '16:9' | '9:16' | '1:1' }
+      } else {
+        // Fallback (e.g. HeyGen) — Runway is the safest assume-anything.
+        endpoint = '/api/agents/video/runway'
+      }
+
+      const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          workspaceId,
-          action: 'text_to_video',
-          prompt,
-          duration,
-          ratio: aspectRatio === '16:9' ? '1280:768' :
-                 aspectRatio === '9:16' ? '768:1280' :
-                 aspectRatio === '1:1' ? '960:960' : '1280:768',
-        }),
+        body: JSON.stringify(body),
       })
       const data = await res.json() as {
         ok?: boolean
@@ -375,9 +437,18 @@ export default function VideoGenPage() {
         artifactId?: string
         error?: string
         requiresSetup?: boolean
+        requiresProviderAccess?: boolean
+        provider?: string
       }
       if (!data.ok || !data.taskId) {
-        setGenerationError(data.error || 'Failed to start video generation')
+        // Surface the specific error: missing key vs missing provider
+        // access vs generic failure. The UI distinguishes them so users
+        // know the right remediation.
+        const hint =
+          data.requiresSetup ? ' — Go to Settings → API Keys to paste the key.'
+          : data.requiresProviderAccess ? ' — Your key works but the provider hasn\'t enabled API access. Try a different model.'
+          : ''
+        setGenerationError((data.error || 'Failed to start video generation') + hint)
         setGenerating(false)
         return
       }
@@ -592,27 +663,71 @@ export default function VideoGenPage() {
                 {/* Model Selector */}
                 <div>
                   <label className="text-gray-400 text-xs mb-2 block">AI Model</label>
+                  {/* Sprint 12E: real per-model status from /api/agents/video/models.
+                      Buttons show: name, status badge (✓ Ready / ⚠ Needs key / 🔒 Beta),
+                      and tooltip with the exact setup hint. Picker prefers modelStatus
+                      when loaded, falls back to VIDEO_MODELS for visual continuity. */}
                   <div className="flex flex-wrap gap-2">
-                    {VIDEO_MODELS.map(model => (
-                      <button
-                        key={model.id}
-                        onClick={() => setSelectedModel(model.id)}
-                        className={`relative px-3 py-2 rounded-xl border text-left transition-all ${selectedModel === model.id ? 'border-indigo-500 bg-indigo-900/30' : 'border-gray-700 bg-gray-900 hover:border-gray-600'}`}
-                      >
-                        <div className="flex items-center gap-2">
-                          <span className={`text-sm font-medium ${selectedModel === model.id ? 'text-white' : 'text-gray-300'}`}>{model.name}</span>
-                        </div>
-                        <div className="flex gap-1.5 mt-1">
-                          <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${model.speed === 'Fast' ? 'bg-emerald-900/50 text-emerald-400' : 'bg-amber-900/50 text-amber-400'}`}>{model.speed}</span>
-                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-900/50 text-indigo-400 font-medium">{model.quality}</span>
-                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-700 text-gray-400">~{model.avgSec}s</span>
-                        </div>
-                      </button>
-                    ))}
+                    {(modelStatus.length > 0 ? modelStatus : VIDEO_MODELS.map(m => ({
+                      id: m.id, name: m.name, whatFor: '',
+                      status: m.id === 'runway' ? ('ready' as const) : ('needs_key' as const),
+                      setupHint: '', byokFields: [], byokAnchor: '#uc-video-gen', missingFields: [],
+                    }))).map(model => {
+                      const isSelected = selectedModel === model.id
+                      const staticInfo = VIDEO_MODELS.find(v => v.id === model.id)
+                      const statusBadge =
+                        model.status === 'ready' ? { label: '✓ Ready', cls: 'bg-emerald-900/50 text-emerald-400 border-emerald-800/50' }
+                        : model.status === 'beta_access' ? { label: '🔒 Beta', cls: 'bg-amber-900/50 text-amber-400 border-amber-800/50' }
+                        : { label: '⚠ Needs key', cls: 'bg-gray-800 text-gray-500 border-gray-700' }
+                      return (
+                        <button
+                          key={model.id}
+                          onClick={() => setSelectedModel(model.id)}
+                          title={model.setupHint || undefined}
+                          className={`relative px-3 py-2 rounded-xl border text-left transition-all ${isSelected ? 'border-indigo-500 bg-indigo-900/30' : 'border-gray-700 bg-gray-900 hover:border-gray-600'} ${model.status === 'needs_key' ? 'opacity-75' : ''}`}
+                        >
+                          <div className="flex items-center gap-2">
+                            <span className={`text-sm font-medium ${isSelected ? 'text-white' : 'text-gray-300'}`}>{model.name}</span>
+                          </div>
+                          <div className="flex gap-1.5 mt-1 flex-wrap">
+                            <span className={`text-[10px] px-1.5 py-0.5 rounded border font-medium ${statusBadge.cls}`}>{statusBadge.label}</span>
+                            {staticInfo && (
+                              <>
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-900/50 text-indigo-400 font-medium">{staticInfo.quality}</span>
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-700 text-gray-400">~{staticInfo.avgSec}s</span>
+                              </>
+                            )}
+                          </div>
+                        </button>
+                      )
+                    })}
                   </div>
-                  {selectedModel !== 'runway' && (
-                    <p className="text-amber-400 text-[10px] mt-2">Note: only Runway Gen-3 is wired to a live API. Other models will route through Runway.</p>
-                  )}
+                  {(() => {
+                    // Contextual help row UNDER the picker, based on the
+                    // currently-selected model's status. This is where the
+                    // smart UX lives — link straight to the BYOK section
+                    // for the missing key.
+                    const cur = modelStatus.find(m => m.id === selectedModel)
+                    if (!cur) return null
+                    if (cur.status === 'ready') {
+                      return <p className="text-emerald-400 text-[11px] mt-2">{cur.setupHint}</p>
+                    }
+                    if (cur.status === 'beta_access') {
+                      return (
+                        <p className="text-amber-400 text-[11px] mt-2">
+                          {cur.setupHint}{' '}
+                          <a href={`/dashboard/settings${cur.byokAnchor}`} className="underline">Open API Keys →</a>
+                        </p>
+                      )
+                    }
+                    // needs_key
+                    return (
+                      <p className="text-gray-400 text-[11px] mt-2">
+                        {cur.setupHint}{' '}
+                        <a href={`/dashboard/settings${cur.byokAnchor}`} className="text-indigo-400 underline">Add key →</a>
+                      </p>
+                    )
+                  })()}
                 </div>
 
                 {/* Style Presets */}
