@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { SUPPORTED_MODELS } from '@/lib/models'
 
@@ -119,9 +119,25 @@ interface ModelSettings {
   razorpayKeySecret: string
 }
 
-interface Session { id: string; device: string; browser: string; ip: string; location: string; lastActive: string; current: boolean }
-interface AccessToken { id: string; name: string; permissions: string[]; lastUsed: string; expiry: string }
-interface LoginRecord { date: string; device: string; ip: string; location: string; result: 'Success' | 'Failed' }
+// Sprint 7C: shapes returned by /api/account/sessions + login-history.
+interface Session {
+  id: string
+  workspaceId: string | null
+  device: string
+  browser: string
+  ip: string
+  createdAt: string
+  lastSeenAt: string
+  current: boolean
+}
+interface LoginRecord {
+  id: string
+  createdAt: string
+  ip: string
+  device: string
+  success: boolean
+  failureReason: string | null
+}
 
 // ─── masked key input ─────────────────────────────────────────────────────────
 function MaskedInput({ value, onChange, placeholder, className }: { value: string; onChange: (v: string) => void; placeholder?: string; className?: string }) {
@@ -265,19 +281,16 @@ export default function SettingsPage() {
   const [dndEnabled, setDndEnabled] = useState(false)
 
   // ── security state ─────────────────────────────────────────────────────────
+  // Sprint 7C: hardcoded demo arrays purged. Sessions + login history now
+  // come from /api/account/sessions and /api/account/login-history,
+  // populated by the login route's audit writes. The previous version
+  // showed fake "MacBook Pro · Mumbai · 2 mins ago" rows on every
+  // workspace, regardless of actual logins.
   const [twoFAEnabled, setTwoFAEnabled] = useState(false)
-  const [sessions] = useState<Session[]>([
-    { id: '1', device: 'MacBook Pro', browser: 'Chrome 124', ip: '103.21.45.12', location: 'Mumbai, IN', lastActive: '2 mins ago', current: true },
-    { id: '2', device: 'iPhone 15', browser: 'Safari 17', ip: '103.21.45.14', location: 'Mumbai, IN', lastActive: '1 hr ago', current: false },
-  ])
-  const [accessTokens, setAccessTokens] = useState<AccessToken[]>([
-    { id: 't1', name: 'CI/CD Pipeline', permissions: ['read:campaigns', 'write:content'], lastUsed: '2026-05-25', expiry: '2026-12-31' },
-  ])
-  const [loginHistory] = useState<LoginRecord[]>([
-    { date: '2026-05-26 09:14', device: 'MacBook Pro', ip: '103.21.45.12', location: 'Mumbai, IN', result: 'Success' },
-    { date: '2026-05-25 22:41', device: 'iPhone 15', ip: '103.21.45.14', location: 'Mumbai, IN', result: 'Success' },
-    { date: '2026-05-20 03:12', device: 'Unknown', ip: '198.51.100.99', location: 'Frankfurt, DE', result: 'Failed' },
-  ])
+  const [sessions, setSessions] = useState<Session[] | null>(null)
+  const [loginHistory, setLoginHistory] = useState<LoginRecord[] | null>(null)
+  const [sessionActing, setSessionActing] = useState<string | null>(null)
+  const [exportError, setExportError] = useState<string | null>(null)
 
   // ── appearance state ───────────────────────────────────────────────────────
   const [appearance, setAppearance] = useState({
@@ -384,6 +397,78 @@ export default function SettingsPage() {
     const name = localStorage.getItem('userName') || ''
     setProfile(prev => ({ ...prev, fullName: name, email }))
   }, [router])
+
+  // Sprint 7C: load Security tab data when it becomes active. Sessions
+  // and login history come from the audit tables — login_events &
+  // user_sessions — populated whenever the user logs in.
+  const loadSessions = useCallback(async () => {
+    try {
+      const r = await fetch('/api/account/sessions')
+      if (!r.ok) { setSessions([]); return }
+      const j = await r.json() as { sessions?: Session[] }
+      setSessions(j.sessions || [])
+    } catch { setSessions([]) }
+  }, [])
+  const loadLoginHistory = useCallback(async () => {
+    try {
+      const r = await fetch('/api/account/login-history')
+      if (!r.ok) { setLoginHistory([]); return }
+      const j = await r.json() as { events?: LoginRecord[] }
+      setLoginHistory(j.events || [])
+    } catch { setLoginHistory([]) }
+  }, [])
+
+  useEffect(() => {
+    if (activeSection === 'security') {
+      void loadSessions()
+      void loadLoginHistory()
+    }
+  }, [activeSection, loadSessions, loadLoginHistory])
+
+  async function revokeSession(id: string) {
+    setSessionActing(id)
+    try {
+      await fetch(`/api/account/sessions?id=${encodeURIComponent(id)}`, { method: 'DELETE' })
+      await loadSessions()
+    } finally { setSessionActing(null) }
+  }
+  async function revokeAllOtherSessions() {
+    setSessionActing('all')
+    try {
+      await fetch('/api/account/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'revoke-others' }),
+      })
+      await loadSessions()
+    } finally { setSessionActing(null) }
+  }
+
+  // Sprint 7C: real GDPR-style export — was previously alert('demo').
+  async function exportData() {
+    setExportError(null)
+    try {
+      const workspaceId = localStorage.getItem('workspaceId')
+      const qs = workspaceId ? `?workspaceId=${encodeURIComponent(workspaceId)}` : ''
+      const r = await fetch(`/api/account/export${qs}`)
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({})) as { error?: string }
+        setExportError(j.error || `Export failed (${r.status})`)
+        return
+      }
+      const blob = await r.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `ooumph-export-${new Date().toISOString().slice(0, 10)}.json`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      setExportError(e instanceof Error ? e.message : String(e))
+    }
+  }
 
   const markUnsaved = (sec: SectionKey) => setUnsaved(prev => new Set(prev).add(sec))
 
@@ -1069,35 +1154,69 @@ export default function SettingsPage() {
               <p className="text-gray-400 text-sm mt-1">Manage authentication, sessions, and access control.</p>
             </div>
 
-            {/* Current session */}
-            <Card title="Current Session">
-              <div className="flex items-center justify-between text-sm">
-                <div>
-                  <p className="text-white font-medium">MacBook Pro — Chrome 124</p>
-                  <p className="text-gray-500 text-xs mt-0.5">103.21.45.12 · Mumbai, IN · Active now</p>
-                </div>
-                <span className="px-2 py-0.5 bg-green-900 text-green-300 text-xs rounded">Current</span>
-              </div>
-            </Card>
-
-            {/* All sessions */}
-            <Card title="Active Sessions">
-              <div className="space-y-3">
-                {sessions.map(s => (
-                  <div key={s.id} className="flex items-center justify-between p-3 rounded-lg bg-gray-800 border border-gray-700">
-                    <div>
-                      <p className="text-white text-sm font-medium">{s.device} — {s.browser}</p>
-                      <p className="text-gray-500 text-xs">{s.ip} · {s.location} · {s.lastActive}</p>
+            {/* Active sessions — Sprint 7C: real data from /api/account/sessions.
+                Previous version showed two fake "MacBook Pro · Mumbai" rows
+                on every workspace. Revoke buttons now hit the real endpoint;
+                the "current" badge marks whichever session matches this
+                browser's cookie. */}
+            <Card
+              title="Active Sessions"
+              subtitle="Every device currently signed in to your account. Revoke any session you don't recognise."
+            >
+              {sessions === null && (
+                <p className="text-gray-500 text-sm">Loading sessions…</p>
+              )}
+              {sessions && sessions.length === 0 && (
+                <p className="text-gray-500 text-sm">No active sessions found. (You must be the current session if you're seeing this — try refreshing.)</p>
+              )}
+              {sessions && sessions.length > 0 && (
+                <div className="space-y-3">
+                  {sessions.map(s => (
+                    <div key={s.id} className="flex items-center justify-between p-3 rounded-lg bg-gray-800 border border-gray-700">
+                      <div>
+                        <p className="text-white text-sm font-medium">
+                          {s.device}{s.browser ? ` — ${s.browser}` : ''}
+                        </p>
+                        <p className="text-gray-500 text-xs mt-0.5">
+                          {s.ip} · last seen {new Date(s.lastSeenAt).toLocaleString()}
+                        </p>
+                      </div>
+                      {s.current
+                        ? <span className="px-2 py-0.5 bg-green-900 text-green-300 text-xs rounded">Current</span>
+                        : (
+                          <button
+                            disabled={sessionActing === s.id}
+                            onClick={() => revokeSession(s.id)}
+                            className={btnDanger + ' text-xs py-1 disabled:opacity-40'}
+                          >
+                            {sessionActing === s.id ? 'Revoking…' : 'Revoke'}
+                          </button>
+                        )}
                     </div>
-                    {s.current ? <span className="text-xs text-green-400">Current</span> :
-                      <button className={btnDanger + ' text-xs py-1'} onClick={() => alert('Session revoked (demo)')}>Revoke</button>}
-                  </div>
-                ))}
-              </div>
-              <button className={btnDanger} onClick={() => alert('All other sessions revoked (demo)')}>Revoke All Other Sessions</button>
+                  ))}
+                </div>
+              )}
+              {sessions && sessions.filter(s => !s.current).length > 0 && (
+                <button
+                  disabled={sessionActing === 'all'}
+                  onClick={revokeAllOtherSessions}
+                  className={btnDanger + ' disabled:opacity-40'}
+                >
+                  {sessionActing === 'all' ? 'Revoking…' : 'Revoke All Other Sessions'}
+                </button>
+              )}
+              <p className="text-[11px] text-gray-600 mt-3 leading-relaxed">
+                Note: revoking a session removes it from this list immediately. Full enforcement
+                across every API route ships when the auth middleware is upgraded; for a
+                hard sign-out everywhere right now, change your password to rotate the token secret.
+              </p>
             </Card>
 
-            {/* 2FA */}
+            {/* 2FA — kept as the existing client-side toggle. Real 2FA
+                enrolment requires a TOTP secret store + verification flow
+                that's out of scope for this sprint. The badge accurately
+                reflects whatever the user toggled this session; the next
+                refresh resets it to disabled. */}
             <Card title="Two-Factor Authentication">
               <div className="flex items-center justify-between">
                 <div>
@@ -1115,48 +1234,69 @@ export default function SettingsPage() {
               )}
             </Card>
 
-            {/* Personal Access Tokens */}
-            <Card title="API Access Tokens" subtitle="Generate tokens to use the Ooumph API from external apps">
-              <div className="space-y-2">
-                {accessTokens.map(t => (
-                  <div key={t.id} className="flex items-center justify-between p-3 rounded-lg bg-gray-800 border border-gray-700 text-sm">
-                    <div>
-                      <p className="text-white font-medium">{t.name}</p>
-                      <p className="text-gray-500 text-xs">{t.permissions.join(', ')} · Last used {t.lastUsed} · Expires {t.expiry}</p>
-                    </div>
-                    <button className={btnDanger + ' text-xs py-1'} onClick={() => setAccessTokens(p => p.filter(x => x.id !== t.id))}>Revoke</button>
-                  </div>
-                ))}
-              </div>
-              <button className={btn} onClick={() => setModal('newToken')}>+ Generate New Token</button>
+            {/* API Access Tokens — moved to the canonical Developer API
+                surface. The previous hardcoded "CI/CD Pipeline" row was a
+                fabricated demo. The /dashboard/developer-api page is wired
+                to the real developer_tokens table with proper scopes,
+                revocation, and last-used tracking. */}
+            <Card
+              title="API Access Tokens"
+              subtitle="Manage your Ooumph API keys, scopes, and revocation"
+            >
+              <p className="text-gray-400 text-sm">
+                Developer tokens are managed on the dedicated Developer API page,
+                which is wired to the real <code className="text-gray-300">developer_tokens</code> table.
+              </p>
+              <a
+                href="/dashboard/developer-api"
+                className={btn + ' inline-block text-center no-underline'}
+              >
+                Open Developer API
+              </a>
             </Card>
 
-            {/* Login History */}
-            <Card title="Login History">
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-gray-800 text-left">
-                      <th className="pb-2 text-gray-400 font-medium">Date</th>
-                      <th className="pb-2 text-gray-400 font-medium">Device</th>
-                      <th className="pb-2 text-gray-400 font-medium">IP</th>
-                      <th className="pb-2 text-gray-400 font-medium">Location</th>
-                      <th className="pb-2 text-gray-400 font-medium text-right">Result</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {loginHistory.map((r, i) => (
-                      <tr key={i} className="border-b border-gray-800/50">
-                        <td className="py-2 text-gray-300 pr-3 text-xs">{r.date}</td>
-                        <td className="py-2 text-gray-300 pr-3">{r.device}</td>
-                        <td className="py-2 text-gray-400 pr-3 font-mono text-xs">{r.ip}</td>
-                        <td className="py-2 text-gray-400 pr-3">{r.location}</td>
-                        <td className={`py-2 text-right text-xs font-medium ${r.result === 'Success' ? 'text-green-400' : 'text-red-400'}`}>{r.result}</td>
+            {/* Login History — Sprint 7C: real data from /api/account/login-history,
+                backed by the login_events table. Surfaces both successful
+                logins and failed attempts so suspicious activity is
+                visible. */}
+            <Card
+              title="Login History"
+              subtitle="Last 20 successful and failed sign-in attempts on your account"
+            >
+              {loginHistory === null && (
+                <p className="text-gray-500 text-sm">Loading history…</p>
+              )}
+              {loginHistory && loginHistory.length === 0 && (
+                <p className="text-gray-500 text-sm">
+                  No login events recorded yet. (This list will populate from your next sign-in onward.)
+                </p>
+              )}
+              {loginHistory && loginHistory.length > 0 && (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-gray-800 text-left">
+                        <th className="pb-2 text-gray-400 font-medium">Date</th>
+                        <th className="pb-2 text-gray-400 font-medium">Device</th>
+                        <th className="pb-2 text-gray-400 font-medium">IP</th>
+                        <th className="pb-2 text-gray-400 font-medium text-right">Result</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                    </thead>
+                    <tbody>
+                      {loginHistory.map(r => (
+                        <tr key={r.id} className="border-b border-gray-800/50">
+                          <td className="py-2 text-gray-300 pr-3 text-xs">{new Date(r.createdAt).toLocaleString()}</td>
+                          <td className="py-2 text-gray-300 pr-3">{r.device}</td>
+                          <td className="py-2 text-gray-400 pr-3 font-mono text-xs">{r.ip}</td>
+                          <td className={`py-2 text-right text-xs font-medium ${r.success ? 'text-green-400' : 'text-red-400'}`}>
+                            {r.success ? 'Success' : `Failed${r.failureReason ? ` (${r.failureReason})` : ''}`}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </Card>
 
             {/* Password */}
@@ -1330,13 +1470,20 @@ export default function SettingsPage() {
                 <button className={btnDanger + ' shrink-0'} onClick={() => setModal('resetWorkspace')}>Reset Workspace</button>
               </div>
 
-              {/* Export Data */}
+              {/* Export Data — Sprint 7C: real GDPR-style download via
+                  /api/account/export. Streams a JSON archive of every row
+                  tied to the user + their workspace (artifacts, leads,
+                  deals, sessions, login events, etc.). Caps at 1000 rows
+                  per table to keep the file portable. */}
               <div className="flex items-start justify-between gap-6 pb-5 border-b border-red-900/50">
                 <div>
                   <p className="text-white font-medium text-sm">Export All Data</p>
-                  <p className="text-gray-500 text-xs mt-1">Download a JSON archive of all your workspace data, content, and settings.</p>
+                  <p className="text-gray-500 text-xs mt-1">Download a JSON archive of your workspace data, content, leads, and account history. Generated media binaries are not included.</p>
+                  {exportError && (
+                    <p className="text-red-400 text-xs mt-1.5">Export failed: {exportError}</p>
+                  )}
                 </div>
-                <button className={btn + ' shrink-0'} onClick={() => alert('Export initiated (demo)')}>Export Data</button>
+                <button className={btn + ' shrink-0'} onClick={exportData}>Export Data</button>
               </div>
 
               {/* Delete Workspace */}
@@ -1408,35 +1555,10 @@ export default function SettingsPage() {
         </div>
       </Modal>
 
-      {/* New Token */}
-      <Modal open={modal === 'newToken'} onClose={() => setModal(null)} title="Generate API Access Token">
-        <Field label="Token Name"><input className={inp} placeholder="e.g. CI/CD Pipeline" value={modalData.tokenName || ''} onChange={e => setModalData(p => ({ ...p, tokenName: e.target.value }))} /></Field>
-        <Field label="Permissions">
-          <div className="space-y-2">
-            {['read:campaigns', 'write:content', 'read:analytics', 'write:campaigns', 'admin:workspace'].map(p => (
-              <label key={p} className="flex items-center gap-2 cursor-pointer">
-                <input type="checkbox" className="accent-indigo-500" />
-                <span className="text-sm text-gray-300 font-mono">{p}</span>
-              </label>
-            ))}
-          </div>
-        </Field>
-        <Field label="Expiry">
-          <select className={inp} value={modalData.tokenExpiry || '90'} onChange={e => setModalData(p => ({ ...p, tokenExpiry: e.target.value }))}>
-            <option value="30">30 days</option>
-            <option value="90">90 days</option>
-            <option value="365">1 year</option>
-            <option value="never">Never</option>
-          </select>
-        </Field>
-        <div className="flex gap-3 justify-end pt-2">
-          <button className={btnGhost} onClick={() => setModal(null)}>Cancel</button>
-          <button className={btn} onClick={() => {
-            setAccessTokens(p => [...p, { id: `t${Date.now()}`, name: modalData.tokenName || 'New Token', permissions: ['read:campaigns'], lastUsed: 'Never', expiry: '2026-12-31' }])
-            setModal(null); setModalData({})
-          }}>Generate Token</button>
-        </div>
-      </Modal>
+      {/* Sprint 7C: removed orphan New Token modal. Token generation now
+          lives on /dashboard/developer-api, which is wired to the real
+          developer_tokens table with proper scope grammar, revocation,
+          and last-used tracking. The Card on the Security tab links there. */}
 
       {/* Delete Content */}
       <Modal open={modal === 'deleteContent'} onClose={() => setModal(null)} title="Delete All Content">

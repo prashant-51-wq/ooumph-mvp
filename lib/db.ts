@@ -157,6 +157,16 @@ async function postgresQuery(strings: TemplateStringsArray, ...values: unknown[]
     await pgSql`CREATE TABLE IF NOT EXISTS post_metrics (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, artifact_id TEXT NOT NULL, platform VARCHAR(50) NOT NULL, post_id TEXT, impressions INTEGER DEFAULT 0, clicks INTEGER DEFAULT 0, likes INTEGER DEFAULT 0, comments INTEGER DEFAULT 0, shares INTEGER DEFAULT 0, saves INTEGER DEFAULT 0, video_views INTEGER DEFAULT 0, last_synced_at TIMESTAMPTZ DEFAULT NOW(), created_at TIMESTAMPTZ DEFAULT NOW())`
     await pgSql`CREATE UNIQUE INDEX IF NOT EXISTS idx_post_metrics_unique ON post_metrics(artifact_id, platform)`
     await pgSql`CREATE INDEX IF NOT EXISTS idx_post_metrics_workspace ON post_metrics(workspace_id, last_synced_at DESC)`
+    // Sprint 7C: real session tracking + login event history. Replaces the
+    // hardcoded session/login arrays on /dashboard/settings/security. Each
+    // successful login inserts a user_sessions row (token_hash = sha256(JWT))
+    // and a login_events row. Revoke = set revoked_at. Login history table
+    // also records failed attempts so the operator can spot abuse.
+    await pgSql`CREATE TABLE IF NOT EXISTS user_sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, workspace_id TEXT, token_hash TEXT NOT NULL UNIQUE, user_agent TEXT, ip TEXT, created_at TIMESTAMPTZ DEFAULT NOW(), last_seen_at TIMESTAMPTZ DEFAULT NOW(), revoked_at TIMESTAMPTZ)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_user_sessions_user ON user_sessions(user_id, created_at DESC)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_user_sessions_token ON user_sessions(token_hash)`
+    await pgSql`CREATE TABLE IF NOT EXISTS login_events (id TEXT PRIMARY KEY, user_id TEXT, email_attempted TEXT, ip TEXT, user_agent TEXT, success INTEGER DEFAULT 0, failure_reason TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_login_events_user ON login_events(user_id, created_at DESC)`
     // === Phase Remediation tables (Postgres first-call init) ===
     await pgSql`CREATE TABLE IF NOT EXISTS workspace_secrets (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, provider VARCHAR(50) NOT NULL, encrypted_value TEXT NOT NULL, label TEXT, status TEXT DEFAULT 'active', last_tested_at TIMESTAMPTZ, test_result TEXT, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
     await pgSql`CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_secrets_unique ON workspace_secrets(workspace_id, provider)`
@@ -1154,6 +1164,12 @@ function initSQLiteSync(db: import('better-sqlite3').Database) {
     'CREATE TABLE IF NOT EXISTS post_metrics (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, artifact_id TEXT NOT NULL, platform TEXT NOT NULL, post_id TEXT, impressions INTEGER DEFAULT 0, clicks INTEGER DEFAULT 0, likes INTEGER DEFAULT 0, comments INTEGER DEFAULT 0, shares INTEGER DEFAULT 0, saves INTEGER DEFAULT 0, video_views INTEGER DEFAULT 0, last_synced_at TEXT DEFAULT (datetime(\'now\')), created_at TEXT DEFAULT (datetime(\'now\')))',
     'CREATE UNIQUE INDEX IF NOT EXISTS idx_post_metrics_unique ON post_metrics(artifact_id, platform)',
     'CREATE INDEX IF NOT EXISTS idx_post_metrics_workspace ON post_metrics(workspace_id, last_synced_at DESC)',
+    // Sprint 7C: real session + login event tracking.
+    'CREATE TABLE IF NOT EXISTS user_sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, workspace_id TEXT, token_hash TEXT NOT NULL UNIQUE, user_agent TEXT, ip TEXT, created_at TEXT DEFAULT (datetime(\'now\')), last_seen_at TEXT DEFAULT (datetime(\'now\')), revoked_at TEXT)',
+    'CREATE INDEX IF NOT EXISTS idx_user_sessions_user ON user_sessions(user_id, created_at DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_user_sessions_token ON user_sessions(token_hash)',
+    'CREATE TABLE IF NOT EXISTS login_events (id TEXT PRIMARY KEY, user_id TEXT, email_attempted TEXT, ip TEXT, user_agent TEXT, success INTEGER DEFAULT 0, failure_reason TEXT, created_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE INDEX IF NOT EXISTS idx_login_events_user ON login_events(user_id, created_at DESC)',
     // === Phase Remediation: BYOK secrets + notifications + agent configs ===
     'CREATE TABLE IF NOT EXISTS workspace_secrets (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, provider TEXT NOT NULL, encrypted_value TEXT NOT NULL, label TEXT, status TEXT DEFAULT \'active\', last_tested_at TEXT, test_result TEXT, created_at TEXT DEFAULT (datetime(\'now\')), updated_at TEXT DEFAULT (datetime(\'now\')))',
     'CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_secrets_unique ON workspace_secrets(workspace_id, provider)',
@@ -1531,6 +1547,12 @@ export async function initializeDatabase() {
   await pgSql`CREATE TABLE IF NOT EXISTS post_metrics (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, artifact_id TEXT NOT NULL, platform VARCHAR(50) NOT NULL, post_id TEXT, impressions INTEGER DEFAULT 0, clicks INTEGER DEFAULT 0, likes INTEGER DEFAULT 0, comments INTEGER DEFAULT 0, shares INTEGER DEFAULT 0, saves INTEGER DEFAULT 0, video_views INTEGER DEFAULT 0, last_synced_at TIMESTAMPTZ DEFAULT NOW(), created_at TIMESTAMPTZ DEFAULT NOW())`
   await pgSql`CREATE UNIQUE INDEX IF NOT EXISTS idx_post_metrics_unique ON post_metrics(artifact_id, platform)`
   await pgSql`CREATE INDEX IF NOT EXISTS idx_post_metrics_workspace ON post_metrics(workspace_id, last_synced_at DESC)`
+  // Sprint 7C: real session + login event tracking.
+  await pgSql`CREATE TABLE IF NOT EXISTS user_sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, workspace_id TEXT, token_hash TEXT NOT NULL UNIQUE, user_agent TEXT, ip TEXT, created_at TIMESTAMPTZ DEFAULT NOW(), last_seen_at TIMESTAMPTZ DEFAULT NOW(), revoked_at TIMESTAMPTZ)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_user_sessions_user ON user_sessions(user_id, created_at DESC)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_user_sessions_token ON user_sessions(token_hash)`
+  await pgSql`CREATE TABLE IF NOT EXISTS login_events (id TEXT PRIMARY KEY, user_id TEXT, email_attempted TEXT, ip TEXT, user_agent TEXT, success INTEGER DEFAULT 0, failure_reason TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_login_events_user ON login_events(user_id, created_at DESC)`
   // === Phase Remediation tables ===
   await pgSql`CREATE TABLE IF NOT EXISTS workspace_secrets (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, provider VARCHAR(50) NOT NULL, encrypted_value TEXT NOT NULL, label TEXT, status TEXT DEFAULT 'active', last_tested_at TIMESTAMPTZ, test_result TEXT, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
   await pgSql`CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_secrets_unique ON workspace_secrets(workspace_id, provider)`
