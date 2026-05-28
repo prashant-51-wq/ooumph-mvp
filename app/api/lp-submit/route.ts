@@ -5,6 +5,7 @@
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
+import { notifyLeadCaptured } from '@/lib/notifications'
 
 export const runtime = 'nodejs'
 
@@ -53,6 +54,15 @@ export async function POST(req: NextRequest) {
         'landing_page', ${artifactTitle}, 'new', 0, ${notes}
       )
     `
+
+    // Sprint 15B (P0 #7): producer-side notification so the user sees
+    // "new lead" in the bell even when not watching the CRM page.
+    await notifyLeadCaptured(
+      workspaceId,
+      id,
+      name || email,
+      'landing page' + (artifactTitle ? ` (${artifactTitle})` : ''),
+    )
 
     // Fire-and-forget: auto-score if a scoring model exists
     const modelResult = await sql`

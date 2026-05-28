@@ -168,6 +168,109 @@ export async function PATCH(req: NextRequest) {
       }
     }
 
+    // ── Sprint 15B (P0 #1): approval → scheduled_content auto-handoff ─────────
+    //
+    // Previously: approving a daily-post artifact only flipped artifacts.status
+    // to 'approved' — the user had to manually open /publishing and schedule
+    // each post. That broke the "auto-pilot daily posting" promise.
+    //
+    // Now: for any content-shaped artifact, derive an artifact.content_json
+    // payload per platform and insert a pending scheduled_content row. The
+    // existing publish-scheduled cron drains it on its next 15-minute tick.
+    //
+    // We dedupe via artifact_id — re-approval (regen+approve loops) won't
+    // create duplicate queue rows.
+    const CONTENT_TYPES = new Set([
+      'social_post', 'linkedin_post', 'twitter_post', 'instagram_post',
+      'facebook_post', 'post', 'caption', 'thread', 'reel_script',
+    ])
+    if (action === 'approve' && artifact?.id && CONTENT_TYPES.has(artifact.type as string)) {
+      after(async () => {
+        try {
+          const existing = await sql`
+            SELECT id FROM scheduled_content WHERE artifact_id = ${artifact.id as string} LIMIT 1
+          `
+          if (existing.rows[0]) {
+            console.log(`[approvals] artifact ${artifact.id} already queued — skip auto-schedule`)
+            return
+          }
+          // Pull artifact body + decide channel + when to fire.
+          const artFull = await sql`
+            SELECT content_json FROM artifacts WHERE id = ${artifact.id as string} LIMIT 1
+          `
+          const row = artFull.rows[0] as { content_json?: string | Record<string, unknown> } | undefined
+          let content: Record<string, unknown> = {}
+          if (typeof row?.content_json === 'string') {
+            try { content = JSON.parse(row.content_json) } catch { /* ignore */ }
+          } else if (row?.content_json && typeof row.content_json === 'object') {
+            content = row.content_json as Record<string, unknown>
+          }
+          const body =
+            (content.body as string) ||
+            (content.text as string) ||
+            (content.caption as string) ||
+            (content.copy as string) ||
+            (artifact.title as string) || ''
+          if (!body.trim()) {
+            console.log(`[approvals] artifact ${artifact.id} has empty body — skip auto-schedule`)
+            return
+          }
+          // Channel inference: explicit > artifact.type > default linkedin
+          const inferChannel = (t: string) => {
+            const x = t.toLowerCase()
+            if (x.includes('linkedin')) return 'linkedin'
+            if (x.includes('twitter') || x.includes('x_')) return 'twitter'
+            if (x.includes('instagram') || x.includes('reel')) return 'instagram'
+            if (x.includes('facebook')) return 'facebook'
+            return null
+          }
+          const channel =
+            (content.channel as string) ||
+            (content.platform as string) ||
+            inferChannel(artifact.type as string) ||
+            'linkedin'
+          // Default scheduling: +30 minutes (gives the user a chance to cancel
+          // from /calendar before the cron picks it up).
+          const scheduledAt = (content.scheduled_at as string) || new Date(Date.now() + 30 * 60_000).toISOString()
+          const mediaUrls = Array.isArray(content.media_urls) ? content.media_urls : []
+          const now = new Date().toISOString()
+          await sql`
+            INSERT INTO scheduled_content (
+              id, workspace_id, artifact_id,
+              channel, platform,
+              content_body, content,
+              scheduled_at, scheduled_for,
+              media_urls, status, retry_count,
+              created_at, updated_at
+            ) VALUES (
+              ${newId()}, ${workspaceId}, ${artifact.id as string},
+              ${channel}, ${channel},
+              ${body}, ${body},
+              ${scheduledAt}, ${scheduledAt},
+              ${JSON.stringify(mediaUrls)}, 'pending', 0,
+              ${now}, ${now}
+            )
+          `
+          console.log(`[approvals] auto-scheduled artifact ${artifact.id} → ${channel} @ ${scheduledAt}`)
+          // Producer-side notification so the user sees "post queued" even if
+          // they're not looking at /calendar right now.
+          await sql`
+            INSERT INTO notifications (id, workspace_id, type, title, body, link, severity, created_at)
+            VALUES (
+              ${newId()}, ${workspaceId}, 'post_queued',
+              ${'Post queued for ' + channel},
+              ${'Will publish in 30 minutes — open the calendar to retime or cancel.'},
+              ${'/dashboard/calendar'},
+              'info',
+              ${now}
+            )
+          `
+        } catch (err) {
+          console.error('[approvals after()] auto-schedule failed:', err)
+        }
+      })
+    }
+
     return NextResponse.json({ success: true, status })
   } catch (error) {
     console.error('Approval error:', error)

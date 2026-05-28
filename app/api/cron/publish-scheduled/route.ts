@@ -270,11 +270,26 @@ export async function GET(req: NextRequest) {
         if (gate) {
           // 403 from gate — leave permanently failed; don't auto-retry an
           // unapproved artifact.
+          const now = new Date().toISOString()
           await sql`
             UPDATE scheduled_content
-            SET status = 'failed', error_message = 'Artifact not approved', updated_at = ${new Date().toISOString()}
+            SET status = 'failed', error_message = 'Artifact not approved', updated_at = ${now}
             WHERE id = ${itemId}
           `
+          // Sprint 15B (P0 #7): producer-side notification.
+          try {
+            await sql`
+              INSERT INTO notifications (id, workspace_id, type, title, body, link, severity, created_at)
+              VALUES (
+                ${newId()}, ${workspaceId}, 'publish_failed',
+                ${'Publish blocked — artifact not approved'},
+                ${'Open the approval queue and approve before the cron will publish.'},
+                '/dashboard/approvals',
+                'warning',
+                ${now}
+              )
+            `
+          } catch { /* non-fatal */ }
           results.push({ id: itemId, status: 'failed', error: 'artifact_not_approved' })
           continue
         }
@@ -282,7 +297,7 @@ export async function GET(req: NextRequest) {
 
       // ── 3. Resolve OAuth token from oauth_tokens (BYOK) ─────────────────
       if (!channel) {
-        await markFailed(itemId, retryCount, 'No channel set')
+        await markFailed(itemId, retryCount, 'No channel set', workspaceId, null)
         results.push({ id: itemId, status: 'failed', error: 'no_channel' })
         continue
       }
@@ -300,14 +315,14 @@ export async function GET(req: NextRequest) {
       } | undefined
 
       if (!tok?.encrypted_access_token || tok.status !== 'active') {
-        await markFailed(itemId, retryCount, `No active ${channel} connection`)
+        await markFailed(itemId, retryCount, `No active ${channel} connection`, workspaceId, channel)
         results.push({ id: itemId, status: 'failed', error: 'no_oauth_token' })
         continue
       }
 
       const accessToken = decryptSecret(tok.encrypted_access_token)
       if (!accessToken) {
-        await markFailed(itemId, retryCount, 'Token decrypt failed')
+        await markFailed(itemId, retryCount, 'Token decrypt failed', workspaceId, channel)
         results.push({ id: itemId, status: 'failed', error: 'decrypt_failed' })
         continue
       }
@@ -320,7 +335,7 @@ export async function GET(req: NextRequest) {
       // ── 5. Per-platform dispatch ────────────────────────────────────────
       const dispatcher = dispatcherFor(channel)
       if (!dispatcher) {
-        await markFailed(itemId, retryCount, `Channel '${channel}' not supported`)
+        await markFailed(itemId, retryCount, `Channel '${channel}' not supported`, workspaceId, channel)
         results.push({ id: itemId, status: 'failed', error: 'unsupported_channel' })
         continue
       }
@@ -358,14 +373,14 @@ export async function GET(req: NextRequest) {
         })
       } else {
         // ── 6b. Failure → bump retry counter; mark failed at 3 strikes ────
-        await markFailed(itemId, retryCount, dispatch.error || 'Unknown dispatch error')
+        await markFailed(itemId, retryCount, dispatch.error || 'Unknown dispatch error', workspaceId, channel)
         results.push({ id: itemId, status: 'retry', error: dispatch.error })
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       console.error(`[publish-scheduled] item ${itemId} threw:`, err)
       try {
-        await markFailed(itemId, retryCount, msg)
+        await markFailed(itemId, retryCount, msg, workspaceId, channel)
       } catch { /* best-effort */ }
       results.push({ id: itemId, status: 'failed', error: msg })
     }
@@ -382,16 +397,45 @@ export async function GET(req: NextRequest) {
 /**
  * Centralised failure handler. Increments retry_count and either flips back
  * to 'pending' for another shot, or to 'failed' once we've burned 3 strikes.
+ *
+ * Sprint 15B (P0 #7): on terminal failure, produce a notification row so the
+ * user sees the failure even if they aren't watching /calendar. workspaceId
+ * and channel are optional only because two early call sites don't have them
+ * yet — both still flow through here so the notification path stays single.
  */
-async function markFailed(itemId: string, currentRetries: number, errMsg: string): Promise<void> {
+async function markFailed(
+  itemId: string,
+  currentRetries: number,
+  errMsg: string,
+  workspaceId?: string,
+  channel?: string | null,
+): Promise<void> {
   const nextRetries = currentRetries + 1
   const finalStatus = nextRetries >= MAX_RETRY_COUNT ? 'failed' : 'pending'
+  const now = new Date().toISOString()
   await sql`
     UPDATE scheduled_content SET
       status        = ${finalStatus},
       retry_count   = ${nextRetries},
       error_message = ${errMsg.slice(0, 500)},
-      updated_at    = ${new Date().toISOString()}
+      updated_at    = ${now}
     WHERE id = ${itemId}
   `
+  if (finalStatus === 'failed' && workspaceId) {
+    try {
+      await sql`
+        INSERT INTO notifications (id, workspace_id, type, title, body, link, severity, created_at)
+        VALUES (
+          ${newId()}, ${workspaceId}, 'publish_failed',
+          ${'Publish failed' + (channel ? ` on ${channel}` : '')},
+          ${errMsg.slice(0, 240)},
+          '/dashboard/calendar',
+          'error',
+          ${now}
+        )
+      `
+    } catch (err) {
+      console.error('[publish-scheduled] notification insert failed:', err)
+    }
+  }
 }

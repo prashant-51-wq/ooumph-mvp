@@ -622,6 +622,28 @@ async function postgresQuery(strings: TemplateStringsArray, ...values: unknown[]
     // tokens like {platform}, {campaign_slug}, {creative_id}). Per-campaign
     // override lives in ad_campaigns.utm_override.
     await pgSql`ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS utm_template TEXT`
+
+    // Sprint 15A: onboarding-complete marker so mid-wizard refresh resumes
+    // correctly (previously the wizard had no persisted completion state).
+    await pgSql`ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS onboarding_completed_at TIMESTAMPTZ`
+    await pgSql`ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS onboarding_step INTEGER NOT NULL DEFAULT 0`
+
+    // Sprint 15A: persisted CRM segments. Previously segments were UI-only —
+    // computed each render over leads_captured rows. Persisting the rule
+    // lets users share/save segments and lets workflows trigger on them.
+    await pgSql`
+      CREATE TABLE IF NOT EXISTS lead_segments (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+        name VARCHAR(255) NOT NULL,
+        description TEXT,
+        rule_json TEXT NOT NULL,
+        member_count INTEGER NOT NULL DEFAULT 0,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `
+    await pgSql`CREATE INDEX IF NOT EXISTS lead_segments_ws ON lead_segments(workspace_id)`
   }
 
   const rows = await pgSql(strings, ...values) as Record<string, unknown>[]
@@ -1200,6 +1222,11 @@ function initSQLiteSync(db: import('better-sqlite3').Database) {
     // SQLite needs a separate CREATE UNIQUE INDEX (no partial-index syntax with WHERE in older SQLite,
     // but modern SQLite supports WHERE — better-sqlite3 ships ≥ 3.40 where this works fine).
     'CREATE UNIQUE INDEX IF NOT EXISTS idx_artifacts_lp_slug ON artifacts(lp_slug) WHERE lp_slug IS NOT NULL',
+    // Sprint 15A: onboarding-complete marker + persisted CRM segments.
+    'ALTER TABLE workspaces ADD COLUMN onboarding_completed_at TEXT',
+    'ALTER TABLE workspaces ADD COLUMN onboarding_step INTEGER NOT NULL DEFAULT 0',
+    'CREATE TABLE IF NOT EXISTS lead_segments (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT, rule_json TEXT NOT NULL, member_count INTEGER NOT NULL DEFAULT 0, created_at TEXT DEFAULT (datetime(\'now\')), updated_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE INDEX IF NOT EXISTS lead_segments_ws ON lead_segments(workspace_id)',
     // === Phase Remediation: BYOK secrets + notifications + agent configs ===
     'CREATE TABLE IF NOT EXISTS workspace_secrets (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, provider TEXT NOT NULL, encrypted_value TEXT NOT NULL, label TEXT, status TEXT DEFAULT \'active\', last_tested_at TEXT, test_result TEXT, created_at TEXT DEFAULT (datetime(\'now\')), updated_at TEXT DEFAULT (datetime(\'now\')))',
     'CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_secrets_unique ON workspace_secrets(workspace_id, provider)',
@@ -1818,5 +1845,10 @@ export async function initializeDatabase() {
   await pgSql`ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS hard_max_daily_spend INTEGER NOT NULL DEFAULT 50000`
   await pgSql`ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS alert_threshold_budget INTEGER NOT NULL DEFAULT 25000`
   await pgSql`ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS utm_template TEXT`
+  // Sprint 15A: onboarding marker + lead_segments table (standalone init path).
+  await pgSql`ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS onboarding_completed_at TIMESTAMPTZ`
+  await pgSql`ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS onboarding_step INTEGER NOT NULL DEFAULT 0`
+  await pgSql`CREATE TABLE IF NOT EXISTS lead_segments (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), name VARCHAR(255) NOT NULL, description TEXT, rule_json TEXT NOT NULL, member_count INTEGER NOT NULL DEFAULT 0, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE INDEX IF NOT EXISTS lead_segments_ws ON lead_segments(workspace_id)`
   console.log('✅ Neon Postgres DB initialized')
 }
