@@ -16,7 +16,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { publishTweet } from '@/lib/twitter-oauth'
 import { fetchWithTimeout } from '@/lib/fetch-with-timeout'
-import { assertArtifactApproved } from '@/lib/guards'
+import { assertArtifactApproved, assertWorkspaceOwnership } from '@/lib/guards'
 
 interface DirectPublishBody {
   workspaceId: string
@@ -128,6 +128,11 @@ export async function POST(req: NextRequest) {
     if (!workspaceId || !platforms?.length || !content) {
       return NextResponse.json({ error: 'workspaceId, platforms, and content required' }, { status: 400 })
     }
+    // Sprint 7E: session must own this workspace. Without this an
+    // authenticated user with a stolen artifactId could trigger external
+    // posts on someone else's connected social accounts.
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     // ─── Human governance gate (defense in depth) ─────────────────────────
     // When this route is called with an artifactId (the normal flow from
@@ -225,6 +230,9 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
   const workspaceId = searchParams.get('workspaceId')
   if (!workspaceId) return NextResponse.json([])
+  // Sprint 7E: session must own this workspace.
+  const denied = assertWorkspaceOwnership(req, workspaceId)
+  if (denied) return denied
 
   const result = await sql`
     SELECT * FROM published_content

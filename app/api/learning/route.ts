@@ -1,11 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
   const workspaceId = searchParams.get('workspaceId')
   const sourcePrefix = searchParams.get('sourcePrefix') // e.g. 'repurpose'
   if (!workspaceId) return NextResponse.json([])
+  // Sprint 7E: session must own this workspace.
+  const denied = assertWorkspaceOwnership(req, workspaceId)
+  if (denied) return denied
 
   const result = sourcePrefix
     ? await sql`
@@ -42,6 +46,9 @@ export async function POST(req: NextRequest) {
     if (!workspaceId || !note) {
       return NextResponse.json({ error: 'workspaceId and note are required' }, { status: 400 })
     }
+    // Sprint 7E: session must own this workspace.
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     const id = newId()
     const conf = typeof confidence === 'number' ? Math.min(1, Math.max(0, confidence)) : 0.8

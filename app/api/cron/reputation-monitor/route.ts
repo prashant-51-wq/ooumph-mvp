@@ -8,9 +8,13 @@ import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
 
 export async function GET(req: NextRequest) {
-  // Verify cron secret
-  const authHeader = req.headers.get('authorization')
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+  // Sprint 7E: align with every other cron in the project — fall open in
+  // dev when CRON_SECRET isn't set, otherwise enforce the bearer match.
+  // Previously the check was unconditional, which made local testing
+  // always 401 even when no secret was configured.
+  const secret = process.env.CRON_SECRET || ''
+  const authHeader = req.headers.get('authorization') || ''
+  if (secret && authHeader !== `Bearer ${secret}`) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 

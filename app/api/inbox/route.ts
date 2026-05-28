@@ -5,6 +5,7 @@
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
@@ -14,6 +15,10 @@ export async function GET(req: NextRequest) {
   const search = searchParams.get('search') || ''
 
   if (!workspaceId) return NextResponse.json([])
+  // Sprint 7E: session must own this workspace. Inbox conversations
+  // contain customer contact details + message bodies that would leak.
+  const denied = assertWorkspaceOwnership(req, workspaceId)
+  if (denied) return denied
 
   let convos
   if (search) {
@@ -70,6 +75,9 @@ export async function POST(req: NextRequest) {
     } = body
 
     if (!workspaceId) return NextResponse.json({ error: 'workspaceId required' }, { status: 400 })
+    // Sprint 7E: session must own this workspace.
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     // Try to find existing contact in CRM
     let contactId: string | null = null
@@ -123,6 +131,12 @@ export async function PATCH(req: NextRequest) {
       unreadCount?: number
     }
     if (!id) return NextResponse.json({ error: 'id required' }, { status: 400 })
+    // Sprint 7E: resolve the conversation's workspace and assert ownership.
+    const wsRes = await sql`SELECT workspace_id FROM inbox_conversations WHERE id = ${id} LIMIT 1`
+    const wsRow = wsRes.rows[0] as { workspace_id?: string } | undefined
+    if (!wsRow?.workspace_id) return NextResponse.json({ error: 'Conversation not found' }, { status: 404 })
+    const denied = assertWorkspaceOwnership(req, wsRow.workspace_id)
+    if (denied) return denied
 
     await sql`
       UPDATE inbox_conversations
@@ -130,7 +144,7 @@ export async function PATCH(req: NextRequest) {
           tags = COALESCE(${tags ? JSON.stringify(tags) : null}, tags),
           assigned_to = COALESCE(${assignedTo || null}, assigned_to),
           unread_count = COALESCE(${unreadCount ?? null}, unread_count)
-      WHERE id = ${id}
+      WHERE id = ${id} AND workspace_id = ${wsRow.workspace_id}
     `
     return NextResponse.json({ ok: true })
   } catch (error) {

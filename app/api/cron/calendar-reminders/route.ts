@@ -22,6 +22,9 @@ export async function GET(req: NextRequest) {
 
   try {
     // ── Send reminders for meetings in next 24h ───────────────────────────────
+    // Sprint 7E: LIMIT 200 so a single workspace with thousands of confirmed
+    // bookings in the next 24h can't drain the cron's maxDuration. Remaining
+    // bookings get picked up by the next tick.
     const upcomingResult = await sql`
       SELECT b.*, w.name as workspace_name, w.owner_email, bp.business_name
       FROM bookings b
@@ -31,6 +34,8 @@ export async function GET(req: NextRequest) {
         AND b.reminder_sent = 0
         AND b.start_time >= ${now.toISOString()}
         AND b.start_time <= ${in24h.toISOString()}
+      ORDER BY b.start_time ASC
+      LIMIT 200
     `
 
     const resendKey = process.env.RESEND_API_KEY

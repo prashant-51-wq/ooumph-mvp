@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 
 // Map convenient type aliases to actual artifact.type values stored by agent routes.
 const TYPE_ALIASES: Record<string, string[]> = {
@@ -17,6 +18,10 @@ export async function GET(req: NextRequest) {
   const agentRunId = searchParams.get('agentRunId')
   const limit = parseInt(searchParams.get('limit') || '50')
   if (!workspaceId) return NextResponse.json([])
+
+  // Sprint 7E: session must own this workspace.
+  const denied = assertWorkspaceOwnership(req, workspaceId)
+  if (denied) return denied
 
   // Children of a specific agent run — used by Workspace Hub middle panel.
   // Walks the parent_run_id chain by joining agent_runs so we capture
@@ -108,6 +113,9 @@ export async function POST(req: NextRequest) {
     if (!workspaceId || !type || !title) {
       return NextResponse.json({ error: 'workspaceId, type and title are required' }, { status: 400 })
     }
+    // Sprint 7E: session must own this workspace.
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     const artifactId = newId()
     const payload = typeof content_json === 'string' ? content_json : JSON.stringify(content_json ?? {})
@@ -135,7 +143,16 @@ export async function PATCH(req: NextRequest) {
     if (!artifactId || content_json === undefined) {
       return NextResponse.json({ error: 'Missing artifactId or content_json' }, { status: 400 })
     }
-    await sql`UPDATE artifacts SET content_json = ${JSON.stringify(content_json)} WHERE id = ${artifactId}`
+    // Sprint 7E: resolve artifact's workspace and assert ownership before
+    // the UPDATE. Previously this endpoint accepted any artifactId and
+    // rewrote content_json — a workspace-leakage bug for an authenticated
+    // caller who guessed an ID.
+    const wsRes = await sql`SELECT workspace_id FROM artifacts WHERE id = ${artifactId} LIMIT 1`
+    const wsRow = wsRes.rows[0] as { workspace_id?: string } | undefined
+    if (!wsRow?.workspace_id) return NextResponse.json({ error: 'Artifact not found' }, { status: 404 })
+    const denied = assertWorkspaceOwnership(req, wsRow.workspace_id)
+    if (denied) return denied
+    await sql`UPDATE artifacts SET content_json = ${JSON.stringify(content_json)} WHERE id = ${artifactId} AND workspace_id = ${wsRow.workspace_id}`
     return NextResponse.json({ ok: true })
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 })
