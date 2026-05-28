@@ -23,6 +23,14 @@
     {
       "path": "/api/cron/reputation-monitor",
       "schedule": "0 11 * * *"
+    },
+    {
+      "path": "/api/cron/daily-brief",
+      "schedule": "0 7 * * *"
+    },
+    {
+      "path": "/api/cron/extract-knowledge",
+      "schedule": "0 */6 * * *"
     }
   ]
 }
