@@ -14,8 +14,8 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server'
-import { sql } from '@/lib/db'
-import { assertSuperAdmin } from '@/lib/guards'
+import { sql, newId } from '@/lib/db'
+import { assertSuperAdmin, getSessionUserId } from '@/lib/guards'
 
 interface WorkspaceRow {
   id: string
@@ -187,9 +187,24 @@ async function getCommissions() {
     (clientCountsRes.rows as Array<{ vendor_workspace_id: string; count: number }>).map(r => [r.vendor_workspace_id, Number(r.count)])
   )
 
+  // Sprint 7D: real payout tracking via commission_payouts. balance =
+  // commission earned MINUS payouts recorded. paidOut is the SUM of
+  // amount_cents per vendor.
+  const payoutsRes = await sql`
+    SELECT vendor_workspace_id, COALESCE(SUM(amount_cents)::int, 0) as paid_cents
+    FROM commission_payouts GROUP BY vendor_workspace_id
+  `
+  const paidByVendor = new Map(
+    (payoutsRes.rows as Array<{ vendor_workspace_id: string; paid_cents: number }>)
+      .map(r => [r.vendor_workspace_id, Number(r.paid_cents)])
+  )
+
   const affiliates = ledger.map(l => {
     const ws = wsById.get(l.vendor_workspace_id)
     const vendor = vendorByWs.get(l.vendor_workspace_id)
+    const earnedCents = Number(l.commission || 0)
+    const paidCents = paidByVendor.get(l.vendor_workspace_id) || 0
+    const balanceCents = Math.max(0, earnedCents - paidCents)
     return {
       id: l.vendor_workspace_id,
       name: vendor?.white_label_name || ws?.name || 'Unknown',
@@ -197,9 +212,9 @@ async function getCommissions() {
       referredAgencies: clientCounts.get(l.vendor_workspace_id) || 0,
       totalReferralMrr: Math.round(l.gross / 100),
       commissionRate: l.gross > 0 ? Math.round((l.commission / l.gross) * 100) : 0,
-      earnedThisMonth: Math.round(l.commission / 100),
-      paidOut: 0, // TODO: track separately when payouts are processed
-      balance: Math.round(l.commission / 100),
+      earnedThisMonth: Math.round(earnedCents / 100),
+      paidOut: Math.round(paidCents / 100),
+      balance: Math.round(balanceCents / 100),
     }
   })
 
@@ -291,6 +306,63 @@ export async function POST(req: NextRequest) {
       const { workspaceId } = body as { workspaceId: string }
       await sql`UPDATE workspaces SET status = 'active' WHERE id = ${workspaceId}`
       return NextResponse.json({ ok: true })
+    }
+
+    // Sprint 7D: manual payout recording. Records the payout in
+    // commission_payouts which getCommissions() subtracts from earned
+    // commission to compute the balance. Stripe Connect transfers
+    // will land later — payment_method='manual' makes the manual
+    // origin auditable.
+    //
+    // Body: { action: 'mark_paid', vendorWorkspaceId, amountCents?, notes? }
+    // If amountCents is omitted, we settle the FULL outstanding balance
+    // (the common case for the UI button).
+    if (action === 'mark_paid') {
+      const {
+        vendorWorkspaceId,
+        amountCents: requestedAmount,
+        notes,
+      } = body as { vendorWorkspaceId?: string; amountCents?: number; notes?: string }
+
+      if (!vendorWorkspaceId) {
+        return NextResponse.json({ error: 'vendorWorkspaceId required' }, { status: 400 })
+      }
+
+      // Compute current balance the same way getCommissions does, so we
+      // don't accidentally pay more than is owed.
+      const ledgerRes = await sql`
+        SELECT COALESCE(SUM(commission_amount)::int, 0) as earned_cents
+        FROM commission_ledger WHERE vendor_workspace_id = ${vendorWorkspaceId}
+      `
+      const earnedCents = Number((ledgerRes.rows[0] as { earned_cents?: number } | undefined)?.earned_cents ?? 0)
+      const paidRes = await sql`
+        SELECT COALESCE(SUM(amount_cents)::int, 0) as paid_cents
+        FROM commission_payouts WHERE vendor_workspace_id = ${vendorWorkspaceId}
+      `
+      const paidCents = Number((paidRes.rows[0] as { paid_cents?: number } | undefined)?.paid_cents ?? 0)
+      const balanceCents = Math.max(0, earnedCents - paidCents)
+
+      if (balanceCents === 0) {
+        return NextResponse.json({ error: 'No outstanding balance to pay out.' }, { status: 400 })
+      }
+
+      const amountToPay = requestedAmount !== undefined
+        ? Math.min(Math.max(0, Math.floor(requestedAmount)), balanceCents)
+        : balanceCents
+      if (amountToPay <= 0) {
+        return NextResponse.json({ error: 'amountCents must be > 0' }, { status: 400 })
+      }
+
+      const paidByUserId = getSessionUserId(req)
+      await sql`
+        INSERT INTO commission_payouts (id, vendor_workspace_id, amount_cents, notes, paid_by_user_id, payment_method)
+        VALUES (${newId()}, ${vendorWorkspaceId}, ${amountToPay}, ${notes ?? null}, ${paidByUserId ?? null}, 'manual')
+      `
+      return NextResponse.json({
+        ok: true,
+        amountPaidCents: amountToPay,
+        newBalanceCents: balanceCents - amountToPay,
+      })
     }
 
     return NextResponse.json({ error: 'Unknown action' }, { status: 400 })

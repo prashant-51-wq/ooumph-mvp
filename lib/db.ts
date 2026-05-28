@@ -167,6 +167,14 @@ async function postgresQuery(strings: TemplateStringsArray, ...values: unknown[]
     await pgSql`CREATE INDEX IF NOT EXISTS idx_user_sessions_token ON user_sessions(token_hash)`
     await pgSql`CREATE TABLE IF NOT EXISTS login_events (id TEXT PRIMARY KEY, user_id TEXT, email_attempted TEXT, ip TEXT, user_agent TEXT, success INTEGER DEFAULT 0, failure_reason TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`
     await pgSql`CREATE INDEX IF NOT EXISTS idx_login_events_user ON login_events(user_id, created_at DESC)`
+    // Sprint 7D: manual + Stripe payout ledger. Until Stripe Connect
+    // payouts are wired, super-admin "Mark Paid" inserts a row here with
+    // payment_method='manual'. commission balance on /super-admin =
+    // SUM(commission_ledger.commission_amount) - SUM(commission_payouts.amount_cents)
+    // for each vendor. stripe_transfer_id populated only when the real
+    // Stripe path lands.
+    await pgSql`CREATE TABLE IF NOT EXISTS commission_payouts (id TEXT PRIMARY KEY, vendor_workspace_id TEXT NOT NULL, amount_cents INTEGER NOT NULL, paid_at TIMESTAMPTZ DEFAULT NOW(), notes TEXT, paid_by_user_id TEXT, payment_method VARCHAR(20) DEFAULT 'manual', stripe_transfer_id TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_commission_payouts_vendor ON commission_payouts(vendor_workspace_id, paid_at DESC)`
     // === Phase Remediation tables (Postgres first-call init) ===
     await pgSql`CREATE TABLE IF NOT EXISTS workspace_secrets (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, provider VARCHAR(50) NOT NULL, encrypted_value TEXT NOT NULL, label TEXT, status TEXT DEFAULT 'active', last_tested_at TIMESTAMPTZ, test_result TEXT, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
     await pgSql`CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_secrets_unique ON workspace_secrets(workspace_id, provider)`
@@ -1170,6 +1178,9 @@ function initSQLiteSync(db: import('better-sqlite3').Database) {
     'CREATE INDEX IF NOT EXISTS idx_user_sessions_token ON user_sessions(token_hash)',
     'CREATE TABLE IF NOT EXISTS login_events (id TEXT PRIMARY KEY, user_id TEXT, email_attempted TEXT, ip TEXT, user_agent TEXT, success INTEGER DEFAULT 0, failure_reason TEXT, created_at TEXT DEFAULT (datetime(\'now\')))',
     'CREATE INDEX IF NOT EXISTS idx_login_events_user ON login_events(user_id, created_at DESC)',
+    // Sprint 7D: manual + Stripe payout ledger.
+    'CREATE TABLE IF NOT EXISTS commission_payouts (id TEXT PRIMARY KEY, vendor_workspace_id TEXT NOT NULL, amount_cents INTEGER NOT NULL, paid_at TEXT DEFAULT (datetime(\'now\')), notes TEXT, paid_by_user_id TEXT, payment_method TEXT DEFAULT \'manual\', stripe_transfer_id TEXT, created_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE INDEX IF NOT EXISTS idx_commission_payouts_vendor ON commission_payouts(vendor_workspace_id, paid_at DESC)',
     // === Phase Remediation: BYOK secrets + notifications + agent configs ===
     'CREATE TABLE IF NOT EXISTS workspace_secrets (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, provider TEXT NOT NULL, encrypted_value TEXT NOT NULL, label TEXT, status TEXT DEFAULT \'active\', last_tested_at TEXT, test_result TEXT, created_at TEXT DEFAULT (datetime(\'now\')), updated_at TEXT DEFAULT (datetime(\'now\')))',
     'CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_secrets_unique ON workspace_secrets(workspace_id, provider)',
@@ -1553,6 +1564,9 @@ export async function initializeDatabase() {
   await pgSql`CREATE INDEX IF NOT EXISTS idx_user_sessions_token ON user_sessions(token_hash)`
   await pgSql`CREATE TABLE IF NOT EXISTS login_events (id TEXT PRIMARY KEY, user_id TEXT, email_attempted TEXT, ip TEXT, user_agent TEXT, success INTEGER DEFAULT 0, failure_reason TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`
   await pgSql`CREATE INDEX IF NOT EXISTS idx_login_events_user ON login_events(user_id, created_at DESC)`
+  // Sprint 7D: manual + Stripe payout ledger.
+  await pgSql`CREATE TABLE IF NOT EXISTS commission_payouts (id TEXT PRIMARY KEY, vendor_workspace_id TEXT NOT NULL, amount_cents INTEGER NOT NULL, paid_at TIMESTAMPTZ DEFAULT NOW(), notes TEXT, paid_by_user_id TEXT, payment_method VARCHAR(20) DEFAULT 'manual', stripe_transfer_id TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_commission_payouts_vendor ON commission_payouts(vendor_workspace_id, paid_at DESC)`
   // === Phase Remediation tables ===
   await pgSql`CREATE TABLE IF NOT EXISTS workspace_secrets (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, provider VARCHAR(50) NOT NULL, encrypted_value TEXT NOT NULL, label TEXT, status TEXT DEFAULT 'active', last_tested_at TIMESTAMPTZ, test_result TEXT, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
   await pgSql`CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_secrets_unique ON workspace_secrets(workspace_id, provider)`
