@@ -131,11 +131,22 @@ function BarChart({ days, content, engagement, leads }: { days: string[]; conten
 
 // ── Report Builder Modal ───────────────────────────────────────────────────────
 
+// Sprint 6F: recommendations payload from /api/analytics/recommendations.
+interface Recommendation {
+  id: string
+  title: string
+  body: string
+  severity: 'info' | 'warning' | 'critical'
+  metric?: { label: string; value: string }
+}
+
 function ReportBuilderModal({
   template,
+  workspaceId,
   onClose,
 }: {
   template: typeof REPORT_TEMPLATES[0]
+  workspaceId: string | null
   onClose: () => void
 }) {
   const [step, setStep] = useState<'build' | 'preview'>('build')
@@ -150,6 +161,41 @@ function ReportBuilderModal({
   const [schedFreq, setSchedFreq] = useState('Monthly')
   const [schedEmail, setSchedEmail] = useState('')
   const [scheduled, setScheduled] = useState(false)
+  // Sprint 6F: live recommendations from the rule engine. Fetched on
+  // preview-open so the report builder shows real, data-grounded
+  // recommendations instead of the previous "will appear here" stub.
+  const [recommendations, setRecommendations] = useState<Recommendation[] | null>(null)
+  const [recsLoading, setRecsLoading] = useState(false)
+  const [recsDataAvailable, setRecsDataAvailable] = useState<boolean>(true)
+  const [recsError, setRecsError] = useState<string | null>(null)
+
+  // Range label → API token. The dashboard hardcodes the same mapping.
+  const rangeToken = range === 'Last 7 days' ? '7d'
+    : range === 'Last 90 days' ? '90d'
+    : range === 'Last 12 months' ? '12mo'
+    : '30d'
+
+  useEffect(() => {
+    if (step !== 'preview' || !sections['Recommendations'] || !workspaceId) return
+    let cancelled = false
+    setRecsLoading(true); setRecsError(null)
+    fetch(`/api/analytics/recommendations?workspaceId=${workspaceId}&range=${rangeToken}`)
+      .then(async r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`)
+        return r.json() as Promise<{
+          recommendations: Recommendation[]
+          dataAvailable: boolean
+        }>
+      })
+      .then(json => {
+        if (cancelled) return
+        setRecommendations(json.recommendations || [])
+        setRecsDataAvailable(json.dataAvailable)
+      })
+      .catch(e => { if (!cancelled) setRecsError(e instanceof Error ? e.message : String(e)) })
+      .finally(() => { if (!cancelled) setRecsLoading(false) })
+    return () => { cancelled = true }
+  }, [step, sections, workspaceId, rangeToken])
 
   function handleDownload() {
     const data = JSON.stringify({
@@ -375,14 +421,53 @@ function ReportBuilderModal({
 
             {sections['Recommendations'] && (
               <div className="bg-gray-800 rounded-xl p-4">
-                <h4 className="text-white font-medium mb-2 text-sm">Strategic Recommendations</h4>
-                {/* Recommendations are generated from the period's data, not
-                    hardcoded. Removed the previous version's fake bullets
-                    referencing "$2.90 CPL" / "$22.10 Facebook" — those were
-                    fabrications. */}
-                <p className="text-gray-500 text-sm">
-                  AI-generated recommendations will appear here once the report engine has data to analyze.
-                </p>
+                <h4 className="text-white font-medium mb-3 text-sm">Strategic Recommendations</h4>
+                {/* Sprint 6F: rule-based recommendations from
+                    /api/analytics/recommendations. Every bullet cites a
+                    real metric from this workspace — no fabrication. */}
+                {!workspaceId && (
+                  <p className="text-gray-500 text-sm">Select a workspace to generate recommendations.</p>
+                )}
+                {workspaceId && recsLoading && (
+                  <p className="text-gray-500 text-sm">Analyzing your data…</p>
+                )}
+                {workspaceId && !recsLoading && recsError && (
+                  <p className="text-red-400 text-sm">Could not load recommendations: {recsError}</p>
+                )}
+                {workspaceId && !recsLoading && !recsError && !recsDataAvailable && (
+                  <p className="text-gray-500 text-sm">
+                    No published content, leads, or paid campaigns yet in this period — recommendations will surface once there's data to analyze.
+                  </p>
+                )}
+                {workspaceId && !recsLoading && !recsError && recsDataAvailable && recommendations && (
+                  recommendations.length === 0 ? (
+                    <p className="text-gray-500 text-sm">No issues flagged for this period.</p>
+                  ) : (
+                    <ul className="space-y-2.5">
+                      {recommendations.map(r => {
+                        const dot = r.severity === 'critical' ? 'bg-red-500'
+                          : r.severity === 'warning' ? 'bg-amber-500'
+                          : 'bg-emerald-500'
+                        return (
+                          <li key={r.id} className="flex gap-3">
+                            <span className={`mt-1.5 w-2 h-2 rounded-full flex-shrink-0 ${dot}`} />
+                            <div className="flex-1">
+                              <p className="text-gray-200 text-sm font-medium">
+                                {r.title}
+                                {r.metric && (
+                                  <span className="ml-2 text-xs font-normal text-gray-500">
+                                    ({r.metric.label}: {r.metric.value})
+                                  </span>
+                                )}
+                              </p>
+                              <p className="text-gray-400 text-xs mt-0.5 leading-relaxed">{r.body}</p>
+                            </div>
+                          </li>
+                        )
+                      })}
+                    </ul>
+                  )
+                )}
               </div>
             )}
 
@@ -1340,6 +1425,7 @@ export default function AnalyticsPage() {
       {activeTemplate && (
         <ReportBuilderModal
           template={activeTemplate}
+          workspaceId={workspaceId}
           onClose={() => setActiveTemplate(null)}
         />
       )}
