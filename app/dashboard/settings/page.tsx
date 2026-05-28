@@ -1175,13 +1175,33 @@ export default function SettingsPage() {
               <p className="text-gray-400 text-sm mt-1">Customise how the dashboard looks and feels.</p>
             </div>
             <Card title="Theme">
-              <div className="flex gap-3">
-                {(['dark', 'light', 'system'] as const).map(t => (
-                  <button key={t} onClick={() => setAppearance(a => ({ ...a, theme: t }))}
-                    className={`px-5 py-2.5 rounded-lg text-sm border capitalize transition-colors ${appearance.theme === t ? 'bg-indigo-600 border-indigo-600 text-white' : 'bg-gray-800 border-gray-700 text-gray-300 hover:border-indigo-600'}`}>
-                    {t === 'dark' ? '🌙 Dark' : t === 'light' ? '☀ Light' : '💻 System'}
-                  </button>
-                ))}
+              {/* Sprint 5 fix: Light + System themes are not implemented —
+                  the entire dashboard CSS uses dark-only Tailwind classes
+                  (bg-gray-950, text-white, etc.) with no `light:` variants.
+                  Previously clicking "Light" highlighted the button but
+                  nothing visually changed, which violated the No Fake
+                  Success rule. Disabled with a "Coming soon" badge until
+                  a real CSS variable / theme-token system ships. */}
+              <div className="flex gap-3 flex-wrap">
+                <button
+                  onClick={() => setAppearance(a => ({ ...a, theme: 'dark' }))}
+                  className={`px-5 py-2.5 rounded-lg text-sm border transition-colors ${appearance.theme === 'dark' ? 'bg-indigo-600 border-indigo-600 text-white' : 'bg-gray-800 border-gray-700 text-gray-300 hover:border-indigo-600'}`}>
+                  🌙 Dark
+                </button>
+                <button
+                  disabled
+                  title="Light mode is on the roadmap — the dashboard CSS needs theme-token refactoring first"
+                  className="px-5 py-2.5 rounded-lg text-sm border bg-gray-900 border-gray-800 text-gray-600 cursor-not-allowed flex items-center gap-2">
+                  ☀ Light
+                  <span className="text-[10px] text-amber-400 bg-amber-900/20 border border-amber-800/40 px-1.5 py-0.5 rounded">Coming soon</span>
+                </button>
+                <button
+                  disabled
+                  title="System theme follows OS preference — requires Light mode first"
+                  className="px-5 py-2.5 rounded-lg text-sm border bg-gray-900 border-gray-800 text-gray-600 cursor-not-allowed flex items-center gap-2">
+                  💻 System
+                  <span className="text-[10px] text-amber-400 bg-amber-900/20 border border-amber-800/40 px-1.5 py-0.5 rounded">Coming soon</span>
+                </button>
               </div>
             </Card>
             <Card title="Accent Color">

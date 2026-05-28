@@ -1309,7 +1309,11 @@ export default function LeadsCRMPage() {
     ? Math.round(totalPipeline / contacts.filter(c => c.deal_value > 0).length)
     : 0
   const newThisWeek = contacts.filter(c => Date.now() - new Date(c.created_at).getTime() < 7 * 86400000).length
-  const conversionRate = Math.round((contacts.filter(c => c.stage === 'Customer').length / contacts.length) * 100)
+  // Sprint 5 fix: guard division by zero — a fresh workspace has
+  // contacts.length === 0, which used to render "NaN%" in the stat card.
+  const conversionRate = contacts.length === 0
+    ? 0
+    : Math.round((contacts.filter(c => c.stage === 'Customer').length / contacts.length) * 100)
   const churnRisk = contacts.filter(c => c.rfm_tier === 'At Risk' || c.rfm_tier === 'Lost').length
 
   // ── Kanban drag ───────────────────────────────────────────────────────────

@@ -431,6 +431,9 @@ export default function AnalyticsPage() {
   const [activeTab, setActiveTab] = useState<TabId>('overview')
   const [range, setRange] = useState<RangeId>('30d')
   const [compare, setCompare] = useState(false)
+  // Sprint 5 fix: brief banner for the Generate Report / Export Data buttons
+  // so the user sees the silent file download actually happened.
+  const [reportToast, setReportToast] = useState<string | null>(null)
   const [activeTemplate, setActiveTemplate] = useState<typeof REPORT_TEMPLATES[0] | null>(null)
   // scheduledToggles previously seeded from MOCK SCHEDULED_REPORTS. Now starts
   // empty — when the real scheduled-reports endpoint lands the state will be
@@ -568,17 +571,38 @@ export default function AnalyticsPage() {
 
           <button
             onClick={() => {
-              const payload = {
-                generatedAt: new Date().toISOString(),
-                workspaceId,
-                range,
-                data,
+              // Sprint 5 fix: the click DID trigger a JSON download but
+              // most browsers download silently — users thought the button
+              // was broken. Now we:
+              //   (a) append/remove the anchor to/from the DOM for max
+              //       cross-browser compat (some older browsers ignore
+              //       detached anchor clicks),
+              //   (b) fall back to alert() if Blob URL creation fails,
+              //   (c) flip a brief `downloadedAt` state that surfaces a
+              //       confirmation banner so the user sees it worked.
+              try {
+                const payload = {
+                  generatedAt: new Date().toISOString(),
+                  workspaceId,
+                  range,
+                  data,
+                }
+                const filename = `analytics-report-${range}-${Date.now()}.json`
+                const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
+                const url = URL.createObjectURL(blob)
+                const a = document.createElement('a')
+                a.href = url
+                a.download = filename
+                document.body.appendChild(a)
+                a.click()
+                document.body.removeChild(a)
+                URL.revokeObjectURL(url)
+                setReportToast(`Downloaded ${filename}`)
+                setTimeout(() => setReportToast(null), 4000)
+              } catch (err) {
+                setReportToast(`Download failed: ${err instanceof Error ? err.message : String(err)}`)
+                setTimeout(() => setReportToast(null), 6000)
               }
-              const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
-              const url = URL.createObjectURL(blob)
-              const a = document.createElement('a')
-              a.href = url; a.download = `analytics-report-${range}-${Date.now()}.json`; a.click()
-              URL.revokeObjectURL(url)
             }}
             className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
           >
@@ -587,21 +611,33 @@ export default function AnalyticsPage() {
           <button
             onClick={() => {
               if (!data) return
-              const lines: string[] = []
-              lines.push('metric,value')
-              lines.push(`published,${data.published}`)
-              lines.push(`leads,${data.leads}`)
-              lines.push(`reach,${data.reach}`)
-              lines.push(`revenue,${data.revenue}`)
-              lines.push(`engagement_rate,${data.engagementRate}`)
-              lines.push(`ai_runs,${data.totalRuns}`)
-              lines.push(`ai_cost,${data.totalCost}`)
-              const csv = lines.join('\n')
-              const blob = new Blob([csv], { type: 'text/csv' })
-              const url = URL.createObjectURL(blob)
-              const a = document.createElement('a')
-              a.href = url; a.download = `analytics-${range}.csv`; a.click()
-              URL.revokeObjectURL(url)
+              try {
+                const lines: string[] = []
+                lines.push('metric,value')
+                lines.push(`published,${data.published}`)
+                lines.push(`leads,${data.leads}`)
+                lines.push(`reach,${data.reach}`)
+                lines.push(`revenue,${data.revenue}`)
+                lines.push(`engagement_rate,${data.engagementRate}`)
+                lines.push(`ai_runs,${data.totalRuns}`)
+                lines.push(`ai_cost,${data.totalCost}`)
+                const csv = lines.join('\n')
+                const filename = `analytics-${range}.csv`
+                const blob = new Blob([csv], { type: 'text/csv' })
+                const url = URL.createObjectURL(blob)
+                const a = document.createElement('a')
+                a.href = url
+                a.download = filename
+                document.body.appendChild(a)
+                a.click()
+                document.body.removeChild(a)
+                URL.revokeObjectURL(url)
+                setReportToast(`Downloaded ${filename}`)
+                setTimeout(() => setReportToast(null), 4000)
+              } catch (err) {
+                setReportToast(`Export failed: ${err instanceof Error ? err.message : String(err)}`)
+                setTimeout(() => setReportToast(null), 6000)
+              }
             }}
             disabled={!data}
             className="bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 disabled:opacity-50 px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
@@ -610,6 +646,15 @@ export default function AnalyticsPage() {
           </button>
         </div>
       </div>
+
+      {/* Sprint 5 fix: feedback for the silent file-download buttons above. */}
+      {reportToast && (
+        <div className="mb-4 p-3 rounded-xl bg-emerald-950/40 border border-emerald-800/50 text-emerald-300 text-sm flex items-center gap-2">
+          <span>✓</span>
+          <span className="flex-1">{reportToast}</span>
+          <button onClick={() => setReportToast(null)} className="text-gray-500 hover:text-white">×</button>
+        </div>
+      )}
 
       {/* ── Loading & error states ── */}
       {loading && (

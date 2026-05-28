@@ -166,7 +166,14 @@ export default function InboxPage() {
       .finally(() => setLoadingList(false))
   }, [workspaceId, search, selectedId])
 
-  useEffect(() => { fetchConvos() }, [fetchConvos])
+  // Sprint 5 fix: debounce the search-driven refetch. Without this, every
+  // keystroke in the search box re-triggers fetchConvos, the loading flag
+  // never settles, and "Loading…" appears stuck. 300ms is short enough to
+  // feel responsive and long enough to coalesce a burst of keystrokes.
+  useEffect(() => {
+    const t = setTimeout(() => { fetchConvos() }, 300)
+    return () => clearTimeout(t)
+  }, [fetchConvos])
 
   const fetchThread = useCallback(() => {
     if (!selectedId) { setThread(null); return }

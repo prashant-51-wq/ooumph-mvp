@@ -461,7 +461,13 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const sidebarProps = { pathname, businessName, userName, advancedOpen, setAdvancedOpen, logout }
 
   return (
-    <div className="min-h-screen bg-gray-950 flex flex-col">
+    // Sprint 5 fix: was `min-h-screen` — root grew to fit content, so the
+    // sidebar's `overflow-y-auto` nav had no viewport ceiling to scroll
+    // inside. When the Advanced section expanded, the nav grew below the
+    // visible viewport and items appeared "missing" until the user scrolled
+    // the whole page. `h-screen` locks the root to exactly the viewport so
+    // the inner nav can scroll independently of main content.
+    <div className="h-screen bg-gray-950 flex flex-col">
       {/* Mobile top bar */}
       <div className="lg:hidden flex items-center justify-between px-4 py-3 border-b border-gray-800 bg-gray-950 flex-shrink-0">
         <Link href="/" className="flex items-center gap-2">

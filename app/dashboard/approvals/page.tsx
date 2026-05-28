@@ -977,6 +977,72 @@ function TextPreview({ item }: { item: ApprovalItem }) {
         </div>
       )
     default:
-      return <pre className="text-gray-400 text-xs whitespace-pre-wrap overflow-auto max-h-48">{JSON.stringify(c, null, 2)}</pre>
+      // Sprint 5 fix: previously dumped raw JSON for any artifact type
+      // that didn't match a case above ("{copy: '...', platform: 'linkedin',
+      // is_demo: true}"). That looks broken to users. The fallback now
+      // pulls common content fields (copy, body, content, text, headline,
+      // subject, hook, cta, message, description, title) and renders them
+      // as a readable preview. If literally nothing recognizable is in
+      // the payload, falls back to a collapsible Raw JSON view.
+      return <DefaultPreview content={c} />
   }
+}
+
+/**
+ * Best-effort renderer for approval artifacts with no dedicated case in
+ * TextPreview. Extracts whichever common content fields exist, in priority
+ * order. Hides anything that's clearly metadata (is_demo, platform_id, etc.).
+ * Used for sample-seeded approvals and any new artifact_type that ships
+ * before its preview case is written.
+ */
+function DefaultPreview({ content }: { content: Record<string, unknown> }) {
+  const get = (k: string): string | null => {
+    const v = content[k]
+    return typeof v === 'string' && v.trim() ? v : null
+  }
+  const title    = get('title') || get('headline') || get('subject') || get('name')
+  const lead     = get('hook') || get('subtext') || get('preview')
+  const body     = get('body') || get('copy') || get('content') || get('text') || get('message') || get('description')
+  const cta      = get('cta') || get('callToAction') || get('action')
+  const platform = get('platform') || get('channel')
+  const hashtags = Array.isArray(content.hashtags)
+    ? (content.hashtags as unknown[]).filter((h): h is string => typeof h === 'string')
+    : null
+  const isDemo   = content.is_demo === true || content.is_sample === true
+
+  const hasReadable = title || lead || body || cta
+  if (!hasReadable) {
+    // Truly nothing parseable — give the user a collapsible JSON view
+    // so the page doesn't appear blank.
+    return (
+      <details className="text-sm">
+        <summary className="cursor-pointer text-gray-400 hover:text-white">
+          Raw artifact content (no preview template registered)
+        </summary>
+        <pre className="text-gray-400 text-xs whitespace-pre-wrap overflow-auto max-h-48 mt-2 p-2 rounded bg-gray-800/50">
+          {JSON.stringify(content, null, 2)}
+        </pre>
+      </details>
+    )
+  }
+
+  return (
+    <div className="space-y-2 text-sm">
+      {isDemo && (
+        <span className="inline-block text-[10px] text-amber-400 bg-amber-900/20 border border-amber-800/40 px-1.5 py-0.5 rounded">Sample</span>
+      )}
+      {platform && (
+        <p className="text-gray-500 text-xs">Channel: <span className="text-gray-300 capitalize">{platform}</span></p>
+      )}
+      {title && <p className="text-white font-semibold">{title}</p>}
+      {lead && <p className="text-gray-400">{lead}</p>}
+      {body && <p className="text-gray-300 whitespace-pre-wrap">{body}</p>}
+      {cta && <p className="text-indigo-400 font-medium">{cta}</p>}
+      {hashtags && hashtags.length > 0 && (
+        <div className="flex flex-wrap gap-1 pt-1">
+          {hashtags.map(h => <span key={h} className="text-gray-500 text-xs">#{h.replace(/^#/, '')}</span>)}
+        </div>
+      )}
+    </div>
+  )
 }
