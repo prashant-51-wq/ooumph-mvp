@@ -70,6 +70,8 @@ interface ModelSettings {
   klingAccessKey: string
   klingSecretKey: string
   runwayApiKey: string
+  lumaApiKey: string
+  pikaApiKey: string
   heygenApiKey: string
   vapiApiKey: string
   openaiModel: string
@@ -357,13 +359,33 @@ const KEY_USE_CASES: UseCase[] = [
       {
         id: 'kling',
         name: 'Kling AI',
-        whatFor: 'Alternative AI video model. Strong on character consistency.',
+        whatFor: 'Real Kuaishou Kling 2.0 API. Strong on character consistency. Needs both access + secret key — used to mint a JWT for each request.',
         testProvider: 'kling',
         docUrl: 'https://klingai.com',
         optional: true,
         fields: [
           { field: 'klingAccessKey', label: 'Access Key', placeholder: 'Access key', type: 'password' },
           { field: 'klingSecretKey', label: 'Secret Key', placeholder: 'Secret key', type: 'password' },
+        ],
+      },
+      {
+        id: 'luma',
+        name: 'Luma Dream Machine',
+        whatFor: 'Real Luma Dream Machine API. Photorealistic motion + cinematic shots. Single bearer token from lumalabs.ai.',
+        docUrl: 'https://lumalabs.ai/dream-machine/api/keys',
+        optional: true,
+        fields: [
+          { field: 'lumaApiKey', label: 'API Key', placeholder: 'luma-...', hint: 'Get one at lumalabs.ai/dream-machine/api/keys', type: 'password' },
+        ],
+      },
+      {
+        id: 'pika',
+        name: 'Pika Labs',
+        whatFor: 'Stylised cartoon + animation generation. Public API is limited-access; if you have it, paste your key here and the dispatcher will use Pika when selected.',
+        docUrl: 'https://pika.art',
+        optional: true,
+        fields: [
+          { field: 'pikaApiKey', label: 'API Key', placeholder: 'pika-...', hint: 'Pika API access is invitation-only as of writing; check pika.art for current status.', type: 'password' },
         ],
       },
       {
@@ -1085,7 +1107,7 @@ export default function SettingsPage() {
     elevenLabsApiKey: '', elevenLabsVoiceId: '', elevenLabsVoiceModel: 'eleven_multilingual_v2',
     stabilityApiKey: '', replicateApiToken: '',
     geminiApiKey: '', geminiModel: 'gemini-1.5-pro',
-    klingAccessKey: '', klingSecretKey: '', runwayApiKey: '',
+    klingAccessKey: '', klingSecretKey: '', runwayApiKey: '', lumaApiKey: '', pikaApiKey: '',
     heygenApiKey: '', vapiApiKey: '',
     slackBotToken: '', slackChannelId: '',
     telegramBotToken: '', telegramChatId: '',
