@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { publishTweet } from '@/lib/twitter-oauth'
 import { assertWorkspaceOwnership } from '@/lib/guards'
+import { readAccessToken } from '@/lib/integrations'
 
 const BASE_URL = process.env.NEXT_PUBLIC_BASE_URL || 'https://ooumph-mvp.vercel.app'
 
@@ -307,8 +308,10 @@ export async function POST(req: NextRequest) {
     const denied = assertWorkspaceOwnership(req, workspaceId)
     if (denied) return denied
 
+    // Sprint 9B: select both token columns; readAccessToken() prefers
+    // encrypted (decrypted) over legacy plaintext.
     const intResult = await sql`
-      SELECT access_token, account_id, platform, metadata FROM integrations
+      SELECT access_token, encrypted_access_token, account_id, platform, metadata FROM integrations
       WHERE workspace_id = ${workspaceId} AND platform = ${platform} AND status = 'active'
       LIMIT 1
     `
@@ -321,8 +324,14 @@ export async function POST(req: NextRequest) {
           : JSON.parse(String(_rawInteg.metadata)) as Record<string, unknown>
       } catch { /* ignore */ }
     }
-    const integration = { ..._rawInteg, metadata: _meta } as unknown as Integration
-    if (!integration) {
+    const _resolvedToken = readAccessToken({
+      access_token: _rawInteg?.access_token as string | null,
+      encrypted_access_token: _rawInteg?.encrypted_access_token as string | null,
+    })
+    const integration = _rawInteg
+      ? ({ ..._rawInteg, access_token: _resolvedToken ?? '', metadata: _meta } as unknown as Integration)
+      : null
+    if (!integration || !_resolvedToken) {
       return NextResponse.json({ error: `No active ${platform} integration. Connect it in Integrations.` }, { status: 400 })
     }
 

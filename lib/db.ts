@@ -175,6 +175,12 @@ async function postgresQuery(strings: TemplateStringsArray, ...values: unknown[]
     // Stripe path lands.
     await pgSql`CREATE TABLE IF NOT EXISTS commission_payouts (id TEXT PRIMARY KEY, vendor_workspace_id TEXT NOT NULL, amount_cents INTEGER NOT NULL, paid_at TIMESTAMPTZ DEFAULT NOW(), notes TEXT, paid_by_user_id TEXT, payment_method VARCHAR(20) DEFAULT 'manual', stripe_transfer_id TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`
     await pgSql`CREATE INDEX IF NOT EXISTS idx_commission_payouts_vendor ON commission_payouts(vendor_workspace_id, paid_at DESC)`
+    // Sprint 9B: encrypt-at-rest for integration access tokens. AES-256-GCM
+    // via lib/secrets.ts. New writes go into encrypted_access_token;
+    // legacy rows continue to use access_token (plaintext) until they're
+    // re-saved. The shared lib/integrations.ts:readAccessToken() helper
+    // hides the difference from readers.
+    await pgSql`ALTER TABLE integrations ADD COLUMN IF NOT EXISTS encrypted_access_token TEXT`
     // === Phase Remediation tables (Postgres first-call init) ===
     await pgSql`CREATE TABLE IF NOT EXISTS workspace_secrets (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, provider VARCHAR(50) NOT NULL, encrypted_value TEXT NOT NULL, label TEXT, status TEXT DEFAULT 'active', last_tested_at TIMESTAMPTZ, test_result TEXT, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
     await pgSql`CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_secrets_unique ON workspace_secrets(workspace_id, provider)`
@@ -1181,6 +1187,8 @@ function initSQLiteSync(db: import('better-sqlite3').Database) {
     // Sprint 7D: manual + Stripe payout ledger.
     'CREATE TABLE IF NOT EXISTS commission_payouts (id TEXT PRIMARY KEY, vendor_workspace_id TEXT NOT NULL, amount_cents INTEGER NOT NULL, paid_at TEXT DEFAULT (datetime(\'now\')), notes TEXT, paid_by_user_id TEXT, payment_method TEXT DEFAULT \'manual\', stripe_transfer_id TEXT, created_at TEXT DEFAULT (datetime(\'now\')))',
     'CREATE INDEX IF NOT EXISTS idx_commission_payouts_vendor ON commission_payouts(vendor_workspace_id, paid_at DESC)',
+    // Sprint 9B: encrypted_access_token column on integrations (SQLite — try/catch swallows duplicate).
+    'ALTER TABLE integrations ADD COLUMN encrypted_access_token TEXT',
     // === Phase Remediation: BYOK secrets + notifications + agent configs ===
     'CREATE TABLE IF NOT EXISTS workspace_secrets (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, provider TEXT NOT NULL, encrypted_value TEXT NOT NULL, label TEXT, status TEXT DEFAULT \'active\', last_tested_at TEXT, test_result TEXT, created_at TEXT DEFAULT (datetime(\'now\')), updated_at TEXT DEFAULT (datetime(\'now\')))',
     'CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_secrets_unique ON workspace_secrets(workspace_id, provider)',
@@ -1567,6 +1575,8 @@ export async function initializeDatabase() {
   // Sprint 7D: manual + Stripe payout ledger.
   await pgSql`CREATE TABLE IF NOT EXISTS commission_payouts (id TEXT PRIMARY KEY, vendor_workspace_id TEXT NOT NULL, amount_cents INTEGER NOT NULL, paid_at TIMESTAMPTZ DEFAULT NOW(), notes TEXT, paid_by_user_id TEXT, payment_method VARCHAR(20) DEFAULT 'manual', stripe_transfer_id TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`
   await pgSql`CREATE INDEX IF NOT EXISTS idx_commission_payouts_vendor ON commission_payouts(vendor_workspace_id, paid_at DESC)`
+  // Sprint 9B: encrypted_access_token column on integrations.
+  await pgSql`ALTER TABLE integrations ADD COLUMN IF NOT EXISTS encrypted_access_token TEXT`
   // === Phase Remediation tables ===
   await pgSql`CREATE TABLE IF NOT EXISTS workspace_secrets (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, provider VARCHAR(50) NOT NULL, encrypted_value TEXT NOT NULL, label TEXT, status TEXT DEFAULT 'active', last_tested_at TIMESTAMPTZ, test_result TEXT, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
   await pgSql`CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_secrets_unique ON workspace_secrets(workspace_id, provider)`

@@ -239,6 +239,11 @@ export async function GET(req: NextRequest, ctx: RouteCtx) {
   //    /api/publish/direct + /api/publish read access_token from this
   //    row to fire the actual API calls. The encrypted copy in
   //    oauth_tokens remains the source of truth for refresh.
+  //
+  //    Sprint 9B: ALSO write encrypted_access_token (AES-256-GCM via
+  //    lib/secrets.ts — same encryption already applied to the
+  //    oauth_tokens row above). Plaintext still populated for the
+  //    migration window.
   try {
     await sql`
       DELETE FROM integrations
@@ -252,17 +257,19 @@ export async function GET(req: NextRequest, ctx: RouteCtx) {
     }
     try {
       await sql`
-        INSERT INTO integrations (id, workspace_id, platform, access_token, account_id, status, metadata)
+        INSERT INTO integrations (id, workspace_id, platform, access_token, encrypted_access_token, account_id, status, metadata)
         VALUES (${newId()}, ${state.workspaceId}, ${state.platform},
-                ${tokens.access_token}, ${tokens.account_id || ''},
+                ${tokens.access_token}, ${encryptedAccess},
+                ${tokens.account_id || ''},
                 'active', ${JSON.stringify(intMetadata)})
       `
     } catch {
       // metadata column may not exist on older deployments.
       await sql`
-        INSERT INTO integrations (id, workspace_id, platform, access_token, account_id, status)
+        INSERT INTO integrations (id, workspace_id, platform, access_token, encrypted_access_token, account_id, status)
         VALUES (${newId()}, ${state.workspaceId}, ${state.platform},
-                ${tokens.access_token}, ${tokens.account_id || ''}, 'active')
+                ${tokens.access_token}, ${encryptedAccess},
+                ${tokens.account_id || ''}, 'active')
       `
     }
   } catch (err) {

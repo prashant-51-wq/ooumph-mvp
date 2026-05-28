@@ -17,6 +17,7 @@ import { sql, newId } from '@/lib/db'
 import { publishTweet } from '@/lib/twitter-oauth'
 import { fetchWithTimeout } from '@/lib/fetch-with-timeout'
 import { assertArtifactApproved, assertWorkspaceOwnership } from '@/lib/guards'
+import { readAccessToken } from '@/lib/integrations'
 
 interface DirectPublishBody {
   workspaceId: string
@@ -142,15 +143,21 @@ export async function POST(req: NextRequest) {
     const gate = await assertArtifactApproved(workspaceId, artifactId)
     if (gate) return gate
 
-    // Load all integrations for this workspace
+    // Load all integrations for this workspace.
+    // Sprint 9B: select both token columns; readAccessToken() prefers
+    // encrypted (decrypted), falls back to plaintext for legacy rows.
     const integResult = await sql`
-      SELECT platform, access_token, account_id, metadata FROM integrations
+      SELECT platform, access_token, encrypted_access_token, account_id, metadata FROM integrations
       WHERE workspace_id = ${workspaceId} AND status = 'active'
     `
     const integrations: Record<string, { access_token?: string; account_id?: string; metadata?: unknown }> = {}
     for (const row of integResult.rows) {
+      const token = readAccessToken({
+        access_token: row.access_token as string | null,
+        encrypted_access_token: row.encrypted_access_token as string | null,
+      })
       integrations[String(row.platform)] = {
-        access_token: row.access_token ? String(row.access_token) : undefined,
+        access_token: token || undefined,
         account_id: row.account_id ? String(row.account_id) : undefined,
         metadata: row.metadata,
       }
