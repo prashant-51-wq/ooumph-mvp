@@ -69,6 +69,9 @@ export default function ABTestLabPage() {
   const [insights, setInsights] = useState<AIInsight[]>([])
   const [stats, setStats] = useState<Stats>({ active: 0, completed: 0, total: 0, avgLift: 0, bestConversionRate: 0 })
   const [loading, setLoading] = useState(true)
+  // Sprint 4C: error state for the loadData fetch — surfaced to UI in
+  // place of the silent demo-data fallback that used to mask failures.
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [insightsOpen, setInsightsOpen] = useState(true)
 
   // New Test modal
@@ -100,8 +103,10 @@ export default function ABTestLabPage() {
   }
 
   const loadData = async () => {
+    setLoadError(null)
     try {
       const res = await fetch('/api/ab-test')
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
       setTests(data.tests || [])
       setStats(data.stats || stats)
@@ -109,50 +114,19 @@ export default function ABTestLabPage() {
       const insRes = await fetch('/api/ab-test?type=insights')
       const insData = await insRes.json()
       setInsights(Array.isArray(insData) ? insData : [])
-    } catch {
-      // Use demo data fallback
-      setTests([
-        {
-          id: 'abt_001', name: 'Q3 Email Subject Line Test',
-          hypothesis: 'Question-based subject lines drive higher open rates than statement-based ones',
-          status: 'Completed', contentType: 'Email Subject', goalMetric: 'Open Rate', duration: 14,
-          startDate: '2026-05-01', confidence: 94,
-          variants: [
-            { label: 'A', content: 'Your marketing is costing you sales', conversionRate: 18.2, impressions: 4500, clicks: 819 },
-            { label: 'B', content: 'Are you leaving sales on the table?', conversionRate: 24.7, impressions: 4500, clicks: 1112, isWinner: true },
-          ],
-          aiInsight: 'Question-format subject lines outperform statement formats by 35.7%. Curiosity-gap framing drives stronger open intent.',
-          createdAt: '2026-05-01T09:00:00Z',
-        },
-        {
-          id: 'abt_002', name: 'Hero CTA Button Copy',
-          hypothesis: 'Action-oriented CTAs with urgency signals increase click-through vs generic "Learn More"',
-          status: 'Running', contentType: 'CTA Button', goalMetric: 'Click Rate', duration: 7,
-          startDate: '2026-05-20', confidence: 71,
-          variants: [
-            { label: 'A', content: 'Learn More', conversionRate: 3.1, impressions: 12000, clicks: 372 },
-            { label: 'B', content: 'Start Growing Today →', conversionRate: 5.8, impressions: 12000, clicks: 696 },
-          ],
-          createdAt: '2026-05-20T10:00:00Z',
-        },
-        {
-          id: 'abt_003', name: 'Ad Headline Emotional Angle',
-          hypothesis: 'Pain-point headlines outperform aspiration headlines for B2B audiences',
-          status: 'Paused', contentType: 'Ad Headline', goalMetric: 'Conversion Rate', duration: 10,
-          startDate: '2026-04-15', confidence: 58,
-          variants: [
-            { label: 'A', content: 'Scale Your Business with AI Marketing', conversionRate: 2.4, impressions: 8200, clicks: 197 },
-            { label: 'B', content: 'Stop Wasting Ad Budget — Let AI Optimize', conversionRate: 3.9, impressions: 8200, clicks: 320 },
-          ],
-          createdAt: '2026-04-15T08:00:00Z',
-        },
-      ])
-      setStats({ active: 1, completed: 1, total: 3, avgLift: 36, bestConversionRate: 24.7 })
-      setInsights([
-        { id: 'ins_001', text: 'Subject lines with questions outperform statements by 23% on average across all tests', lift: 23, sourceTest: 'Q3 Email Subject Line Test', deployed: false },
-        { id: 'ins_002', text: 'CTAs with directional arrows (→) increase click-through by 18% vs plain text', lift: 18, sourceTest: 'Hero CTA Button Copy', deployed: true },
-        { id: 'ins_003', text: 'Pain-point framing resonates 60% more than aspiration framing for B2B SaaS audiences', lift: 60, sourceTest: 'Ad Headline Emotional Angle', deployed: false },
-      ])
+    } catch (err) {
+      // Sprint 4C: removed the silent fallback to a 3-test, 3-insight
+      // hardcoded demo array. When the API failed, the page used to
+      // backfill with fabricated "Q3 Email Subject Line Test" et al,
+      // making real data and demo data indistinguishable on the screen.
+      //
+      // Now we surface the error honestly: empty lists + a setable
+      // `loadError` the UI can display. The user knows the network call
+      // failed and can retry, instead of staring at fake results.
+      console.error('[ab-test] loadData failed', err)
+      setTests([])
+      setInsights([])
+      setLoadError(err instanceof Error ? err.message : 'Failed to load A/B tests')
     } finally {
       setLoading(false)
     }
@@ -286,7 +260,22 @@ export default function ABTestLabPage() {
         </div>
       )}
 
-      {!loading && (
+      {/* Sprint 4C: surface load errors honestly instead of silently
+          falling back to fake demo tests. */}
+      {!loading && loadError && (
+        <div className="bg-red-950/40 border border-red-800/50 rounded-xl p-4 mb-6 flex items-start gap-3">
+          <span className="text-red-400">✕</span>
+          <div className="flex-1">
+            <p className="text-red-300 text-sm font-medium">Couldn&apos;t load A/B tests</p>
+            <p className="text-red-300/70 text-xs mt-1">{loadError}</p>
+          </div>
+          <button onClick={loadData} className="text-xs text-red-300 hover:text-white border border-red-800 px-3 py-1.5 rounded-lg">
+            Retry
+          </button>
+        </div>
+      )}
+
+      {!loading && !loadError && (
         <>
           {/* AI Learning Panel */}
           <div className="bg-gray-900 border border-gray-800 rounded-xl mb-6 overflow-hidden">
