@@ -1003,19 +1003,26 @@ export default function DashboardPage() {
 
   useEffect(() => {
     async function init() {
-      let wid = localStorage.getItem('workspaceId')
-      if (!wid) {
-        try {
-          const res = await fetch('/api/auth/me')
-          const data = await res.json() as { user?: { workspaceId?: string; workspaceName?: string; name?: string } }
-          if (data.user?.workspaceId) {
-            wid = data.user.workspaceId
-            localStorage.setItem('workspaceId', wid!)
-            if (data.user.workspaceName) localStorage.setItem('businessName', data.user.workspaceName)
-            if (data.user.name) localStorage.setItem('userName', data.user.name)
-          }
-        } catch { /* ignore */ }
-      }
+      // Sprint 9E: prefer the session-derived workspaceId (signed cookie)
+      // over localStorage. Previously we checked localStorage FIRST and
+      // only fell back to /api/auth/me if it was empty — meaning a stale
+      // localStorage value (e.g. after a workspace switch in another
+      // tab) would silently win over the actual session.
+      let wid: string | null = null
+      try {
+        const res = await fetch('/api/auth/me', { credentials: 'include' })
+        const data = await res.json() as { user?: { workspaceId?: string; workspaceName?: string; name?: string } }
+        if (data.user?.workspaceId) {
+          wid = data.user.workspaceId
+          localStorage.setItem('workspaceId', wid)
+          if (data.user.workspaceName) localStorage.setItem('businessName', data.user.workspaceName)
+          if (data.user.name) localStorage.setItem('userName', data.user.name)
+        }
+      } catch { /* /me unreachable — fall through to localStorage */ }
+      // Fallback to localStorage only when the /me probe failed entirely
+      // (network error, not auth-null). Saves users mid-flight on a flaky
+      // connection.
+      if (!wid) wid = localStorage.getItem('workspaceId')
       if (!wid) {
         router.push('/dashboard/onboarding')
         return

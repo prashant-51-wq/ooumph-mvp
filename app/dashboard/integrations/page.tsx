@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
+import { useWorkspaceId } from '@/lib/hooks/use-workspace-id'
 
 interface Integration {
   id: string
@@ -156,6 +157,9 @@ const PLATFORMS = [
 ]
 
 export default function IntegrationsPage() {
+  // Sprint 9E: session-derived workspaceId. The hook caches /api/auth/me
+  // (1-minute TTL) and mirrors back to localStorage for legacy code paths.
+  const { workspaceId: sessionWorkspaceId } = useWorkspaceId()
   const [workspaceId, setWorkspaceId] = useState('')
   const [connected, setConnected] = useState<Integration[]>([])
   const [form, setForm] = useState<Record<string, Record<string, string>>>({})
@@ -173,11 +177,15 @@ export default function IntegrationsPage() {
     if (Array.isArray(data)) setConnected(data)
   }, [])
 
+  // Sprint 9E: when the session-derived workspaceId resolves, adopt it.
+  // We keep the local state because deep call sites (connect/disconnect)
+  // still read `workspaceId`, but the value now reflects whatever the
+  // server's signed cookie says — not a stale localStorage entry.
   useEffect(() => {
-    const wid = localStorage.getItem('workspaceId') || ''
-    setWorkspaceId(wid)
-    if (wid) load(wid)
-  }, [load])
+    if (!sessionWorkspaceId) return
+    setWorkspaceId(sessionWorkspaceId)
+    load(sessionWorkspaceId)
+  }, [sessionWorkspaceId, load])
 
   // Sprint 8G: catch the OAuth callback bounce-back. Pulls the
   // success/error query param, shows a banner, then scrubs the URL
