@@ -8,11 +8,16 @@
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 
 export async function POST(req: NextRequest) {
   try {
     const { workspaceId } = await req.json() as { workspaceId: string }
     if (!workspaceId) return NextResponse.json({ error: 'workspaceId required' }, { status: 400 })
+    // Sprint 9A: ownership before kicking off Stripe Connect onboarding
+    // for someone else's workspace.
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     const stripeKey = process.env.STRIPE_SECRET_KEY
     if (!stripeKey) return NextResponse.json({ error: 'Stripe not configured' }, { status: 503 })
@@ -86,6 +91,9 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
   const workspaceId = searchParams.get('workspaceId')
   if (!workspaceId) return NextResponse.json(null)
+  // Sprint 9A: ownership.
+  const denied = assertWorkspaceOwnership(req, workspaceId)
+  if (denied) return denied
 
   const result = await sql`SELECT * FROM vendor_profiles WHERE workspace_id = ${workspaceId} LIMIT 1`
   const profile = result.rows[0]

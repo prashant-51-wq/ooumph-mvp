@@ -1,12 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
 import { generateDocx } from '@/lib/export/docx'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url)
     const workspaceId = searchParams.get('workspaceId')
     const format = searchParams.get('format') || 'docx'
+
+    if (!workspaceId) {
+      return NextResponse.json({ error: 'workspaceId required' }, { status: 400 })
+    }
+    // Sprint 9A: ownership — export packages brand profile + every
+    // artifact (strategy, calendars, ad copy, emails…). Cross-tenant
+    // leak would dump a whole agency's playbook.
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     const [brandResult, artifactsResult] = await Promise.all([
       sql`SELECT * FROM brand_profiles WHERE workspace_id = ${workspaceId} LIMIT 1`,

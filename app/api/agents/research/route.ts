@@ -8,6 +8,7 @@ import { sql, newId } from '@/lib/db'
 import { runAgent } from '@/lib/claude'
 import { braveSearch, formatSearchResults } from '@/lib/tools/brave-search'
 import { scrapeUrl } from '@/lib/tools/firecrawl'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 import type { BrandProfile } from '@/types'
 
 const SYSTEM = `You are the Research Analyst Agent for Ooumph AI Marketing OS.
@@ -41,6 +42,10 @@ export async function POST(req: NextRequest) {
     if (!workspaceId) return NextResponse.json({ error: 'Missing workspaceId' }, { status: 400 })
     if (!query) return NextResponse.json({ error: 'Missing query' }, { status: 400 })
     if (!type) return NextResponse.json({ error: 'Missing type' }, { status: 400 })
+    // Sprint 9A: ownership before burning AI + Brave credits on
+    // someone else's behalf.
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     // Load brand profile
     const brandResult = await sql`
@@ -158,6 +163,9 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
   const workspaceId = searchParams.get('workspaceId')
   if (!workspaceId) return NextResponse.json([], { status: 200 })
+  // Sprint 9A: ownership.
+  const denied = assertWorkspaceOwnership(req, workspaceId)
+  if (denied) return denied
 
   const result = await sql`
     SELECT id, title, content_json, created_at

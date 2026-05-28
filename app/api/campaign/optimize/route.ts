@@ -13,6 +13,7 @@ import {
   type OptimizationRecommendation,
 } from '@/lib/agents/campaign-optimizer'
 import { syncCampaignPerformance, setPlatformCampaignStatus, type AdPlatform } from '@/lib/ad-platforms'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 
 export async function POST(req: NextRequest) {
   try {
@@ -23,6 +24,9 @@ export async function POST(req: NextRequest) {
     if (!workspaceId || !campaignArtifactId) {
       return NextResponse.json({ error: 'Missing workspaceId or campaignArtifactId' }, { status: 400 })
     }
+    // Sprint 9A: ownership.
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     // Load campaign brief
     const artifactResult = await sql`
@@ -71,6 +75,9 @@ export async function GET(req: NextRequest) {
   const workspaceId = searchParams.get('workspaceId')
   const campaignArtifactId = searchParams.get('campaignArtifactId')
   if (!workspaceId || !campaignArtifactId) return NextResponse.json([])
+  // Sprint 9A: ownership.
+  const denied = assertWorkspaceOwnership(req, workspaceId)
+  if (denied) return denied
   const reports = await getOptimizationReports(workspaceId, campaignArtifactId)
   return NextResponse.json(reports)
 }
@@ -84,6 +91,11 @@ export async function PATCH(req: NextRequest) {
       recommendationId: string
       decision: 'approved' | 'rejected'
     }
+    if (!workspaceId) return NextResponse.json({ error: 'workspaceId required' }, { status: 400 })
+    // Sprint 9A: ownership before approving/rejecting an
+    // optimization recommendation (which can apply paid-spend changes).
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     // Load the optimization report
     const reportResult = await sql`

@@ -6,6 +6,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { publishCampaignToPlatform, type AdPlatform } from '@/lib/ad-platforms'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 
 export async function POST(req: NextRequest) {
   try {
@@ -18,6 +19,10 @@ export async function POST(req: NextRequest) {
     if (!workspaceId || !campaignArtifactId || !platforms?.length) {
       return NextResponse.json({ error: 'Missing workspaceId, campaignArtifactId, or platforms' }, { status: 400 })
     }
+    // Sprint 9A: ownership before firing external campaign creation
+    // on another tenant's connected ad accounts.
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     // ── HITL gate: must be approved ────────────────────────────────────────────
     const approvalResult = await sql`
