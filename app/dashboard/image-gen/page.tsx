@@ -26,12 +26,13 @@ interface GeneratedImage {
 
 // ─── Static config ───────────────────────────────────────────────────────────
 
+// Sprint 4B: collapsed to just DALL-E 3 — the only model with a real
+// /api/agents/creative/image backend wiring. Midjourney/SDXL/Ideogram/Flux
+// were visual placeholders that routed silently to DALL-E 3 anyway,
+// disguising "we don't actually have this model" as "this model exists."
+// When Replicate / Stability / Flux are properly wired add them back here.
 const IMAGE_MODELS = [
   { id: 'dalle3', name: 'DALL-E 3', specialty: 'Photorealistic', speedDot: 'bg-emerald-500' },
-  { id: 'mj6', name: 'Midjourney v6', specialty: 'Artistic', speedDot: 'bg-amber-500' },
-  { id: 'sdxl', name: 'Stable Diffusion XL', specialty: 'Versatile', speedDot: 'bg-emerald-500' },
-  { id: 'ideogram', name: 'Ideogram v2', specialty: 'Logo & Brand', speedDot: 'bg-emerald-500' },
-  { id: 'flux', name: 'Flux Pro', specialty: 'Photorealistic', speedDot: 'bg-emerald-500' },
   { id: 'firefly', name: 'Adobe Firefly', specialty: 'Corporate', speedDot: 'bg-amber-500' },
 ]
 
@@ -81,7 +82,10 @@ function Spinner({ size = 4 }: { size?: number }) {
 }
 
 function ApiSettingsPanel({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const [provider, setProvider] = useState('DALL-E 3 (OpenAI)')
+  // Sprint 4B: `provider` state removed — was only consumed by the 5-option
+  // dropdown that's been deleted. The image generation backend reads its
+  // provider from /api/workspace-secrets (the BYOK key resolution path),
+  // not from a per-page user selection.
   const [apiKey, setApiKey] = useState('')
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<'idle' | 'ok' | 'fail'>('idle')
@@ -106,21 +110,15 @@ function ApiSettingsPanel({ open, onClose }: { open: boolean; onClose: () => voi
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
           </button>
         </div>
-        <p className="text-amber-300 text-xs bg-amber-900/20 border border-amber-800/40 rounded-lg p-3">
-          API keys are configured in Settings → AI Assistants. Currently only DALL-E 3 (OpenAI) is wired up for actual generation — other models are visual placeholders.
+        <p className="text-gray-400 text-xs bg-gray-900/40 border border-gray-800 rounded-lg p-3">
+          API keys are configured in Settings → AI Assistants. The image
+          generator routes through OpenAI's DALL-E 3 endpoint using the key
+          stored on your workspace.
         </p>
-        <div>
-          <label className="text-gray-400 text-xs mb-1.5 block">API Provider</label>
-          <select
-            value={provider}
-            onChange={e => setProvider(e.target.value)}
-            className="w-full px-3 py-2.5 rounded-lg bg-gray-800 border border-gray-700 text-white text-sm focus:outline-none focus:border-indigo-500"
-          >
-            {['DALL-E 3 (OpenAI)', 'Midjourney (Unofficial)', 'Replicate (SDXL/Flux)', 'Adobe Firefly', 'Ideogram API'].map(p => (
-              <option key={p} value={p}>{p}</option>
-            ))}
-          </select>
-        </div>
+        {/* Sprint 4B: removed the 5-option provider dropdown
+            (Midjourney / Replicate / Adobe Firefly / Ideogram). Only the
+            OpenAI path is implemented — listing the others as if you could
+            switch was misleading. Restore when those providers are wired. */}
         <div>
           <label className="text-gray-400 text-xs mb-1.5 block">API Key</label>
           <input
@@ -466,9 +464,9 @@ export default function ImageGenPage() {
                 </button>
               ))}
             </div>
-            {selectedModel !== 'dalle3' && (
-              <p className="text-amber-400 text-[10px] mt-2">Note: only DALL-E 3 is wired to a live API. Other models will route to DALL-E 3.</p>
-            )}
+            {/* Sprint 4B: removed "other models route to DALL-E 3 anyway"
+                disclaimer — the model list now contains only DALL-E 3, so
+                there's nothing to disclaim. */}
           </div>
 
           {/* Style Presets */}
