@@ -360,6 +360,13 @@ export default function IntegrationsPage() {
                       {'badge' in platform && platform.badge === 'Messaging' && (
                         <span className="text-xs bg-green-900/40 text-green-400 px-2 py-0.5 rounded-full font-medium">Messaging</span>
                       )}
+                      {/* Sprint 15F (P1 #12): badge so users know which flow
+                          is one-click vs which still needs manual paste. */}
+                      {'oauthPlatform' in platform ? (
+                        <span className="text-[10px] bg-indigo-900/40 text-indigo-300 px-2 py-0.5 rounded-full font-medium border border-indigo-800/50">OAuth</span>
+                      ) : (
+                        <span className="text-[10px] bg-gray-800 text-gray-400 px-2 py-0.5 rounded-full font-medium border border-gray-700" title="Manual API-key paste only. OAuth flow planned for a future release.">Manual key</span>
+                      )}
                     </div>
                     <p className="text-gray-500 text-xs mt-0.5">{platform.publishSupports}</p>
                   </div>

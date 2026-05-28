@@ -6,6 +6,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { getBufferProfiles, scheduleBufferPost, groqChat, isGroqAvailable } from '@/lib/tools'
+import { assertWorkspaceOwnership } from '@/lib/guards'
+import { isAgentActive } from '@/lib/agents'
 
 type SocialPlatform = 'twitter' | 'linkedin' | 'instagram' | 'facebook'
 
@@ -62,6 +64,12 @@ export async function POST(req: NextRequest) {
     if (!workspaceId) return NextResponse.json({ error: 'Missing workspaceId' }, { status: 400 })
     if (!content) return NextResponse.json({ error: 'Missing content' }, { status: 400 })
     if (!platforms || platforms.length === 0) return NextResponse.json({ error: 'Select at least one platform' }, { status: 400 })
+    // Sprint 15F (P2 #20): real-time scheduling must honor agent pause.
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
+    if (!(await isAgentActive(workspaceId, 'social-agent'))) {
+      return NextResponse.json({ ok: false, error: 'social-agent is paused', paused: true }, { status: 423 })
+    }
 
     // 1. Load workspace model_settings
     const wsResult = await sql`SELECT model_settings FROM workspaces WHERE id = ${workspaceId} LIMIT 1`

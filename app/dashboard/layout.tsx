@@ -74,7 +74,10 @@ const ADVANCED_NAV = [
       { href: '/dashboard/leads', label: 'Lead Gen', icon: '🎯' },
       { href: '/dashboard/funnel', label: 'Funnel Plan', icon: '🔮' },
       { href: '/dashboard/funnel/form-builder', label: 'Form Builder', icon: '📋' },
-      { href: '/dashboard/campaign', label: 'Campaigns', icon: '📣' },
+      // Sprint 15F (P1 #16): renamed from "Campaigns" — the page is a
+      // read-only performance ledger. Multi-channel campaign creation
+      // happens via the CMO chat, not here.
+      { href: '/dashboard/campaign', label: 'Campaign Performance', icon: '📣' },
       { href: '/dashboard/ads', label: 'Paid Ads', icon: '💸' },
     ],
   },

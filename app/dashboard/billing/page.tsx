@@ -28,15 +28,9 @@ interface Subscription {
   features?: string[] | string
 }
 
-// ── Static fallback (kept for the addons + history sections only) ─────────────
-
-const ADDONS = [
-  { id: 'ai_1k', name: '+1,000 AI Requests', description: 'Extra AI request credits', price: 19, unit: 'mo' },
-  { id: 'ai_5k', name: '+5,000 AI Requests', description: 'Bulk AI request credits', price: 79, unit: 'mo' },
-  { id: 'storage', name: '+10GB Storage', description: 'Extra cloud storage', price: 9, unit: 'mo' },
-  { id: 'client_seat', name: 'Extra Client Seat', description: 'Add one more client account', price: 29, unit: 'mo / seat' },
-  { id: 'team_member', name: 'Extra Team Member', description: 'Add one more team member', price: 15, unit: 'mo / member' },
-]
+// ADDONS const + AddonCard component removed Sprint 15F (P1 #15) — the
+// grid was UI-only with no `/api/billing/addons` endpoint. Will reinstate
+// once a real fulfilment path lands.
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -70,44 +64,7 @@ function FaqItem({ q, a }: { q: string; a: string }) {
   )
 }
 
-function AddonCard({ addon }: { addon: typeof ADDONS[0] }) {
-  const [qty, setQty] = useState(0)
-  const [added, setAdded] = useState(false)
-  // TODO: wire add-on purchases to a real /api/billing/addons endpoint once available.
-  function handleAdd() {
-    if (qty === 0) setQty(1)
-    setAdded(true)
-    setTimeout(() => setAdded(false), 2000)
-  }
-  return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 flex flex-col gap-3">
-      <div>
-        <p className="text-white font-medium text-sm">{addon.name}</p>
-        <p className="text-gray-500 text-xs mt-0.5">{addon.description}</p>
-      </div>
-      <div className="flex items-center justify-between">
-        <span className="text-indigo-300 font-semibold text-sm">${addon.price}<span className="text-gray-500 font-normal text-xs">/{addon.unit}</span></span>
-        <div className="flex items-center gap-2">
-          {qty > 0 && (
-            <div className="flex items-center gap-1 bg-gray-800 rounded-lg border border-gray-700">
-              <button onClick={() => setQty(q => Math.max(0, q - 1))} className="px-2 py-1 text-gray-400 hover:text-white text-sm transition-colors">−</button>
-              <span className="text-white text-sm w-5 text-center">{qty}</span>
-              <button onClick={() => setQty(q => q + 1)} className="px-2 py-1 text-gray-400 hover:text-white text-sm transition-colors">+</button>
-            </div>
-          )}
-          <button
-            onClick={handleAdd}
-            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-              added ? 'bg-emerald-600 text-white' : 'bg-indigo-600 hover:bg-indigo-500 text-white'
-            }`}
-          >
-            {added ? 'Added' : 'Add'}
-          </button>
-        </div>
-      </div>
-    </div>
-  )
-}
+// AddonCard removed Sprint 15F (P1 #15) — see ADDONS removal note above.
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
@@ -467,21 +424,10 @@ export default function BillingPage() {
         </div>
       </div>
 
-      {/* ── Add-ons (TODO: not wired to backend yet) ── */}
-      <div>
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <h2 className="text-white font-semibold text-lg">Add-ons</h2>
-            <p className="text-gray-500 text-xs mt-0.5">Note: add-on purchases are not yet connected to billing.</p>
-          </div>
-          <p className="text-gray-500 text-sm">Extend your plan without upgrading</p>
-        </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
-          {ADDONS.map(addon => (
-            <AddonCard key={addon.id} addon={addon} />
-          ))}
-        </div>
-      </div>
+      {/* ── Add-ons removed Sprint 15F (P1 #15) ──
+          The grid was UI-only — clicking "Add" just toggled local state and
+          no `/api/billing/addons` endpoint existed. Honest move was to ship
+          it or remove it; we removed pending a real fulfilment story. */}
 
       {/* ── Payment Methods ── */}
       <div>

@@ -5,6 +5,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { postTweet, postThread, isTwitterAvailable } from '@/lib/tools/twitter'
+import { assertWorkspaceOwnership } from '@/lib/guards'
+import { isAgentActive } from '@/lib/agents'
 
 interface TwitterRequest {
   workspaceId: string
@@ -71,6 +73,12 @@ export async function POST(req: NextRequest) {
 
     if (!workspaceId) return NextResponse.json({ error: 'Missing workspaceId' }, { status: 400 })
     if (!action) return NextResponse.json({ error: 'Missing action' }, { status: 400 })
+    // Sprint 15F (P2 #20): real-time publish must honor agent pause.
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
+    if (!(await isAgentActive(workspaceId, 'social-agent'))) {
+      return NextResponse.json({ ok: false, error: 'social-agent is paused', paused: true }, { status: 423 })
+    }
 
     const settings = await getSettings(workspaceId)
     if (!settings) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 })

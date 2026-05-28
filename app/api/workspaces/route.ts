@@ -81,32 +81,60 @@ export async function POST(req: NextRequest) {
 
 export async function PATCH(req: NextRequest) {
   try {
-    const {
-      workspaceId, businessName, industry, website, tagline, offer, uniqueValue,
-      targetAudience, tone, competitors, channels, goals,
-      monthlyBudget, prohibitedClaims, approvalEmail, modelSettings, extraSettings,
-    } = await req.json()
+    const body = await req.json() as {
+      workspaceId?: string; businessName?: string; industry?: string; website?: string;
+      tagline?: string; offer?: string; uniqueValue?: string; targetAudience?: string;
+      tone?: string; competitors?: string; channels?: string; goals?: string;
+      monthlyBudget?: string; prohibitedClaims?: string; approvalEmail?: string;
+      modelSettings?: Record<string, unknown>; extraSettings?: Record<string, unknown>;
+      // Sprint 15F (P0 #8): onboarding completion fields.
+      onboardingCompletedAt?: string; onboardingStep?: number;
+    }
+    const { workspaceId } = body
     if (!workspaceId) return NextResponse.json({ error: 'workspaceId required' }, { status: 400 })
     // Sprint 8A: ownership before mutating brand profile + workspace row.
     const denied = assertWorkspaceOwnership(req, workspaceId)
     if (denied) return denied
 
+    // Onboarding-only patches don't include brand_profile fields — short
+    // circuit so the wizard's completion ping doesn't blank out the row.
+    const isOnboardingOnly =
+      body.businessName === undefined &&
+      (body.onboardingCompletedAt !== undefined || body.onboardingStep !== undefined)
+
+    if (isOnboardingOnly) {
+      if (body.onboardingCompletedAt !== undefined) {
+        await sql`UPDATE workspaces SET onboarding_completed_at = ${body.onboardingCompletedAt} WHERE id = ${workspaceId}`
+      }
+      if (body.onboardingStep !== undefined) {
+        await sql`UPDATE workspaces SET onboarding_step = ${body.onboardingStep} WHERE id = ${workspaceId}`
+      }
+      return NextResponse.json({ ok: true, onboardingPatch: true })
+    }
+
     await sql`
       UPDATE brand_profiles SET
-        business_name = ${businessName}, tagline = ${tagline}, offer = ${offer},
-        unique_value = ${uniqueValue}, target_audience = ${targetAudience},
-        tone = ${tone}, competitors = ${competitors}, channels = ${channels},
-        goals = ${goals}, monthly_budget = ${monthlyBudget},
-        prohibited_claims = ${prohibitedClaims}, approval_email = ${approvalEmail},
+        business_name = ${body.businessName}, tagline = ${body.tagline}, offer = ${body.offer},
+        unique_value = ${body.uniqueValue}, target_audience = ${body.targetAudience},
+        tone = ${body.tone}, competitors = ${body.competitors}, channels = ${body.channels},
+        goals = ${body.goals}, monthly_budget = ${body.monthlyBudget},
+        prohibited_claims = ${body.prohibitedClaims}, approval_email = ${body.approvalEmail},
         updated_at = CURRENT_TIMESTAMP
       WHERE workspace_id = ${workspaceId}
     `
     await sql`
-      UPDATE workspaces SET name = ${businessName}, industry = ${industry}, website = ${website},
-        model_settings = ${modelSettings ? JSON.stringify(modelSettings) : '{}'},
-        extra_settings = ${extraSettings ? JSON.stringify(extraSettings) : '{}'}
+      UPDATE workspaces SET name = ${body.businessName}, industry = ${body.industry}, website = ${body.website},
+        model_settings = ${body.modelSettings ? JSON.stringify(body.modelSettings) : '{}'},
+        extra_settings = ${body.extraSettings ? JSON.stringify(body.extraSettings) : '{}'}
       WHERE id = ${workspaceId}
     `
+    // Combined patches can still include the onboarding flag.
+    if (body.onboardingCompletedAt !== undefined) {
+      await sql`UPDATE workspaces SET onboarding_completed_at = ${body.onboardingCompletedAt} WHERE id = ${workspaceId}`
+    }
+    if (body.onboardingStep !== undefined) {
+      await sql`UPDATE workspaces SET onboarding_step = ${body.onboardingStep} WHERE id = ${workspaceId}`
+    }
     return NextResponse.json({ ok: true })
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 })

@@ -667,6 +667,11 @@ function SubscribersTab({ workspaceId }: { workspaceId: string }) {
 
 function PerformanceTab({ workspaceId }: { workspaceId: string }) {
   const [campaigns, setCampaigns] = useState<CampaignPerf[]>([])
+  // Sprint 15F (P0 #3): UI-side send queue so users can finally trigger
+  // the dispatcher from the dashboard. The dispatcher route already
+  // existed (/api/email-campaigns/[id]/send) but had no UI invocation.
+  const [sendingId, setSendingId] = useState<string | null>(null)
+  const [sendError, setSendError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
@@ -697,6 +702,32 @@ function PerformanceTab({ workspaceId }: { workspaceId: string }) {
       {sub && <div className="text-xs text-gray-500 mt-1">{sub}</div>}
     </div>
   )
+
+  const sendCampaign = async (id: string, name: string) => {
+    if (!confirm(`Send "${name}" to all recipients now? This is HITL-gated — sends only if the linked artifact is approved.`)) return
+    setSendingId(id); setSendError(null)
+    try {
+      const res = await fetch(`/api/email-campaigns/${id}/send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspaceId }),
+      })
+      const data = await res.json()
+      if (!res.ok || !data.ok) {
+        setSendError(data.error || `Send failed (HTTP ${res.status})`)
+      } else {
+        // Refresh row to reflect new status.
+        fetch(`/api/email-campaigns?workspaceId=${workspaceId}`)
+          .then(r => r.json())
+          .then((rows: CampaignPerf[]) => setCampaigns(Array.isArray(rows) ? rows : []))
+          .catch(() => undefined)
+      }
+    } catch (err) {
+      setSendError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSendingId(null)
+    }
+  }
 
   return (
     <div>
@@ -730,6 +761,7 @@ function PerformanceTab({ workspaceId }: { workspaceId: string }) {
                     <th className="px-4 py-3 font-medium">Clicks</th>
                     <th className="px-4 py-3 font-medium">Bounces</th>
                     <th className="px-4 py-3 font-medium">Sent at</th>
+                    <th className="px-4 py-3 font-medium"></th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-800">
@@ -750,10 +782,29 @@ function PerformanceTab({ workspaceId }: { workspaceId: string }) {
                           : <span className="text-gray-600">0</span>}
                       </td>
                       <td className="px-4 py-3 text-xs text-gray-500">{formatDateTime(c.sent_at)}</td>
+                      <td className="px-4 py-3 text-right">
+                        {c.status === 'draft' || c.status === 'scheduled' ? (
+                          <button
+                            onClick={() => sendCampaign(c.id, c.name)}
+                            disabled={sendingId === c.id}
+                            className="px-2.5 py-1 rounded bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-medium"
+                          >
+                            {sendingId === c.id ? 'Sending…' : 'Send'}
+                          </button>
+                        ) : (
+                          <span className="text-[10px] text-gray-700">—</span>
+                        )}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
+              {sendError && (
+                <div className="px-4 py-2 border-t border-rose-900 bg-rose-950/40 text-rose-300 text-xs flex items-center justify-between">
+                  <span>Send failed: {sendError}</span>
+                  <button onClick={() => setSendError(null)} className="text-rose-400 hover:text-rose-200">Dismiss</button>
+                </div>
+              )}
             </div>
           )}
         </>

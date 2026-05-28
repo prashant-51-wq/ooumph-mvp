@@ -73,7 +73,12 @@ function makeNode(type: NodeType, config: Record<string,string> = {}): WorkflowN
 }
 
 // ── Mock workflows ─────────────────────────────────────────────────────────────
-const INITIAL_WORKFLOWS: WorkflowDef[] = [
+// Sprint 15F (P2 #19): retained only as reference shapes for the template
+// gallery. NOT hydrated into state any more — that was misleading users
+// into thinking demo workflows were live. State now starts [] and the
+// /api/workflows fetch effect populates real rows.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+const INITIAL_WORKFLOWS_REFERENCE: WorkflowDef[] = [
   {
     id:'wf1', name:'Lead Nurture — 7-Step', triggerIcon:'🌱', status:'Active', enrolled:247, lastRun:'2m ago',
     stats:{ enrolled:247, completed:89, convRate:36, emailsSent:1438, avgTime:'8 days' },
@@ -504,8 +509,11 @@ function nodeToPayload(n: WorkflowNode): Record<string, unknown> {
 
 // ── Main Page ──────────────────────────────────────────────────────────────────
 export default function WorkflowsPage() {
-  const [workflows, setWorkflows] = useState<WorkflowDef[]>(INITIAL_WORKFLOWS)
-  const [selectedId, setSelectedId] = useState<string>(INITIAL_WORKFLOWS[0]?.id || '')
+  // Sprint 15F (P2 #19): start empty instead of with INITIAL_WORKFLOWS demo
+  // seed. The /api/workflows fetch effect hydrates real rows; showing fake
+  // workflows before then was misleading users into thinking demos were live.
+  const [workflows, setWorkflows] = useState<WorkflowDef[]>([])
+  const [selectedId, setSelectedId] = useState<string>('')
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>('workflows')
   const [filterStatus, setFilterStatus] = useState<string>('All')
   const [editingNode, setEditingNode] = useState<WorkflowNode | null>(null)

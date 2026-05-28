@@ -264,8 +264,52 @@ export async function executeNode(node: WorkflowNode, ctx: ExecuteContext): Prom
     }
 
     case 'send_sms': {
-      if (leadId) {
-        await sql`INSERT INTO lead_activities (id, workspace_id, lead_id, type, title, description, metadata_json, created_at) VALUES (${newId()}, ${workspaceId}, ${leadId}, 'sms_sent', 'Workflow: SMS would be sent', ${personalize(node.message || node.body || '', vars)}, ${JSON.stringify({ pending_provider: 'twilio' })}, ${now})`
+      // Sprint 15F (P1 #9): real Twilio dispatch when configured, otherwise
+      // we throw — workflows that depend on SMS must not silently drop
+      // messages. Previously this branch logged a placeholder activity and
+      // returned, which masked the absence of an SMS provider.
+      const sid = process.env.TWILIO_ACCOUNT_SID
+      const token = process.env.TWILIO_AUTH_TOKEN
+      const from = process.env.TWILIO_FROM_NUMBER
+      const lead = leadId ? await sql`SELECT phone FROM leads_captured WHERE id = ${leadId} LIMIT 1` : null
+      const phone = (lead?.rows[0] as { phone?: string } | undefined)?.phone || node.to_phone || ''
+      const message = personalize(node.message || node.body || '', vars)
+
+      if (!sid || !token || !from) {
+        // Surface the gap loudly so users see why SMS didn't send.
+        if (leadId) {
+          await sql`INSERT INTO lead_activities (id, workspace_id, lead_id, type, title, description, metadata_json, created_at) VALUES (${newId()}, ${workspaceId}, ${leadId}, 'sms_skipped', 'SMS step skipped — Twilio not configured', ${message}, ${JSON.stringify({ reason: 'no_twilio_credentials' })}, ${now})`
+        }
+        throw new Error('send_sms: Twilio not configured (set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER)')
+      }
+      if (!phone) {
+        if (leadId) {
+          await sql`INSERT INTO lead_activities (id, workspace_id, lead_id, type, title, description, metadata_json, created_at) VALUES (${newId()}, ${workspaceId}, ${leadId}, 'sms_skipped', 'SMS step skipped — no phone number on lead', ${message}, ${JSON.stringify({ reason: 'no_phone' })}, ${now})`
+        }
+        throw new Error('send_sms: no phone number on lead and no node.to_phone fallback')
+      }
+      try {
+        const auth = Buffer.from(`${sid}:${token}`).toString('base64')
+        const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Basic ${auth}`,
+            'Content-Type': 'application/x-www-form-urlencoded',
+          },
+          body: new URLSearchParams({ From: from, To: phone, Body: message.slice(0, 1600) }),
+        })
+        const data = await res.json() as { sid?: string; error_message?: string; status?: string }
+        if (!res.ok || !data.sid) {
+          throw new Error(`Twilio: ${data.error_message || res.statusText}`)
+        }
+        if (leadId) {
+          await sql`INSERT INTO lead_activities (id, workspace_id, lead_id, type, title, description, metadata_json, created_at) VALUES (${newId()}, ${workspaceId}, ${leadId}, 'sms_sent', 'Workflow: SMS sent', ${message}, ${JSON.stringify({ twilio_sid: data.sid, status: data.status })}, ${now})`
+        }
+      } catch (err) {
+        if (leadId) {
+          await sql`INSERT INTO lead_activities (id, workspace_id, lead_id, type, title, description, metadata_json, created_at) VALUES (${newId()}, ${workspaceId}, ${leadId}, 'sms_failed', 'SMS dispatch failed', ${message}, ${JSON.stringify({ error: err instanceof Error ? err.message : String(err) })}, ${now})`
+        }
+        throw err
       }
       return
     }

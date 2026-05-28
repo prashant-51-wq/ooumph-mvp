@@ -298,6 +298,20 @@ export default function OnboardingPage() {
         )
       }
 
+      // Sprint 15F (P0 #8): persist the onboarding_completed_at flag so a
+      // mid-wizard refresh in a future visit doesn't relaunch the wizard.
+      try {
+        await fetch('/api/workspaces', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            workspaceId,
+            onboardingCompletedAt: new Date().toISOString(),
+            onboardingStep: 7,
+          }),
+        })
+      } catch { /* non-fatal */ }
+
       localStorage.removeItem('onboarding_progress')
       router.push('/dashboard')
     } catch (err) {
