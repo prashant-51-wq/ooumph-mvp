@@ -150,6 +150,13 @@ async function postgresQuery(strings: TemplateStringsArray, ...values: unknown[]
     // moves to Closed Lost — feeds future win/loss analysis.
     await pgSql`ALTER TABLE sales_deals ADD COLUMN IF NOT EXISTS lost_reason TEXT`
     await pgSql`ALTER TABLE sales_deals ADD COLUMN IF NOT EXISTS lost_at TIMESTAMPTZ`
+    // Sprint 6G: per-post organic engagement. Populated by future platform
+    // sync workers (LinkedIn Insights, Twitter Analytics, etc.). The
+    // /api/analytics/posts endpoint joins this with publish_log + artifacts
+    // so Top Performing Content can sort by real engagement, not recency.
+    await pgSql`CREATE TABLE IF NOT EXISTS post_metrics (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, artifact_id TEXT NOT NULL, platform VARCHAR(50) NOT NULL, post_id TEXT, impressions INTEGER DEFAULT 0, clicks INTEGER DEFAULT 0, likes INTEGER DEFAULT 0, comments INTEGER DEFAULT 0, shares INTEGER DEFAULT 0, saves INTEGER DEFAULT 0, video_views INTEGER DEFAULT 0, last_synced_at TIMESTAMPTZ DEFAULT NOW(), created_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE UNIQUE INDEX IF NOT EXISTS idx_post_metrics_unique ON post_metrics(artifact_id, platform)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_post_metrics_workspace ON post_metrics(workspace_id, last_synced_at DESC)`
     // === Phase Remediation tables (Postgres first-call init) ===
     await pgSql`CREATE TABLE IF NOT EXISTS workspace_secrets (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, provider VARCHAR(50) NOT NULL, encrypted_value TEXT NOT NULL, label TEXT, status TEXT DEFAULT 'active', last_tested_at TIMESTAMPTZ, test_result TEXT, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
     await pgSql`CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_secrets_unique ON workspace_secrets(workspace_id, provider)`
@@ -1143,6 +1150,10 @@ function initSQLiteSync(db: import('better-sqlite3').Database) {
     // Sprint 6E: Lost-reason capture (try/catch swallows duplicate-column on re-run).
     'ALTER TABLE sales_deals ADD COLUMN lost_reason TEXT',
     'ALTER TABLE sales_deals ADD COLUMN lost_at TEXT',
+    // Sprint 6G: per-post organic engagement.
+    'CREATE TABLE IF NOT EXISTS post_metrics (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, artifact_id TEXT NOT NULL, platform TEXT NOT NULL, post_id TEXT, impressions INTEGER DEFAULT 0, clicks INTEGER DEFAULT 0, likes INTEGER DEFAULT 0, comments INTEGER DEFAULT 0, shares INTEGER DEFAULT 0, saves INTEGER DEFAULT 0, video_views INTEGER DEFAULT 0, last_synced_at TEXT DEFAULT (datetime(\'now\')), created_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_post_metrics_unique ON post_metrics(artifact_id, platform)',
+    'CREATE INDEX IF NOT EXISTS idx_post_metrics_workspace ON post_metrics(workspace_id, last_synced_at DESC)',
     // === Phase Remediation: BYOK secrets + notifications + agent configs ===
     'CREATE TABLE IF NOT EXISTS workspace_secrets (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, provider TEXT NOT NULL, encrypted_value TEXT NOT NULL, label TEXT, status TEXT DEFAULT \'active\', last_tested_at TEXT, test_result TEXT, created_at TEXT DEFAULT (datetime(\'now\')), updated_at TEXT DEFAULT (datetime(\'now\')))',
     'CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_secrets_unique ON workspace_secrets(workspace_id, provider)',
@@ -1516,6 +1527,10 @@ export async function initializeDatabase() {
   // Sprint 6E: Lost-reason capture for sales_deals.
   await pgSql`ALTER TABLE sales_deals ADD COLUMN IF NOT EXISTS lost_reason TEXT`
   await pgSql`ALTER TABLE sales_deals ADD COLUMN IF NOT EXISTS lost_at TIMESTAMPTZ`
+  // Sprint 6G: per-post organic engagement.
+  await pgSql`CREATE TABLE IF NOT EXISTS post_metrics (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, artifact_id TEXT NOT NULL, platform VARCHAR(50) NOT NULL, post_id TEXT, impressions INTEGER DEFAULT 0, clicks INTEGER DEFAULT 0, likes INTEGER DEFAULT 0, comments INTEGER DEFAULT 0, shares INTEGER DEFAULT 0, saves INTEGER DEFAULT 0, video_views INTEGER DEFAULT 0, last_synced_at TIMESTAMPTZ DEFAULT NOW(), created_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE UNIQUE INDEX IF NOT EXISTS idx_post_metrics_unique ON post_metrics(artifact_id, platform)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_post_metrics_workspace ON post_metrics(workspace_id, last_synced_at DESC)`
   // === Phase Remediation tables ===
   await pgSql`CREATE TABLE IF NOT EXISTS workspace_secrets (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, provider VARCHAR(50) NOT NULL, encrypted_value TEXT NOT NULL, label TEXT, status TEXT DEFAULT 'active', last_tested_at TIMESTAMPTZ, test_result TEXT, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
   await pgSql`CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_secrets_unique ON workspace_secrets(workspace_id, provider)`

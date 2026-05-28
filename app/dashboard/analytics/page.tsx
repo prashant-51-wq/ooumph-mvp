@@ -512,6 +512,26 @@ interface AnalyticsData {
   publishByPlatform: { platform: string; count: number }[]
 }
 
+// Sprint 6G: shape returned by /api/analytics/posts. Top Performing Content
+// panel ranks by engagement (likes+comments+shares) rather than recency.
+interface TopPost {
+  artifactId: string
+  title: string
+  type: string
+  createdAt: string
+  publishedPlatforms: string[]
+  publishedAt: string | null
+  impressions: number
+  clicks: number
+  likes: number
+  comments: number
+  shares: number
+  engagement: number
+  engagementRate: number
+  hasMetrics: boolean
+  paidMetrics: { spend: number; conversions: number; revenue: number } | null
+}
+
 export default function AnalyticsPage() {
   const [activeTab, setActiveTab] = useState<TabId>('overview')
   const [range, setRange] = useState<RangeId>('30d')
@@ -532,6 +552,9 @@ export default function AnalyticsPage() {
   const [data, setData] = useState<AnalyticsData | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  // Sprint 6G: per-post engagement (Top Performing Content panel).
+  const [topPosts, setTopPosts] = useState<TopPost[] | null>(null)
+  const [topPostsLoading, setTopPostsLoading] = useState(false)
 
   const loadAnalytics = useCallback(async (wsId: string, r: RangeId) => {
     setLoading(true); setError(null)
@@ -559,6 +582,21 @@ export default function AnalyticsPage() {
   useEffect(() => {
     if (workspaceId) loadAnalytics(workspaceId, range)
   }, [range, workspaceId, loadAnalytics])
+
+  // Sprint 6G: load Top Performing Content via /api/analytics/posts. This
+  // replaces the recency-sorted topArtifacts surface with true engagement
+  // ranking. Runs in parallel with the main stats load.
+  useEffect(() => {
+    if (!workspaceId) return
+    let cancelled = false
+    setTopPostsLoading(true)
+    fetch(`/api/analytics/posts?workspaceId=${workspaceId}&range=${range}&sortBy=engagement&limit=6`)
+      .then(async r => r.ok ? r.json() as Promise<{ posts: TopPost[] }> : Promise.reject(new Error(`HTTP ${r.status}`)))
+      .then(json => { if (!cancelled) setTopPosts(json.posts || []) })
+      .catch(() => { if (!cancelled) setTopPosts([]) })
+      .finally(() => { if (!cancelled) setTopPostsLoading(false) })
+    return () => { cancelled = true }
+  }, [workspaceId, range])
 
   // ── Computed values from real data (NO mock fallback — Source Test) ──────
   // `data` is the response from /api/stats?view=analytics. `hasData` flags
@@ -889,29 +927,73 @@ export default function AnalyticsPage() {
             </div>
           </div>
 
-          {/* Top Performing Content */}
+          {/* Top Performing Content — Sprint 6G: ranks by engagement (likes
+              + comments + shares) using /api/analytics/posts. Posts with
+              synced platform metrics rank above posts that haven't been
+              synced yet. Honest empty state: no fabricated zeros. */}
           <div>
-            <h2 className="text-white font-semibold mb-3">Top Recent Content</h2>
-            {data && data.topArtifacts.length > 0 ? (
+            <div className="flex items-baseline justify-between mb-3">
+              <h2 className="text-white font-semibold">Top Performing Content</h2>
+              {topPosts && topPosts.some(p => !p.hasMetrics) && (
+                <p className="text-gray-500 text-xs">
+                  Some posts have no synced metrics yet — connect platform integrations to populate.
+                </p>
+              )}
+            </div>
+            {topPostsLoading && !topPosts && (
+              <div className="bg-gray-900 border border-gray-800 rounded-2xl p-8 text-center text-gray-500 text-sm">Loading…</div>
+            )}
+            {topPosts && topPosts.length === 0 && (
+              <div className="bg-gray-900 border border-gray-800 rounded-2xl p-8 text-center text-gray-500 text-sm">
+                No content published yet in this date range.
+              </div>
+            )}
+            {topPosts && topPosts.length > 0 && (
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                {data.topArtifacts.slice(0, 3).map(art => (
-                  <div key={art.id} className="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden">
-                    <div className="h-24 bg-gradient-to-br from-indigo-700 to-purple-900 flex items-center justify-center">
+                {topPosts.slice(0, 6).map(post => (
+                  <div key={post.artifactId} className="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden">
+                    <div className="h-24 bg-gradient-to-br from-indigo-700 to-purple-900 flex items-center justify-center relative">
                       <span className="text-4xl">📝</span>
+                      {post.hasMetrics && (
+                        <span className="absolute top-2 right-2 text-emerald-300 text-[10px] bg-emerald-950/70 px-1.5 py-0.5 rounded">
+                          {post.engagement.toLocaleString()} eng
+                        </span>
+                      )}
                     </div>
                     <div className="p-4">
-                      <div className="flex items-center gap-2 mb-2">
-                        <span className="text-gray-400 text-xs bg-gray-800 px-2 py-0.5 rounded">{art.type}</span>
+                      <div className="flex items-center gap-2 mb-2 flex-wrap">
+                        <span className="text-gray-400 text-xs bg-gray-800 px-2 py-0.5 rounded">{post.type}</span>
+                        {post.publishedPlatforms.slice(0, 3).map(pl => (
+                          <span key={pl} className="text-indigo-300 text-xs bg-indigo-950/60 px-2 py-0.5 rounded">{pl}</span>
+                        ))}
                       </div>
-                      <p className="text-white text-sm font-medium mb-2 line-clamp-2">{art.title}</p>
-                      <p className="text-gray-500 text-xs">{new Date(art.created_at).toLocaleDateString()}</p>
+                      <p className="text-white text-sm font-medium mb-2 line-clamp-2">{post.title}</p>
+                      {post.hasMetrics ? (
+                        <div className="grid grid-cols-3 gap-1 mt-2 mb-2">
+                          <div className="text-center">
+                            <p className="text-white text-xs font-semibold">{post.likes.toLocaleString()}</p>
+                            <p className="text-gray-600 text-[10px]">Likes</p>
+                          </div>
+                          <div className="text-center">
+                            <p className="text-white text-xs font-semibold">{post.comments.toLocaleString()}</p>
+                            <p className="text-gray-600 text-[10px]">Comments</p>
+                          </div>
+                          <div className="text-center">
+                            <p className="text-white text-xs font-semibold">{post.shares.toLocaleString()}</p>
+                            <p className="text-gray-600 text-[10px]">Shares</p>
+                          </div>
+                        </div>
+                      ) : (
+                        <p className="text-gray-600 text-[11px] italic mt-1.5 mb-1">No metrics synced yet</p>
+                      )}
+                      <p className="text-gray-500 text-xs">
+                        {post.publishedAt
+                          ? `Published ${new Date(post.publishedAt).toLocaleDateString()}`
+                          : `Drafted ${new Date(post.createdAt).toLocaleDateString()}`}
+                      </p>
                     </div>
                   </div>
                 ))}
-              </div>
-            ) : (
-              <div className="bg-gray-900 border border-gray-800 rounded-2xl p-8 text-center text-gray-500 text-sm">
-                {data ? 'No content published yet in this date range' : 'Loading…'}
               </div>
             )}
           </div>
@@ -1040,21 +1122,21 @@ export default function AnalyticsPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {/* Real top-content table — driven by data.topArtifacts. The
-                      /api/stats endpoint doesn't yet attach per-artifact reach
-                      / engagement / clicks; until it does we leave those
-                      columns blank rather than fabricating numbers. */}
-                  {data && data.topArtifacts.length > 0 ? data.topArtifacts.map(art => (
-                    <tr key={art.id} className="border-b border-gray-800/40 hover:bg-gray-800/30 transition-colors">
-                      <td className="px-4 py-3 text-sm text-gray-300 max-w-xs truncate">{art.title}</td>
-                      <td className="px-4 py-3 text-sm text-indigo-400">{art.type}</td>
-                      <td className="px-4 py-3 text-sm text-gray-600">—</td>
-                      <td className="px-4 py-3 text-sm text-gray-600">—</td>
-                      <td className="px-4 py-3 text-sm text-gray-600">—</td>
-                      <td className="px-4 py-3 text-sm text-gray-500">{new Date(art.created_at).toLocaleDateString()}</td>
+                  {/* Sprint 6G: driven by /api/analytics/posts. Reach /
+                      Eng Rate / Clicks columns now show real synced
+                      metrics, or "—" when a post hasn't been synced yet.
+                      Empty dashes are honest "no data" — not zero. */}
+                  {topPosts && topPosts.length > 0 ? topPosts.map(post => (
+                    <tr key={post.artifactId} className="border-b border-gray-800/40 hover:bg-gray-800/30 transition-colors">
+                      <td className="px-4 py-3 text-sm text-gray-300 max-w-xs truncate">{post.title}</td>
+                      <td className="px-4 py-3 text-sm text-indigo-400">{post.publishedPlatforms[0] || post.type}</td>
+                      <td className="px-4 py-3 text-sm text-gray-300">{post.hasMetrics ? post.impressions.toLocaleString() : '—'}</td>
+                      <td className="px-4 py-3 text-sm text-gray-300">{post.hasMetrics ? `${post.engagementRate.toFixed(2)}%` : '—'}</td>
+                      <td className="px-4 py-3 text-sm text-gray-300">{post.hasMetrics ? post.clicks.toLocaleString() : '—'}</td>
+                      <td className="px-4 py-3 text-sm text-gray-500">{new Date(post.publishedAt || post.createdAt).toLocaleDateString()}</td>
                     </tr>
                   )) : (
-                    <tr><td colSpan={6} className="text-center py-8 text-gray-500 text-sm">{data ? 'No content created yet in this date range.' : 'Loading…'}</td></tr>
+                    <tr><td colSpan={6} className="text-center py-8 text-gray-500 text-sm">{topPostsLoading ? 'Loading…' : 'No content created yet in this date range.'}</td></tr>
                   )}
                 </tbody>
               </table>
