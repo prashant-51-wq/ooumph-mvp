@@ -196,6 +196,32 @@ export default function PublishingHubPage() {
   const [queueFilter, setQueueFilter] = useState<QueueFilter>('All')
   const [selectedPosts, setSelectedPosts] = useState<string[]>([])
 
+  // Sprint 12B: per-post analytics (real data from /api/analytics/posts
+  // shipped in Sprint 6G). Replaces the "coming soon" empty state that
+  // was here before — the endpoint has existed for sprints but the UI
+  // tab still rendered the placeholder.
+  interface AnalyticsPost {
+    artifactId: string
+    title: string
+    type: string
+    createdAt: string
+    publishedPlatforms: string[]
+    publishedAt: string | null
+    impressions: number
+    clicks: number
+    likes: number
+    comments: number
+    shares: number
+    engagement: number
+    engagementRate: number
+    hasMetrics: boolean
+    paidMetrics: { spend: number; conversions: number; revenue: number } | null
+  }
+  const [analyticsPosts, setAnalyticsPosts] = useState<AnalyticsPost[] | null>(null)
+  const [analyticsLoading, setAnalyticsLoading] = useState(false)
+  const [analyticsRange, setAnalyticsRange] = useState<'7d' | '30d' | '90d'>('30d')
+  const [analyticsSort, setAnalyticsSort] = useState<'engagement' | 'reach' | 'recency'>('engagement')
+
   // Composer state
   const [compPlatforms, setCompPlatforms] = useState<Platform[]>(['linkedin'])
   const [compContent, setCompContent] = useState('')
@@ -259,6 +285,20 @@ export default function PublishingHubPage() {
     loadIntegrations(workspaceId)
     loadQueue(workspaceId)
   }, [workspaceId, loadIntegrations, loadQueue])
+
+  // Sprint 12B: fetch real per-post analytics when the Analytics tab
+  // opens or when the user changes the range/sort.
+  useEffect(() => {
+    if (!workspaceId || mainTab !== 'analytics') return
+    let cancelled = false
+    setAnalyticsLoading(true)
+    fetch(`/api/analytics/posts?workspaceId=${encodeURIComponent(workspaceId)}&range=${analyticsRange}&sortBy=${analyticsSort}&limit=20`)
+      .then(async r => r.ok ? (r.json() as Promise<{ posts: AnalyticsPost[] }>) : Promise.reject(new Error(`HTTP ${r.status}`)))
+      .then(j => { if (!cancelled) setAnalyticsPosts(j.posts || []) })
+      .catch(() => { if (!cancelled) setAnalyticsPosts([]) })
+      .finally(() => { if (!cancelled) setAnalyticsLoading(false) })
+    return () => { cancelled = true }
+  }, [workspaceId, mainTab, analyticsRange, analyticsSort])
 
   // ── Derived state ───────────────────────────────────────────────────────────
   const connectionStates = useMemo(() => {
@@ -881,35 +921,106 @@ export default function PublishingHubPage() {
         )}
 
         {/* ── ANALYTICS TAB ───────────────────────────────────────────────────── */}
+        {/* Sprint 12B: wired to /api/analytics/posts (shipped Sprint 6G).
+            Posts with synced platform metrics rank above un-synced ones.
+            Empty / un-synced posts are honestly disclosed — not fabricated. */}
         {mainTab === 'analytics' && (
           <div className="flex-1 overflow-y-auto p-6">
-            {/* Honest empty state — no fabricated metrics, no fake heatmap.
-                When /api/analytics/posts ships we'll render real per-post data here. */}
-            <div className="text-center py-20 bg-gray-900 border border-gray-800 rounded-2xl max-w-2xl mx-auto">
-              <div className="text-5xl mb-4">📊</div>
-              <h3 className="text-white font-semibold text-lg mb-2">Per-post analytics coming soon</h3>
-              <p className="text-gray-500 text-sm mb-5 max-w-md mx-auto leading-relaxed">
-                Reach, engagement, clicks, and best-time-to-post insights will populate here once
-                your platforms are connected and posts have been live for at least 24 hours.
-              </p>
-              <div className="flex items-center justify-center gap-2 flex-wrap">
-                <button
-                  onClick={() => router.push('/dashboard/integrations')}
-                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium rounded-lg"
-                >
-                  Connect platforms →
-                </button>
-                <button
-                  onClick={() => router.push('/dashboard/analytics')}
-                  className="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm font-medium rounded-lg border border-gray-700"
-                >
-                  Workspace analytics
-                </button>
+            {/* Range + sort controls */}
+            <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
+              <div>
+                <h3 className="text-white font-semibold text-lg">Per-post performance</h3>
+                <p className="text-gray-500 text-xs mt-0.5">Ranks your posts by engagement, reach, or recency. Synced from connected platforms.</p>
               </div>
-              <p className="text-gray-700 text-xs mt-6">
-                We don&apos;t show fake numbers. When data exists, it appears here — not before.
-              </p>
+              <div className="flex items-center gap-2">
+                <select
+                  value={analyticsRange}
+                  onChange={e => setAnalyticsRange(e.target.value as '7d' | '30d' | '90d')}
+                  className="bg-gray-800 border border-gray-700 text-white text-xs rounded-lg px-2.5 py-1.5"
+                >
+                  <option value="7d">Last 7d</option>
+                  <option value="30d">Last 30d</option>
+                  <option value="90d">Last 90d</option>
+                </select>
+                <select
+                  value={analyticsSort}
+                  onChange={e => setAnalyticsSort(e.target.value as 'engagement' | 'reach' | 'recency')}
+                  className="bg-gray-800 border border-gray-700 text-white text-xs rounded-lg px-2.5 py-1.5"
+                >
+                  <option value="engagement">Sort: engagement</option>
+                  <option value="reach">Sort: reach</option>
+                  <option value="recency">Sort: recency</option>
+                </select>
+              </div>
             </div>
+
+            {analyticsLoading && analyticsPosts === null && (
+              <div className="bg-gray-900 border border-gray-800 rounded-2xl p-12 text-center text-gray-500 text-sm">Loading…</div>
+            )}
+
+            {analyticsPosts !== null && analyticsPosts.length === 0 && (
+              <div className="bg-gray-900 border border-gray-800 rounded-2xl p-12 text-center max-w-2xl mx-auto">
+                <div className="text-5xl mb-4">📊</div>
+                <p className="text-white font-medium">No posts in this date range yet</p>
+                <p className="text-gray-500 text-sm mt-2 max-w-md mx-auto leading-relaxed">
+                  Once you publish (or connect platforms so we can pull recent posts), they appear here. We never fabricate numbers.
+                </p>
+                <div className="flex items-center justify-center gap-2 flex-wrap mt-5">
+                  <button onClick={() => router.push('/dashboard/integrations')} className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium rounded-lg">Connect platforms →</button>
+                  <button onClick={() => setMainTab('composer')} className="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm font-medium rounded-lg border border-gray-700">Compose a post</button>
+                </div>
+              </div>
+            )}
+
+            {analyticsPosts !== null && analyticsPosts.length > 0 && (
+              <>
+                {analyticsPosts.some(p => !p.hasMetrics) && (
+                  <p className="text-amber-400 text-xs mb-3">
+                    Some posts have no synced platform metrics yet — connect your platform integrations so we can pull impressions/likes/comments.
+                  </p>
+                )}
+                <div className="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-gray-800 bg-gray-900/60">
+                          <th className="text-left text-gray-400 text-xs font-medium px-4 py-3">Post</th>
+                          <th className="text-left text-gray-400 text-xs font-medium px-4 py-3">Platforms</th>
+                          <th className="text-right text-gray-400 text-xs font-medium px-4 py-3">Reach</th>
+                          <th className="text-right text-gray-400 text-xs font-medium px-4 py-3">Engagement</th>
+                          <th className="text-right text-gray-400 text-xs font-medium px-4 py-3">Eng. rate</th>
+                          <th className="text-right text-gray-400 text-xs font-medium px-4 py-3">Clicks</th>
+                          <th className="text-right text-gray-400 text-xs font-medium px-4 py-3">Published</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {analyticsPosts.map(p => (
+                          <tr key={p.artifactId} className="border-b border-gray-800/40 hover:bg-gray-800/30">
+                            <td className="px-4 py-3 text-gray-200 max-w-xs truncate">{p.title}</td>
+                            <td className="px-4 py-3">
+                              <div className="flex gap-1.5 flex-wrap">
+                                {p.publishedPlatforms.length > 0
+                                  ? p.publishedPlatforms.map(pl => <span key={pl} className="text-[10px] text-indigo-300 bg-indigo-950/60 px-1.5 py-0.5 rounded">{pl}</span>)
+                                  : <span className="text-[10px] text-gray-600 italic">Not published</span>
+                                }
+                              </div>
+                            </td>
+                            <td className="px-4 py-3 text-right text-gray-300">{p.hasMetrics ? p.impressions.toLocaleString() : <span className="text-gray-600">—</span>}</td>
+                            <td className="px-4 py-3 text-right text-gray-300">{p.hasMetrics ? p.engagement.toLocaleString() : <span className="text-gray-600">—</span>}</td>
+                            <td className="px-4 py-3 text-right text-gray-300">{p.hasMetrics ? `${p.engagementRate.toFixed(2)}%` : <span className="text-gray-600">—</span>}</td>
+                            <td className="px-4 py-3 text-right text-gray-300">{p.hasMetrics ? p.clicks.toLocaleString() : <span className="text-gray-600">—</span>}</td>
+                            <td className="px-4 py-3 text-right text-gray-500 text-xs">{p.publishedAt ? new Date(p.publishedAt).toLocaleDateString() : <span className="italic">draft</span>}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+                <p className="text-gray-600 text-[11px] mt-3">
+                  Empty cells mean platform metrics haven&apos;t been synced for that post yet — not zero. We never fabricate numbers.
+                </p>
+              </>
+            )}
           </div>
         )}
       </div>
