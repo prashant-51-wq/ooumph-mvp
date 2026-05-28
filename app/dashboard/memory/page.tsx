@@ -96,6 +96,11 @@ export default function BrandMemoryPage() {
   const [uploadResult, setUploadResult] = useState<{ success: boolean; message: string } | null>(null)
   const uploadFileRef = useRef<HTMLInputElement>(null)
   const [isDragging, setIsDragging] = useState(false)
+  // Sprint 14C: per-file progress so a bulk upload of 10 PDFs shows which one
+  // is currently parsing, which already finished, and which failed (instead
+  // of a single global "processing file 3" status line).
+  type FileStage = 'queued' | 'parsing' | 'ingesting' | 'done' | 'failed'
+  const [fileStages, setFileStages] = useState<Record<number, { stage: FileStage; error?: string; nodes?: number }>>({})
 
   const load = useCallback(async (query?: string) => {
     const wid = localStorage.getItem('workspaceId')
@@ -164,22 +169,38 @@ export default function BrandMemoryPage() {
     setUploadResult(null)
     setUploadStatus('')
 
-    type IngestItem = { type: 'pdf' | 'docx' | 'url' | 'text'; content: string; filename?: string }
+    // Seed per-file stages so every row in the file list shows "queued"
+    // immediately, then patches to parsing → ingesting → done/failed live.
+    const initialStages: Record<number, { stage: FileStage }> = {}
+    uploadFiles.forEach((_, i) => { initialStages[i] = { stage: 'queued' } })
+    setFileStages(initialStages)
+
+    type IngestItem = { type: 'pdf' | 'docx' | 'url' | 'text'; content: string; filename?: string; fileIndex?: number }
     const items: IngestItem[] = []
     const errors: string[] = []
+    const total = uploadFiles.length + (uploadUrl.trim() ? 1 : 0) + (uploadText.trim() ? 1 : 0)
+    let processed = 0
 
     // 1) Parse files via /api/parse-document
-    for (const f of uploadFiles) {
+    for (let i = 0; i < uploadFiles.length; i++) {
+      const f = uploadFiles[i]
       const lower = f.name.toLowerCase()
       const ext: 'pdf' | 'docx' | 'text' =
         lower.endsWith('.pdf') ? 'pdf' :
         lower.endsWith('.docx') ? 'docx' :
         'text'
+      processed++
+      setFileStages(prev => ({ ...prev, [i]: { stage: 'parsing' } }))
       try {
-        setUploadStatus(`📄 Parsing ${ext.toUpperCase()}: ${f.name}...`)
+        setUploadStatus(`📄 Parsing ${ext.toUpperCase()} ${processed}/${total}: ${f.name}...`)
         if (ext === 'text') {
           const text = await f.text()
-          if (text.trim()) items.push({ type: 'text', content: text, filename: f.name })
+          if (text.trim()) {
+            items.push({ type: 'text', content: text, filename: f.name, fileIndex: i })
+          } else {
+            setFileStages(prev => ({ ...prev, [i]: { stage: 'failed', error: 'empty file' } }))
+            errors.push(`${f.name}: empty file`)
+          }
           continue
         }
         const fd = new FormData()
@@ -187,23 +208,29 @@ export default function BrandMemoryPage() {
         const parseRes = await fetch('/api/parse-document', { method: 'POST', body: fd })
         const parsed = await parseRes.json() as { text?: string; error?: string; type?: 'pdf' | 'docx' | 'txt' }
         if (!parseRes.ok || !parsed.text) {
-          errors.push(`${f.name}: ${parsed.error || 'parse failed'}`)
+          const msg = parsed.error || 'parse failed'
+          setFileStages(prev => ({ ...prev, [i]: { stage: 'failed', error: msg } }))
+          errors.push(`${f.name}: ${msg}`)
           continue
         }
         items.push({
           type: parsed.type === 'txt' ? 'text' : (parsed.type as 'pdf' | 'docx'),
           content: parsed.text,
           filename: f.name,
+          fileIndex: i,
         })
       } catch (e) {
-        errors.push(`${f.name}: ${e instanceof Error ? e.message : 'parse error'}`)
+        const msg = e instanceof Error ? e.message : 'parse error'
+        setFileStages(prev => ({ ...prev, [i]: { stage: 'failed', error: msg } }))
+        errors.push(`${f.name}: ${msg}`)
       }
     }
 
     // 2) Scrape URL via /api/parse-document?url=...
     if (uploadUrl.trim()) {
+      processed++
       try {
-        setUploadStatus(`🌐 Fetching ${uploadUrl}...`)
+        setUploadStatus(`🌐 Fetching ${uploadUrl} (${processed}/${total})...`)
         const r = await fetch(`/api/parse-document?url=${encodeURIComponent(uploadUrl.trim())}`)
         const parsed = await r.json() as { text?: string; error?: string }
         if (!r.ok || !parsed.text) {
@@ -218,6 +245,7 @@ export default function BrandMemoryPage() {
 
     // 3) Pasted text
     if (uploadText.trim()) {
+      processed++
       items.push({ type: 'text', content: uploadText.trim(), filename: 'Pasted brand guidelines' })
     }
 
@@ -233,9 +261,13 @@ export default function BrandMemoryPage() {
 
     // 4) Ingest each item
     let totalNodes = 0
-    for (const item of items) {
+    for (let idx = 0; idx < items.length; idx++) {
+      const item = items[idx]
+      if (typeof item.fileIndex === 'number') {
+        setFileStages(prev => ({ ...prev, [item.fileIndex!]: { stage: 'ingesting' } }))
+      }
       try {
-        setUploadStatus(`🤖 Extracting knowledge from ${item.filename || item.type}...`)
+        setUploadStatus(`🤖 Extracting knowledge from ${item.filename || item.type} (${idx + 1}/${items.length})...`)
         const res = await fetch('/api/learning/ingest', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -248,12 +280,24 @@ export default function BrandMemoryPage() {
         })
         const data = await res.json()
         if (data.success) {
-          totalNodes += data.nodesCreated || 0
+          const nodes = data.nodesCreated || 0
+          totalNodes += nodes
+          if (typeof item.fileIndex === 'number') {
+            setFileStages(prev => ({ ...prev, [item.fileIndex!]: { stage: 'done', nodes } }))
+          }
         } else {
-          errors.push(`${item.filename || item.type}: ${data.error || 'ingest failed'}`)
+          const msg = data.error || 'ingest failed'
+          if (typeof item.fileIndex === 'number') {
+            setFileStages(prev => ({ ...prev, [item.fileIndex!]: { stage: 'failed', error: msg } }))
+          }
+          errors.push(`${item.filename || item.type}: ${msg}`)
         }
       } catch (e) {
-        errors.push(`${item.filename || item.type}: ${e instanceof Error ? e.message : 'ingest error'}`)
+        const msg = e instanceof Error ? e.message : 'ingest error'
+        if (typeof item.fileIndex === 'number') {
+          setFileStages(prev => ({ ...prev, [item.fileIndex!]: { stage: 'failed', error: msg } }))
+        }
+        errors.push(`${item.filename || item.type}: ${msg}`)
       }
     }
 
@@ -261,15 +305,18 @@ export default function BrandMemoryPage() {
     setUploadResult({
       success: !hasError && totalNodes > 0,
       message: hasError
-        ? `${totalNodes} knowledge node${totalNodes === 1 ? '' : 's'} added, but some items failed: ${errors.slice(0, 3).join(' • ')}`
+        ? `${totalNodes} knowledge node${totalNodes === 1 ? '' : 's'} added — ${errors.length} item${errors.length === 1 ? '' : 's'} failed (see badges above).`
         : `✅ ${totalNodes} knowledge node${totalNodes === 1 ? '' : 's'} added to Brand Memory.`,
     })
     setUploadStatus('')
     setUploading(false)
     if (!hasError) {
+      // Clear staged files only on a fully clean run — leave failed rows
+      // visible so the user can retry or remove them individually.
       setUploadFiles([])
       setUploadUrl('')
       setUploadText('')
+      setFileStages({})
       setTimeout(() => { setShowUploadModal(false); setUploadResult(null); load() }, 2000)
     }
   }
@@ -503,12 +550,80 @@ export default function BrandMemoryPage() {
 
               {uploadFiles.length > 0 && (
                 <div className="space-y-1.5">
-                  {uploadFiles.map((f, i) => (
-                    <div key={i} className="flex items-center gap-2 px-3 py-2 bg-gray-800 rounded-lg">
-                      <span className="text-gray-400 text-xs flex-1 truncate">{f.name}</span>
-                      <button onClick={() => setUploadFiles(prev => prev.filter((_, j) => j !== i))} className="text-gray-600 hover:text-red-400 text-xs transition-colors">✕</button>
-                    </div>
-                  ))}
+                  <div className="flex items-center justify-between text-xs text-gray-500 px-1">
+                    <span>{uploadFiles.length} file{uploadFiles.length === 1 ? '' : 's'} staged</span>
+                    {!uploading && (
+                      <button
+                        onClick={() => { setUploadFiles([]); setFileStages({}) }}
+                        className="text-gray-600 hover:text-red-400 transition-colors"
+                      >
+                        Clear all
+                      </button>
+                    )}
+                  </div>
+                  {uploadFiles.map((f, i) => {
+                    const fs = fileStages[i]
+                    // Sprint 14C: per-file badge — pulls from fileStages so the
+                    // user can see at a glance which file is currently parsing,
+                    // which finished (and how many nodes it added), and which
+                    // failed (with the error inline).
+                    const badge = (() => {
+                      if (!fs) return null
+                      switch (fs.stage) {
+                        case 'queued':
+                          return <span className="text-xs px-2 py-0.5 rounded bg-gray-700 text-gray-300">queued</span>
+                        case 'parsing':
+                          return (
+                            <span className="text-xs px-2 py-0.5 rounded bg-indigo-900/60 text-indigo-300 flex items-center gap-1">
+                              <span className="w-2 h-2 border border-indigo-300 border-t-transparent rounded-full animate-spin" />
+                              parsing
+                            </span>
+                          )
+                        case 'ingesting':
+                          return (
+                            <span className="text-xs px-2 py-0.5 rounded bg-purple-900/60 text-purple-300 flex items-center gap-1">
+                              <span className="w-2 h-2 border border-purple-300 border-t-transparent rounded-full animate-spin" />
+                              extracting
+                            </span>
+                          )
+                        case 'done':
+                          return <span className="text-xs px-2 py-0.5 rounded bg-emerald-900/60 text-emerald-300">✓ {fs.nodes || 0} node{fs.nodes === 1 ? '' : 's'}</span>
+                        case 'failed':
+                          return <span className="text-xs px-2 py-0.5 rounded bg-red-900/60 text-red-300" title={fs.error}>✕ failed</span>
+                      }
+                    })()
+                    return (
+                      <div key={i} className="px-3 py-2 bg-gray-800 rounded-lg">
+                        <div className="flex items-center gap-2">
+                          <span className="text-gray-400 text-xs flex-1 truncate">{f.name}</span>
+                          <span className="text-gray-600 text-[10px]">{(f.size / 1024).toFixed(0)} KB</span>
+                          {badge}
+                          {!uploading && (
+                            <button
+                              onClick={() => {
+                                setUploadFiles(prev => prev.filter((_, j) => j !== i))
+                                setFileStages(prev => {
+                                  const next: typeof prev = {}
+                                  Object.entries(prev).forEach(([k, v]) => {
+                                    const idx = Number(k)
+                                    if (idx < i) next[idx] = v
+                                    else if (idx > i) next[idx - 1] = v
+                                  })
+                                  return next
+                                })
+                              }}
+                              className="text-gray-600 hover:text-red-400 text-xs transition-colors"
+                            >
+                              ✕
+                            </button>
+                          )}
+                        </div>
+                        {fs?.stage === 'failed' && fs.error && (
+                          <p className="text-red-400 text-[11px] mt-1 truncate">{fs.error}</p>
+                        )}
+                      </div>
+                    )
+                  })}
                 </div>
               )}
 
