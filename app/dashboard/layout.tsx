@@ -89,7 +89,8 @@ const ADVANCED_NAV = [
     items: [
       { href: '/dashboard/billing', label: 'Billing & Plans', icon: '💳' },
       // Hidden /dashboard/agency (all MOCK_ data, 0 fetch calls) — Sprint 1E
-      { href: '/dashboard/payments', label: 'Payments', icon: '💰' },
+      // Hidden /dashboard/payments (TRANSACTIONS/SUBSCRIPTIONS/PAYOUTS all fabricated, 0 fetch calls) — Sprint 7B
+      // Page now redirects to /dashboard/billing.
       // Swapped /dashboard/connections (all hardcoded, 0 fetch calls) → /dashboard/integrations (real) — Sprint 1E
       { href: '/dashboard/integrations', label: 'Integrations', icon: '🔗' },
       { href: '/dashboard/onboarding', label: 'Workspace Setup', icon: '🚀' },
@@ -102,7 +103,9 @@ const ADVANCED_NAV = [
       { href: '/dashboard/health', label: 'System Health', icon: '🩺' },
       { href: '/dashboard/activity', label: 'Activity Feed', icon: '📡' },
       // Hidden /dashboard/audit (all hardcoded ACTIVITY_LOGS/AGENT_TASKS/API_CALLS, refresh is `// In production:` comment, 0 fetch calls) — Sprint 1E
-      { href: '/dashboard/privacy', label: 'Privacy & Trust', icon: '🔒' },
+      // Hidden /dashboard/privacy (CHECKLIST/CONSENT_RECORDS/LEGAL_DOCS all fabricated, 0 fetch calls) — Sprint 7B
+      // Page now redirects to /dashboard/settings/security (the actual
+      // privacy / data controls surface).
     ],
   },
   {
@@ -145,8 +148,9 @@ function getPageTitle(pathname: string): string {
     '/dashboard/pr': 'PR Studio',
     '/dashboard/publishing': 'Publishing',
     '/dashboard/billing': 'Billing & Plans',
-    '/dashboard/payments': 'Payments',
-    '/dashboard/privacy': 'Privacy & Trust',
+    // /dashboard/payments and /dashboard/privacy redirect server-side
+    // (Sprint 7B). Breadcrumb entries removed since they're never the
+    // resolved URL after the redirect fires.
     '/dashboard/funnel': 'Funnel Plan',
     '/dashboard/funnel/form-builder': 'Form Builder',
     '/dashboard/super-admin': 'Super Admin',
