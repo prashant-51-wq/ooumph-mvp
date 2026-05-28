@@ -59,16 +59,31 @@ interface LPRow {
   approval_status: string | null
 }
 
-async function loadLandingPage(id: string): Promise<LandingPageContent | null> {
+async function loadLandingPage(idOrSlug: string): Promise<LandingPageContent | null> {
+  // Sprint 13A: try by slug first, fall back to artifact id. Slugs are
+  // human-readable (acme-launch), ids are UUIDs — the column patterns
+  // don't overlap so there's no ambiguity. Slug match is cheap
+  // (UNIQUE index on lp_slug WHERE lp_slug IS NOT NULL).
+  //
   // Must be approved — never expose drafts on a public URL.
-  const result = await sql`
+  let result = await sql`
     SELECT a.id, a.title, a.content_json, ap.status as approval_status
     FROM artifacts a
     LEFT JOIN approvals ap ON ap.artifact_id = a.id
-    WHERE a.id = ${id} AND a.type = 'landing_page'
+    WHERE a.lp_slug = ${idOrSlug} AND a.type = 'landing_page'
     ORDER BY ap.created_at DESC
     LIMIT 1
   `
+  if (!result.rows[0]) {
+    result = await sql`
+      SELECT a.id, a.title, a.content_json, ap.status as approval_status
+      FROM artifacts a
+      LEFT JOIN approvals ap ON ap.artifact_id = a.id
+      WHERE a.id = ${idOrSlug} AND a.type = 'landing_page'
+      ORDER BY ap.created_at DESC
+      LIMIT 1
+    `
+  }
   const row = result.rows[0] as unknown as LPRow | undefined
   if (!row) return null
   if ((row.approval_status || '').toLowerCase() !== 'approved') return null

@@ -181,6 +181,12 @@ async function postgresQuery(strings: TemplateStringsArray, ...values: unknown[]
     // re-saved. The shared lib/integrations.ts:readAccessToken() helper
     // hides the difference from readers.
     await pgSql`ALTER TABLE integrations ADD COLUMN IF NOT EXISTS encrypted_access_token TEXT`
+    // Sprint 13A: human-readable slugs for hosted landing pages. Allows
+    // /lp/acme-launch instead of /lp/<uuid>. NULL on artifacts that
+    // aren't landing pages or haven't had a slug set. Unique enforced
+    // at the column level so two LPs can't claim the same URL.
+    await pgSql`ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS lp_slug VARCHAR(128)`
+    await pgSql`CREATE UNIQUE INDEX IF NOT EXISTS idx_artifacts_lp_slug ON artifacts(lp_slug) WHERE lp_slug IS NOT NULL`
     // === Phase Remediation tables (Postgres first-call init) ===
     await pgSql`CREATE TABLE IF NOT EXISTS workspace_secrets (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, provider VARCHAR(50) NOT NULL, encrypted_value TEXT NOT NULL, label TEXT, status TEXT DEFAULT 'active', last_tested_at TIMESTAMPTZ, test_result TEXT, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
     await pgSql`CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_secrets_unique ON workspace_secrets(workspace_id, provider)`
@@ -1189,6 +1195,11 @@ function initSQLiteSync(db: import('better-sqlite3').Database) {
     'CREATE INDEX IF NOT EXISTS idx_commission_payouts_vendor ON commission_payouts(vendor_workspace_id, paid_at DESC)',
     // Sprint 9B: encrypted_access_token column on integrations (SQLite — try/catch swallows duplicate).
     'ALTER TABLE integrations ADD COLUMN encrypted_access_token TEXT',
+    // Sprint 13A: lp_slug on artifacts.
+    'ALTER TABLE artifacts ADD COLUMN lp_slug TEXT',
+    // SQLite needs a separate CREATE UNIQUE INDEX (no partial-index syntax with WHERE in older SQLite,
+    // but modern SQLite supports WHERE — better-sqlite3 ships ≥ 3.40 where this works fine).
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_artifacts_lp_slug ON artifacts(lp_slug) WHERE lp_slug IS NOT NULL',
     // === Phase Remediation: BYOK secrets + notifications + agent configs ===
     'CREATE TABLE IF NOT EXISTS workspace_secrets (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, provider TEXT NOT NULL, encrypted_value TEXT NOT NULL, label TEXT, status TEXT DEFAULT \'active\', last_tested_at TEXT, test_result TEXT, created_at TEXT DEFAULT (datetime(\'now\')), updated_at TEXT DEFAULT (datetime(\'now\')))',
     'CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_secrets_unique ON workspace_secrets(workspace_id, provider)',
@@ -1577,6 +1588,9 @@ export async function initializeDatabase() {
   await pgSql`CREATE INDEX IF NOT EXISTS idx_commission_payouts_vendor ON commission_payouts(vendor_workspace_id, paid_at DESC)`
   // Sprint 9B: encrypted_access_token column on integrations.
   await pgSql`ALTER TABLE integrations ADD COLUMN IF NOT EXISTS encrypted_access_token TEXT`
+  // Sprint 13A: lp_slug on artifacts.
+  await pgSql`ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS lp_slug VARCHAR(128)`
+  await pgSql`CREATE UNIQUE INDEX IF NOT EXISTS idx_artifacts_lp_slug ON artifacts(lp_slug) WHERE lp_slug IS NOT NULL`
   // === Phase Remediation tables ===
   await pgSql`CREATE TABLE IF NOT EXISTS workspace_secrets (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, provider VARCHAR(50) NOT NULL, encrypted_value TEXT NOT NULL, label TEXT, status TEXT DEFAULT 'active', last_tested_at TIMESTAMPTZ, test_result TEXT, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
   await pgSql`CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_secrets_unique ON workspace_secrets(workspace_id, provider)`

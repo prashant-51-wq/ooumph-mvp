@@ -21,7 +21,8 @@ export async function GET(req: NextRequest) {
       a.title as artifact_title,
       a.content_json,
       a.status as artifact_status,
-      a.created_at as artifact_created_at
+      a.created_at as artifact_created_at,
+      a.lp_slug
     FROM approvals ap
     JOIN artifacts a ON a.id = ap.artifact_id
     WHERE ap.workspace_id = ${workspaceId}

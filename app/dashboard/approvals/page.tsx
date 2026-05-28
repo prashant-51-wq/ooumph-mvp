@@ -15,6 +15,10 @@ interface ApprovalItem {
   created_at: string
   brand_voice_score?: number | null
   brand_voice_reasoning?: string | null
+  /** Sprint 13A: present on landing_page artifacts when a custom slug
+   *  has been set. UI uses it to render the friendly /lp/<slug> URL
+   *  instead of /lp/<uuid>. NULL otherwise. */
+  lp_slug?: string | null
 }
 
 const TYPE_LABELS: Record<string, string> = {
@@ -746,6 +750,15 @@ export default function ApprovalsPage() {
                     </div>
                   )}
 
+                  {/* Sprint 13A: public URL panel for landing_page artifacts.
+                      Shows the live URL with copy-link, lets the operator
+                      set a custom slug (e.g. "acme-launch") instead of
+                      the UUID. Only visible once the LP is approved —
+                      the renderer enforces that anyway. */}
+                  {item.status === 'approved' && item.artifact_type === 'landing_page' && (
+                    <LpSlugWidget item={item} onUpdated={load} />
+                  )}
+
                   {item.status === 'approved' && PUBLISHABLE[item.artifact_type] && (
                     <div className="mt-4 p-4 rounded-lg bg-gray-900 border border-gray-700">
                       <p className="text-gray-400 text-xs font-semibold uppercase tracking-wider mb-3">Publish to Platform</p>
@@ -1066,6 +1079,113 @@ function DefaultPreview({ content }: { content: Record<string, unknown> }) {
       {hashtags && hashtags.length > 0 && (
         <div className="flex flex-wrap gap-1 pt-1">
           {hashtags.map(h => <span key={h} className="text-gray-500 text-xs">#{h.replace(/^#/, '')}</span>)}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Sprint 13A: Public URL + custom slug widget for landing_page items ──────
+function LpSlugWidget({ item, onUpdated }: { item: ApprovalItem; onUpdated: () => void }) {
+  const [slugInput, setSlugInput] = useState(item.lp_slug || '')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [copied, setCopied] = useState(false)
+  const [editing, setEditing] = useState(!item.lp_slug)
+
+  const origin = typeof window !== 'undefined' ? window.location.origin : ''
+  const currentPath = item.lp_slug ? `/lp/${item.lp_slug}` : `/lp/${item.artifact_id}`
+  const currentUrl = `${origin}${currentPath}`
+
+  async function save() {
+    setError(null); setSaving(true)
+    try {
+      const res = await fetch(`/api/artifacts/${item.artifact_id}/lp-slug`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug: slugInput.trim().toLowerCase() || null }),
+      })
+      const data = await res.json() as { error?: string; ok?: boolean; slug?: string | null; publicUrl?: string }
+      if (!res.ok || !data.ok) {
+        setError(data.error || `Save failed (${res.status})`)
+        return
+      }
+      setEditing(false)
+      onUpdated()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Network error')
+    } finally { setSaving(false) }
+  }
+
+  async function copyUrl() {
+    try {
+      await navigator.clipboard.writeText(currentUrl)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch { /* clipboard blocked — silently no-op */ }
+  }
+
+  return (
+    <div className="mt-4 p-4 rounded-lg bg-gray-900 border border-gray-700">
+      <p className="text-gray-400 text-xs font-semibold uppercase tracking-wider mb-3">Public URL</p>
+
+      {!editing && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            <a
+              href={currentPath}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-indigo-300 hover:text-indigo-200 text-sm font-mono break-all"
+            >
+              {currentUrl}
+            </a>
+            <button onClick={copyUrl} className="px-2 py-1 text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 rounded border border-gray-700">
+              {copied ? '✓ Copied' : 'Copy'}
+            </button>
+            <button onClick={() => setEditing(true)} className="px-2 py-1 text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 rounded border border-gray-700">
+              {item.lp_slug ? 'Change slug' : 'Add custom slug'}
+            </button>
+          </div>
+          {!item.lp_slug && (
+            <p className="text-gray-600 text-[11px]">
+              Using the artifact UUID. Add a custom slug to get a shareable URL like {origin}/lp/acme-launch.
+            </p>
+          )}
+        </div>
+      )}
+
+      {editing && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <span className="text-gray-500 text-sm font-mono whitespace-nowrap">{origin}/lp/</span>
+            <input
+              value={slugInput}
+              onChange={e => setSlugInput(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ''))}
+              placeholder="acme-launch"
+              className="flex-1 bg-gray-800 border border-gray-700 text-white text-sm rounded px-2 py-1 font-mono"
+              autoFocus
+            />
+          </div>
+          <p className="text-gray-600 text-[11px]">
+            3-64 chars, lowercase letters / digits / hyphens, must start with a letter. Leave blank to clear and fall back to the UUID URL.
+          </p>
+          {error && <p className="text-red-400 text-xs">{error}</p>}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={save}
+              disabled={saving}
+              className="px-3 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 text-white rounded font-medium disabled:opacity-40"
+            >
+              {saving ? 'Saving…' : 'Save'}
+            </button>
+            <button
+              onClick={() => { setEditing(false); setSlugInput(item.lp_slug || ''); setError(null) }}
+              className="px-3 py-1.5 text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 rounded border border-gray-700"
+            >
+              Cancel
+            </button>
+          </div>
         </div>
       )}
     </div>
