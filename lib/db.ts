@@ -145,6 +145,11 @@ async function postgresQuery(strings: TemplateStringsArray, ...values: unknown[]
     await pgSql`CREATE INDEX IF NOT EXISTS idx_workspace_invites_workspace ON workspace_invites(workspace_id)`
     await pgSql`CREATE TABLE IF NOT EXISTS sales_deals (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, lead_id TEXT, contact_name TEXT NOT NULL, contact_email TEXT, company TEXT, title TEXT NOT NULL, value REAL DEFAULT 0, currency VARCHAR(10) DEFAULT 'USD', stage VARCHAR(50) DEFAULT 'prospect', probability INTEGER DEFAULT 10, expected_close TEXT, actual_close TEXT, notes TEXT, source TEXT, custom_fields TEXT DEFAULT '{}', created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
     await pgSql`CREATE INDEX IF NOT EXISTS idx_sales_deals_workspace ON sales_deals(workspace_id, stage)`
+    // Sprint 6E: Lost-reason capture for sales_deals (analytics + retro).
+    // Lets the CRM Kanban prompt for "why did we lose this?" when a deal
+    // moves to Closed Lost — feeds future win/loss analysis.
+    await pgSql`ALTER TABLE sales_deals ADD COLUMN IF NOT EXISTS lost_reason TEXT`
+    await pgSql`ALTER TABLE sales_deals ADD COLUMN IF NOT EXISTS lost_at TIMESTAMPTZ`
     // === Phase Remediation tables (Postgres first-call init) ===
     await pgSql`CREATE TABLE IF NOT EXISTS workspace_secrets (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, provider VARCHAR(50) NOT NULL, encrypted_value TEXT NOT NULL, label TEXT, status TEXT DEFAULT 'active', last_tested_at TIMESTAMPTZ, test_result TEXT, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
     await pgSql`CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_secrets_unique ON workspace_secrets(workspace_id, provider)`
@@ -1135,6 +1140,9 @@ function initSQLiteSync(db: import('better-sqlite3').Database) {
     'CREATE INDEX IF NOT EXISTS idx_workspace_invites_workspace ON workspace_invites(workspace_id)',
     'CREATE TABLE IF NOT EXISTS sales_deals (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, lead_id TEXT, contact_name TEXT NOT NULL, contact_email TEXT, company TEXT, title TEXT NOT NULL, value REAL DEFAULT 0, currency TEXT DEFAULT \'USD\', stage TEXT DEFAULT \'prospect\', probability INTEGER DEFAULT 10, expected_close TEXT, actual_close TEXT, notes TEXT, source TEXT, custom_fields TEXT DEFAULT \'{}\', created_at TEXT DEFAULT (datetime(\'now\')), updated_at TEXT DEFAULT (datetime(\'now\')))',
     'CREATE INDEX IF NOT EXISTS idx_sales_deals_workspace ON sales_deals(workspace_id, stage)',
+    // Sprint 6E: Lost-reason capture (try/catch swallows duplicate-column on re-run).
+    'ALTER TABLE sales_deals ADD COLUMN lost_reason TEXT',
+    'ALTER TABLE sales_deals ADD COLUMN lost_at TEXT',
     // === Phase Remediation: BYOK secrets + notifications + agent configs ===
     'CREATE TABLE IF NOT EXISTS workspace_secrets (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, provider TEXT NOT NULL, encrypted_value TEXT NOT NULL, label TEXT, status TEXT DEFAULT \'active\', last_tested_at TEXT, test_result TEXT, created_at TEXT DEFAULT (datetime(\'now\')), updated_at TEXT DEFAULT (datetime(\'now\')))',
     'CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_secrets_unique ON workspace_secrets(workspace_id, provider)',
@@ -1505,6 +1513,9 @@ export async function initializeDatabase() {
   await pgSql`CREATE INDEX IF NOT EXISTS idx_workspace_invites_workspace ON workspace_invites(workspace_id)`
   await pgSql`CREATE TABLE IF NOT EXISTS sales_deals (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, lead_id TEXT, contact_name TEXT NOT NULL, contact_email TEXT, company TEXT, title TEXT NOT NULL, value REAL DEFAULT 0, currency VARCHAR(10) DEFAULT 'USD', stage VARCHAR(50) DEFAULT 'prospect', probability INTEGER DEFAULT 10, expected_close TEXT, actual_close TEXT, notes TEXT, source TEXT, custom_fields TEXT DEFAULT '{}', created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
   await pgSql`CREATE INDEX IF NOT EXISTS idx_sales_deals_workspace ON sales_deals(workspace_id, stage)`
+  // Sprint 6E: Lost-reason capture for sales_deals.
+  await pgSql`ALTER TABLE sales_deals ADD COLUMN IF NOT EXISTS lost_reason TEXT`
+  await pgSql`ALTER TABLE sales_deals ADD COLUMN IF NOT EXISTS lost_at TIMESTAMPTZ`
   // === Phase Remediation tables ===
   await pgSql`CREATE TABLE IF NOT EXISTS workspace_secrets (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, provider VARCHAR(50) NOT NULL, encrypted_value TEXT NOT NULL, label TEXT, status TEXT DEFAULT 'active', last_tested_at TIMESTAMPTZ, test_result TEXT, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
   await pgSql`CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_secrets_unique ON workspace_secrets(workspace_id, provider)`

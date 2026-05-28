@@ -51,6 +51,8 @@ interface Deal {
   stage: string
   close_date: string
   owner: string
+  /** Sprint 6E: captured at the moment the deal moved to Closed Lost. */
+  lost_reason?: string | null
 }
 
 interface Segment {
@@ -109,6 +111,8 @@ interface DealRow {
   actual_close: string | null
   notes: string | null
   source: string | null
+  lost_reason: string | null
+  lost_at: string | null
   created_at: string
   updated_at: string
 }
@@ -211,6 +215,7 @@ function dealRowToDeal(row: DealRow): Deal {
     stage: stageMap[row.stage] || row.stage,
     close_date: row.expected_close || '',
     owner: 'You',
+    lost_reason: row.lost_reason,
   }
 }
 
@@ -999,6 +1004,155 @@ function AddDealModal({ onClose, contacts, workspaceId, onAdded }: { onClose: ()
   )
 }
 
+// ── Edit Deal Modal ────────────────────────────────────────────────────────────
+// Sprint 6E: lets the operator move a deal between stages from the Kanban.
+// When the chosen stage is Closed Lost, surfaces a "Why was this lost?"
+// selector + free-form details so we can run win/loss analysis later.
+const LOST_REASON_PRESETS = [
+  'Price too high',
+  'Lost to competitor',
+  'No budget',
+  'No decision / went silent',
+  'Wrong fit / not our ICP',
+  'Timing — postponed',
+  'Internal champion left',
+  'Other',
+]
+
+function EditDealModal({ deal, onClose, onSaved }: { deal: Deal; onClose: () => void; onSaved: () => void }) {
+  const initialPresetMatch = LOST_REASON_PRESETS.find(p => deal.lost_reason?.startsWith(p))
+  const [stage, setStage] = useState<string>(deal.stage)
+  const [probability, setProbability] = useState<string>(String(deal.probability))
+  const [value, setValue] = useState<string>(String(deal.value))
+  const [lostReasonPreset, setLostReasonPreset] = useState<string>(initialPresetMatch || 'Other')
+  const [lostReasonDetail, setLostReasonDetail] = useState<string>(
+    deal.lost_reason && !initialPresetMatch ? deal.lost_reason : '',
+  )
+  const [saving, setSaving] = useState(false)
+  const [errMsg, setErrMsg] = useState<string | null>(null)
+
+  const isLost = stage === 'Closed Lost'
+
+  async function submit() {
+    // The DEAL_STAGES UI values map to API stage tokens — the same mapping
+    // AddDealModal uses on create. Keep them in sync.
+    const stageMap: Record<string, string> = {
+      'Prospecting': 'prospect',
+      'Qualification': 'qualified',
+      'Proposal': 'proposal',
+      'Negotiation': 'negotiation',
+      'Closed Won': 'won',
+      'Closed Lost': 'lost',
+    }
+    setSaving(true); setErrMsg(null)
+    try {
+      const body: Record<string, unknown> = {
+        id: deal.id,
+        stage: stageMap[stage] || 'prospect',
+        value: Number(value) || 0,
+        probability: Number(probability) || 0,
+      }
+      if (isLost) {
+        // Combine preset + detail. If preset is 'Other' we send just the detail.
+        const combined = lostReasonPreset === 'Other'
+          ? (lostReasonDetail.trim() || 'Other')
+          : (lostReasonDetail.trim() ? `${lostReasonPreset} — ${lostReasonDetail.trim()}` : lostReasonPreset)
+        body.lostReason = combined
+      }
+      const res = await fetch('/api/sales-deals', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({})) as { error?: string }
+        setErrMsg(err.error || `Save failed (${res.status})`)
+        return
+      }
+      onSaved()
+    } catch (e) {
+      setErrMsg(e instanceof Error ? e.message : String(e))
+    } finally { setSaving(false) }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-gray-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-md" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800">
+          <div>
+            <h2 className="text-white font-semibold">Edit Deal</h2>
+            <p className="text-gray-500 text-xs mt-0.5">{deal.name}</p>
+          </div>
+          <button onClick={onClose} className="text-gray-500 hover:text-white">✕</button>
+        </div>
+        <div className="p-6 space-y-4">
+          <div>
+            <label className="text-xs text-gray-500 uppercase tracking-wide mb-1.5 block">Stage</label>
+            <select value={stage} onChange={e => setStage(e.target.value)} className={selectCls}>
+              {DEAL_STAGES.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs text-gray-500 uppercase tracking-wide mb-1.5 block">Value ($)</label>
+              <input value={value} onChange={e => setValue(e.target.value)} className={inputCls} />
+            </div>
+            <div>
+              <label className="text-xs text-gray-500 uppercase tracking-wide mb-1.5 block">Probability (%)</label>
+              <input value={probability} onChange={e => setProbability(e.target.value)} className={inputCls} />
+            </div>
+          </div>
+
+          {/* Sprint 6E: lost-reason capture — only shown when stage is Closed Lost. */}
+          {isLost && (
+            <div className="space-y-3 pt-3 border-t border-gray-800">
+              <div>
+                <label className="text-xs text-red-400 uppercase tracking-wide mb-1.5 block">Why was this lost?</label>
+                <select value={lostReasonPreset} onChange={e => setLostReasonPreset(e.target.value)} className={selectCls}>
+                  {LOST_REASON_PRESETS.map(r => <option key={r} value={r}>{r}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs text-gray-500 uppercase tracking-wide mb-1.5 block">
+                  {lostReasonPreset === 'Other' ? 'Details (required)' : 'Details (optional)'}
+                </label>
+                <textarea
+                  value={lostReasonDetail}
+                  onChange={e => setLostReasonDetail(e.target.value)}
+                  rows={3}
+                  placeholder="What happened? (e.g. went with Acme — 30% cheaper)"
+                  className={inputCls.replace('px-3 py-2', 'px-3 py-2 resize-none')}
+                />
+              </div>
+              <p className="text-[11px] text-gray-600 leading-relaxed">
+                Captured for future win/loss analysis — used to spot patterns in why we
+                lose deals and refine ICP / positioning.
+              </p>
+            </div>
+          )}
+
+          {errMsg && (
+            <div className="px-3 py-2 bg-red-950/40 border border-red-900 rounded-lg text-red-400 text-xs">
+              {errMsg}
+            </div>
+          )}
+
+          <div className="flex gap-3 pt-2">
+            <button onClick={onClose} className="flex-1 py-2.5 border border-gray-700 text-gray-400 rounded-lg text-sm hover:text-white">Cancel</button>
+            <button
+              onClick={submit}
+              disabled={saving || (isLost && lostReasonPreset === 'Other' && !lostReasonDetail.trim())}
+              className="flex-1 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white rounded-lg text-sm font-medium transition-colors"
+            >
+              {saving ? 'Saving…' : 'Save changes'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Add Contact Modal ──────────────────────────────────────────────────────────
 function AddContactModal({ onClose, workspaceId, onAdded }: { onClose: () => void; workspaceId: string | null; onAdded: () => void }) {
   const [form, setForm] = useState({ name:'', email:'', phone:'', company:'', stage:'Lead' as Stage, notes:'' })
@@ -1132,6 +1286,8 @@ export default function LeadsCRMPage() {
   const [showAddActivity, setShowAddActivity] = useState(false)
   const [showAddDeal, setShowAddDeal] = useState(false)
   const [showAddContact, setShowAddContact] = useState(false)
+  // Sprint 6E: deal opened in the edit modal (stage change + lost-reason capture).
+  const [editingDeal, setEditingDeal] = useState<Deal | null>(null)
 
   // ── Data loading ──────────────────────────────────────────────────────────
   const loadData = useCallback(async (wsId: string) => {
@@ -1870,7 +2026,7 @@ export default function LeadsCRMPage() {
                     </div>
                     <div className="flex-1 p-2 space-y-2 bg-gray-950/30 overflow-y-auto">
                       {stageDeals.map(deal => (
-                        <div key={deal.id} className="bg-gray-900 border border-gray-800 hover:border-gray-700 rounded-lg p-3 cursor-pointer transition-all">
+                        <div key={deal.id} onClick={() => setEditingDeal(deal)} className="bg-gray-900 border border-gray-800 hover:border-indigo-700 rounded-lg p-3 cursor-pointer transition-all">
                           <p className="text-white text-xs font-medium mb-1 leading-tight">{deal.name}</p>
                           <p className="text-gray-500 text-xs mb-2">{deal.contact}</p>
                           <div className="flex items-center justify-between mb-1.5">
@@ -1881,6 +2037,11 @@ export default function LeadsCRMPage() {
                             <div className="h-1 bg-indigo-500 rounded-full" style={{ width: `${deal.probability}%` }} />
                           </div>
                           <p className="text-gray-600 text-xs mt-1.5">Close: {deal.close_date}</p>
+                          {deal.stage === 'Closed Lost' && deal.lost_reason && (
+                            <p className="text-red-400/80 text-[10px] mt-1.5 italic truncate" title={deal.lost_reason}>
+                              Lost: {deal.lost_reason}
+                            </p>
+                          )}
                         </div>
                       ))}
                       {stageDeals.length === 0 && (
@@ -1900,6 +2061,7 @@ export default function LeadsCRMPage() {
       {showSegmentModal && <SegmentModal onClose={() => setShowSegmentModal(false)} />}
       {showAddActivity && <AddActivityModal onClose={() => setShowAddActivity(false)} contacts={contacts} workspaceId={workspaceId} onLogged={() => workspaceId && loadData(workspaceId)} />}
       {showAddDeal && <AddDealModal onClose={() => setShowAddDeal(false)} contacts={contacts} workspaceId={workspaceId} onAdded={() => workspaceId && loadData(workspaceId)} />}
+      {editingDeal && <EditDealModal deal={editingDeal} onClose={() => setEditingDeal(null)} onSaved={() => { setEditingDeal(null); if (workspaceId) loadData(workspaceId) }} />}
       {showAddContact && <AddContactModal onClose={() => setShowAddContact(false)} workspaceId={workspaceId} onAdded={() => workspaceId && loadData(workspaceId)} />}
       {selectedContact && <ContactSlideover contact={selectedContact} onClose={() => setSelectedContact(null)} activities={selectedContactActivities} workspaceId={workspaceId} onUpdated={() => workspaceId && loadData(workspaceId)} />}
     </div>

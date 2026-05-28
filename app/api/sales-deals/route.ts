@@ -76,12 +76,26 @@ export async function PATCH(req: NextRequest) {
       expectedClose?: string
       actualClose?: string
       notes?: string
+      lostReason?: string  // Sprint 6E: captured when stage → lost
     }
     const { id } = body
     if (!id) return NextResponse.json({ error: 'id required' }, { status: 400 })
 
     if (body.stage !== undefined) {
       await sql`UPDATE sales_deals SET stage = ${body.stage} WHERE id = ${id}`
+      // Sprint 6E: when a deal is marked Closed Lost, stamp lost_at so we
+      // can compute time-to-loss analytics later. Clear it if the deal is
+      // reopened (stage moves back out of 'lost').
+      if (body.stage === 'lost' || body.stage === 'closed_lost') {
+        await sql`UPDATE sales_deals SET lost_at = NOW() WHERE id = ${id} AND lost_at IS NULL`
+      } else {
+        await sql`UPDATE sales_deals SET lost_at = NULL, lost_reason = NULL WHERE id = ${id} AND lost_at IS NOT NULL`
+      }
+    }
+    if (body.lostReason !== undefined) {
+      // Truncate to 500 chars to keep the column lean — this is a categorical
+      // field with optional commentary, not free-form notes.
+      await sql`UPDATE sales_deals SET lost_reason = ${body.lostReason.slice(0, 500)} WHERE id = ${id}`
     }
     if (body.value !== undefined) {
       await sql`UPDATE sales_deals SET value = ${body.value} WHERE id = ${id}`
