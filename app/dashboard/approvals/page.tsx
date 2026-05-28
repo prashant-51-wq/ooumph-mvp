@@ -156,9 +156,23 @@ export default function ApprovalsPage() {
   // ── Brand voice scores: id → { score, reasoning[] } ──────────────────────────
   const [bvScores, setBvScores] = useState<Record<string, { score: number; reasoning: string[] }>>({})
 
-  // Persist auto-approve delay
+  // Persist auto-approve delay. Sprint 6H: also push to workspaces
+  // .extra_settings via /api/workspaces/settings so the server-side
+  // auto-approve cron can read it. Without this the cron has no
+  // signal and the autonomy story falls apart when no one's on the page.
   useEffect(() => {
-    if (typeof window !== 'undefined') localStorage.setItem('approvals_auto_approve_delay', autoApproveDelay)
+    if (typeof window === 'undefined') return
+    localStorage.setItem('approvals_auto_approve_delay', autoApproveDelay)
+    const wsId = localStorage.getItem('workspaceId')
+    if (!wsId) return
+    fetch('/api/workspaces/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        workspaceId: wsId,
+        settings: { auto_approve_delay: autoApproveDelay },
+      }),
+    }).catch(() => { /* best-effort — UI still works via localStorage */ })
   }, [autoApproveDelay])
 
   // ── Inline edit ───────────────────────────────────────────────────────────────
@@ -431,7 +445,7 @@ export default function ApprovalsPage() {
                 ⚙ Auto-Approve{autoApproveDelay !== 'off' ? `: ${autoApproveDelay}` : ''}
               </button>
               {autoSettingsOpen && (
-                <div className="absolute right-0 top-10 bg-gray-900 border border-gray-700 rounded-xl shadow-xl py-1 min-w-[140px] z-20">
+                <div className="absolute right-0 top-10 bg-gray-900 border border-gray-700 rounded-xl shadow-xl py-1 min-w-[200px] z-20">
                   {(['off', '24h', '48h', '72h'] as AutoApproveDelay[]).map(opt => (
                     <button
                       key={opt}
@@ -441,6 +455,12 @@ export default function ApprovalsPage() {
                       {opt === 'off' ? 'Off' : opt}
                     </button>
                   ))}
+                  {/* Sprint 6H: clarify that auto-approve runs server-side. */}
+                  <div className="border-t border-gray-800 mt-1 px-4 py-2">
+                    <p className="text-gray-500 text-[10px] leading-relaxed">
+                      Runs hourly on the server — approvals fire even while you&apos;re away. Only items with brand voice score ≥ 80 are eligible.
+                    </p>
+                  </div>
                 </div>
               )}
             </div>
