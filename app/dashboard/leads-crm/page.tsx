@@ -568,22 +568,69 @@ function CSVImportModal({ onClose, workspaceId, onImported }: { onClose: () => v
       setAllRows(rows)
       setPreview(rows.slice(0, 6))
       const headers = rows[0] || []
+      // Sprint 12D: smarter auto-detection. Each candidate field has
+      // an ordered priority list — first match wins, so "email_work"
+      // maps to 'email' rather than '-- ignore --'. Also checks
+      // common aliases ("organization", "biz", "telephone", "mobile",
+      // "given_name", "surname", etc.) that the previous version
+      // missed entirely.
+      const ALIASES: Array<{ field: string; patterns: RegExp[] }> = [
+        { field: 'email',   patterns: [/\bemail/i, /\be-?mail/i, /\bmail$/i] },
+        { field: 'phone',   patterns: [/\bphone/i, /\bmobile/i, /\btelephone/i, /\btel\b/i, /\bcell/i, /\bcontact.*number/i] },
+        { field: 'name',    patterns: [/^name$/i, /\bfull.?name/i, /\bgiven.?name/i, /\bfirst.?name/i, /\blast.?name/i, /\bsurname/i, /\bperson/i, /\bcontact.?name/i] },
+        { field: 'company', patterns: [/\bcompany/i, /\borganization/i, /\borganisation/i, /\bbiz\b/i, /\bbusiness/i, /\bemployer/i, /\bworkplace/i] },
+        { field: 'stage',   patterns: [/\bstage/i, /\bstatus/i, /\bpipeline/i, /\bdeal.?stage/i] },
+        { field: 'score',   patterns: [/\bscore/i, /\blead.?score/i, /\brank/i] },
+        { field: 'tags',    patterns: [/\btags?\b/i, /\blabels?\b/i, /\bcategories/i] },
+      ]
       const auto: Record<string,string> = {}
       headers.forEach(h => {
-        const low = h.toLowerCase()
-        if (low.includes('name')) auto[h] = 'name'
-        else if (low.includes('email')) auto[h] = 'email'
-        else if (low.includes('phone')) auto[h] = 'phone'
-        else if (low.includes('company') || low.includes('org')) auto[h] = 'company'
-        else if (low.includes('stage') || low.includes('status')) auto[h] = 'stage'
-        else if (low.includes('score')) auto[h] = 'score'
-        else if (low.includes('tag')) auto[h] = 'tags'
-        else auto[h] = '-- ignore --'
+        const matched = ALIASES.find(a => a.patterns.some(p => p.test(h)))
+        auto[h] = matched ? matched.field : '-- ignore --'
       })
       setMapping(auto)
     }
     reader.readAsText(f)
   }
+
+  // Sprint 12D: pre-import validation. Looks at every data row and
+  // reports the counts the user will see in the summary panel BEFORE
+  // they commit. Catches "all my rows are missing email" up-front
+  // instead of waiting through the import.
+  const validation = (() => {
+    if (allRows.length < 2) return null
+    const headers = allRows[0]
+    const data = allRows.slice(1)
+    let withEmail = 0
+    let withName = 0
+    let invalidEmail = 0
+    let missingBoth = 0
+    const emailRx = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+    for (const row of data) {
+      const fields: Record<string, string> = {}
+      headers.forEach((h, j) => {
+        const target = mapping[h]
+        if (target && target !== '-- ignore --' && row[j]) fields[target] = row[j]
+      })
+      if (fields.email) {
+        if (emailRx.test(fields.email)) withEmail++
+        else invalidEmail++
+      }
+      if (fields.name) withName++
+      if (!fields.email && !fields.name) missingBoth++
+    }
+    const usable = data.length - missingBoth
+    return {
+      total: data.length,
+      withEmail,
+      withName,
+      invalidEmail,
+      missingBoth,
+      usable,
+    }
+  })()
+  const emailMapped = Object.values(mapping).includes('email')
+  const nameMapped = Object.values(mapping).includes('name')
 
   async function doImport() {
     if (!workspaceId) return
@@ -713,25 +760,86 @@ function CSVImportModal({ onClose, workspaceId, onImported }: { onClose: () => v
                 </div>
               )}
 
-              {/* Field mapping */}
+              {/* Field mapping — Sprint 12D: each row shows a sample
+                  value from the first non-empty data row so the user
+                  sees what they're mapping. A row is auto-mapped when
+                  the column name matches our alias regex. */}
               {preview[0] && (
                 <div>
-                  <p className="text-xs text-gray-500 uppercase tracking-wide mb-3">Map CSV columns to CRM fields</p>
-                  <div className="space-y-2">
-                    {preview[0].map(header => (
-                      <div key={header} className="flex items-center gap-3">
-                        <span className="text-gray-300 text-sm w-40 truncate">{header}</span>
-                        <span className="text-gray-600">→</span>
-                        <select
-                          value={mapping[header] || '-- ignore --'}
-                          onChange={e => setMapping(m => ({...m, [header]: e.target.value}))}
-                          className={selectCls + ' flex-1'}
-                        >
-                          {CRM_FIELDS.map(f => <option key={f} value={f}>{f}</option>)}
-                        </select>
-                      </div>
-                    ))}
+                  <div className="flex items-baseline justify-between mb-3">
+                    <p className="text-xs text-gray-500 uppercase tracking-wide">Map CSV columns to CRM fields</p>
+                    {!emailMapped && !nameMapped && (
+                      <span className="text-[11px] text-red-400">⚠ Map at least one column to <strong>email</strong> or <strong>name</strong></span>
+                    )}
                   </div>
+                  <div className="space-y-2">
+                    {preview[0].map(header => {
+                      const colIdx = preview[0].indexOf(header)
+                      // Find the first non-empty sample value in this column.
+                      const sample = allRows.slice(1).find(r => r[colIdx]?.trim())?.[colIdx]
+                      const target = mapping[header] || '-- ignore --'
+                      const isImportant = target === 'email' || target === 'name'
+                      return (
+                        <div key={header} className={`flex items-center gap-3 rounded-lg p-2 ${isImportant ? 'bg-indigo-950/30 border border-indigo-900/40' : ''}`}>
+                          <div className="w-40 shrink-0">
+                            <p className="text-gray-300 text-sm font-medium truncate">{header}</p>
+                            {sample && (
+                              <p className="text-[10px] text-gray-500 truncate italic" title={sample}>
+                                e.g. {sample.slice(0, 30)}{sample.length > 30 ? '…' : ''}
+                              </p>
+                            )}
+                          </div>
+                          <span className="text-gray-600">→</span>
+                          <select
+                            value={target}
+                            onChange={e => setMapping(m => ({...m, [header]: e.target.value}))}
+                            className={selectCls + ' flex-1'}
+                          >
+                            {CRM_FIELDS.map(f => <option key={f} value={f}>{f}</option>)}
+                          </select>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Sprint 12D: pre-import validation summary.
+                  Shows the user EXACTLY what will happen before they
+                  click Import — catches "all my rows are missing
+                  email" up-front. */}
+              {validation && (
+                <div className="rounded-xl border border-gray-800 bg-gray-900/60 p-4">
+                  <p className="text-xs text-gray-500 uppercase tracking-wide mb-3">Pre-import preview</p>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    <div>
+                      <p className={`text-2xl font-bold ${validation.usable === validation.total ? 'text-green-400' : 'text-amber-400'}`}>
+                        {validation.usable}
+                      </p>
+                      <p className="text-[11px] text-gray-500 mt-0.5">will import</p>
+                    </div>
+                    <div>
+                      <p className="text-2xl font-bold text-indigo-300">{validation.withEmail}</p>
+                      <p className="text-[11px] text-gray-500 mt-0.5">with valid email</p>
+                    </div>
+                    {validation.invalidEmail > 0 && (
+                      <div>
+                        <p className="text-2xl font-bold text-red-400">{validation.invalidEmail}</p>
+                        <p className="text-[11px] text-gray-500 mt-0.5">invalid email format</p>
+                      </div>
+                    )}
+                    {validation.missingBoth > 0 && (
+                      <div>
+                        <p className="text-2xl font-bold text-gray-500">{validation.missingBoth}</p>
+                        <p className="text-[11px] text-gray-500 mt-0.5">skip (no email or name)</p>
+                      </div>
+                    )}
+                  </div>
+                  {validation.usable === 0 && (
+                    <p className="text-red-400 text-xs mt-3">
+                      No rows will be imported. Make sure your CSV has email or name columns mapped above.
+                    </p>
+                  )}
                 </div>
               )}
 
