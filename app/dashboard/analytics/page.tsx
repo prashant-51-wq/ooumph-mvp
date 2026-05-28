@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
+import { useWorkspaceId } from '@/lib/hooks/use-workspace-id'
 
 /**
  * Analytics dashboard — Sprint 1B rewrite (honest empty states).
@@ -571,12 +572,14 @@ export default function AnalyticsPage() {
     }
   }, [])
 
+  // Sprint 10C: session-derived workspaceId.
+  const { workspaceId: sessionWorkspaceId, resolved: sessionResolved } = useWorkspaceId()
   useEffect(() => {
-    const wsId = typeof window !== 'undefined' ? localStorage.getItem('workspaceId') : null
-    setWorkspaceId(wsId)
-    if (wsId) loadAnalytics(wsId, range)
-    else setLoading(false)
-  }, [loadAnalytics])
+    setWorkspaceId(sessionWorkspaceId)
+    if (sessionWorkspaceId) loadAnalytics(sessionWorkspaceId, range)
+    else if (sessionResolved) setLoading(false)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionWorkspaceId, sessionResolved, loadAnalytics])
 
   // Refetch when range changes
   useEffect(() => {

@@ -13,6 +13,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useWorkspaceId } from '@/lib/hooks/use-workspace-id'
 import {
   Mail, Users, BarChart3, Plus, Search, Trash2, Pencil,
   CheckCircle2, ShieldCheck, Clock, AlertCircle, RefreshCw, X,
@@ -122,22 +123,14 @@ export default function EmailMarketingPage() {
   const [tab, setTab] = useState<Tab>('lists')
   const [error, setError] = useState<string | null>(null)
 
+  // Sprint 10C: session-derived via useWorkspaceId().
+  const { workspaceId: sessionWorkspaceId, resolved: sessionResolved, loading: sessionLoading } = useWorkspaceId()
   useEffect(() => {
-    let cancelled = false
-    fetch('/api/auth/me')
-      .then(r => r.ok ? r.json() : null)
-      .then(data => {
-        if (cancelled) return
-        const id: string | null = data?.user?.workspaceId
-          || (typeof window !== 'undefined' ? localStorage.getItem('workspaceId') : null)
-        setWorkspaceId(id)
-        if (!id) setError('No workspace selected — finish onboarding first.')
-      })
-      .catch(() => {
-        if (!cancelled) setError('Failed to load session')
-      })
-    return () => { cancelled = true }
-  }, [])
+    setWorkspaceId(sessionWorkspaceId)
+    if (sessionResolved && !sessionLoading && !sessionWorkspaceId) {
+      setError('No workspace selected — finish onboarding first.')
+    }
+  }, [sessionWorkspaceId, sessionResolved, sessionLoading])
 
   return (
     <div className="min-h-screen bg-gray-950 text-gray-100">

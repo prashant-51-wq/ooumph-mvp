@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useRouter } from 'next/navigation'
+import { useWorkspaceId } from '@/lib/hooks/use-workspace-id'
 
 interface ApprovalItem {
   id: string
@@ -125,6 +126,11 @@ function buildCreativeUrl(content: Record<string, unknown>, type: string): strin
 
 export default function ApprovalsPage() {
   const router = useRouter()
+  // Sprint 10C: single canonical source for workspaceId. The three
+  // useCallback / useEffect sites below now read this instead of
+  // localStorage. The hook itself still hydrates from localStorage
+  // optimistically so first-paint isn't blank.
+  const { workspaceId: sessionWorkspaceId } = useWorkspaceId()
   const [items, setItems] = useState<ApprovalItem[]>([])
   const [loading, setLoading] = useState(true)
   const [selected, setSelected] = useState<ApprovalItem | null>(null)
@@ -163,17 +169,16 @@ export default function ApprovalsPage() {
   useEffect(() => {
     if (typeof window === 'undefined') return
     localStorage.setItem('approvals_auto_approve_delay', autoApproveDelay)
-    const wsId = localStorage.getItem('workspaceId')
-    if (!wsId) return
+    if (!sessionWorkspaceId) return
     fetch('/api/workspaces/settings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        workspaceId: wsId,
+        workspaceId: sessionWorkspaceId,
         settings: { auto_approve_delay: autoApproveDelay },
       }),
     }).catch(() => { /* best-effort — UI still works via localStorage */ })
-  }, [autoApproveDelay])
+  }, [autoApproveDelay, sessionWorkspaceId])
 
   // ── Inline edit ───────────────────────────────────────────────────────────────
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -202,7 +207,7 @@ export default function ApprovalsPage() {
   }, [])
 
   const load = useCallback(async () => {
-    const workspaceId = localStorage.getItem('workspaceId')
+    const workspaceId = sessionWorkspaceId
     if (!workspaceId) { router.push('/dashboard/onboarding'); return }
     try {
       const res = await fetch(`/api/approvals?workspaceId=${workspaceId}`)
@@ -225,13 +230,13 @@ export default function ApprovalsPage() {
     } finally {
       setLoading(false)
     }
-  }, [router])
+  }, [router, sessionWorkspaceId])
 
   useEffect(() => { load() }, [load])
 
   // ── Fetch real brand-voice scores for visible items (one at a time, lazily) ─
   useEffect(() => {
-    const workspaceId = typeof window !== 'undefined' ? localStorage.getItem('workspaceId') : null
+    const workspaceId = sessionWorkspaceId
     if (!workspaceId) return
     const itemsNeedingScore = items.filter(i => !(i.id in bvScores)).slice(0, 5)
     if (itemsNeedingScore.length === 0) return
@@ -259,7 +264,7 @@ export default function ApprovalsPage() {
   // ── Auto-approve client-side: every minute, approve items past threshold ───
   useEffect(() => {
     if (autoApproveDelay === 'off') return
-    const workspaceId = typeof window !== 'undefined' ? localStorage.getItem('workspaceId') : null
+    const workspaceId = sessionWorkspaceId  // Sprint 10C
     if (!workspaceId) return
     let cancelled = false
 
@@ -299,7 +304,7 @@ export default function ApprovalsPage() {
 
   const act = async (action: 'approve' | 'reject') => {
     if (!selected) return
-    const workspaceId = localStorage.getItem('workspaceId')
+    const workspaceId = sessionWorkspaceId  // Sprint 10C
     setActing(true)
     await fetch('/api/approvals', {
       method: 'PATCH',
@@ -311,7 +316,7 @@ export default function ApprovalsPage() {
   }
 
   const bulkAct = async (action: 'approve' | 'reject') => {
-    const workspaceId = localStorage.getItem('workspaceId')
+    const workspaceId = sessionWorkspaceId  // Sprint 10C
     const ids = Array.from(selectedIds)
     setBulkActing(true)
     setBulkProgress({ done: 0, total: ids.length })
@@ -375,7 +380,7 @@ export default function ApprovalsPage() {
   }
 
   const regenerate = async (item: ApprovalItem, feedback?: string) => {
-    const workspaceId = localStorage.getItem('workspaceId')
+    const workspaceId = sessionWorkspaceId  // Sprint 10C
     if (!workspaceId) return
     setRegenerating(item.id); setRegenResult(null)
     try {
@@ -391,7 +396,7 @@ export default function ApprovalsPage() {
   }
 
   const publish = async (item: ApprovalItem, platform: string) => {
-    const workspaceId = localStorage.getItem('workspaceId')
+    const workspaceId = sessionWorkspaceId  // Sprint 10C
     if (!workspaceId) return
     setPublishing(item.id + platform)
     try {

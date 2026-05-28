@@ -40,6 +40,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
+import { useWorkspaceId } from '@/lib/hooks/use-workspace-id'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -245,11 +246,13 @@ export default function PublishingHubPage() {
     }
   }, [])
 
-  // Hydrate workspaceId from the same source as the rest of the dashboard.
+  // Sprint 10C: session-derived workspaceId via useWorkspaceId(). The hook
+  // hits /api/auth/me and is the canonical source. localStorage stays as
+  // an optimistic-hydrate fallback inside the hook itself.
+  const { workspaceId: sessionWorkspaceId } = useWorkspaceId()
   useEffect(() => {
-    const wid = typeof window !== 'undefined' ? localStorage.getItem('workspaceId') : null
-    setWorkspaceId(wid)
-  }, [])
+    if (sessionWorkspaceId) setWorkspaceId(sessionWorkspaceId)
+  }, [sessionWorkspaceId])
 
   useEffect(() => {
     if (!workspaceId) return

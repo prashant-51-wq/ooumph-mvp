@@ -2,6 +2,7 @@
 
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
+import { useWorkspaceId } from '@/lib/hooks/use-workspace-id'
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 type Stage = 'Lead' | 'Prospect' | 'Qualified' | 'Proposal' | 'Customer' | 'Churned'
@@ -1356,12 +1357,13 @@ export default function LeadsCRMPage() {
     }
   }, [])
 
+  // Sprint 10C: session-derived workspaceId.
+  const { workspaceId: sessionWorkspaceId, resolved: sessionResolved } = useWorkspaceId()
   useEffect(() => {
-    const wsId = typeof window !== 'undefined' ? localStorage.getItem('workspaceId') : null
-    setWorkspaceId(wsId)
-    if (wsId) loadData(wsId)
-    else setLoading(false)
-  }, [loadData])
+    setWorkspaceId(sessionWorkspaceId)
+    if (sessionWorkspaceId) loadData(sessionWorkspaceId)
+    else if (sessionResolved) setLoading(false)
+  }, [sessionWorkspaceId, sessionResolved, loadData])
 
   // Cross-CRM deep-link: the Voice AI call drawer (and any other surface) can
   // open this page with ?leadId=… and the matching contact's drawer pops

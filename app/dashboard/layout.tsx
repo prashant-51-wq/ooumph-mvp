@@ -3,6 +3,7 @@
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { useEffect, useState, useCallback, useRef } from 'react'
+import { useWorkspaceId } from '@/lib/hooks/use-workspace-id'
 
 interface AgentRun {
   id: string
@@ -342,6 +343,12 @@ function CommandPalette({ open, onClose }: { open: boolean; onClose: () => void 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
   const router = useRouter()
+  // Sprint 10C: layout reads workspaceId for notification bell + agent
+  // run badge polling. Previously each callback re-read localStorage,
+  // which meant a stale value in any one tab could silently fetch the
+  // wrong tenant's notifications. Now sourced via the session-derived
+  // hook so the layout's polling is always pointed at the current session.
+  const { workspaceId: sessionWorkspaceId } = useWorkspaceId()
   const [businessName, setBusinessName] = useState('')
   const [userName, setUserName] = useState('')
   const [agentRuns, setAgentRuns] = useState<AgentRun[]>([])
@@ -408,7 +415,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
   // Notification bell — poll /api/notifications every 30s
   const loadNotifications = useCallback(async () => {
-    const wid = localStorage.getItem('workspaceId')
+    const wid = sessionWorkspaceId  // Sprint 10C
     if (!wid) return
     try {
       const res = await fetch(`/api/notifications?workspaceId=${wid}`)
@@ -417,7 +424,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       setNotifications(data.items || [])
       setUnreadCount(data.unreadCount || 0)
     } catch { /* ignore */ }
-  }, [])
+  }, [sessionWorkspaceId])
 
   useEffect(() => {
     loadNotifications()
@@ -426,7 +433,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   }, [loadNotifications])
 
   const markAllNotifsRead = async () => {
-    const wid = localStorage.getItem('workspaceId')
+    const wid = sessionWorkspaceId  // Sprint 10C
     if (!wid) return
     try {
       await fetch(`/api/notifications?workspaceId=${wid}`, {
@@ -440,7 +447,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   }
 
   const loadRuns = useCallback(async () => {
-    const wid = localStorage.getItem('workspaceId')
+    const wid = sessionWorkspaceId  // Sprint 10C
     if (!wid) return
     try {
       const res = await fetch(`/api/agent-runs?workspaceId=${wid}&limit=8`)
@@ -448,7 +455,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       setAgentRuns(data)
       setHasRunning(data.some(r => r.status === 'running'))
     } catch { /* ignore */ }
-  }, [])
+  }, [sessionWorkspaceId])
 
   useEffect(() => {
     loadRuns()
