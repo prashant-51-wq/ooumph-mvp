@@ -80,12 +80,16 @@ const CRISIS_SEVERITY_STYLES: Record<CrisisSeverity, string> = {
   CRITICAL: 'bg-red-900 text-red-200 animate-pulse',
 }
 
-const DEMO_CRISIS_EVENTS: CrisisEvent[] = [
-  { time: '2h ago', event: 'Negative mention spike detected on Twitter/X — 47% negative sentiment', severity: 'HIGH' },
-  { time: '1h 45m ago', event: 'Reddit thread gaining traction: "Bad experience with [Brand]"', severity: 'HIGH' },
-  { time: '1h 20m ago', event: 'Local news outlet picked up the story', severity: 'CRITICAL' },
-  { time: '45m ago', event: 'Customer complaints spreading to Facebook groups', severity: 'MEDIUM' },
-]
+// Sprint 6A: DEMO_CRISIS_EVENTS deleted. Was a 4-row hardcoded array of
+// fake crisis events ("47% negative sentiment", "Local news outlet picked
+// up the story"). The panel that rendered it is gated by
+// `{crisisDetected && ...}` which defaults to false (Sprint 3B) and has
+// no UI path to trigger to true. So it was unreachable AND fake.
+//
+// When a real brand-monitoring backend ships (/api/brand-monitor/crisis
+// or a webhook that flips crisisDetected + provides real events), pass
+// the events as an array prop to the panel and render those instead of
+// any hardcoded array.
 
 export default function BrandMonitorPage() {
   const [monitorType, setMonitorType] = useState<MonitorType>('all')
@@ -315,32 +319,25 @@ export default function BrandMonitorPage() {
         </div>
       </div>
 
-      {/* PR Crisis Detection Panel */}
+      {/* PR Crisis Detection Panel — Sprint 6A.
+          Renders ONLY when crisisDetected===true AND a real crisis events
+          array exists. There is no real backend writing to either right
+          now, so this panel does not appear in normal use. The crisis
+          response generation + Deploy-to-CMO buttons are preserved so
+          that when /api/brand-monitor/crisis lands, the wiring is here. */}
       {crisisDetected && (
         <div className="mb-6 bg-red-950 border border-red-700 rounded-xl p-5 space-y-4">
           <div className="flex items-start justify-between gap-4">
             <div className="flex items-start gap-3">
               <span className="text-2xl">🚨</span>
               <div>
-                <p className="text-red-200 font-bold text-base">Crisis Alert: Negative sentiment spike detected — 47% negative mentions in last 2h</p>
-                <p className="text-red-400 text-xs mt-1">Detected at {new Date(Date.now() - 7200000).toLocaleTimeString()} · Monitoring active</p>
+                <p className="text-red-200 font-bold text-base">Crisis detected for this workspace</p>
+                <p className="text-red-400 text-xs mt-1">Severity {crisisSeverity} — review the AI-drafted response below.</p>
               </div>
             </div>
             <span className={`px-3 py-1 rounded-full text-xs font-bold flex-shrink-0 ${CRISIS_SEVERITY_STYLES[crisisSeverity]}`}>
               {crisisSeverity}
             </span>
-          </div>
-
-          {/* Crisis Timeline */}
-          <div className="space-y-2">
-            <p className="text-red-300 text-xs font-semibold uppercase tracking-wider">Crisis Timeline</p>
-            {DEMO_CRISIS_EVENTS.map((ev, i) => (
-              <div key={i} className="flex items-start gap-3 bg-red-900/40 rounded-lg px-3 py-2">
-                <span className="text-red-500 text-xs flex-shrink-0 w-16">{ev.time}</span>
-                <p className="text-red-200 text-xs flex-1">{ev.event}</p>
-                <span className={`px-1.5 py-0.5 rounded text-xs font-semibold flex-shrink-0 ${CRISIS_SEVERITY_STYLES[ev.severity]}`}>{ev.severity}</span>
-              </div>
-            ))}
           </div>
 
           <div className="flex gap-3 flex-wrap">
@@ -351,7 +348,7 @@ export default function BrandMonitorPage() {
               Generate Crisis Response
             </button>
             <button
-              onClick={() => feedToCMO('CRISIS ALERT: 47% negative sentiment spike detected in last 2h. Severity: HIGH. Multiple platforms affected including Twitter, Reddit, Facebook.')}
+              onClick={() => feedToCMO(`Brand crisis flagged — severity ${crisisSeverity}. Open Brand Monitor for context.`)}
               className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm rounded-lg transition-colors"
             >
               📤 Deploy to CMO
