@@ -9,6 +9,7 @@ import { runAgent } from '@/lib/claude'
 import { braveSearch, formatSearchResults } from '@/lib/tools/brave-search'
 import { scrapeUrl } from '@/lib/tools/firecrawl'
 import { assertWorkspaceOwnership } from '@/lib/guards'
+import { assertAgentRunQuota } from '@/lib/quota'
 import type { BrandProfile } from '@/types'
 
 const SYSTEM = `You are the Research Analyst Agent for Ooumph AI Marketing OS.
@@ -46,6 +47,9 @@ export async function POST(req: NextRequest) {
     // someone else's behalf.
     const denied = assertWorkspaceOwnership(req, workspaceId)
     if (denied) return denied
+    // Sprint 12C: plan-tier quota.
+    const overQuota = await assertAgentRunQuota(req, workspaceId)
+    if (overQuota) return overQuota
 
     // Load brand profile
     const brandResult = await sql`

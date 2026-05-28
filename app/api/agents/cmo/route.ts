@@ -50,6 +50,7 @@ import { after } from 'next/server'
 import { sql } from '@/lib/db'
 import { runAgent, streamAgent } from '@/lib/claude'
 import { assertWorkspaceOwnership } from '@/lib/guards'
+import { assertAgentRunQuota } from '@/lib/quota'
 import {
   createAgentEventStream,
   recordSubAgentRun,
@@ -377,6 +378,13 @@ export async function POST(req: NextRequest) {
   }
   const denied = assertWorkspaceOwnership(req, workspaceId)
   if (denied) return denied
+
+  // Sprint 12C: plan-tier quota gate. CMO is the most expensive single
+  // entry point (streams sub-agent calls), so this is the highest-value
+  // place to enforce. Internal calls from cron / supervisor → worker
+  // bypass via x-internal-secret.
+  const overQuota = await assertAgentRunQuota(req, workspaceId)
+  if (overQuota) return overQuota
 
   if (action !== 'chat' && action !== 'execute') {
     return NextResponse.json(

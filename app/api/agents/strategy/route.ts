@@ -28,6 +28,7 @@ import { sql, newId } from '@/lib/db'
 import { runAgent } from '@/lib/claude'
 import { sendApprovalRequestEmail } from '@/lib/email'
 import { assertWorkspaceOwnership } from '@/lib/guards'
+import { assertAgentRunQuota } from '@/lib/quota'
 import {
   createAgentEventStream,
   streamingResponse,
@@ -187,6 +188,9 @@ export async function POST(req: NextRequest) {
   }
   const denied = assertWorkspaceOwnership(req, workspaceId)
   if (denied) return denied
+  // Sprint 12C: plan-tier quota.
+  const overQuota = await assertAgentRunQuota(req, workspaceId)
+  if (overQuota) return overQuota
 
   // Brand profile gate — same as before
   const brandResult = await sql`SELECT * FROM brand_profiles WHERE workspace_id = ${workspaceId} LIMIT 1`

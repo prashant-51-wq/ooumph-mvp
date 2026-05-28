@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
+import { assertAgentRunQuota } from '@/lib/quota'
 import {
   generateVideoFromText,
   generateVideoFromImage,
@@ -34,6 +35,11 @@ export async function POST(req: NextRequest) {
 
     if (!workspaceId || !action) {
       return NextResponse.json({ error: 'workspaceId and action are required' }, { status: 400 })
+    }
+    // Sprint 12C: plan-tier quota — only on generation actions, not status.
+    if (action === 'text_to_video' || action === 'image_to_video') {
+      const overQuota = await assertAgentRunQuota(req, workspaceId)
+      if (overQuota) return overQuota
     }
 
     // 1. Fetch workspace settings and inject API key

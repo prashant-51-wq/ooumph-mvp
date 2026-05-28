@@ -17,6 +17,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { assertWorkspaceOwnership } from '@/lib/guards'
+import { assertAgentRunQuota } from '@/lib/quota'
 import {
   generateSoraFromText,
   getSoraTaskStatus,
@@ -41,6 +42,10 @@ export async function POST(req: NextRequest) {
     }
     const denied = assertWorkspaceOwnership(req, workspaceId)
     if (denied) return denied
+    if (action === 'text_to_video') {
+      const overQuota = await assertAgentRunQuota(req, workspaceId)
+      if (overQuota) return overQuota
+    }
 
     const ws = await sql`SELECT model_settings FROM workspaces WHERE id = ${workspaceId}`
     const settings = (ws.rows[0]?.model_settings || {}) as Record<string, string>
