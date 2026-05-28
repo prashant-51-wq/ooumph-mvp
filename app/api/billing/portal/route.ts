@@ -5,11 +5,16 @@
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 
 export async function POST(req: NextRequest) {
   try {
     const { workspaceId } = await req.json() as { workspaceId: string }
     if (!workspaceId) return NextResponse.json({ error: 'workspaceId required' }, { status: 400 })
+    // Sprint 10A: ownership before minting a portal URL that lets the
+    // caller manage another tenant's subscription / payment methods.
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     const stripeKey = process.env.STRIPE_SECRET_KEY
     if (!stripeKey) return NextResponse.json({ error: 'Stripe not configured' }, { status: 503 })
