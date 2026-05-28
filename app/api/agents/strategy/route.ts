@@ -76,6 +76,9 @@ async function generateStrategyStreaming(
   timeframe: string,
   sink: ProgressSink,
 ): Promise<Strategy> {
+  // Sprint 15E: use brand.workspace_id for memory lookup. BrandProfile
+  // already carries it (see types/index.ts) so no new parameter is needed.
+  const workspaceId = brand.workspace_id
   const industry = brand.industry || brand.offer || ''
   const audience = brand.target_audience || ''
   const competitors = brand.competitors || ''
@@ -123,6 +126,12 @@ async function generateStrategyStreaming(
   // ─── Build the Claude prompt ─────────────────────────────────────────
   await sink.log(`Composing ${timeframe} strategy prompt with ${formatSearchResults(marketTrends).length + formatSearchResults(competitorInsights).length} chars of research context`)
 
+  // Sprint 15E (P1 #13): pull brand memory (learning_notes + brand_memory)
+  // so the strategy generator finally consults the docs the user uploaded.
+  // The audit found the user spent time on /memory but strategy ignored it.
+  const { getMemoryPromptBlock } = await import('@/lib/tools/memory')
+  const memoryBlock = await getMemoryPromptBlock(workspaceId, { maxNotes: 10, maxVoiceExamples: 3 })
+
   const userPrompt = `Generate a comprehensive ${timeframe || 'monthly'} marketing strategy for this business.
 
 Business: ${brand.business_name}
@@ -133,7 +142,7 @@ Goals: ${brand.goals || 'N/A'}
 Competitors: ${competitors || 'N/A'}
 Preferred channels: ${channelsList.join(', ') || 'all'}
 Monthly budget: ${brand.monthly_budget || 'N/A'}
-
+${memoryBlock ? `\n${memoryBlock}\n` : ''}
 Recent market research:
 ${formatSearchResults(marketTrends).slice(0, 2500)}
 

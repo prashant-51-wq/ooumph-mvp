@@ -84,6 +84,11 @@ export async function POST(req: NextRequest) {
       .map(f => `- ${f}: ${formatInstructions[f] || f}`)
       .join('\n')
 
+    // Sprint 15E (P0 #6): inject brand memory so repurposed snippets
+    // keep voice continuity with prior approved posts.
+    const { getMemoryPromptBlock } = await import('@/lib/tools/memory')
+    const memoryBlock = await getMemoryPromptBlock(workspaceId, { maxNotes: 5, maxVoiceExamples: 3 })
+
     const prompt = `Repurpose the following ${contentType} content into all requested formats for this brand:
 
 BRAND CONTEXT:
@@ -93,7 +98,7 @@ Target Audience: ${brand.target_audience}
 Brand Tone: ${brand.tone}
 Offer: ${brand.offer}
 Channels: ${Array.isArray(brand.channels) ? brand.channels.join(', ') : brand.channels || 'Not specified'}
-
+${memoryBlock ? `\n${memoryBlock}\n` : ''}
 ORIGINAL CONTENT (${contentType}):
 ---
 ${originalContent.slice(0, 8000)}

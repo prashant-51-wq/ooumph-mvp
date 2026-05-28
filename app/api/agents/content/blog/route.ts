@@ -93,6 +93,10 @@ export async function POST(req: NextRequest) {
     `
 
     // 4. Call runAgent
+    // Sprint 15E (P0 #6): inject brand memory so the blog reflects the
+    // user's uploaded brand docs (positioning, tone examples).
+    const { getMemoryPromptBlock } = await import('@/lib/tools/memory')
+    const memoryBlock = await getMemoryPromptBlock(workspaceId, { query: topic, maxNotes: 6, maxVoiceExamples: 2 })
     const systemPrompt = `You are an expert SEO content writer and digital marketer. You write comprehensive, engaging blog posts that rank on Google. You follow E-E-A-T principles, use natural keyword integration, and always write in the brand's voice. You structure content for both readers and search engines.`
 
     const userPrompt = `Write a complete, publication-ready blog post for ${brand.business_name || 'the brand'}.
@@ -103,7 +107,7 @@ BRAND DETAILS:
 - Target audience: ${brand.target_audience || targetAudience || 'general audience'}
 - Industry: ${brand.industry || ''}
 - Brand values: ${brand.brand_values || brand.values || ''}
-
+${memoryBlock ? `\n${memoryBlock}\n` : ''}
 CONTENT BRIEF:
 - Topic: ${topic}
 - Target keywords: ${keywords || 'derive from topic'}

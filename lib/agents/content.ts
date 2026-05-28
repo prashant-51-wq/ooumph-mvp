@@ -1,4 +1,5 @@
 ﻿import { runAgent } from '@/lib/claude'
+import { getMemoryPromptBlock } from '@/lib/tools/memory'
 import type { BrandProfile, Strategy, ContentCalendarItem } from '@/types'
 
 const SYSTEM_PROMPT = `You are the Content Calendar Agent for Ooumph, an AI Marketing Agency OS.
@@ -10,6 +11,12 @@ export async function generateContentCalendar(
   brand: BrandProfile,
   strategy: Strategy
 ): Promise<ContentCalendarItem[]> {
+  // Sprint 15E (P0 #6): inject brand memory (learning_notes + brand_memory)
+  // so the calendar reflects the user's uploaded brand docs + approved
+  // examples instead of generic-feeling LinkedIn-101 output.
+  const memoryBlock = await getMemoryPromptBlock(brand.workspace_id, {
+    maxNotes: 8, maxVoiceExamples: 3,
+  })
   const userPrompt = `Create a 30-day content calendar for:
 
 Business: ${brand.business_name}
@@ -18,7 +25,7 @@ Content Pillars: ${strategy.contentPillars.map((p) => p.name).join(', ')}
 Tone: ${brand.tone}
 Target Audience: ${brand.target_audience}
 Offer: ${brand.offer}
-
+${memoryBlock ? `\n${memoryBlock}\n` : ''}
 Rules:
 - Distribute content across all selected channels
 - Vary post types: educational, storytelling, promotional, engagement, behind-scenes

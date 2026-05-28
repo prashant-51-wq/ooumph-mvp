@@ -163,15 +163,39 @@ const CAMPAIGN_TEMPLATES = [
 ] as const
 
 // ─── Quick action chips ───────────────────────────────────────────────────────
+//
+// Sprint 15E (P2 #17): chips were always-on static labels. Now they're
+// context-aware — show "Review N approvals" when the pending queue is
+// non-empty, surface failed runs first when there are any. The base actions
+// always remain available as fallback.
 
-const QUICK_ACTIONS = [
+const STATIC_QUICK_ACTIONS = [
   'Generate weekly strategy',
-  'Review pending approvals',
-  'Check brand performance',
   'Plan this week\'s content',
   'Analyze competitors',
   'Generate lead plan',
+  'Check brand performance',
 ]
+
+function buildContextualChips(opts: {
+  pendingApprovals: number
+  failedRuns: number
+}): string[] {
+  const chips: string[] = []
+  if (opts.pendingApprovals > 0) {
+    chips.push(`Review ${opts.pendingApprovals} pending approval${opts.pendingApprovals === 1 ? '' : 's'}`)
+  }
+  if (opts.failedRuns > 0) {
+    chips.push(`Diagnose ${opts.failedRuns} failed agent run${opts.failedRuns === 1 ? '' : 's'}`)
+  }
+  // Always include the static suggestions, but de-duped.
+  for (const a of STATIC_QUICK_ACTIONS) {
+    if (!chips.some(c => c.toLowerCase().includes(a.toLowerCase().split(' ').slice(0, 2).join(' ')))) {
+      chips.push(a)
+    }
+  }
+  return chips.slice(0, 7)
+}
 
 // Market Pulse widget removed in Sprint 3A — it was a fixed three-row array
 // of fabricated "insights" ("AI Marketing Tools trending +340%", "Competitor
@@ -1854,10 +1878,13 @@ export default function DashboardPage() {
               </div>
             )}
 
-            {/* Quick action chips */}
+            {/* Quick action chips — context-aware (Sprint 15E P2 #17) */}
             <div className="flex-shrink-0 px-4 pt-2 pb-1">
               <div className="flex gap-2 overflow-x-auto hide-scrollbar pb-1">
-                {QUICK_ACTIONS.map((action) => (
+                {buildContextualChips({
+                  pendingApprovals: stats.pendingApprovals,
+                  failedRuns: runs.filter(r => r.status === 'failed').length,
+                }).map((action) => (
                   <button
                     key={action}
                     onClick={() => void sendMessage(action)}

@@ -511,6 +511,8 @@ interface AnalyticsData {
   topArtifacts: { id: string; title: string; type: string; created_at: string }[]
   contentByType: { type: string; count: number }[]
   publishByPlatform: { platform: string; count: number }[]
+  // Sprint 15E (P1 #14): daily trendline arrays for the Overview bar chart.
+  dailySeries?: { day: string; content: number; published: number; leads: number }[]
 }
 
 // Sprint 6G: shape returned by /api/analytics/posts. Top Performing Content
@@ -879,11 +881,15 @@ export default function AnalyticsPage() {
                 <span className="flex items-center gap-1.5"><span className="w-3 h-2 rounded bg-pink-500/40 inline-block" /> Content</span>
               </div>
             </div>
-            {/* The /api/stats response doesn't yet expose a daily series, so
-                this chart is empty until that endpoint adds it. The previous
-                version showed hardcoded May 1 / May 5 / May 10… bars — that's
-                exactly the kind of fabrication the Source Test rejects. */}
-            <BarChart days={[]} content={[]} engagement={[]} leads={[]} />
+            {/* Sprint 15E (P1 #14): daily series now comes from /api/stats.
+                If the workspace is empty the arrays stay empty and the chart
+                shows an honest "no data" rail — never fabricated. */}
+            <BarChart
+              days={(data?.dailySeries || []).map(d => d.day.slice(5))}
+              content={(data?.dailySeries || []).map(d => d.content)}
+              engagement={(data?.dailySeries || []).map(d => d.published)}
+              leads={(data?.dailySeries || []).map(d => d.leads)}
+            />
           </div>
 
           {/* Channel Breakdown */}
