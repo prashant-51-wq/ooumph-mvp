@@ -110,6 +110,31 @@ function statusOf(status: string) {
   return STATUS_STYLE[status] || { pill: 'bg-gray-800 text-gray-400 border-gray-700', Icon: AlertTriangle }
 }
 
+// Sprint 14D: drag-to-reschedule helpers. Only items the cron isn't actively
+// handling can be moved. publishing/published rows refuse the PATCH anyway
+// (publishing/route.ts line ~212), but we filter here for visual feedback
+// — a non-draggable cursor on the locked tile is clearer than a 409 toast
+// after the user already tried.
+const DRAGGABLE_STATUSES = new Set(['pending', 'paused', 'failed'])
+function isDraggable(item: ScheduledItem): boolean {
+  return DRAGGABLE_STATUSES.has(item.status)
+}
+/** Build a new ISO timestamp on `targetDay` preserving the time-of-day
+ *  from `originalIso`. If the original has no time component we default
+ *  to 09:00 local. */
+function rescheduleTo(originalIso: string | null, targetDay: Date): string {
+  const target = new Date(targetDay)
+  if (originalIso) {
+    const orig = new Date(originalIso)
+    if (!Number.isNaN(orig.getTime())) {
+      target.setHours(orig.getHours(), orig.getMinutes(), 0, 0)
+      return target.toISOString()
+    }
+  }
+  target.setHours(9, 0, 0, 0)
+  return target.toISOString()
+}
+
 function ChannelIcon({ channel, className = 'w-3.5 h-3.5' }: { channel: string; className?: string }) {
   const ch = channel.toLowerCase()
   if (ch === 'linkedin') return <Briefcase className={`${className} text-sky-400`} />
@@ -184,6 +209,37 @@ export default function CalendarPage() {
     return () => clearInterval(t)
   }, [workspaceId, fetchItems])
 
+  // Sprint 14D: drag-to-reschedule. Optimistically patches the local row
+  // so the tile snaps to the new day immediately, then commits via PATCH.
+  // On error we revert and surface the message.
+  const [rescheduleError, setRescheduleError] = useState<string | null>(null)
+  const reschedule = useCallback(async (itemId: string, newScheduledAt: string) => {
+    if (!workspaceId) return
+    const prevSnapshot = items
+    setItems(prev => prev.map(it =>
+      it.id === itemId
+        ? { ...it, scheduled_at: newScheduledAt, scheduled_for: newScheduledAt }
+        : it
+    ))
+    try {
+      const res = await fetch('/api/publishing', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: itemId, workspaceId, scheduledAt: newScheduledAt }),
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({})) as { error?: string }
+        throw new Error(data.error || `PATCH ${res.status}`)
+      }
+      setRescheduleError(null)
+      // Pick up server-side updated_at + any state reset on the next poll.
+      fetchItems()
+    } catch (err) {
+      setItems(prevSnapshot)
+      setRescheduleError(err instanceof Error ? err.message : String(err))
+    }
+  }, [workspaceId, items, fetchItems])
+
   // Empty-state check (filtered)
   const isEmpty = !loading && items.length === 0
 
@@ -249,6 +305,12 @@ export default function CalendarPage() {
             <AlertCircle className="w-4 h-4" /> {error}
           </div>
         )}
+        {rescheduleError && (
+          <div className="mb-4 p-3 bg-amber-950/40 border border-amber-900 rounded-lg text-amber-300 text-sm flex items-center justify-between gap-2">
+            <span className="flex items-center gap-2"><AlertCircle className="w-4 h-4" /> Reschedule failed: {rescheduleError}</span>
+            <button onClick={() => setRescheduleError(null)} className="text-xs text-amber-400 hover:text-amber-200">Dismiss</button>
+          </div>
+        )}
 
         {loading ? (
           <div className="text-center py-20 text-gray-500 text-sm">Loading schedule…</div>
@@ -271,12 +333,14 @@ export default function CalendarPage() {
               <WeekView
                 items={items} publishedMap={publishedMap}
                 anchorDate={anchorDate} onAnchorChange={setAnchorDate}
+                onReschedule={reschedule}
               />
             )}
             {view === 'month' && (
               <MonthView
                 items={items} publishedMap={publishedMap}
                 anchorDate={anchorDate} onAnchorChange={setAnchorDate}
+                onReschedule={reschedule}
               />
             )}
           </>
@@ -387,10 +451,11 @@ function AgendaCard({ item, published }: { item: ScheduledItem; published: Publi
 // ─── Week view ─────────────────────────────────────────────────────────────
 
 function WeekView({
-  items, publishedMap, anchorDate, onAnchorChange,
+  items, publishedMap, anchorDate, onAnchorChange, onReschedule,
 }: {
   items: ScheduledItem[]; publishedMap: Record<string, PublishedRow>
   anchorDate: Date; onAnchorChange: (d: Date) => void
+  onReschedule: (itemId: string, newScheduledAt: string) => void
 }) {
   const weekStart = startOfWeek(anchorDate)
   const days = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i))
@@ -408,6 +473,27 @@ function WeekView({
     return map
   }, [items])
 
+  // Sprint 14D: dragOverDay highlights the cell the user is hovering so the
+  // drop zone is unambiguous before they release.
+  const [dragOverDay, setDragOverDay] = useState<string | null>(null)
+  const itemById = useMemo(() => {
+    const m = new Map<string, ScheduledItem>()
+    for (const it of items) m.set(it.id, it)
+    return m
+  }, [items])
+
+  const handleDrop = (e: React.DragEvent<HTMLDivElement>, day: Date) => {
+    e.preventDefault()
+    setDragOverDay(null)
+    const id = e.dataTransfer.getData('text/calendar-item-id')
+    if (!id) return
+    const item = itemById.get(id)
+    if (!item || !isDraggable(item)) return
+    const originalIso = getScheduledAt(item)
+    if (originalIso && sameDay(new Date(originalIso), day)) return  // no-op
+    onReschedule(id, rescheduleTo(originalIso, day))
+  }
+
   return (
     <div>
       <div className="flex items-center justify-between mb-4">
@@ -423,14 +509,28 @@ function WeekView({
           <ChevronRight className="w-4 h-4 text-gray-400" />
         </button>
       </div>
+      <p className="text-[11px] text-gray-500 mb-2">
+        Drag a tile to a different day to reschedule. Time-of-day is preserved.
+        Locked rows (publishing / published / cancelled) can&apos;t be moved.
+      </p>
 
       <div className="grid grid-cols-7 gap-2">
         {days.map(day => {
           const key = day.toISOString().slice(0, 10)
           const dayItems = itemsByDay.get(key) || []
           const isToday = sameDay(day, new Date())
+          const isDragTarget = dragOverDay === key
           return (
-            <div key={key} className={`bg-gray-900 border rounded-xl p-2 min-h-[180px] ${isToday ? 'border-indigo-700' : 'border-gray-800'}`}>
+            <div
+              key={key}
+              onDragOver={e => { e.preventDefault(); setDragOverDay(key) }}
+              onDragLeave={() => setDragOverDay(prev => prev === key ? null : prev)}
+              onDrop={e => handleDrop(e, day)}
+              className={`bg-gray-900 border rounded-xl p-2 min-h-[180px] transition-colors ${
+                isDragTarget ? 'border-indigo-500 bg-indigo-950/30'
+                : isToday ? 'border-indigo-700' : 'border-gray-800'
+              }`}
+            >
               <div className="flex items-center justify-between mb-2">
                 <div className="text-[10px] uppercase text-gray-500">{day.toLocaleDateString(undefined, { weekday: 'short' })}</div>
                 <div className={`text-sm font-bold ${isToday ? 'text-indigo-400' : 'text-gray-200'}`}>{day.getDate()}</div>
@@ -456,8 +556,21 @@ function WeekTile({ item, published }: { item: ScheduledItem; published: Publish
   const StatIcon = stat.Icon
   const permalink = published?.permalink || published?.post_url || null
   const body = getBody(item)
+  const draggable = isDraggable(item)
+  // Sprint 14D: draggable for unlocked rows. We stop propagation on dragStart
+  // so clicking through to the permalink link inside the tile still works.
   const inner = (
-    <div className="bg-gray-950 border border-gray-800 rounded p-1.5 hover:border-gray-700 transition-colors">
+    <div
+      draggable={draggable}
+      onDragStart={e => {
+        e.dataTransfer.setData('text/calendar-item-id', item.id)
+        e.dataTransfer.effectAllowed = 'move'
+      }}
+      title={draggable ? 'Drag to a different day to reschedule' : `${item.status} — locked from rescheduling`}
+      className={`bg-gray-950 border border-gray-800 rounded p-1.5 hover:border-gray-700 transition-colors ${
+        draggable ? 'cursor-grab active:cursor-grabbing' : 'cursor-not-allowed opacity-80'
+      }`}
+    >
       <div className="flex items-center gap-1 mb-0.5">
         <ChannelIcon channel={channel} className="w-2.5 h-2.5" />
         <span className="text-[9px] text-gray-500 tabular-nums">{formatTime(getScheduledAt(item))}</span>
@@ -474,10 +587,11 @@ function WeekTile({ item, published }: { item: ScheduledItem; published: Publish
 // ─── Month view ────────────────────────────────────────────────────────────
 
 function MonthView({
-  items, publishedMap, anchorDate, onAnchorChange,
+  items, publishedMap, anchorDate, onAnchorChange, onReschedule,
 }: {
   items: ScheduledItem[]; publishedMap: Record<string, PublishedRow>
   anchorDate: Date; onAnchorChange: (d: Date) => void
+  onReschedule: (itemId: string, newScheduledAt: string) => void
 }) {
   const monthStart = startOfMonth(anchorDate)
   const gridStart = startOfWeek(monthStart)
@@ -496,6 +610,25 @@ function MonthView({
     return map
   }, [items])
 
+  const itemById = useMemo(() => {
+    const m = new Map<string, ScheduledItem>()
+    for (const it of items) m.set(it.id, it)
+    return m
+  }, [items])
+
+  const [dragOverDay, setDragOverDay] = useState<string | null>(null)
+  const handleDrop = (e: React.DragEvent<HTMLDivElement>, day: Date) => {
+    e.preventDefault()
+    setDragOverDay(null)
+    const id = e.dataTransfer.getData('text/calendar-item-id')
+    if (!id) return
+    const item = itemById.get(id)
+    if (!item || !isDraggable(item)) return
+    const originalIso = getScheduledAt(item)
+    if (originalIso && sameDay(new Date(originalIso), day)) return
+    onReschedule(id, rescheduleTo(originalIso, day))
+  }
+
   return (
     <div>
       <div className="flex items-center justify-between mb-4">
@@ -511,6 +644,9 @@ function MonthView({
           <ChevronRight className="w-4 h-4 text-gray-400" />
         </button>
       </div>
+      <p className="text-[11px] text-gray-500 mb-2">
+        Drag a chip into another day to reschedule. Time-of-day is preserved.
+      </p>
 
       <div className="grid grid-cols-7 gap-px bg-gray-800 border border-gray-800 rounded-xl overflow-hidden">
         {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(d => (
@@ -521,26 +657,29 @@ function MonthView({
           const dayItems = itemsByDay.get(key) || []
           const inMonth = day.getMonth() === monthStart.getMonth()
           const isToday = sameDay(day, new Date())
+          const isDragTarget = dragOverDay === key
           return (
-            <div key={key} className={`bg-gray-950 min-h-[80px] p-1.5 ${!inMonth ? 'opacity-30' : ''}`}>
+            <div
+              key={key}
+              onDragOver={e => { e.preventDefault(); setDragOverDay(key) }}
+              onDragLeave={() => setDragOverDay(prev => prev === key ? null : prev)}
+              onDrop={e => handleDrop(e, day)}
+              className={`min-h-[80px] p-1.5 transition-colors ${
+                isDragTarget ? 'bg-indigo-950/40 ring-1 ring-indigo-500'
+                : 'bg-gray-950'
+              } ${!inMonth ? 'opacity-30' : ''}`}
+            >
               <div className={`text-[10px] mb-1 ${isToday ? 'text-indigo-400 font-bold' : 'text-gray-500'}`}>
                 {day.getDate()}
               </div>
               <div className="space-y-0.5">
-                {dayItems.slice(0, 3).map(item => {
-                  const ch = getChannel(item)
-                  const stat = statusOf(item.status)
-                  const permalink = publishedMap[item.id]?.permalink || publishedMap[item.id]?.post_url || null
-                  const dot = (
-                    <div className={`flex items-center gap-1 px-1 py-0.5 rounded text-[9px] truncate ${stat.pill}`}>
-                      <ChannelIcon channel={ch} className="w-2 h-2 flex-shrink-0" />
-                      <span className="truncate">{formatTime(getScheduledAt(item))}</span>
-                    </div>
-                  )
-                  return permalink
-                    ? <a key={item.id} href={permalink} target="_blank" rel="noopener noreferrer">{dot}</a>
-                    : <div key={item.id}>{dot}</div>
-                })}
+                {dayItems.slice(0, 3).map(item => (
+                  <MonthChip
+                    key={item.id}
+                    item={item}
+                    published={publishedMap[item.id] || null}
+                  />
+                ))}
                 {dayItems.length > 3 && (
                   <div className="text-[9px] text-gray-600">+{dayItems.length - 3} more</div>
                 )}
@@ -551,4 +690,34 @@ function MonthView({
       </div>
     </div>
   )
+}
+
+function MonthChip({ item, published }: { item: ScheduledItem; published: PublishedRow | null }) {
+  const ch = getChannel(item)
+  const stat = statusOf(item.status)
+  const permalink = published?.permalink || published?.post_url || null
+  const draggable = isDraggable(item)
+  // Sprint 14D: the dot is itself the drag handle in month view. We rely on
+  // dataTransfer rather than React state so the drop target (a different
+  // sibling) can read the id without prop-drilling.
+  const chip = (
+    <div
+      draggable={draggable}
+      onDragStart={e => {
+        if (!draggable) return
+        e.dataTransfer.setData('text/calendar-item-id', item.id)
+        e.dataTransfer.effectAllowed = 'move'
+      }}
+      title={draggable ? 'Drag to another day to reschedule' : `${item.status} — locked`}
+      className={`flex items-center gap-1 px-1 py-0.5 rounded text-[9px] truncate ${stat.pill} ${
+        draggable ? 'cursor-grab active:cursor-grabbing' : 'cursor-not-allowed'
+      }`}
+    >
+      <ChannelIcon channel={ch} className="w-2 h-2 flex-shrink-0" />
+      <span className="truncate">{formatTime(getScheduledAt(item))}</span>
+    </div>
+  )
+  return permalink
+    ? <a href={permalink} target="_blank" rel="noopener noreferrer">{chip}</a>
+    : chip
 }
