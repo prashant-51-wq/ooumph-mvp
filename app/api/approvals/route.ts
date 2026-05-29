@@ -60,9 +60,28 @@ export async function PATCH(req: NextRequest) {
 
     const status = action === 'approve' ? 'approved' : 'rejected'
 
+    // Sprint 16J (audit P1 #17): persist who/when on the approval row +
+    // append an event to approval_events for full audit trail. Previously
+    // the PATCH overwrote status+notes in place with no actor record,
+    // making compliance / "who approved this?" questions unanswerable.
+    const now = new Date().toISOString()
+    let actorId: string | null = null
+    let actorEmail: string | null = null
+    try {
+      const { getSessionUserId } = await import('@/lib/guards')
+      actorId = getSessionUserId(req)
+      if (actorId) {
+        const userRes = await sql`SELECT email FROM users WHERE id = ${actorId} LIMIT 1`
+        actorEmail = (userRes.rows[0] as { email?: string } | undefined)?.email || null
+      }
+    } catch { /* non-fatal */ }
+
     await sql`
       UPDATE approvals
-      SET status = ${status}, notes = ${notes || null}, updated_at = CURRENT_TIMESTAMP
+      SET status = ${status}, notes = ${notes || null},
+          approved_by = ${actorEmail || actorId},
+          approved_at = ${now},
+          updated_at = CURRENT_TIMESTAMP
       WHERE id = ${approvalId}
     `
 
@@ -72,6 +91,22 @@ export async function PATCH(req: NextRequest) {
       WHERE ap.id = ${approvalId}
     `
     const artifact = artifactResult.rows[0]
+
+    // Append the audit event. Non-fatal — a missing approval_events table
+    // (legacy install pre-Sprint-16A migration) doesn't break the approval.
+    try {
+      await sql`
+        INSERT INTO approval_events (id, workspace_id, approval_id, artifact_id, actor_id, actor_email, action, notes, created_at)
+        VALUES (
+          ${newId()}, ${workspaceId}, ${approvalId}, ${(artifact?.id as string) || null},
+          ${actorId}, ${actorEmail},
+          ${action}, ${notes || null},
+          ${now}
+        )
+      `
+    } catch (err) {
+      console.error('[approvals] approval_events insert failed (non-fatal):', err)
+    }
 
     await sql`UPDATE artifacts SET status = ${status} WHERE id = ${artifact?.id}`
 
