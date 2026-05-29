@@ -319,14 +319,26 @@ export default function ApprovalsPage() {
     setSelectedIds(new Set())
   }, [filter])
 
-  const act = async (action: 'approve' | 'reject') => {
+  // Sprint 18A (audit pass #5 P0 #6 — Sprint 17 self-regression):
+  // Reject+Regenerate previously did:
+  //   setNotes(feedbackText); await act('reject'); await regenerate(...)
+  // The `act('reject')` then read `notes` via stale closure → empty value
+  // → backend at /api/approvals route.ts:113 skipped the learning_notes
+  // insert (requires non-empty notes). The rejection feedback never
+  // reached the learning loop.
+  //
+  // Fix: accept an explicit `notesOverride` argument so callers like the
+  // combined Reject+Regen path can pass the feedback text directly without
+  // relying on state propagation.
+  const act = async (action: 'approve' | 'reject', notesOverride?: string) => {
     if (!selected) return
     const workspaceId = sessionWorkspaceId  // Sprint 10C
+    const effectiveNotes = notesOverride !== undefined ? notesOverride : notes
     setActing(true)
     await fetch('/api/approvals', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ approvalId: selected.id, action, notes, workspaceId }),
+      body: JSON.stringify({ approvalId: selected.id, action, notes: effectiveNotes, workspaceId }),
     })
     setActing(false); setSelected(null); setNotes('')
     load()
@@ -389,6 +401,22 @@ export default function ApprovalsPage() {
         delete next[item.id]
         return next
       })
+      // Sprint 18A (audit pass #5 P0): proactively recompute the
+      // brand-voice score after an edit. Without this, the
+      // /api/cron/auto-approve cron reads stale approvals.brand_voice_score
+      // and may auto-approve content the user just edited off-brand.
+      try {
+        await fetch('/api/agents/brand-voice-score', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            workspaceId: sessionWorkspaceId,
+            approvalId: item.id,
+            artifactId: item.artifact_id,
+            forceRefresh: true,
+          }),
+        })
+      } catch { /* non-fatal — next page load will recompute */ }
       setEditingId(null)
       load()
     } finally {
@@ -768,12 +796,14 @@ export default function ApprovalsPage() {
                         <button
                           onClick={async e => {
                             e.stopPropagation()
-                            if (!feedbackText.trim()) return
-                            // Issue the reject with the feedback as the note,
-                            // then kick off regenerate with the same text.
-                            setNotes(feedbackText)
-                            await act('reject')
-                            await regenerate(item, feedbackText)
+                            const fb = feedbackText.trim()
+                            if (!fb) return
+                            // Sprint 18A (audit pass #5 P0): pass `fb` directly
+                            // as notesOverride to act() — bypasses the stale
+                            // closure on `notes` that was discarding the
+                            // rejection feedback before learning_notes write.
+                            await act('reject', fb)
+                            await regenerate(item, fb)
                           }}
                           disabled={regenerating === item.id || acting || !feedbackText.trim()}
                           className="flex-1 py-2 rounded-lg border border-rose-700 text-rose-300 hover:bg-rose-950/40 text-sm font-medium transition-colors disabled:opacity-50"

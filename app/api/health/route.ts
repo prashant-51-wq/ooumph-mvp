@@ -11,6 +11,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
 import { resolveProviderKey } from '@/lib/secrets'
+import { assertSuperAdmin } from '@/lib/guards'
 
 interface CheckResult {
   name: string
@@ -41,6 +42,18 @@ async function check(name: string, category: CheckResult['category'], fn: () => 
 }
 
 export async function GET(req: NextRequest) {
+  // Sprint 18A (audit pass #5 P0 #3): close the public info-disclosure path.
+  // Previously unauthenticated callers could enumerate workspace counts,
+  // super-admin counts, BYOK key counts, and env config status. Now requires
+  // super-admin. Surface a tiny anonymous "alive" probe for load-balancer
+  // health checks that doesn't reveal anything sensitive.
+  const isAlivePing = req.nextUrl.searchParams.get('alive') === '1'
+  if (isAlivePing) {
+    return NextResponse.json({ alive: true, ts: new Date().toISOString() })
+  }
+  const sadminGate = await assertSuperAdmin(req)
+  if (sadminGate) return sadminGate
+
   const workspaceId = req.nextUrl.searchParams.get('workspaceId')
   const live = req.nextUrl.searchParams.get('live') === '1'
 

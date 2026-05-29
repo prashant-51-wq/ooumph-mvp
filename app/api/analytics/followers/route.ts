@@ -39,6 +39,7 @@
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 
 export const runtime = 'nodejs'
 
@@ -61,6 +62,11 @@ export async function GET(req: NextRequest) {
   if (!workspaceId) {
     return NextResponse.json({ error: 'workspaceId required' }, { status: 400 })
   }
+  // Sprint 18A (audit pass #5 P0 #1): cross-tenant data leak fix. Without
+  // this, any authenticated user could read another workspace's follower
+  // history by URL-tampering ?workspaceId=. Sprint 17D shipped without it.
+  const denied = assertWorkspaceOwnership(req, workspaceId)
+  if (denied) return denied
 
   try {
     // One row per (date, platform) — pick the LAST synced point in the day

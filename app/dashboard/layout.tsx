@@ -657,12 +657,23 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                           lead_captured: '🎯',
                           publish_failed: '⚠️',
                           publish_success: '🚀',
+                          // Sprint 18A (audit pass #5 P0 #4 — Sprint 17 self-regression):
+                          // notifyPublishSuccess writes type='post_published'.
+                          // Keep both keys so already-persisted rows and new
+                          // producers both render the rocket.
+                          post_published: '🚀',
                           post_queued: '⏰',
                           calendar_queued: '📅',
                           nurture_reply: '💬',
                           oauth_expiring: '🔑',
                           agent_run_failed: '🔴',
                           budget_alert: '💸',
+                          // Sprint 18A: pass #4 finding A8 — was falling back
+                          // to severity icon.
+                          follower_sync_skipped: '📉',
+                          // Sprint 18A: workflow_trigger_failed surfaced from
+                          // lp-submit in Sprint 17G; keeps timeline scannable.
+                          workflow_trigger_failed: '🛑',
                         }
                         const pickIcon = (n: any) => typeIcons[n.type] || sevIcons[n.severity] || '🔔'
                         const ago = (iso: string) => {

@@ -22,6 +22,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useSearchParams } from 'next/navigation'
 import {
   Megaphone, Plus, RefreshCw, Rocket, Pause, Archive, AlertCircle,
   Loader2, ShieldCheck, ExternalLink, X, Edit3, CheckCircle2,
@@ -113,11 +114,19 @@ const PLATFORM_OPTIONS = [
 // ─── Page ──────────────────────────────────────────────────────────────────
 
 export default function AdsPage() {
+  // Sprint 18A (audit pass #5 P0 #5 — Sprint 17 self-regression):
+  // /api/ads/[id]/deploy writes budget_alert notifications with
+  // link=`/dashboard/ads?campaign=<id>`. Without this, the bell click
+  // landed on the page but didn't auto-select. Reading ?campaign= here
+  // closes the click loop.
+  const searchParams = useSearchParams()
+  const linkedCampaignId = searchParams?.get('campaign') || null
+
   const [workspaceId, setWorkspaceId] = useState<string | null>(null)
   const [campaigns, setCampaigns] = useState<AdCampaign[]>([])
   const [budget, setBudget] = useState<BudgetSnapshot | null>(null)
   const [loading, setLoading] = useState(true)
-  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [selectedId, setSelectedId] = useState<string | null>(linkedCampaignId)
   const [creatives, setCreatives] = useState<AdCreative[]>([])
   const [loadingCreatives, setLoadingCreatives] = useState(false)
   const [showNew, setShowNew] = useState(false)
@@ -172,6 +181,18 @@ export default function AdsPage() {
     const t = setInterval(fetchAll, 3_000)
     return () => clearInterval(t)
   }, [workspaceId, campaigns, fetchAll])
+
+  // Sprint 18A (audit pass #5 P0 #5): once campaigns have loaded, if the
+  // URL had ?campaign=… and that id exists in the list, select it. Handles
+  // the race where the page mounts with an id we haven't fetched yet.
+  useEffect(() => {
+    if (!linkedCampaignId) return
+    if (campaigns.length === 0) return
+    if (selectedId === linkedCampaignId) return
+    if (campaigns.find(c => c.id === linkedCampaignId)) {
+      setSelectedId(linkedCampaignId)
+    }
+  }, [linkedCampaignId, campaigns, selectedId])
 
   // Fetch creatives for selected campaign
   useEffect(() => {
