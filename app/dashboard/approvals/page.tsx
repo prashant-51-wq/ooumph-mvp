@@ -920,9 +920,18 @@ function ApprovalAuditFooter({ item, workspaceId }: { item: ApprovalItem; worksp
     if (events !== null) return
     setLoading(true)
     try {
+      // Sprint 17H (audit pass #3 P2 #46): pagination shape. Response is
+      // { events, nextBefore, hasMore } — also tolerate legacy array
+      // shape in case the cached endpoint hasn't redeployed yet.
       const res = await fetch(`/api/approvals/events?approvalId=${item.id}&workspaceId=${workspaceId}`)
       const data = await res.json()
-      setEvents(Array.isArray(data) ? data : [])
+      if (Array.isArray(data)) {
+        setEvents(data)
+      } else if (data && Array.isArray(data.events)) {
+        setEvents(data.events)
+      } else {
+        setEvents([])
+      }
     } catch {
       setEvents([])
     } finally {

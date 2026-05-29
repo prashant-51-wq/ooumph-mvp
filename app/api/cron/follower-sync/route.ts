@@ -277,13 +277,35 @@ async function syncOne(row: OAuthRow): Promise<PerPlatformResult> {
   const prevTotal = typeof prev?.total_followers === 'number' ? prev.total_followers : 0
   const delta = total - prevTotal
 
+  // Sprint 17H (audit pass #3 P2 #40): tag the sentinel row with the most
+  // recently active ad campaign on this platform. The audit found
+  // followers-delta couldn't be attributed to a specific campaign because
+  // artifact_id is a fixed sentinel ('__followers__'). Attribution is now
+  // recorded in metadata_json.attribution = {ad_campaign_id, platform}
+  // so a downstream analytics query can join post_metrics → ad_campaigns
+  // and answer "did this Meta page-likes campaign actually grow my page?"
+  let attribution: { ad_campaign_id: string | null } = { ad_campaign_id: null }
+  try {
+    const recentCamp = await sql`
+      SELECT id FROM ad_campaigns
+      WHERE workspace_id = ${row.workspace_id}
+        AND LOWER(platform) = LOWER(${row.platform === 'facebook' || row.platform === 'instagram' ? 'meta_ads' : row.platform === 'twitter' || row.platform === 'x' ? 'twitter_ads' : row.platform + '_ads'})
+        AND status IN ('active', 'paused')
+      ORDER BY created_at DESC LIMIT 1
+    `
+    const c = recentCamp.rows[0] as { id?: string } | undefined
+    if (c?.id) attribution = { ad_campaign_id: c.id }
+  } catch { /* non-fatal — attribution stays null */ }
+
   await sql`
     INSERT INTO post_metrics (
       id, workspace_id, artifact_id, platform,
-      total_followers, followers_delta, last_synced_at, created_at
+      total_followers, followers_delta, last_synced_at, created_at,
+      metadata_json
     ) VALUES (
       ${newId()}, ${row.workspace_id}, ${FOLLOWERS_SENTINEL_ARTIFACT_ID}, ${row.platform},
-      ${total}, ${delta}, ${nowIso}, ${nowIso}
+      ${total}, ${delta}, ${nowIso}, ${nowIso},
+      ${JSON.stringify({ attribution })}
     )
   `
 
@@ -332,6 +354,60 @@ export async function GET(req: NextRequest) {
           error: String(err),
         })
       }
+    }
+
+    // Sprint 17H (audit pass #3 P2 #42): notify on permanent failure or
+    // repeated skips. If a (workspace, platform) has shown ≥3 consecutive
+    // failures/skipped in a row, fire a notification so the user knows
+    // the follower feature is silently half-broken for them. One per
+    // 7-day window to avoid spam.
+    try {
+      const failureMap = new Map<string, PerPlatformResult>()
+      for (const r of results) {
+        if (r.status === 'failed' || r.status === 'skipped') {
+          failureMap.set(`${r.workspaceId}|${r.platform}`, r)
+        }
+      }
+      if (failureMap.size > 0) {
+        const sevenDaysAgo = new Date(Date.now() - 7 * 86400_000).toISOString()
+        for (const r of failureMap.values()) {
+          // Skip if we've already notified this (workspace, platform) within 7d.
+          const dedup = await sql`
+            SELECT id FROM notifications
+            WHERE workspace_id = ${r.workspaceId}
+              AND type = 'follower_sync_skipped'
+              AND body LIKE ${'%' + r.platform + '%'}
+              AND created_at >= ${sevenDaysAgo}
+            LIMIT 1
+          `
+          if (dedup.rows[0]) continue
+          // Only fire on consecutive failures — check last 3 sync attempts.
+          const recent = await sql`
+            SELECT total_followers FROM post_metrics
+            WHERE workspace_id = ${r.workspaceId}
+              AND platform = ${r.platform}
+              AND artifact_id = ${FOLLOWERS_SENTINEL_ARTIFACT_ID}
+            ORDER BY last_synced_at DESC LIMIT 3
+          `
+          const allNullOrEmpty = recent.rows.length === 0 ||
+            recent.rows.every(row => (row as { total_followers?: number | null }).total_followers == null)
+          if (allNullOrEmpty) {
+            await sql`
+              INSERT INTO notifications (id, workspace_id, type, title, body, link, severity, created_at)
+              VALUES (
+                ${newId()}, ${r.workspaceId}, 'follower_sync_skipped',
+                ${'Follower tracking unavailable on ' + r.platform},
+                ${(r.error || 'No followers data returned by the platform') + ' (' + r.platform + ')'},
+                '/dashboard/integrations',
+                'warning',
+                ${new Date().toISOString()}
+              )
+            `
+          }
+        }
+      }
+    } catch (err) {
+      console.error('[follower-sync] skip-notification batch failed:', err)
     }
 
     return NextResponse.json({

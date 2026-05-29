@@ -142,26 +142,19 @@ export default function FunnelOverviewPage() {
         }
       } catch { /* parent funnels are additive — analytics still works */ }
 
-      // Best-effort: per-funnel last-N submissions roll-up.
-      // We don't have a workspace-wide submissions endpoint yet; instead pull
-      // recent submissions via lead-activities if any exist (form_submitted).
+      // Sprint 17H (audit pass #3 P2 #43): read directly from the
+      // form_submissions table via /api/form-submissions. Previously
+      // this joined lead_activities of type='form_submitted', which
+      // under-counted whenever the activity write failed (the activity
+      // is best-effort; the form_submissions row is durable).
       try {
-        const actRes = await fetch(`/api/lead-activities?workspaceId=${workspaceId}&activityType=form_submitted&limit=20`)
-        const acts = await actRes.json() as Array<{ id: string; lead_id: string; metadata_json: string | null; created_at: string; description: string | null }>
-        if (Array.isArray(acts)) {
-          // Convert activity rows into a submission-shaped feed for the bottom panel
-          setSubmissions(acts.map(a => {
-            const meta = (a.metadata_json && (() => { try { return JSON.parse(a.metadata_json) as Record<string, unknown> } catch { return null } })()) || {}
-            const fsId = String((meta as { funnel_step_id?: string }).funnel_step_id || '')
-            return {
-              id: a.id,
-              workspace_id: workspaceId,
-              funnel_step_id: fsId,
-              email: (meta as { email?: string }).email || a.description?.split('·')[0]?.trim() || '',
-              submitted_data: a.metadata_json,
-              created_at: a.created_at,
-            }
-          }).filter(s => s.email.length > 0))
+        const subsRes = await fetch(`/api/form-submissions?workspaceId=${workspaceId}&limit=20`)
+        const subs = await subsRes.json() as Array<{
+          id: string; workspace_id: string; funnel_step_id: string; email: string;
+          submitted_data: string | null; created_at: string;
+        }>
+        if (Array.isArray(subs)) {
+          setSubmissions(subs.filter(s => s.email && s.email.length > 0))
         }
       } catch { /* non-fatal — submissions panel just stays empty */ }
 

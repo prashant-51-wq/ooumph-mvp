@@ -17,7 +17,7 @@
  * and joined client-side rather than pushing the join into the route.
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useWorkspaceId } from '@/lib/hooks/use-workspace-id'
 
 interface LeadMagnet {
@@ -58,6 +58,90 @@ function formatRelative(iso: string | null | undefined): string {
   if (s < 86400) return `${Math.floor(s / 3600)}h ago`
   if (s < 86400 * 7) return `${Math.floor(s / 86400)}d ago`
   return d.toLocaleDateString()
+}
+
+/**
+ * Sprint 17H (audit pass #3 P2 #44) — inline file upload control.
+ * Posts base64 to /api/upload/asset (Cloudinary or data-URL fallback),
+ * then writes the returned URL into the parent's assetUrl input.
+ */
+function FileUploadButton({ workspaceId, onUploaded }: {
+  workspaceId: string | null
+  onUploaded: (url: string) => void
+}) {
+  const [uploading, setUploading] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  const handle = async (file: File) => {
+    if (!workspaceId) {
+      setErr('Workspace not loaded yet — try again in a moment.')
+      return
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      setErr('File too large (max 10MB).')
+      return
+    }
+    setErr(null)
+    setUploading(true)
+    try {
+      const reader = new FileReader()
+      const result = await new Promise<{ base64: string; mimeType: string }>((resolve, reject) => {
+        reader.onload = () => {
+          const dataUrl = reader.result as string
+          const [meta, b64] = dataUrl.split(',')
+          const mimeMatch = meta.match(/data:([^;]+)/)
+          resolve({ base64: b64, mimeType: mimeMatch?.[1] || file.type || 'application/octet-stream' })
+        }
+        reader.onerror = () => reject(new Error('Failed to read file'))
+        reader.readAsDataURL(file)
+      })
+      const res = await fetch('/api/upload/asset', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          workspaceId,
+          base64: result.base64,
+          mimeType: result.mimeType,
+          filename: file.name,
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok || !data?.url) {
+        setErr(data?.error || `Upload failed (HTTP ${res.status})`)
+      } else {
+        onUploaded(data.url)
+      }
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setUploading(false)
+      if (inputRef.current) inputRef.current.value = ''
+    }
+  }
+
+  return (
+    <div className="mt-2 flex items-center gap-2">
+      <input
+        ref={inputRef}
+        type="file"
+        className="hidden"
+        onChange={e => {
+          const f = e.target.files?.[0]
+          if (f) void handle(f)
+        }}
+      />
+      <button
+        type="button"
+        onClick={() => inputRef.current?.click()}
+        disabled={uploading || !workspaceId}
+        className="px-3 py-1.5 text-xs bg-gray-800 hover:bg-gray-700 disabled:opacity-50 border border-gray-700 text-gray-300 rounded transition-colors"
+      >
+        {uploading ? 'Uploading…' : '📤 Upload file'}
+      </button>
+      {err && <span className="text-xs text-rose-400">{err}</span>}
+    </div>
+  )
 }
 
 function isLikelyUrl(s: string): boolean {
@@ -389,8 +473,17 @@ export default function LeadMagnetsPage() {
                   placeholder="https://cdn.example.com/playbook.pdf"
                   className="w-full bg-gray-950 border border-gray-800 rounded px-3 py-2 text-sm text-white focus:border-indigo-600 focus:outline-none font-mono"
                 />
+                {/* Sprint 17H (audit pass #3 P2 #44): direct file upload.
+                    POSTs base64 to /api/upload/asset which uploads to
+                    Cloudinary when configured, or returns a data URL as
+                    fallback. The text input still works for users with an
+                    existing CDN. */}
+                <FileUploadButton
+                  workspaceId={workspaceId}
+                  onUploaded={url => setDraft(d => ({ ...d, assetUrl: url }))}
+                />
                 <p className="text-[11px] text-gray-600 mt-1">
-                  Paste a public URL to the file (S3, Drive, R2, etc.). File upload UI ships in a later sprint.
+                  Paste a public URL or upload a file (max 10MB; PDF / Office / image / audio / video).
                 </p>
               </div>
               <div>

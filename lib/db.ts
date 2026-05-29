@@ -681,6 +681,10 @@ async function postgresQuery(strings: TemplateStringsArray, ...values: unknown[]
     // no follower column, so J4 step 8 (track follower growth) was impossible.
     await pgSql`ALTER TABLE post_metrics ADD COLUMN IF NOT EXISTS followers_delta INTEGER NOT NULL DEFAULT 0`
     await pgSql`ALTER TABLE post_metrics ADD COLUMN IF NOT EXISTS total_followers INTEGER`
+    // Sprint 17H (audit pass #3 P2 #40): attribution metadata (ad campaign,
+    // etc.) — gives follower-sync rows a place to record which ad campaign
+    // most likely drove the delta. Free-form JSON to avoid more migrations.
+    await pgSql`ALTER TABLE post_metrics ADD COLUMN IF NOT EXISTS metadata_json TEXT DEFAULT '{}'`
 
     // Sprint 16A: approval audit trail. approvals table previously overwrote
     // status/notes in place on PATCH — no record of WHO approved WHEN. We add
@@ -1318,6 +1322,8 @@ function initSQLiteSync(db: import('better-sqlite3').Database) {
     'ALTER TABLE ad_campaigns ADD COLUMN targeting_json TEXT DEFAULT \'{}\'',
     'ALTER TABLE post_metrics ADD COLUMN followers_delta INTEGER NOT NULL DEFAULT 0',
     'ALTER TABLE post_metrics ADD COLUMN total_followers INTEGER',
+    // Sprint 17H (audit pass #3 P2 #40): attribution metadata column.
+    'ALTER TABLE post_metrics ADD COLUMN metadata_json TEXT DEFAULT \'{}\'',
     'ALTER TABLE approvals ADD COLUMN approved_by TEXT',
     'ALTER TABLE approvals ADD COLUMN approved_at TEXT',
     'CREATE TABLE IF NOT EXISTS approval_events (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, approval_id TEXT NOT NULL, artifact_id TEXT, actor_id TEXT, actor_email TEXT, action TEXT NOT NULL, notes TEXT, created_at TEXT DEFAULT (datetime(\'now\')))',
@@ -1961,6 +1967,8 @@ export async function initializeDatabase() {
   await pgSql`ALTER TABLE ad_campaigns ADD COLUMN IF NOT EXISTS targeting_json TEXT DEFAULT '{}'`
   await pgSql`ALTER TABLE post_metrics ADD COLUMN IF NOT EXISTS followers_delta INTEGER NOT NULL DEFAULT 0`
   await pgSql`ALTER TABLE post_metrics ADD COLUMN IF NOT EXISTS total_followers INTEGER`
+  // Sprint 17H (audit pass #3 P2 #40): attribution metadata column.
+  await pgSql`ALTER TABLE post_metrics ADD COLUMN IF NOT EXISTS metadata_json TEXT DEFAULT '{}'`
   await pgSql`ALTER TABLE approvals ADD COLUMN IF NOT EXISTS approved_by TEXT`
   await pgSql`ALTER TABLE approvals ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ`
   await pgSql`CREATE TABLE IF NOT EXISTS approval_events (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, approval_id TEXT NOT NULL, artifact_id TEXT, actor_id TEXT, actor_email VARCHAR(255), action VARCHAR(40) NOT NULL, notes TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`
