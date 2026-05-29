@@ -168,25 +168,154 @@ export async function PATCH(req: NextRequest) {
       }
     }
 
-    // ── Sprint 15B (P0 #1): approval → scheduled_content auto-handoff ─────────
+    // ── Sprint 16C (audit P0 #1): approval → scheduled_content fan-out ────────
     //
-    // Previously: approving a daily-post artifact only flipped artifacts.status
-    // to 'approved' — the user had to manually open /publishing and schedule
-    // each post. That broke the "auto-pilot daily posting" promise.
+    // The Sprint 15B closure shipped a single-row handoff that only handled
+    // single-post artifact types (linkedin_post, twitter_post, etc.). The
+    // actual content_calendar artifact emitted by /api/agents/content is ONE
+    // row containing 30 calendar entries — which fell through the type set
+    // and never reached scheduled_content. The audit pass #2 flagged this
+    // as the headline regression: J1 + J2 happy paths still failed.
     //
-    // Now: for any content-shaped artifact, derive an artifact.content_json
-    // payload per platform and insert a pending scheduled_content row. The
-    // existing publish-scheduled cron drains it on its next 15-minute tick.
+    // This rewrite handles BOTH shapes:
+    //   - content_calendar / 30-day-calendar artifacts → fan-out into N rows
+    //   - single-post artifacts → one row (preserved behaviour)
     //
-    // We dedupe via artifact_id — re-approval (regen+approve loops) won't
-    // create duplicate queue rows.
-    const CONTENT_TYPES = new Set([
+    // Dedupe: existing scheduled_content rows for this artifact_id are not
+    // re-inserted. We use (artifact_id, channel, scheduled_at) as the
+    // logical key per entry; on regen+approve the next run's identical
+    // entries are skipped, while genuinely new entries land.
+    const SINGLE_POST_TYPES = new Set([
       'social_post', 'linkedin_post', 'twitter_post', 'instagram_post',
       'facebook_post', 'post', 'caption', 'thread', 'reel_script',
     ])
-    if (action === 'approve' && artifact?.id && CONTENT_TYPES.has(artifact.type as string)) {
+    const CALENDAR_TYPES = new Set([
+      'content_calendar', '30_day_calendar', 'weekly_content', 'content_plan',
+    ])
+    const isSinglePost = artifact && SINGLE_POST_TYPES.has(artifact.type as string)
+    const isCalendar = artifact && CALENDAR_TYPES.has(artifact.type as string)
+    if (action === 'approve' && artifact?.id && (isSinglePost || isCalendar)) {
       after(async () => {
         try {
+          const artFull = await sql`
+            SELECT content_json FROM artifacts WHERE id = ${artifact.id as string} LIMIT 1
+          `
+          const row = artFull.rows[0] as { content_json?: string | Record<string, unknown> | unknown[] } | undefined
+          let content: unknown = {}
+          if (typeof row?.content_json === 'string') {
+            try { content = JSON.parse(row.content_json) } catch { /* ignore */ }
+          } else if (row?.content_json) {
+            content = row.content_json
+          }
+
+          // Channel inference helper — shared between single-post and calendar.
+          const inferChannel = (t: string): string | null => {
+            const x = (t || '').toLowerCase()
+            if (x.includes('linkedin')) return 'linkedin'
+            if (x.includes('twitter') || x.includes('x_')) return 'twitter'
+            if (x.includes('instagram') || x.includes('reel')) return 'instagram'
+            if (x.includes('facebook')) return 'facebook'
+            if (x.includes('youtube')) return 'youtube'
+            return null
+          }
+
+          // Calendar entries can live under several keys depending on which
+          // generator produced the artifact. We try each in order.
+          const extractEntries = (c: unknown): Record<string, unknown>[] => {
+            if (Array.isArray(c)) return c as Record<string, unknown>[]
+            if (c && typeof c === 'object') {
+              const obj = c as Record<string, unknown>
+              for (const k of ['posts', 'entries', 'days', 'calendar', 'items', 'schedule']) {
+                if (Array.isArray(obj[k])) return obj[k] as Record<string, unknown>[]
+              }
+            }
+            return []
+          }
+
+          // ---- CALENDAR PATH (30+ rows fan-out) ----
+          if (isCalendar) {
+            const entries = extractEntries(content)
+            if (entries.length === 0) {
+              console.log(`[approvals] calendar ${artifact.id} has no entries — skip`)
+              return
+            }
+            // Pull existing rows for this artifact so re-approval doesn't dup.
+            const existing = await sql`
+              SELECT channel, scheduled_at FROM scheduled_content
+              WHERE artifact_id = ${artifact.id as string}
+            `
+            const seen = new Set(
+              (existing.rows as { channel?: string; scheduled_at?: string }[])
+                .map(r => `${r.channel || ''}|${r.scheduled_at || ''}`)
+            )
+            const baseTime = Date.now() + 30 * 60_000  // first entry +30 min from approval
+            let inserted = 0
+            const queuedChannels = new Set<string>()
+            for (let i = 0; i < entries.length; i++) {
+              const e = entries[i]
+              const body =
+                (e.body as string) || (e.content as string) || (e.text as string) ||
+                (e.caption as string) || (e.copy as string) || (e.hook as string) || (e.topic as string) || ''
+              if (!body.trim()) continue
+              const channel =
+                (e.channel as string) || (e.platform as string) ||
+                inferChannel((e.postType as string) || (e.format as string) || '') ||
+                'linkedin'
+              // Schedule: explicit `scheduled_at` > computed (day N at 9am
+              // local +30min for the first entry). Day field may be a number
+              // (1..30) or a relative string.
+              let scheduledAt: string
+              if (e.scheduled_at && typeof e.scheduled_at === 'string') {
+                scheduledAt = e.scheduled_at
+              } else {
+                const dayN = typeof e.day === 'number' ? Math.max(0, e.day - 1) : i
+                const ts = baseTime + dayN * 24 * 3600 * 1000
+                scheduledAt = new Date(ts).toISOString()
+              }
+              const key = `${channel.toLowerCase()}|${scheduledAt}`
+              if (seen.has(key)) continue
+              const mediaUrls = Array.isArray(e.media_urls) ? e.media_urls : []
+              const now = new Date().toISOString()
+              await sql`
+                INSERT INTO scheduled_content (
+                  id, workspace_id, artifact_id,
+                  channel, platform,
+                  content_body, content,
+                  scheduled_at, scheduled_for,
+                  media_urls, status, retry_count,
+                  created_at, updated_at
+                ) VALUES (
+                  ${newId()}, ${workspaceId}, ${artifact.id as string},
+                  ${channel.toLowerCase()}, ${channel.toLowerCase()},
+                  ${body}, ${body},
+                  ${scheduledAt}, ${scheduledAt},
+                  ${JSON.stringify(mediaUrls)}, 'pending', 0,
+                  ${now}, ${now}
+                )
+              `
+              seen.add(key)
+              queuedChannels.add(channel.toLowerCase())
+              inserted++
+            }
+            console.log(`[approvals] calendar ${artifact.id} fanned out to ${inserted} scheduled rows across [${[...queuedChannels].join(', ')}]`)
+            if (inserted > 0) {
+              await sql`
+                INSERT INTO notifications (id, workspace_id, type, title, body, link, severity, created_at)
+                VALUES (
+                  ${newId()}, ${workspaceId}, 'calendar_queued',
+                  ${inserted + ' posts queued from your content calendar'},
+                  ${'Spans ' + queuedChannels.size + ' channel' + (queuedChannels.size === 1 ? '' : 's') + ' — open the calendar to retime or cancel any of them.'},
+                  '/dashboard/calendar',
+                  'success',
+                  ${new Date().toISOString()}
+                )
+              `
+            }
+            return
+          }
+
+          // ---- SINGLE POST PATH (preserved Sprint 15B behaviour) ----
+          const c = (content || {}) as Record<string, unknown>
           const existing = await sql`
             SELECT id FROM scheduled_content WHERE artifact_id = ${artifact.id as string} LIMIT 1
           `
@@ -194,45 +323,18 @@ export async function PATCH(req: NextRequest) {
             console.log(`[approvals] artifact ${artifact.id} already queued — skip auto-schedule`)
             return
           }
-          // Pull artifact body + decide channel + when to fire.
-          const artFull = await sql`
-            SELECT content_json FROM artifacts WHERE id = ${artifact.id as string} LIMIT 1
-          `
-          const row = artFull.rows[0] as { content_json?: string | Record<string, unknown> } | undefined
-          let content: Record<string, unknown> = {}
-          if (typeof row?.content_json === 'string') {
-            try { content = JSON.parse(row.content_json) } catch { /* ignore */ }
-          } else if (row?.content_json && typeof row.content_json === 'object') {
-            content = row.content_json as Record<string, unknown>
-          }
           const body =
-            (content.body as string) ||
-            (content.text as string) ||
-            (content.caption as string) ||
-            (content.copy as string) ||
+            (c.body as string) || (c.text as string) || (c.caption as string) || (c.copy as string) ||
             (artifact.title as string) || ''
           if (!body.trim()) {
             console.log(`[approvals] artifact ${artifact.id} has empty body — skip auto-schedule`)
             return
           }
-          // Channel inference: explicit > artifact.type > default linkedin
-          const inferChannel = (t: string) => {
-            const x = t.toLowerCase()
-            if (x.includes('linkedin')) return 'linkedin'
-            if (x.includes('twitter') || x.includes('x_')) return 'twitter'
-            if (x.includes('instagram') || x.includes('reel')) return 'instagram'
-            if (x.includes('facebook')) return 'facebook'
-            return null
-          }
           const channel =
-            (content.channel as string) ||
-            (content.platform as string) ||
-            inferChannel(artifact.type as string) ||
-            'linkedin'
-          // Default scheduling: +30 minutes (gives the user a chance to cancel
-          // from /calendar before the cron picks it up).
-          const scheduledAt = (content.scheduled_at as string) || new Date(Date.now() + 30 * 60_000).toISOString()
-          const mediaUrls = Array.isArray(content.media_urls) ? content.media_urls : []
+            (c.channel as string) || (c.platform as string) ||
+            inferChannel(artifact.type as string) || 'linkedin'
+          const scheduledAt = (c.scheduled_at as string) || new Date(Date.now() + 30 * 60_000).toISOString()
+          const mediaUrls = Array.isArray(c.media_urls) ? c.media_urls : []
           const now = new Date().toISOString()
           await sql`
             INSERT INTO scheduled_content (
@@ -244,7 +346,7 @@ export async function PATCH(req: NextRequest) {
               created_at, updated_at
             ) VALUES (
               ${newId()}, ${workspaceId}, ${artifact.id as string},
-              ${channel}, ${channel},
+              ${channel.toLowerCase()}, ${channel.toLowerCase()},
               ${body}, ${body},
               ${scheduledAt}, ${scheduledAt},
               ${JSON.stringify(mediaUrls)}, 'pending', 0,
@@ -252,8 +354,6 @@ export async function PATCH(req: NextRequest) {
             )
           `
           console.log(`[approvals] auto-scheduled artifact ${artifact.id} → ${channel} @ ${scheduledAt}`)
-          // Producer-side notification so the user sees "post queued" even if
-          // they're not looking at /calendar right now.
           await sql`
             INSERT INTO notifications (id, workspace_id, type, title, body, link, severity, created_at)
             VALUES (

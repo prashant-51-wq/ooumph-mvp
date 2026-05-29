@@ -252,29 +252,78 @@ export async function PUT(req: NextRequest) {
       sent.push({ recipient: recipient.email, emailsScheduled: emails.length, day0Id })
     }
 
-    // Schedule remaining emails (day > 0) into scheduled_posts
+    // Sprint 16C (audit P1 #19): schedule remaining emails into the
+    // workflow_pending_steps table — NOT scheduled_posts. The audit found
+    // that scheduled_posts bypassed the Sprint 15C reply-cancellation: an
+    // inbound human reply cancelled workflow_pending_steps rows but did
+    // nothing about pending scheduled_posts. Now sequence follow-ups land
+    // in workflow_pending_steps so the email-inbound webhook's
+    // notifyNurtureReplyReceived path actually cancels them.
+    //
+    // We create one synthetic workflow_run per recipient so the audit log
+    // tells you which recipient was enrolled. The pending steps reference
+    // node_data with the personalised email payload, which the cron at
+    // /api/cron/workflow-steps already knows how to dispatch via
+    // lib/workflow-engine.ts → 'send_email' case.
     const remainingEmails = emails.filter(e => e.day > 0)
     let scheduledCount = 0
+    const syntheticWorkflowId = artifactId  // sequence artifact == workflow id for this run
     for (const recipient of recipients.slice(0, 50)) {
-      for (const email of remainingEmails) {
+      // Look up lead_id if this email matches a known lead — lets the
+      // reply-cancellation join on contact_email reach these rows.
+      let leadId: string | null = null
+      try {
+        const leadRes = await sql`
+          SELECT id FROM leads_captured
+          WHERE workspace_id = ${workspaceId} AND email = ${recipient.email}
+          LIMIT 1
+        `
+        leadId = (leadRes.rows[0] as { id?: string } | undefined)?.id || null
+      } catch { /* non-fatal */ }
+
+      const runId = newId()
+      try {
+        await sql`
+          INSERT INTO workflow_runs (id, workflow_id, workspace_id, lead_id, contact_email, trigger_data, status, current_node)
+          VALUES (
+            ${runId}, ${syntheticWorkflowId}, ${workspaceId},
+            ${leadId}, ${recipient.email},
+            ${JSON.stringify({ source: 'email_sequence', artifactId, firstName: recipient.firstName })},
+            'running', 0
+          )
+        `
+      } catch { /* workflow_runs may not exist on legacy installs */ }
+
+      for (let nodeIdx = 0; nodeIdx < remainingEmails.length; nodeIdx++) {
+        const email = remainingEmails[nodeIdx]
         const scheduledTime = new Date(Date.now() + email.day * 24 * 60 * 60 * 1000).toISOString()
         const personalised = (text: string) => text.replace(/\{\{FIRST_NAME\}\}/g, recipient.firstName || 'there')
+        // node_data shape matches lib/workflow-engine.ts WorkflowNode for send_email.
+        const nodeData = {
+          type: 'send_email',
+          subject: personalised(email.subject),
+          body: personalised(email.body),
+          // Keep cta/ctaUrl in metadata so the workflow engine can render
+          // them into the email body template if it chooses.
+          metadata: {
+            cta: email.cta,
+            ctaUrl: email.ctaUrl,
+            previewText: email.previewText ? personalised(email.previewText) : '',
+            from,
+            businessName: brand.business_name,
+            day: email.day,
+            artifactId,
+          },
+        }
         await sql`
-          INSERT INTO scheduled_posts (id, workspace_id, platform, content_json, artifact_id, scheduled_time, status)
-          VALUES (
-            ${newId()}, ${workspaceId}, 'email',
-            ${JSON.stringify({
-              to: recipient.email,
-              from: from,
-              subject: personalised(email.subject),
-              previewText: email.previewText ? personalised(email.previewText) : '',
-              body: personalised(email.body),
-              cta: email.cta,
-              ctaUrl: email.ctaUrl,
-              businessName: brand.business_name,
-              day: email.day,
-            })},
-            ${artifactId}, ${scheduledTime}, 'queued'
+          INSERT INTO workflow_pending_steps (
+            id, workflow_run_id, workflow_id, workspace_id,
+            node_index, node_data, lead_id, contact_email,
+            scheduled_for, status
+          ) VALUES (
+            ${newId()}, ${runId}, ${syntheticWorkflowId}, ${workspaceId},
+            ${nodeIdx}, ${JSON.stringify(nodeData)}, ${leadId}, ${recipient.email},
+            ${scheduledTime}, 'pending'
           )
         `
         scheduledCount++

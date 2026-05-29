@@ -136,6 +136,16 @@ const AGENT_ROUTE_MAP: Record<string, string> = {
   strategy: '/api/agents/strategy',
   content: '/api/agents/content',
   blog: '/api/agents/content/blog',
+  // Sprint 16C (audit P0 #5): split the old `email` slug into two so the CMO
+  // can correctly route nurture-sequence requests to the funnel sequence
+  // generator instead of the campaign-broadcaster. Audit pass #2 found the
+  // CMO was emitting `email` for "create a 5-day nurture" requests and the
+  // wrong agent (email-marketing campaigns) was firing.
+  email_campaign: '/api/agents/email-marketing',
+  email_sequence: '/api/agents/funnel/email-sequence',
+  // Back-compat: `email` defaults to campaign (the old behaviour). The CMO
+  // prompt should prefer the explicit slugs; this fallback prevents legacy
+  // proposals from breaking.
   email: '/api/agents/email-marketing',
   leads: '/api/agents/leads',
   funnel: '/api/agents/funnel',
