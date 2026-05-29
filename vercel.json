@@ -39,6 +39,16 @@
     {
       "path": "/api/cron/follower-sync",
       "schedule": "0 0,6,12,18 * * *"
+    },
+    {
+      "_comment": "Sprint 16D (P1 #13): produces agent_run_failed notifications.",
+      "path": "/api/cron/agent-run-watchdog",
+      "schedule": "*/15 * * * *"
+    },
+    {
+      "_comment": "Sprint 16D (P1 #12): fires notifyOAuthExpiring for tokens nearing expiry.",
+      "path": "/api/cron/oauth-health-check",
+      "schedule": "0 */6 * * *"
     }
   ]
 }

@@ -105,7 +105,21 @@ export async function POST(req: NextRequest) {
     })
     } // end if resendKey
 
-    return NextResponse.json({ ok: true, inviteId, email, inviteUrl: acceptUrl })
+    // Sprint 16D (audit P1 #20): surface "email not sent" so the user
+    // knows to copy the inviteUrl manually. Previously this silently
+    // succeeded — invitee never got the link, inviter thought they did.
+    const emailSent = !!resendKey
+    if (!emailSent) {
+      console.warn(`[team/invite] RESEND_API_KEY missing — invite for ${email} created but no email was dispatched. Use inviteUrl to share manually.`)
+    }
+    return NextResponse.json({
+      ok: true,
+      inviteId,
+      email,
+      inviteUrl: acceptUrl,
+      emailSent,
+      ...(emailSent ? {} : { warning: 'Email not sent — RESEND_API_KEY missing. Share the inviteUrl manually.' }),
+    })
   } catch (err) {
     console.error('[team/invite POST]', err)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
