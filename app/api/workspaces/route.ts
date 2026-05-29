@@ -116,6 +116,18 @@ export async function PATCH(req: NextRequest) {
 
     // Sprint 16H (P1 #15, #21): include logo_url + icp_json in the update.
     // icp_json column is TEXT (Sprint 16A) — store as serialised JSON.
+    // Sprint 17G (audit pass #3 P2 #27): cap logo_url length. The data:
+    // URL fallback path (when Cloudinary isn't configured) was unbounded —
+    // a 5MB logo would blow the brand_profiles row. Reject anything > 8KB
+    // (large enough for any reasonable SVG/PNG, small enough to keep rows
+    // healthy). Cloudinary URLs are always short, so the cap only kicks
+    // in for data: URLs that should have been uploaded.
+    const MAX_LOGO_URL_BYTES = 8 * 1024
+    let safeLogoUrl: string | null = body.logoUrl ?? null
+    if (safeLogoUrl && safeLogoUrl.length > MAX_LOGO_URL_BYTES) {
+      console.warn(`[/api/workspaces PATCH] logoUrl too large (${safeLogoUrl.length} bytes) — clearing. Configure Cloudinary for proper hosting.`)
+      safeLogoUrl = null
+    }
     const icpJsonSerialized = body.icpJson !== undefined
       ? JSON.stringify(body.icpJson)
       : '{}'
@@ -126,7 +138,7 @@ export async function PATCH(req: NextRequest) {
         tone = ${body.tone}, competitors = ${body.competitors}, channels = ${body.channels},
         goals = ${body.goals}, monthly_budget = ${body.monthlyBudget},
         prohibited_claims = ${body.prohibitedClaims}, approval_email = ${body.approvalEmail},
-        logo_url = ${body.logoUrl ?? null},
+        logo_url = ${safeLogoUrl},
         icp_json = ${icpJsonSerialized},
         updated_at = CURRENT_TIMESTAMP
       WHERE workspace_id = ${workspaceId}

@@ -155,7 +155,13 @@ export default function OnboardingPage() {
   }, [])
 
   useEffect(() => {
-    localStorage.setItem('onboarding_progress', JSON.stringify({ form, step, completedSteps }))
+    // Sprint 17G (audit pass #3 P2 #31): never persist transient upload
+    // state to localStorage. If the user navigates away mid-upload, hydration
+    // would restore `logoUploading: true` and freeze the UI forever. Strip
+    // it here so the persisted snapshot is always upload-idle.
+    const { logoUploading: _ignored, ...persistable } = form
+    void _ignored
+    localStorage.setItem('onboarding_progress', JSON.stringify({ form: persistable, step, completedSteps }))
   }, [form, step, completedSteps])
 
   const update = (patch: Partial<WizardState>) => setForm(f => ({ ...f, ...patch }))
@@ -205,8 +211,12 @@ export default function OnboardingPage() {
       if (form.primaryGoal) goalsArray.push(form.primaryGoal)
       if (form.contentTopics.length) goalsArray.push(...form.contentTopics)
       const tone = form.voiceAdjectives.join(', ') || ''
+      // Sprint 17G (audit pass #3 P2 #28): painPoints is now stored ONLY
+      // in icp_json.painPoints. Previously it was duplicated into the free-
+      // text target_audience too — edits on one diverged from the other.
+      // Strategy/research agents read either column, with icp_json taking
+      // precedence (it's the structured source of truth).
       const targetAudience = [
-        form.painPoints ? `Pain points: ${form.painPoints}` : null,
         form.jobTitles.length ? `Job titles: ${form.jobTitles.join(', ')}` : null,
         form.ageMin && form.ageMax ? `Age: ${form.ageMin}-${form.ageMax}` : null,
       ].filter(Boolean).join(' | ')

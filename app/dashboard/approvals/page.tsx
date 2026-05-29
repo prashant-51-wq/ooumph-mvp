@@ -752,12 +752,36 @@ export default function ApprovalsPage() {
                         value={feedbackText} onChange={e => setFeedbackText(e.target.value)} rows={2}
                         onClick={e => e.stopPropagation()}
                       />
-                      <button
-                        onClick={e => { e.stopPropagation(); regenerate(item, feedbackText) }}
-                        disabled={regenerating === item.id}
-                        className="w-full mt-2 py-2 rounded-lg border border-indigo-700 text-indigo-400 hover:bg-indigo-950 text-sm font-medium transition-colors disabled:opacity-50">
-                        {regenerating === item.id ? '⏳ Regenerating...' : '↻ Regenerate with This Feedback'}
-                      </button>
+                      <div className="flex gap-2 mt-2">
+                        <button
+                          onClick={e => { e.stopPropagation(); regenerate(item, feedbackText) }}
+                          disabled={regenerating === item.id}
+                          className="flex-1 py-2 rounded-lg border border-indigo-700 text-indigo-400 hover:bg-indigo-950 text-sm font-medium transition-colors disabled:opacity-50">
+                          {regenerating === item.id ? '⏳ Regenerating...' : '↻ Regenerate'}
+                        </button>
+                        {/* Sprint 17G (audit pass #3 P2 #23): combined
+                            "Reject + Regenerate" — reject the current draft
+                            AND immediately spawn a fresh version using the
+                            feedback as the reject note + regen prompt. Two
+                            clicks compressed to one. Only enabled when
+                            feedback is non-empty since reject requires a note. */}
+                        <button
+                          onClick={async e => {
+                            e.stopPropagation()
+                            if (!feedbackText.trim()) return
+                            // Issue the reject with the feedback as the note,
+                            // then kick off regenerate with the same text.
+                            setNotes(feedbackText)
+                            await act('reject')
+                            await regenerate(item, feedbackText)
+                          }}
+                          disabled={regenerating === item.id || acting || !feedbackText.trim()}
+                          className="flex-1 py-2 rounded-lg border border-rose-700 text-rose-300 hover:bg-rose-950/40 text-sm font-medium transition-colors disabled:opacity-50"
+                          title="Reject this draft with the feedback above + generate a fresh version in one click."
+                        >
+                          ✕ Reject + Regenerate
+                        </button>
+                      </div>
                       <p className="text-xs text-gray-600 mt-1 text-center">New version will appear below immediately after generation</p>
                     </div>
                   )}

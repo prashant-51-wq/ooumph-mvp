@@ -297,6 +297,15 @@ export default function FunnelOverviewPage() {
         // the form-builder.
         const suffix = Math.random().toString(36).slice(2, 7)
         const newSlug = `${step.slug}-${suffix}`
+        // Sprint 17G (audit pass #3 P2 #34): deep-clone reliability fix.
+        // Prior version sent step.stage / step.sequence directly — when those
+        // fields were undefined (pre-migration rows OR steps fetched before
+        // the schema bump), the API defaulted them to 'awareness' / 0,
+        // collapsing every cloned step into the same bucket. Now we coerce
+        // to explicit safe defaults at the client level so the clone always
+        // preserves intent.
+        const safeStage = (step.stage && typeof step.stage === 'string') ? step.stage : 'awareness'
+        const safeSequence = typeof step.sequence === 'number' ? step.sequence : 0
         await fetch('/api/funnel-steps', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -305,8 +314,8 @@ export default function FunnelOverviewPage() {
             slug: newSlug,
             htmlContent: step.html_content,
             funnelId: newFunnelId,
-            stage: step.stage,
-            sequence: step.sequence,
+            stage: safeStage,
+            sequence: safeSequence,
             // Clones are drafts until the user publishes the new funnel.
             isActive: false,
           }),

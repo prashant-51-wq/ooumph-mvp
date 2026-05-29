@@ -70,20 +70,30 @@ function base64UrlDecode(str: string): string {
   }
 }
 
-async function isSessionValid(token: string): Promise<boolean> {
+interface SessionPayload {
+  userId: string
+  workspaceId?: string
+}
+
+/**
+ * Verifies the cookie HMAC + expiry. Returns the decoded payload on success
+ * so the caller can forward `userId` / `workspaceId` to downstream handlers
+ * as request headers (saving them a re-parse). Returns null on any failure.
+ */
+async function readValidSession(token: string): Promise<SessionPayload | null> {
   const dotIdx = token.lastIndexOf('.')
-  if (dotIdx < 0) return false
+  if (dotIdx < 0) return null
   const payloadB64 = token.slice(0, dotIdx)
   const sig = token.slice(dotIdx + 1)
   const expected = await hmacSha256Hex(SECRET, payloadB64)
-  if (!constantTimeEqual(sig, expected)) return false
+  if (!constantTimeEqual(sig, expected)) return null
   try {
-    const data = JSON.parse(base64UrlDecode(payloadB64)) as { exp?: number; userId?: string }
-    if (typeof data.exp !== 'number' || data.exp < Date.now()) return false
-    if (!data.userId) return false
-    return true
+    const data = JSON.parse(base64UrlDecode(payloadB64)) as { exp?: number; userId?: string; workspaceId?: string }
+    if (typeof data.exp !== 'number' || data.exp < Date.now()) return null
+    if (!data.userId) return null
+    return { userId: data.userId, workspaceId: data.workspaceId }
   } catch {
-    return false
+    return null
   }
 }
 
@@ -109,8 +119,21 @@ export async function middleware(req: NextRequest) {
   }
 
   const token = req.cookies.get(COOKIE_NAME)?.value
-  if (token && await isSessionValid(token)) {
-    return NextResponse.next()
+  if (token) {
+    const session = await readValidSession(token)
+    if (session) {
+      // Sprint 17G (audit pass #3 P2 #35): forward session into request
+      // headers. lib/guards.ts has been checking these headers since
+      // Sprint 7 but middleware never set them — guards always fell
+      // through to cookie re-parsing (effectively dead code). Forwarding
+      // saves a base64+HMAC round-trip on every API call inside a request.
+      const requestHeaders = new Headers(req.headers)
+      requestHeaders.set('x-session-user-id', session.userId)
+      if (session.workspaceId) {
+        requestHeaders.set('x-session-workspace-id', session.workspaceId)
+      }
+      return NextResponse.next({ request: { headers: requestHeaders } })
+    }
   }
 
   // No cookie, or invalid — redirect with the original path so we can return

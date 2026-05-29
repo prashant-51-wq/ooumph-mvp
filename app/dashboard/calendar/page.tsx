@@ -597,13 +597,29 @@ function TileMenu({
               <Pencil className="w-3 h-3" /> Edit
             </button>
           )}
-          {hasPendingApproval && (
+          {hasPendingApproval ? (
             <button
               onClick={() => { setOpen(false); onApprove(item) }}
               className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-emerald-300 hover:bg-gray-800"
             >
               <Check className="w-3 h-3" /> Approve
             </button>
+          ) : item.artifact_id ? (
+            <div
+              className="px-3 py-1.5 text-[11px] text-gray-600 italic"
+              title="This post's source artifact is already approved (or has no pending approval). Approval happens in /dashboard/approvals before scheduling."
+            >
+              {/* Sprint 17G (audit pass #3 P2 #30): explain why Approve is
+                  missing instead of just hiding the option silently. */}
+              Already approved
+            </div>
+          ) : (
+            <div
+              className="px-3 py-1.5 text-[11px] text-gray-600 italic"
+              title="Approve requires a backing artifact. Manually-composed posts skip the approval queue."
+            >
+              No artifact to approve
+            </div>
           )}
           {/* Sprint 17E (audit P2 #25): parity with /publishing — terminal
               failed rows can be re-queued straight from the calendar tile. */}

@@ -335,13 +335,23 @@ export async function PUT(req: NextRequest) {
               VALUES (${newId()}, ${workspaceId}, 'email_sequence_send', ${artifactId},
                       ${`Sent day-0 email to ${sent.length} recipients from sequence "${sequence.sequenceName}". Scheduled ${scheduledCount} follow-up emails.`}, 0.9)`
 
+    // Sprint 17G (audit pass #3 P2 #33): surface the 50-recipient cap so
+    // the caller knows when their list was truncated. Previously the cap
+    // was silent — a CRM bulk-send of 200 leads would silently drop 150.
+    const totalRequested = recipients.length
+    const capped = totalRequested > 50
+    const overflow = capped ? totalRequested - 50 : 0
     return NextResponse.json({
       ok: true,
       sentCount: sent.length,
       totalEmailsInSequence: emails.length,
       scheduledFollowUps: scheduledCount,
       recipients: sent,
-      message: `Day-0 email sent to ${sent.length} recipients. ${scheduledCount} follow-up emails scheduled (days ${remainingEmails.map(e => e.day).join(', ')}) via the publish cron.`,
+      requestedRecipients: totalRequested,
+      capped,
+      overflow,
+      message: `Day-0 email sent to ${sent.length} recipients. ${scheduledCount} follow-up emails scheduled (days ${remainingEmails.map(e => e.day).join(', ')}) via the publish cron.`
+        + (capped ? ` (Capped at 50 — ${overflow} recipient${overflow === 1 ? '' : 's'} skipped. Send again with the remaining list.)` : ''),
     })
   } catch (error) {
     console.error('Email sequence send error:', error)

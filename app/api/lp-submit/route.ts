@@ -111,6 +111,11 @@ export async function POST(req: NextRequest) {
         AND status = 'active'
     `.then(async wfResult => {
       for (const wf of wfResult.rows) {
+        // Sprint 17G (audit pass #3 P2 #37): surface trigger failures
+        // instead of silently swallowing. Previously a .catch(() => {})
+        // ate every workflow miss — operators had no signal when a
+        // misconfigured workflow stopped firing. Now we log + persist
+        // a lead_activity so the operator can diagnose from the CRM.
         fetch(`${appUrl}/api/workflows/trigger`, {
           method: 'POST',
           headers: {
@@ -118,9 +123,29 @@ export async function POST(req: NextRequest) {
             ...(internalSecret ? { 'x-internal-secret': internalSecret } : {}),
           },
           body: JSON.stringify({ workspaceId, workflowId: String(wf.id), leadId: id, contactEmail: email }),
-        }).catch(() => {}) // fire-and-forget
+        }).then(async r => {
+          if (!r.ok) {
+            const errBody = await r.text().catch(() => '')
+            console.error(`[lp-submit] workflow ${wf.id} trigger ${r.status}: ${errBody.slice(0, 240)}`)
+            try {
+              await sql`
+                INSERT INTO lead_activities (id, workspace_id, lead_id, type, title, description, metadata_json, created_at)
+                VALUES (
+                  ${newId()}, ${workspaceId}, ${id},
+                  'workflow_trigger_failed',
+                  ${'Workflow trigger failed: ' + String(wf.id).slice(0, 60)},
+                  ${(errBody || `HTTP ${r.status}`).slice(0, 500)},
+                  ${JSON.stringify({ workflowId: wf.id, status: r.status })},
+                  CURRENT_TIMESTAMP
+                )
+              `
+            } catch { /* non-fatal */ }
+          }
+        }).catch(err => {
+          console.error(`[lp-submit] workflow ${wf.id} trigger network error:`, err)
+        })
       }
-    }).catch(() => {})
+    }).catch(err => console.error('[lp-submit] workflow lookup failed:', err))
 
     // Sprint 17C (audit P1 #7): fire lead_added_to_segment triggers for
     // every segment this new lead belongs to. Fire-and-forget; never
