@@ -28,6 +28,35 @@ export async function GET(req: NextRequest) {
       onboarding_completed_at?: string | null
     } | undefined
 
+    // Sprint 18N (user-reported: stuck on wizard forever): auto-heal
+    // workspaces whose owner already filled the brand profile but
+    // never got the onboarding_completed_at timestamp written
+    // (pre-Sprint-18N cache-bust bug, or any future PATCH failure).
+    // If the brand_profiles row has a non-empty business_name, treat
+    // onboarding as complete and backfill the timestamp once so the
+    // hook caches the right value on next read.
+    let healedOnboardingTs: string | null = workspace?.onboarding_completed_at || null
+    if (workspace?.id && !healedOnboardingTs) {
+      try {
+        const bp = await sql`
+          SELECT business_name FROM brand_profiles
+          WHERE workspace_id = ${workspace.id} LIMIT 1
+        `
+        const businessName = (bp.rows[0] as { business_name?: string } | undefined)?.business_name
+        if (businessName && businessName.trim().length > 0) {
+          const nowIso = new Date().toISOString()
+          await sql`
+            UPDATE workspaces SET onboarding_completed_at = ${nowIso}
+            WHERE id = ${workspace.id} AND onboarding_completed_at IS NULL
+          `
+          healedOnboardingTs = nowIso
+          console.log(`[auth/me] auto-healed onboarding for workspace ${workspace.id}`)
+        }
+      } catch (err) {
+        console.error('[auth/me] onboarding auto-heal failed (non-fatal):', err)
+      }
+    }
+
     // Compute isAdmin: column flag OR env allowlist
     const adminEmails = (process.env.SUPER_ADMIN_EMAILS || '')
       .split(',')
@@ -43,7 +72,7 @@ export async function GET(req: NextRequest) {
         isAdmin: !!isAdmin,
         workspaceId: workspace?.id || null,
         workspaceName: workspace?.name || null,
-        onboardingCompletedAt: workspace?.onboarding_completed_at || null,
+        onboardingCompletedAt: healedOnboardingTs,
       },
     })
   } catch (error) {
