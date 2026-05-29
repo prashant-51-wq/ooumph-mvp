@@ -66,6 +66,39 @@ export async function POST(req: NextRequest) {
   const appUrl = process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000'
   const internalSecret = process.env.ADMIN_SECRET || process.env.CRON_SECRET || ''
 
+  // Sprint 18E (P0): Stripe event idempotency. Stripe retries webhooks
+  // aggressively (on 5xx, timeout, network jitter) and may also replay
+  // historic events from the dashboard. Without dedup we'd double-credit
+  // commissions, activate the same subscription twice, or re-flip Connect
+  // status repeatedly. We insert event.id into a dedicated table with a
+  // UNIQUE constraint; the INSERT itself is the lock. If it conflicts we
+  // return 200 (success) so Stripe stops retrying — the original request
+  // already processed this event.
+  try {
+    await sql`
+      CREATE TABLE IF NOT EXISTS stripe_webhook_events (
+        event_id TEXT PRIMARY KEY,
+        event_type TEXT,
+        processed_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+      )
+    `
+  } catch (err) {
+    // Non-fatal on create. The INSERT below will surface real errors.
+    console.error('[stripe-webhook] ensure idempotency table failed:', err)
+  }
+
+  try {
+    await sql`
+      INSERT INTO stripe_webhook_events (event_id, event_type)
+      VALUES (${event.id}, ${event.type})
+    `
+  } catch {
+    // PRIMARY KEY collision → already processed. Return 200 so Stripe
+    // doesn't retry. We do NOT re-run the handler logic.
+    console.log(`[stripe-webhook] duplicate event ${event.id} (${event.type}) — skipped`)
+    return NextResponse.json({ received: true, duplicate: true })
+  }
+
   try {
     // ── checkout.session.completed ───────────────────────────────────────────
     if (event.type === 'checkout.session.completed') {

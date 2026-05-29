@@ -14,20 +14,67 @@ export async function GET(req: NextRequest) {
   const denied = assertWorkspaceOwnership(req, workspaceId)
   if (denied) return denied
 
-  const result = await sql`
-    SELECT
-      ap.*,
-      a.type as artifact_type,
-      a.title as artifact_title,
-      a.content_json,
-      a.status as artifact_status,
-      a.created_at as artifact_created_at,
-      a.lp_slug
-    FROM approvals ap
-    JOIN artifacts a ON a.id = ap.artifact_id
-    WHERE ap.workspace_id = ${workspaceId}
-    ORDER BY ap.created_at DESC
-  `
+  // Sprint 18F (audit pass #5 P1): paginate. Pre-fix the route returned
+  // every approval ever, joined to its artifact — a workspace with months
+  // of activity could ship megabytes per page render. Default 50, max 200,
+  // optional `cursor` = the created_at ISO of the last row from the prior
+  // page (returns rows strictly older).
+  const limitRaw = parseInt(searchParams.get('limit') || '50', 10)
+  const limit = Math.max(1, Math.min(200, isNaN(limitRaw) ? 50 : limitRaw))
+  const cursor = searchParams.get('cursor') // ISO timestamp
+  const statusFilter = searchParams.get('status') // optional: pending|approved|rejected
+
+  const result = cursor
+    ? (statusFilter
+        ? await sql`
+            SELECT
+              ap.*, a.type as artifact_type, a.title as artifact_title,
+              a.content_json, a.status as artifact_status,
+              a.created_at as artifact_created_at, a.lp_slug
+            FROM approvals ap
+            JOIN artifacts a ON a.id = ap.artifact_id
+            WHERE ap.workspace_id = ${workspaceId}
+              AND ap.status = ${statusFilter}
+              AND ap.created_at < ${cursor}
+            ORDER BY ap.created_at DESC
+            LIMIT ${limit}
+          `
+        : await sql`
+            SELECT
+              ap.*, a.type as artifact_type, a.title as artifact_title,
+              a.content_json, a.status as artifact_status,
+              a.created_at as artifact_created_at, a.lp_slug
+            FROM approvals ap
+            JOIN artifacts a ON a.id = ap.artifact_id
+            WHERE ap.workspace_id = ${workspaceId}
+              AND ap.created_at < ${cursor}
+            ORDER BY ap.created_at DESC
+            LIMIT ${limit}
+          `)
+    : (statusFilter
+        ? await sql`
+            SELECT
+              ap.*, a.type as artifact_type, a.title as artifact_title,
+              a.content_json, a.status as artifact_status,
+              a.created_at as artifact_created_at, a.lp_slug
+            FROM approvals ap
+            JOIN artifacts a ON a.id = ap.artifact_id
+            WHERE ap.workspace_id = ${workspaceId}
+              AND ap.status = ${statusFilter}
+            ORDER BY ap.created_at DESC
+            LIMIT ${limit}
+          `
+        : await sql`
+            SELECT
+              ap.*, a.type as artifact_type, a.title as artifact_title,
+              a.content_json, a.status as artifact_status,
+              a.created_at as artifact_created_at, a.lp_slug
+            FROM approvals ap
+            JOIN artifacts a ON a.id = ap.artifact_id
+            WHERE ap.workspace_id = ${workspaceId}
+            ORDER BY ap.created_at DESC
+            LIMIT ${limit}
+          `)
   // Parse content_json strings into objects for the UI
   const rows = result.rows.map((r) => {
     const row = r as Record<string, unknown>
@@ -36,7 +83,14 @@ export async function GET(req: NextRequest) {
     }
     return row
   })
-  return NextResponse.json(rows)
+  // Back-compat: if no pagination params were requested, return a plain
+  // array (the original shape). If paginated, return {rows, nextCursor}.
+  if (!cursor && !searchParams.has('limit') && !statusFilter) {
+    return NextResponse.json(rows)
+  }
+  const last = rows[rows.length - 1] as { created_at?: string } | undefined
+  const nextCursor = rows.length === limit && last?.created_at ? last.created_at : null
+  return NextResponse.json({ rows, nextCursor })
 }
 
 export async function PATCH(req: NextRequest) {

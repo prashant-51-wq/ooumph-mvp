@@ -3,6 +3,43 @@ import { sql, newId } from '@/lib/db'
 import { seedWorkspace } from '@/lib/seed-workspace'
 import { seedDefaultAgents } from '@/lib/agents'
 import { assertWorkspaceOwnership } from '@/lib/guards'
+import { setWorkspaceSecret, getWorkspaceSecret } from '@/lib/secrets'
+
+/**
+ * Sprint 18B (BYOK P0): customer-provided LLM API keys must never be
+ * persisted in `workspaces.model_settings` JSON. This helper extracts
+ * known key fields from a model_settings payload, writes them through
+ * the AES-GCM encryption layer (`workspace_secrets`), and returns a
+ * sanitised copy with the raw keys stripped. Never logs the values.
+ */
+async function extractAndStoreModelKeys(
+  workspaceId: string,
+  modelSettings: Record<string, unknown> | undefined,
+): Promise<Record<string, unknown> | undefined> {
+  if (!modelSettings) return modelSettings
+  const sanitized: Record<string, unknown> = { ...modelSettings }
+
+  const keyFields: Array<[string, 'anthropic' | 'openai']> = [
+    ['anthropicApiKey', 'anthropic'],
+    ['openaiApiKey', 'openai'],
+  ]
+
+  for (const [field, provider] of keyFields) {
+    const raw = sanitized[field]
+    if (typeof raw === 'string' && raw.trim().length > 0) {
+      try {
+        await setWorkspaceSecret(workspaceId, provider, raw.trim())
+      } catch (err) {
+        // Surface as a generic error — never include the key value.
+        console.error(`[/api/workspaces] failed to persist ${provider} BYOK secret:`, (err as Error).message)
+      }
+    }
+    // Strip from JSON regardless — even an empty string shouldn't land in model_settings.
+    delete sanitized[field]
+  }
+
+  return sanitized
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -143,9 +180,13 @@ export async function PATCH(req: NextRequest) {
         updated_at = CURRENT_TIMESTAMP
       WHERE workspace_id = ${workspaceId}
     `
+    // Sprint 18B (BYOK P0): pull anthropicApiKey / openaiApiKey out of
+    // model_settings and persist them encrypted in workspace_secrets
+    // before the JSON hits the workspaces row.
+    const safeModelSettings = await extractAndStoreModelKeys(workspaceId, body.modelSettings)
     await sql`
       UPDATE workspaces SET name = ${body.businessName}, industry = ${body.industry}, website = ${body.website},
-        model_settings = ${body.modelSettings ? JSON.stringify(body.modelSettings) : '{}'},
+        model_settings = ${safeModelSettings ? JSON.stringify(safeModelSettings) : '{}'},
         extra_settings = ${body.extraSettings ? JSON.stringify(body.extraSettings) : '{}'}
       WHERE id = ${workspaceId}
     `
@@ -184,7 +225,30 @@ export async function GET(req: NextRequest) {
         LEFT JOIN brand_profiles bp ON bp.workspace_id = w.id
         WHERE w.id = ${workspaceId}
       `
-      return NextResponse.json(result.rows[0] || null)
+      const row = result.rows[0] as Record<string, unknown> | undefined
+      if (!row) return NextResponse.json(null)
+
+      // Sprint 18B (BYOK P0): never echo BYOK material on the wire. Strip
+      // any legacy plaintext key fields out of `model_settings` and replace
+      // them with boolean presence flags sourced from `workspace_secrets`.
+      let modelSettings = row.model_settings as Record<string, unknown> | string | null | undefined
+      if (typeof modelSettings === 'string') {
+        try { modelSettings = JSON.parse(modelSettings) as Record<string, unknown> } catch { modelSettings = {} }
+      }
+      if (modelSettings && typeof modelSettings === 'object') {
+        delete (modelSettings as Record<string, unknown>).anthropicApiKey
+        delete (modelSettings as Record<string, unknown>).openaiApiKey
+      }
+      const [anthropicKey, openaiKey] = await Promise.all([
+        getWorkspaceSecret(workspaceId, 'anthropic'),
+        getWorkspaceSecret(workspaceId, 'openai'),
+      ])
+      return NextResponse.json({
+        ...row,
+        model_settings: modelSettings ?? {},
+        hasAnthropicKey: Boolean(anthropicKey),
+        hasOpenaiKey: Boolean(openaiKey),
+      })
     }
 
     const result = await sql`SELECT * FROM workspaces ORDER BY created_at DESC LIMIT 20`

@@ -24,6 +24,30 @@ interface SegmentRule {
   maxScore?: number
   createdSince?: string
   campaignLike?: string
+  rfm?: { tier?: string[] }
+}
+
+/**
+ * Heuristic RFM-tier derivation for a freshly-captured lead. Mirrors the
+ * computation in app/dashboard/leads-crm/page.tsx (`leadToContact`) so the
+ * trigger fires the same set of segments the dashboard renders. A fresh
+ * lead has no activity → frequency = 1, no closed deal value → monetary = 1,
+ * created today → recency = 5. That deterministically lands in 'New Customer'
+ * for almost every brand-new lead, which is the only tier the trigger can
+ * honestly assign at capture time.
+ */
+function deriveRfmTier(lead: { score?: number; created_at?: string }): string {
+  const lastActivity = lead.created_at || new Date().toISOString()
+  const daysSinceActivity = (Date.now() - new Date(lastActivity).getTime()) / 86400000
+  const recency = daysSinceActivity < 7 ? 5 : daysSinceActivity < 30 ? 4 : daysSinceActivity < 60 ? 3 : daysSinceActivity < 90 ? 2 : 1
+  const frequency = 1 // a brand-new lead has no recorded activity yet
+  const monetary = 1 // no deal value at capture
+  if (recency >= 4 && frequency >= 4 && monetary >= 4) return 'Champion'
+  if (recency >= 4 && frequency >= 3) return 'Loyal'
+  if (recency >= 3 && frequency >= 2) return 'Potential Loyalist'
+  if (recency <= 2 && frequency >= 3) return 'At Risk'
+  if (recency <= 2) return 'Lost'
+  return 'New Customer'
 }
 
 function leadMatches(
@@ -39,6 +63,14 @@ function leadMatches(
     const since = new Date(rule.createdSince).getTime()
     const created = new Date(String(lead.created_at || '')).getTime()
     if (!Number.isFinite(created) || created < since) return false
+  }
+  // Sprint 18C: previously the rule.rfm.tier branch was skipped entirely, so
+  // segments scoped by RFM tier never fired at capture time. We now derive
+  // a heuristic tier from the lead's score + recency and match against the
+  // rule's allowed tiers. This keeps behavior consistent with the dashboard.
+  if (rule.rfm?.tier?.length) {
+    const tier = deriveRfmTier(lead)
+    if (!rule.rfm.tier.includes(tier)) return false
   }
   return true
 }

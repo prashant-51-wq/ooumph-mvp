@@ -11,6 +11,11 @@ const PRIMARY_GOALS = [
   { icon: '📈', label: 'Grow Revenue', value: 'revenue' },
   { icon: '🏆', label: 'Build Brand', value: 'brand' },
   { icon: '🔄', label: 'Retain Customers', value: 'retain' },
+  // Sprint 18F (audit pass #5 P2): follower growth was the most-requested
+  // missing onboarding goal — the platform already tracks follower metrics
+  // and the CMO growth-optimizer agent can pursue this as a first-class
+  // strategy, but until now users had to pick a different goal as a proxy.
+  { icon: '🌱', label: 'Grow Followers', value: 'followers' },
 ]
 const VOICE_ADJECTIVES = ['Professional', 'Friendly', 'Bold', 'Authoritative', 'Playful', 'Innovative', 'Trustworthy', 'Casual', 'Inspirational', 'Educational']
 const PLATFORMS = [

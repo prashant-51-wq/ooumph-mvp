@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -60,9 +60,114 @@ interface ActivityItem {
   timeAgo: string
 }
 
-// ── Mock Data ────────────────────────────────────────────────────────────────
+// ── Display Metadata ─────────────────────────────────────────────────────────
+//
+// Sprint 18D: the agent LIST now comes from /api/agents/registry — that's the
+// authoritative set of agents seeded into the workspace. Display metadata
+// (icon, role, category, supervisor relationship) isn't stored in the
+// registry, so we keep a static lookup keyed by the registry's `name` field.
+// To add a new agent: add it to lib/agents.ts (DEFAULT_AGENTS) AND here.
 
 const DEFAULT_TOOLS = ['Web Search', 'Image Gen', 'Email Send', 'CRM Update', 'Social Post', 'File Read', 'Analytics Pull', 'Webhook']
+
+interface AgentMeta {
+  icon: string
+  role: string
+  category: 'supervisor' | 'worker'
+  supervisorId?: string
+  supervisorName?: string
+}
+
+// Note: keys must match the `name` column in the agents table (seeded by
+// lib/agents.ts → DEFAULT_AGENTS). Anything in the registry not in this
+// map gets generic fallback metadata so a newly-registered agent still
+// renders rather than disappearing.
+const AGENT_META: Record<string, AgentMeta> = {
+  // Supervisors
+  cmo:                { icon: '🧠', role: 'Strategy & Orchestration', category: 'supervisor' },
+  'content-sup':      { icon: '📅', role: 'Content & Creative',       category: 'supervisor' },
+  'growth-sup':       { icon: '🎯', role: 'Leads & Revenue',          category: 'supervisor' },
+  'engagement-sup':   { icon: '💬', role: 'Inbox & Social',           category: 'supervisor' },
+  'intelligence-sup': { icon: '🔭', role: 'Research & Analytics',     category: 'supervisor' },
+  'brand-sup':        { icon: '🎨', role: 'Brand & Reputation',       category: 'supervisor' },
+  // Workers
+  'blog-writer':      { icon: '✍️', role: 'Long-form Content',     category: 'worker', supervisorId: 'content-sup',      supervisorName: 'Content Supervisor' },
+  'social-agent':     { icon: '📱', role: 'Social Posting',        category: 'worker', supervisorId: 'content-sup',      supervisorName: 'Content Supervisor' },
+  'email-copy':       { icon: '📧', role: 'Email Sequences',       category: 'worker', supervisorId: 'content-sup',      supervisorName: 'Content Supervisor' },
+  'ad-copy':          { icon: '📢', role: 'Paid Advertising Copy', category: 'worker', supervisorId: 'content-sup',      supervisorName: 'Content Supervisor' },
+  'seo-agent':        { icon: '🔍', role: 'SEO Optimization',      category: 'worker', supervisorId: 'content-sup',      supervisorName: 'Content Supervisor' },
+  'lead-scorer':      { icon: '⚡', role: 'Lead Qualification',    category: 'worker', supervisorId: 'growth-sup',       supervisorName: 'Growth Supervisor'  },
+  'outreach-agent':   { icon: '📬', role: 'Sales Outreach',        category: 'worker', supervisorId: 'growth-sup',       supervisorName: 'Growth Supervisor'  },
+  'crm-agent':        { icon: '🗄️', role: 'CRM Management',       category: 'worker', supervisorId: 'growth-sup',       supervisorName: 'Growth Supervisor'  },
+  'brand-monitor':    { icon: '👁️', role: 'Brand Monitoring',     category: 'worker', supervisorId: 'brand-sup',        supervisorName: 'Brand Supervisor'   },
+  reputation:         { icon: '⭐', role: 'Review Management',     category: 'worker', supervisorId: 'brand-sup',        supervisorName: 'Brand Supervisor'   },
+  analytics:          { icon: '📊', role: 'Performance Analytics', category: 'worker', supervisorId: 'intelligence-sup', supervisorName: 'Intelligence Supervisor' },
+  'growth-optimizer': { icon: '📈', role: 'Growth Experiments',    category: 'worker', supervisorId: 'growth-sup',       supervisorName: 'Growth Supervisor'  },
+}
+
+// Pretty-print a registry slug like "growth-sup" → "Growth Sup Agent" as a
+// fallback display name when AGENT_META has no entry. Capitalizes each
+// hyphen-separated token.
+function titleCaseFromSlug(slug: string): string {
+  return slug.split(/[-_]/g).map(w => w ? w[0].toUpperCase() + w.slice(1) : w).join(' ') + ' Agent'
+}
+
+function buildAgentFromRegistry(row: RegistryRow): Agent {
+  const meta = AGENT_META[row.name] || {
+    icon: '🤖',
+    role: 'Custom Agent',
+    category: 'worker' as const,
+  }
+  // Map registry lifecycle status → UI status. 'disabled' is treated as
+  // 'paused' for display since the slide-over doesn't model a fourth state.
+  const status: AgentStatus =
+    row.status === 'paused'   ? 'paused' :
+    row.status === 'error'    ? 'error'  :
+    row.status === 'disabled' ? 'paused' :
+    'idle' // 'active' from registry → 'idle' until runs-hydration promotes
+  return {
+    id: row.name,
+    name: AGENT_META[row.name] ? friendlyName(row.name) : titleCaseFromSlug(row.name),
+    icon: meta.icon,
+    role: meta.role,
+    category: meta.category,
+    supervisorId: meta.supervisorId,
+    supervisorName: meta.supervisorName,
+    status,
+    currentTask: undefined,
+    tasksToday: 0,
+    costToday: 0,
+    avgResponseTime: '—',
+    model: 'Claude 3.5 Sonnet',
+    config: makeConfig(),
+    logs: [],
+  }
+}
+
+// Friendly name lookup for slugs we know about. Keep in sync with AGENT_META.
+const AGENT_DISPLAY_NAME: Record<string, string> = {
+  cmo:                'CMO Agent',
+  'content-sup':      'Content Supervisor',
+  'growth-sup':       'Growth Supervisor',
+  'engagement-sup':   'Engagement Supervisor',
+  'intelligence-sup': 'Intelligence Supervisor',
+  'brand-sup':        'Brand Supervisor',
+  'blog-writer':      'Blog Writer Agent',
+  'social-agent':     'Social Media Agent',
+  'email-copy':       'Email Copywriter Agent',
+  'ad-copy':          'Ad Copy Agent',
+  'seo-agent':        'SEO Agent',
+  'lead-scorer':      'Lead Scorer Agent',
+  'outreach-agent':   'Outreach Agent',
+  'crm-agent':        'CRM Agent',
+  'brand-monitor':    'Brand Monitor Agent',
+  reputation:         'Reputation Agent',
+  analytics:          'Analytics Agent',
+  'growth-optimizer': 'Growth Optimizer Agent',
+}
+function friendlyName(slug: string): string {
+  return AGENT_DISPLAY_NAME[slug] || titleCaseFromSlug(slug)
+}
 
 function makeConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
   return {
@@ -80,169 +185,12 @@ function makeConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
   }
 }
 
-function makeLogs(agentName: string): LogEntry[] {
-  const tasks = [
-    { type: 'Content Generation', input: 'Write blog post about AI trends', output: '1,847 word blog post with 3 SEO keywords', cost: 0.042, dur: '12.4s' },
-    { type: 'Social Scheduling', input: 'Schedule LinkedIn post for Thursday 9am', output: 'Post scheduled: "Top 5 AI Tools for 2026"', cost: 0.008, dur: '3.1s' },
-    { type: 'Lead Score Update', input: 'Score lead: john@acme.com', output: 'Score updated to 87/100 (High Intent)', cost: 0.011, dur: '4.8s' },
-    { type: 'Brand Monitoring', input: 'Scan Twitter for brand mentions', output: '3 new mentions found, 1 requires response', cost: 0.019, dur: '8.2s' },
-    { type: 'Email Draft', input: 'Draft follow-up email for demo request', output: '247 word personalized follow-up email', cost: 0.031, dur: '9.7s' },
-  ]
-  const now = Date.now()
-  return tasks.map((t, i) => ({
-    id: `log-${agentName}-${i}`,
-    timestamp: new Date(now - (i + 1) * 23 * 60000).toISOString(),
-    taskType: t.type,
-    input: t.input,
-    output: t.output,
-    cost: t.cost,
-    duration: t.dur,
-    status: i === 2 ? 'failed' : 'success',
-  }))
-}
-
-const AGENTS: Agent[] = [
-  // Supervisors
-  {
-    id: 'cmo', name: 'CMO Agent', icon: '🧠', role: 'Strategy & Orchestration', category: 'supervisor',
-    status: 'active', currentTask: 'Running: Q2 Strategy Update',
-    tasksToday: 12, costToday: 0.84, avgResponseTime: '14.2s', model: 'Claude 3.5 Sonnet',
-    config: makeConfig({ maxTasksPerDay: 20, priority: 'Critical', allowedTools: ['Web Search', 'Analytics Pull', 'Webhook'], costCapPerDay: 10 }),
-    logs: makeLogs('cmo'),
-  },
-  {
-    id: 'content-sup', name: 'Content Supervisor', icon: '📅', role: 'Content & Creative', category: 'supervisor',
-    status: 'active', currentTask: 'Building May content calendar',
-    tasksToday: 34, costToday: 1.12, avgResponseTime: '11.8s', model: 'Claude 3.5 Sonnet',
-    config: makeConfig({ priority: 'High', allowedTools: ['Web Search', 'Image Gen', 'Social Post'] }),
-    logs: makeLogs('content-sup'),
-  },
-  {
-    id: 'growth-sup', name: 'Growth Supervisor', icon: '🎯', role: 'Leads & Revenue', category: 'supervisor',
-    status: 'active', currentTask: 'Analyzing funnel drop-off at checkout',
-    tasksToday: 28, costToday: 0.76, avgResponseTime: '9.4s', model: 'Claude 3.5 Sonnet',
-    config: makeConfig({ priority: 'High', allowedTools: ['Web Search', 'CRM Update', 'Webhook'] }),
-    logs: makeLogs('growth-sup'),
-  },
-  {
-    id: 'engagement-sup', name: 'Engagement Supervisor', icon: '💬', role: 'Inbox & Social', category: 'supervisor',
-    status: 'idle', currentTask: undefined,
-    tasksToday: 8, costToday: 0.23, avgResponseTime: '6.1s', model: 'Claude 3.5 Sonnet',
-    config: makeConfig({ schedule: 'Business hours', allowedTools: ['Email Send', 'Social Post', 'CRM Update'] }),
-    logs: makeLogs('engagement-sup'),
-  },
-  {
-    id: 'intelligence-sup', name: 'Intelligence Supervisor', icon: '🔭', role: 'Research & Analytics', category: 'supervisor',
-    status: 'active', currentTask: 'Compiling competitor intelligence report',
-    tasksToday: 19, costToday: 0.91, avgResponseTime: '18.7s', model: 'Claude 3.5 Sonnet',
-    config: makeConfig({ priority: 'High', allowedTools: ['Web Search', 'Analytics Pull', 'File Read'] }),
-    logs: makeLogs('intelligence-sup'),
-  },
-  {
-    id: 'brand-sup', name: 'Brand Supervisor', icon: '🎨', role: 'Brand & Reputation', category: 'supervisor',
-    status: 'idle', currentTask: undefined,
-    tasksToday: 5, costToday: 0.18, avgResponseTime: '7.9s', model: 'Claude 3.5 Sonnet',
-    config: makeConfig({ schedule: 'Business hours', costCapPerDay: 3 }),
-    logs: makeLogs('brand-sup'),
-  },
-  // Workers
-  {
-    id: 'blog-writer', name: 'Blog Writer Agent', icon: '✍️', role: 'Long-form Content', category: 'worker',
-    supervisorId: 'content-sup', supervisorName: 'Content Supervisor',
-    status: 'active', currentTask: 'Writing: "Top 10 SaaS Tools for 2026"',
-    tasksToday: 8, costToday: 0.38, avgResponseTime: '22.1s', model: 'Claude 3.5 Sonnet',
-    config: makeConfig({ instructions: 'Write SEO-optimized blog posts. Min 1500 words. Include H2/H3 subheadings and meta description.' }),
-    logs: makeLogs('blog-writer'),
-  },
-  {
-    id: 'social-agent', name: 'Social Media Agent', icon: '📱', role: 'Social Posting', category: 'worker',
-    supervisorId: 'content-sup', supervisorName: 'Content Supervisor',
-    status: 'active', currentTask: 'Scheduling 3 LinkedIn posts for next week',
-    tasksToday: 24, costToday: 0.29, avgResponseTime: '5.3s', model: 'Claude 3.5 Sonnet',
-    config: makeConfig({ allowedTools: ['Social Post', 'Image Gen'] }),
-    logs: makeLogs('social-agent'),
-  },
-  {
-    id: 'email-copy', name: 'Email Copywriter Agent', icon: '📧', role: 'Email Sequences', category: 'worker',
-    supervisorId: 'content-sup', supervisorName: 'Content Supervisor',
-    status: 'idle', currentTask: undefined,
-    tasksToday: 3, costToday: 0.14, avgResponseTime: '8.4s', model: 'Claude 3.5 Sonnet',
-    config: makeConfig({ allowedTools: ['Email Send', 'CRM Update'] }),
-    logs: makeLogs('email-copy'),
-  },
-  {
-    id: 'ad-copy', name: 'Ad Copy Agent', icon: '📢', role: 'Paid Advertising Copy', category: 'worker',
-    supervisorId: 'content-sup', supervisorName: 'Content Supervisor',
-    status: 'active', currentTask: 'Writing Meta ad variants for summer campaign',
-    tasksToday: 7, costToday: 0.22, avgResponseTime: '9.1s', model: 'Claude 3.5 Sonnet',
-    config: makeConfig({ allowedTools: ['Web Search', 'Image Gen'] }),
-    logs: makeLogs('ad-copy'),
-  },
-  {
-    id: 'seo-agent', name: 'SEO Agent', icon: '🔍', role: 'SEO Optimization', category: 'worker',
-    supervisorId: 'content-sup', supervisorName: 'Content Supervisor',
-    status: 'active', currentTask: 'Auditing on-page SEO for 5 blog posts',
-    tasksToday: 12, costToday: 0.31, avgResponseTime: '11.2s', model: 'Claude 3.5 Sonnet',
-    config: makeConfig({ allowedTools: ['Web Search', 'Analytics Pull'] }),
-    logs: makeLogs('seo-agent'),
-  },
-  {
-    id: 'lead-scorer', name: 'Lead Scorer Agent', icon: '⚡', role: 'Lead Qualification', category: 'worker',
-    supervisorId: 'growth-sup', supervisorName: 'Growth Supervisor',
-    status: 'active', currentTask: 'Scoring 47 new inbound leads from Typeform',
-    tasksToday: 47, costToday: 0.18, avgResponseTime: '3.7s', model: 'Claude 3.5 Sonnet',
-    config: makeConfig({ allowedTools: ['CRM Update', 'Webhook'] }),
-    logs: makeLogs('lead-scorer'),
-  },
-  {
-    id: 'outreach-agent', name: 'Outreach Agent', icon: '📬', role: 'Sales Outreach', category: 'worker',
-    supervisorId: 'growth-sup', supervisorName: 'Growth Supervisor',
-    status: 'idle', currentTask: undefined,
-    tasksToday: 0, costToday: 0.00, avgResponseTime: '—', model: 'Claude 3.5 Sonnet',
-    config: makeConfig({ schedule: 'Business hours', allowedTools: ['Email Send', 'CRM Update'] }),
-    logs: makeLogs('outreach-agent'),
-  },
-  {
-    id: 'crm-agent', name: 'CRM Agent', icon: '🗄️', role: 'CRM Management', category: 'worker',
-    supervisorId: 'growth-sup', supervisorName: 'Growth Supervisor',
-    status: 'active', currentTask: 'Syncing 23 deal stage updates from Slack',
-    tasksToday: 23, costToday: 0.09, avgResponseTime: '2.8s', model: 'Claude 3.5 Sonnet',
-    config: makeConfig({ allowedTools: ['CRM Update', 'Webhook', 'Email Send'] }),
-    logs: makeLogs('crm-agent'),
-  },
-  {
-    id: 'brand-monitor', name: 'Brand Monitor Agent', icon: '👁️', role: 'Brand Monitoring', category: 'worker',
-    supervisorId: 'brand-sup', supervisorName: 'Brand Supervisor',
-    status: 'active', currentTask: 'Scanning 156 social mentions across platforms',
-    tasksToday: 156, costToday: 0.12, avgResponseTime: '4.2s', model: 'Claude 3.5 Sonnet',
-    config: makeConfig({ allowedTools: ['Web Search', 'Analytics Pull'] }),
-    logs: makeLogs('brand-monitor'),
-  },
-  {
-    id: 'reputation-agent', name: 'Reputation Agent', icon: '⭐', role: 'Review Management', category: 'worker',
-    supervisorId: 'brand-sup', supervisorName: 'Brand Supervisor',
-    status: 'active', currentTask: 'Drafting response to G2 review',
-    tasksToday: 8, costToday: 0.06, avgResponseTime: '6.8s', model: 'Claude 3.5 Sonnet',
-    config: makeConfig({ allowedTools: ['Web Search', 'Email Send'] }),
-    logs: makeLogs('reputation-agent'),
-  },
-  {
-    id: 'research-agent', name: 'Research Agent', icon: '🧪', role: 'Market Intelligence', category: 'worker',
-    supervisorId: 'intelligence-sup', supervisorName: 'Intelligence Supervisor',
-    status: 'active', currentTask: 'Compiling competitor pricing analysis',
-    tasksToday: 4, costToday: 0.44, avgResponseTime: '31.2s', model: 'Claude 3.5 Sonnet',
-    config: makeConfig({ allowedTools: ['Web Search', 'File Read', 'Analytics Pull'], costCapPerDay: 8 }),
-    logs: makeLogs('research-agent'),
-  },
-  {
-    id: 'analytics-agent', name: 'Analytics Agent', icon: '📊', role: 'Performance Analytics', category: 'worker',
-    supervisorId: 'intelligence-sup', supervisorName: 'Intelligence Supervisor',
-    status: 'active', currentTask: 'Ongoing: Q2 performance dashboard refresh',
-    tasksToday: 11, costToday: 0.28, avgResponseTime: '14.9s', model: 'Claude 3.5 Sonnet',
-    config: makeConfig({ allowedTools: ['Analytics Pull', 'File Read', 'Webhook'] }),
-    logs: makeLogs('analytics-agent'),
-  },
-]
+// makeLogs (mock log generator) and the AGENTS mock array were removed in
+// Sprint 18D. Logs come from the agent_runs table via /api/agent-runs,
+// surfaced through the LogModal which reads agent.logs (currently empty
+// until per-agent runs hydration is wired in a follow-up).
+// Sprint 18D moved the agents-list source of truth to
+// /api/agents/registry — see useEffect → registry hydration in AgentsPage.
 
 const ACTIVITY_FEED: ActivityItem[] = [
   { agentId: 'blog-writer', agentName: 'Blog Writer Agent', agentIcon: '✍️', message: 'Published "Top 10 SaaS Tools for 2026" to WordPress', timeAgo: '2m ago' },
@@ -769,7 +717,13 @@ interface RegistryRow {
 }
 
 export default function AgentsPage() {
-  const [agents, setAgents] = useState<Agent[]>(AGENTS)
+  // Sprint 18D: agents are now loaded from /api/agents/registry on mount
+  // (was a hardcoded mock). `loading` is true on the very first registry
+  // fetch only; subsequent re-fetches (after PATCH) don't toggle it because
+  // we already have data to show.
+  const [agents, setAgents] = useState<Agent[]>([])
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [view, setView] = useState<ViewMode>('grid')
   const [configAgent, setConfigAgent] = useState<Agent | null>(null)
   const [logAgent, setLogAgent] = useState<Agent | null>(null)
@@ -856,37 +810,71 @@ export default function AgentsPage() {
     return () => { cancelled = true; clearInterval(interval) }
   }, [])
 
-  // ── Lifecycle registry hydration (Sprint 2 Commit 3) ────────────────────
+  // ── Lifecycle registry hydration (Sprint 2 Commit 3, rewired Sprint 18D) ─
   //
-  // Fetches the agents table on mount + after each PATCH so the UI's
-  // Pause/Resume state survives reload. The runs-hydration effect above
-  // sets 'active'/'idle' based on recent task volume; THIS effect overlays
-  // 'paused' on top so a paused agent visibly stays paused regardless of
-  // recent activity.
+  // Sprint 18D: the registry is now the SOURCE of the agents list, not just
+  // a paused-status overlay. On mount we build the entire `agents` array
+  // from registry rows (joined with the static AGENT_META display lookup).
+  // On subsequent re-fetches (triggered by refetchRegistry after PATCHes)
+  // we keep existing per-row stats and only reconcile status + add/remove
+  // rows that appeared/disappeared from the registry.
   useEffect(() => {
     const wid = typeof window !== 'undefined' ? localStorage.getItem('workspaceId') : null
-    if (!wid) return
+    if (!wid) {
+      setLoading(false)
+      setLoadError('No workspace selected. Visit /dashboard to pick one.')
+      return
+    }
     let cancelled = false
 
     const hydrateRegistry = async () => {
       try {
         const res = await fetch(`/api/agents/registry?workspaceId=${wid}`)
-        if (!res.ok) return
+        if (!res.ok) {
+          if (!cancelled) {
+            setLoadError(`Failed to load agents: ${res.status}`)
+            setLoading(false)
+          }
+          return
+        }
         const rows = await res.json() as RegistryRow[]
         if (cancelled || !Array.isArray(rows)) return
-        const byName = new Map(rows.map(r => [r.name, r]))
-        setAgents(prev => prev.map(a => {
-          const reg = byName.get(a.id)
-          if (!reg) return a
-          // Pause is authoritative — show paused regardless of runs-hydration.
-          // Error/disabled also overlay. Active falls back to whatever the
-          // runs-hydration computed (might be idle if no recent runs).
-          if (reg.status === 'paused') return { ...a, status: 'paused' }
-          if (reg.status === 'error') return { ...a, status: 'error' }
-          return a
-        }))
+        // First load: build the catalog from scratch using the registry as
+        // the truth. We do this only when `agents` is still empty so
+        // subsequent re-fetches don't blow away locally-hydrated stats.
+        setAgents(prev => {
+          if (prev.length === 0) {
+            return rows.map(buildAgentFromRegistry)
+          }
+          // Re-fetch path: merge new statuses onto existing rows + drop
+          // rows that are no longer in the registry + add any new ones.
+          const byName = new Map(rows.map(r => [r.name, r]))
+          const seen = new Set<string>()
+          const next: Agent[] = []
+          for (const a of prev) {
+            const reg = byName.get(a.id)
+            if (!reg) continue   // removed from registry
+            seen.add(a.id)
+            let status = a.status
+            if (reg.status === 'paused') status = 'paused'
+            else if (reg.status === 'error') status = 'error'
+            else if (a.status === 'paused') status = 'idle' // resumed
+            next.push({ ...a, status })
+          }
+          // Any new rows in the registry that the page hasn't seen yet
+          for (const row of rows) {
+            if (!seen.has(row.name)) next.push(buildAgentFromRegistry(row))
+          }
+          return next
+        })
+        setLoadError(null)
+        setLoading(false)
       } catch (err) {
         console.error('[agents] registry hydrate failed', err)
+        if (!cancelled) {
+          setLoadError(`Network error: ${err instanceof Error ? err.message : String(err)}`)
+          setLoading(false)
+        }
       }
     }
 
@@ -898,6 +886,9 @@ export default function AgentsPage() {
 
   // Re-fetch the registry — called after every successful status PATCH so
   // the UI sees the canonical row (with server-set paused_at / paused_by).
+  // Sprint 18D: this no longer needs to handle add/remove; the mount effect
+  // already does. After a PATCH only statuses can change, so this stays
+  // simple — only reconciles `status` on rows we already know about.
   const refetchRegistry = async (): Promise<void> => {
     const wid = typeof window !== 'undefined' ? localStorage.getItem('workspaceId') : null
     if (!wid) return
@@ -1173,8 +1164,47 @@ export default function AgentsPage() {
       {/* Main content area */}
       <div className="flex gap-6">
         <div className="flex-1 min-w-0">
+          {/* Loading state — first registry fetch hasn't returned yet */}
+          {loading && (
+            <div className="bg-gray-900 border border-gray-800 rounded-xl p-12 flex flex-col items-center justify-center gap-3">
+              <div className="w-8 h-8 rounded-full border-2 border-gray-700 border-t-indigo-400 animate-spin" />
+              <p className="text-gray-400 text-sm">Loading agents…</p>
+            </div>
+          )}
+
+          {/* Load error state */}
+          {!loading && loadError && (
+            <div className="bg-red-950/40 border border-red-800/60 rounded-xl p-6 text-red-300 text-sm">
+              <p className="font-medium mb-1">Couldn&apos;t load your agents</p>
+              <p className="text-xs">{loadError}</p>
+            </div>
+          )}
+
+          {/* Empty state — registry returned zero rows */}
+          {!loading && !loadError && agents.length === 0 && (
+            <div className="bg-gray-900 border border-gray-800 rounded-xl p-12 text-center">
+              <p className="text-3xl mb-3">🤖</p>
+              <p className="text-white font-semibold mb-1">No agents registered yet</p>
+              <p className="text-gray-500 text-sm">
+                Agents are seeded automatically when your workspace is created.
+                If you&apos;re seeing this, re-run workspace onboarding or contact support.
+              </p>
+            </div>
+          )}
+
+          {/* Filtered-empty state — agents exist but search/filter hides them */}
+          {!loading && !loadError && agents.length > 0 && filtered.length === 0 && (
+            <div className="bg-gray-900 border border-gray-800 rounded-xl p-10 text-center">
+              <p className="text-gray-400 text-sm">
+                No agents match your search.{' '}
+                <button onClick={() => { setSearch(''); setCategoryFilter('all') }}
+                  className="text-indigo-400 hover:underline">Clear filters</button>
+              </p>
+            </div>
+          )}
+
           {/* Grid View */}
-          {view === 'grid' && (
+          {!loading && filtered.length > 0 && view === 'grid' && (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
               {filtered.map(agent => (
                 <AgentCard key={agent.id} agent={agent}
@@ -1186,7 +1216,7 @@ export default function AgentsPage() {
           )}
 
           {/* List View */}
-          {view === 'list' && (
+          {!loading && filtered.length > 0 && view === 'list' && (
             <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
               {/* Header */}
               <div className="flex items-center gap-4 px-4 py-3 border-b border-gray-800 bg-gray-800/50">
@@ -1208,7 +1238,7 @@ export default function AgentsPage() {
           )}
 
           {/* Hierarchy View */}
-          {view === 'hierarchy' && (
+          {!loading && agents.length > 0 && view === 'hierarchy' && (
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
               <p className="text-gray-500 text-xs mb-6 text-center">Click any node to configure · Agents auto-route tasks through the hierarchy</p>
               <HierarchyView agents={agents} onConfigure={setConfigAgent} />

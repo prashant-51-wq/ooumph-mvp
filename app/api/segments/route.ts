@@ -85,27 +85,52 @@ async function countMembers(workspaceId: string, rule: SegmentRule): Promise<num
       .filter(s => typeof s === 'string' && ALLOWED_STATUSES.has(s))
     // The sql template tag doesn't support spreading an array as a SQL
     // value list and we don't have an `unsafe()` escape hatch. Pull the
-    // candidate rows by workspace + minScore (both safe via the tag),
-    // then filter status in-memory. The total cardinality per workspace
-    // is small enough that this stays fast — leads_captured is paginated
-    // by the CRM page itself, and this helper is invoked at segment
+    // candidate rows by workspace, then filter the rest in-memory. Cardinality
+    // per workspace is small enough that this stays fast — leads_captured is
+    // paginated by the CRM page itself, and this helper runs at segment
     // create/edit time only (not per-render).
-    let rows
-    if (rule.minScore !== undefined) {
-      rows = await sql`
-        SELECT status FROM leads_captured
-        WHERE workspace_id = ${workspaceId} AND COALESCE(score, 0) >= ${rule.minScore}
-      `
-    } else {
-      rows = await sql`SELECT status FROM leads_captured WHERE workspace_id = ${workspaceId}`
-    }
-    if (safeStatuses.length) {
-      const allowed = new Set(safeStatuses)
-      return (rows.rows as { status?: string }[])
-        .filter(r => r.status && allowed.has(r.status))
-        .length
-    }
-    return rows.rows.length
+    //
+    // Sprint 18C: previously only `minScore` and `statuses` were honored,
+    // which silently returned the wrong member count for any segment that
+    // used sources / maxScore / campaignLike / createdSince / rfm.tier.
+    // Pull all needed columns and apply each rule field.
+    const rows = await sql`
+      SELECT status, source, campaign, score, created_at
+      FROM leads_captured
+      WHERE workspace_id = ${workspaceId}
+    `
+    const statusSet = safeStatuses.length ? new Set(safeStatuses) : null
+    const sourceSet = (rule.sources && rule.sources.length)
+      ? new Set(rule.sources.filter(s => typeof s === 'string'))
+      : null
+    const campaignLike = rule.campaignLike ? rule.campaignLike.toLowerCase() : null
+    const createdSinceMs = rule.createdSince ? new Date(rule.createdSince).getTime() : null
+
+    const data = rows.rows as Array<{
+      status?: string
+      source?: string
+      campaign?: string
+      score?: number
+      created_at?: string
+    }>
+
+    return data.filter(r => {
+      if (statusSet && !(r.status && statusSet.has(r.status))) return false
+      if (sourceSet && !(r.source && sourceSet.has(r.source))) return false
+      if (rule.minScore !== undefined && Number(r.score ?? 0) < rule.minScore) return false
+      if (rule.maxScore !== undefined && Number(r.score ?? 0) > rule.maxScore) return false
+      if (campaignLike && !String(r.campaign || '').toLowerCase().includes(campaignLike)) return false
+      if (createdSinceMs !== null && Number.isFinite(createdSinceMs)) {
+        const t = new Date(String(r.created_at || '')).getTime()
+        if (!Number.isFinite(t) || t < createdSinceMs) return false
+      }
+      // Note: `rfm.tier` is computed client-side from R/F/M scores in the
+      // CRM page (see leadToContact). We don't materialise RFM tiers in
+      // leads_captured, so the count here doesn't apply rfm.tier — it is
+      // documented as "approximate" at the top of this file. The CRM page
+      // still applies the rfm filter at render time.
+      return true
+    }).length
   } catch {
     return 0
   }

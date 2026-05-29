@@ -16,6 +16,71 @@
  */
 import { sql, newId } from '@/lib/db'
 
+/**
+ * Sprint 18E (P0) — workspace-level notification opt-outs.
+ *
+ * Notification toggle prefs are persisted in workspaces.extra_settings JSON,
+ * shape:
+ *   {
+ *     notifications: {
+ *       inApp: { approvals, agentTasks, campaigns, errors, newLeads, weeklySummary },
+ *       email: { ... same keys ... },
+ *       frequency: 'realtime' | 'hourly' | 'daily' | 'off',
+ *     }
+ *   }
+ *
+ * We check the in-app toggle for the relevant key before inserting. Missing
+ * keys default to ENABLED — we never block a notification because of an
+ * unset preference, only because the user explicitly toggled it off. The
+ * full-off frequency ('off') is also honoured as a master kill switch.
+ *
+ * Each notify* helper maps to one preference key:
+ *   notifyLeadCaptured         → newLeads
+ *   notifyPublishSuccess       → campaigns
+ *   notifyPublishFailed        → errors
+ *   notifyNurtureReplyReceived → campaigns
+ *   notifyOAuthExpiring        → errors
+ */
+type NotifKey = 'approvals' | 'agentTasks' | 'campaigns' | 'errors' | 'newLeads' | 'weeklySummary'
+
+interface NotificationPrefs {
+  inApp?: Partial<Record<NotifKey, boolean>>
+  email?: Partial<Record<NotifKey, boolean>>
+  frequency?: 'realtime' | 'hourly' | 'daily' | 'off'
+}
+
+async function isNotificationEnabled(
+  workspaceId: string,
+  prefKey: NotifKey,
+): Promise<boolean> {
+  try {
+    const res = await sql`
+      SELECT extra_settings FROM workspaces WHERE id = ${workspaceId} LIMIT 1
+    `
+    const row = res.rows[0] as { extra_settings?: unknown } | undefined
+    if (!row) return true // unknown workspace → don't block
+    let parsed: Record<string, unknown> = {}
+    const raw = row.extra_settings
+    if (typeof raw === 'string') {
+      try { parsed = JSON.parse(raw) as Record<string, unknown> } catch { parsed = {} }
+    } else if (raw && typeof raw === 'object') {
+      parsed = raw as Record<string, unknown>
+    }
+    const prefs = (parsed.notifications || {}) as NotificationPrefs
+    // Master switch: frequency 'off' silences in-app too.
+    if (prefs.frequency === 'off') return false
+    const inApp = prefs.inApp
+    if (!inApp || typeof inApp !== 'object') return true // unset → default enabled
+    const v = inApp[prefKey]
+    if (v === undefined) return true // unset specific key → default enabled
+    return Boolean(v)
+  } catch (err) {
+    // Pref lookup failure must not silently drop notifications.
+    console.error('[notifications] pref lookup failed (defaulting on):', err)
+    return true
+  }
+}
+
 async function safeInsert(
   workspaceId: string,
   type: string,
@@ -23,7 +88,11 @@ async function safeInsert(
   body: string | null,
   link: string | null,
   severity: 'info' | 'success' | 'warning' | 'error',
+  prefKey: NotifKey,
 ): Promise<void> {
+  // Sprint 18E (P0): respect workspace opt-out before inserting.
+  const enabled = await isNotificationEnabled(workspaceId, prefKey)
+  if (!enabled) return
   try {
     await sql`
       INSERT INTO notifications (id, workspace_id, type, title, body, link, severity, created_at)
@@ -56,6 +125,7 @@ export function notifyLeadCaptured(
     `Captured from ${source}.`,
     `/dashboard/leads-crm?lead=${leadId}`,
     'success',
+    'newLeads',
   )
 }
 
@@ -71,6 +141,7 @@ export function notifyPublishFailed(
     errMsg,
     '/dashboard/calendar',
     'error',
+    'errors',
   )
 }
 
@@ -93,6 +164,7 @@ export function notifyPublishSuccess(
     permalink ? `Live at ${permalink}` : 'Live now.',
     permalink || '/dashboard/calendar',
     'success',
+    'campaigns',
   )
 }
 
@@ -108,6 +180,7 @@ export function notifyNurtureReplyReceived(
     `Cancelled ${cancelledSteps} pending sequence step${cancelledSteps === 1 ? '' : 's'}.`,
     '/dashboard/inbox',
     'info',
+    'campaigns',
   )
 }
 
@@ -123,5 +196,6 @@ export function notifyOAuthExpiring(
     'Reconnect to keep auto-publish working.',
     '/dashboard/integrations',
     daysLeft <= 2 ? 'error' : 'warning',
+    'errors',
   )
 }

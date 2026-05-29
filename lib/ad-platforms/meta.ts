@@ -13,43 +13,65 @@ export interface MetaCredentials {
 }
 
 // ─── Objective mapping ────────────────────────────────────────────────────────
+//
+// Meta Marketing API v18+ uses the ODAX "OUTCOME_*" enum family. The legacy
+// objectives (CONVERSIONS, LINK_CLICKS, BRAND_AWARENESS, PAGE_LIKES, etc.)
+// were deprecated in 2023 and rejected for new campaigns. Map every UI
+// objective onto the appropriate OUTCOME_* value.
 
 const OBJECTIVE_MAP: Record<string, string> = {
-  awareness:   'OUTCOME_AWARENESS',
-  traffic:     'LINK_CLICKS',
-  leads:       'LEAD_GENERATION',
-  conversions: 'OUTCOME_LEADS',
-  sales:       'OUTCOME_SALES',
-  page_likes:  'OUTCOME_ENGAGEMENT',  // follower growth via Engagement objective (Meta deprecated PAGE_LIKES Jan 2024)
-  video_views: 'OUTCOME_AWARENESS',
+  // Canonical UI strings (Sprint 18D)
+  awareness:    'OUTCOME_AWARENESS',
+  traffic:      'OUTCOME_TRAFFIC',
+  engagement:   'OUTCOME_ENGAGEMENT',
+  leads:        'OUTCOME_LEADS',
+  sales:        'OUTCOME_SALES',
+  app_installs: 'OUTCOME_APP_PROMOTION',
+  // Legacy aliases kept for backwards compatibility with already-persisted
+  // campaign rows + older UI surfaces that haven't migrated yet.
+  conversions:  'OUTCOME_LEADS',       // legacy: conversion campaigns now sit under OUTCOME_LEADS for lead-gen flows
+  page_likes:   'OUTCOME_ENGAGEMENT',  // Meta deprecated PAGE_LIKES Jan 2024; rolled into Engagement
+  video_views:  'OUTCOME_AWARENESS',   // video-views → Awareness with ThruPlay optimization (see OPTIMIZATION_GOAL_MAP)
 }
 
 const OPTIMIZATION_GOAL_MAP: Record<string, string> = {
-  awareness:   'REACH',
-  traffic:     'LINK_CLICKS',
-  leads:       'LEAD_GENERATION',
-  conversions: 'OFFSITE_CONVERSIONS',
-  sales:       'OFFSITE_CONVERSIONS',
-  page_likes:  'PAGE_LIKES',
-  video_views: 'THRUPLAY',
+  awareness:    'REACH',
+  traffic:      'LINK_CLICKS',
+  engagement:   'POST_ENGAGEMENT',
+  leads:        'LEAD_GENERATION',
+  sales:        'OFFSITE_CONVERSIONS',
+  app_installs: 'APP_INSTALLS',
+  // Legacy aliases
+  conversions:  'OFFSITE_CONVERSIONS',
+  page_likes:   'PAGE_LIKES',
+  video_views:  'THRUPLAY',
 }
 
 const BILLING_EVENT_MAP: Record<string, string> = {
-  awareness:   'IMPRESSIONS',
-  traffic:     'LINK_CLICKS',
-  leads:       'IMPRESSIONS',
-  conversions: 'IMPRESSIONS',
-  sales:       'IMPRESSIONS',
-  page_likes:  'IMPRESSIONS',
-  video_views: 'IMPRESSIONS',
+  awareness:    'IMPRESSIONS',
+  traffic:      'LINK_CLICKS',
+  engagement:   'IMPRESSIONS',
+  leads:        'IMPRESSIONS',
+  sales:        'IMPRESSIONS',
+  app_installs: 'IMPRESSIONS',
+  // Legacy aliases
+  conversions:  'IMPRESSIONS',
+  page_likes:   'IMPRESSIONS',
+  video_views:  'IMPRESSIONS',
 }
 
 /**
  * Internal objective enum we accept across the deploy pipeline + UI.
  * Anything outside this set should be rejected with a 400 before persistence.
+ *
+ * The first six are the canonical ODAX names. The trailing three are legacy
+ * aliases retained for backwards compatibility — new code should not produce
+ * them but old persisted rows still need to deploy cleanly.
  */
 export const SUPPORTED_OBJECTIVES = [
-  'leads', 'page_likes', 'awareness', 'conversions', 'sales', 'traffic', 'video_views',
+  'awareness', 'traffic', 'engagement', 'leads', 'sales', 'app_installs',
+  // legacy
+  'conversions', 'page_likes', 'video_views',
 ] as const
 export type AdObjective = typeof SUPPORTED_OBJECTIVES[number]
 export function isAdObjective(v: unknown): v is AdObjective {
@@ -92,7 +114,7 @@ async function graphPatch(path: string, token: string, body: Record<string, unkn
 
 export async function createMetaCampaign(creds: MetaCredentials, opts: {
   name: string
-  objective: string      // our internal: awareness | traffic | leads | conversions | sales
+  objective: string      // our internal: awareness | traffic | engagement | leads | sales | app_installs (plus legacy: conversions | page_likes | video_views)
   dailyBudget?: number   // cents (so ₹500 = 50000 if we want ₹5/day minimum is $1)
   status?: 'ACTIVE' | 'PAUSED'
 }) {

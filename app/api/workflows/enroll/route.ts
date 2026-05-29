@@ -84,7 +84,15 @@ export async function POST(req: NextRequest) {
     }
 
     let enrolledCount = 0
+    let skippedCount = 0
+    const skipped: { leadId: string; reason: string }[] = []
     const startMs = Date.now() + 60 * 1000 // first step at now+1min
+
+    // Sprint 18E (P0): dedup guard. If this lead already has an active
+    // run for this workflow created in the last 24h, skip the enrolment.
+    // Without this, re-clicking "Enroll" on the same list (or a CSV with
+    // duplicates) would double-schedule every step.
+    const dedupCutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
 
     for (const leadId of leadIds.slice(0, 500)) {
       // Look up the lead — must belong to this workspace.
@@ -95,6 +103,25 @@ export async function POST(req: NextRequest) {
       `
       const lead = lr.rows[0] as { id?: string; email?: string } | undefined
       if (!lead?.id) continue
+
+      // Dedup check.
+      try {
+        const dupRes = await sql`
+          SELECT id FROM workflow_runs
+          WHERE lead_id = ${lead.id}
+            AND workflow_id = ${workflowId}
+            AND status IN ('pending', 'in_progress', 'running')
+            AND started_at >= ${dedupCutoff}
+          LIMIT 1
+        `
+        if (dupRes.rows[0]) {
+          skippedCount++
+          skipped.push({ leadId: lead.id, reason: 'already_enrolled' })
+          continue
+        }
+      } catch {
+        // workflow_runs may not exist on legacy installs — fall through.
+      }
 
       const email = lead.email ?? null
       const runId = newId()
@@ -161,7 +188,18 @@ export async function POST(req: NextRequest) {
       } catch { /* non-fatal */ }
     }
 
-    return NextResponse.json({ ok: true, enrolledCount })
+    // If every requested lead was already enrolled, surface that clearly.
+    if (enrolledCount === 0 && skippedCount > 0) {
+      return NextResponse.json({
+        ok: true,
+        skipped: true,
+        reason: 'already_enrolled',
+        enrolledCount: 0,
+        skippedCount,
+        skippedDetails: skipped,
+      })
+    }
+    return NextResponse.json({ ok: true, enrolledCount, skippedCount, skippedDetails: skipped })
   } catch (err) {
     console.error('[/api/workflows/enroll]', err)
     return NextResponse.json({ error: String(err) }, { status: 500 })
