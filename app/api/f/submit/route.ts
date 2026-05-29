@@ -39,6 +39,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { after } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { notifyLeadCaptured } from '@/lib/notifications'
+import { fireSegmentTriggersForNewLead } from '@/lib/segment-trigger'
 
 export const runtime = 'nodejs'
 
@@ -282,6 +283,26 @@ export async function POST(req: NextRequest) {
         }).catch(() => undefined)
       }
     } catch { /* best-effort */ }
+
+    // Sprint 17C (audit P1 #7): fire lead_added_to_segment workflow
+    // triggers for every persisted segment this new lead now matches.
+    // Re-look-up the lead by email since the CRM-ingestion block above
+    // scoped its leadId locally.
+    try {
+      const lr = await sql`
+        SELECT id FROM leads_captured
+        WHERE workspace_id = ${funnel.workspace_id} AND email = ${email}
+        LIMIT 1
+      `
+      const leadId = (lr.rows[0] as { id?: string } | undefined)?.id
+      if (leadId) {
+        await fireSegmentTriggersForNewLead({
+          workspaceId: funnel.workspace_id,
+          leadId,
+          contactEmail: email,
+        })
+      }
+    } catch { /* non-fatal */ }
   })
 
   // ── 6. Get the updated count for the response (approximate, pre-bump) ─

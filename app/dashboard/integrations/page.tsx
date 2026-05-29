@@ -12,6 +12,12 @@ interface Integration {
   connected_at: string
 }
 
+interface ExpiryInfo {
+  platform: string
+  expires_at: string | null
+  daysLeft: number
+}
+
 const PLATFORMS = [
   // ── Ad / DSP Platforms ────────────────────────────────────────────────────
   {
@@ -162,6 +168,10 @@ export default function IntegrationsPage() {
   const { workspaceId: sessionWorkspaceId } = useWorkspaceId()
   const [workspaceId, setWorkspaceId] = useState('')
   const [connected, setConnected] = useState<Integration[]>([])
+  // Sprint 17E (audit P1 #19): token expiry per platform, surfaced as a
+  // badge on each connected card so users don't have to wait for the
+  // bell sweep to discover an imminent reconnect.
+  const [expiries, setExpiries] = useState<Record<string, ExpiryInfo>>({})
   const [form, setForm] = useState<Record<string, Record<string, string>>>({})
   const [saving, setSaving] = useState<string | null>(null)
   const [disconnecting, setDisconnecting] = useState<string | null>(null)
@@ -175,6 +185,17 @@ export default function IntegrationsPage() {
     const res = await fetch(`/api/integrations?workspaceId=${wid}`)
     const data = await res.json()
     if (Array.isArray(data)) setConnected(data)
+    // Sprint 17E: pull expiry info alongside. Failure is non-fatal — the
+    // page just renders without expiry badges.
+    try {
+      const eRes = await fetch(`/api/integrations/expiry?workspaceId=${wid}`)
+      const eData = await eRes.json()
+      if (Array.isArray(eData)) {
+        const map: Record<string, ExpiryInfo> = {}
+        for (const row of eData as ExpiryInfo[]) map[row.platform] = row
+        setExpiries(map)
+      }
+    } catch { /* non-fatal */ }
   }, [])
 
   // Sprint 9E: when the session-derived workspaceId resolves, adopt it.
@@ -378,6 +399,37 @@ export default function IntegrationsPage() {
                       Connected
                     </span>
                   )}
+                  {/* Sprint 17E (audit P1 #19): expiry badge — green >30d,
+                      amber when expiring, red when <=2d. Click reconnects. */}
+                  {isConnected && expiries[platform.id] && (() => {
+                    const ex = expiries[platform.id]
+                    const d = ex.daysLeft
+                    const reconnect = () => {
+                      const oauthPlat = ('oauthPlatform' in platform ? (platform.oauthPlatform as string) : null) || platform.id
+                      if (confirm(`Reconnect ${platform.name}? You'll be redirected to sign in again.`)) {
+                        startOAuth(oauthPlat)
+                      }
+                    }
+                    if (d > 30) {
+                      return (
+                        <span className="text-[10px] bg-green-900/40 text-green-300 border border-green-800/50 px-2 py-0.5 rounded-full font-medium" title={`Expires ${ex.expires_at}`}>
+                          Valid ({d}d)
+                        </span>
+                      )
+                    }
+                    if (d > 2) {
+                      return (
+                        <button onClick={reconnect} className="text-[10px] bg-amber-900/40 text-amber-300 border border-amber-800/50 hover:border-amber-600 px-2 py-0.5 rounded-full font-medium" title={`Expires ${ex.expires_at}`}>
+                          Expires in {d}d
+                        </button>
+                      )
+                    }
+                    return (
+                      <button onClick={reconnect} className="text-[10px] bg-red-900/40 text-red-300 border border-red-800/50 hover:border-red-600 px-2 py-0.5 rounded-full font-medium animate-pulse" title={`Expires ${ex.expires_at}`}>
+                        Expires in {Math.max(0, d)}d — reconnect now
+                      </button>
+                    )
+                  })()}
                   {isConnected && (
                     <button
                       onClick={() => disconnect(platform.id)}

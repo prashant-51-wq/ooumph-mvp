@@ -237,12 +237,17 @@ async function notifyAlertThresholdCrossed(
 ): Promise<void> {
   try {
     const { newId } = await import('@/lib/db')
+    // Sprint 17E (audit P2 #36): include link so clicking the bell row
+    // navigates straight to the campaign that crossed the alert threshold
+    // — previously the toast was informational-only with no path forward.
+    const link = `/dashboard/ads?campaign=${campaign.id}`
     await sql`
-      INSERT INTO notifications (id, workspace_id, type, title, body, severity, created_at)
+      INSERT INTO notifications (id, workspace_id, type, title, body, link, severity, created_at)
       VALUES (
         ${newId()}, ${workspaceId}, 'budget_alert',
         ${'Ad spend approaching cap'},
         ${`Activating "${campaign.name}" brings active daily spend to ${outcome.currentActiveSpend + outcome.proposed} cents, crossing your alert threshold of ${outcome.alertThreshold}. Workspace hard cap is ${outcome.hardCap}.`},
+        ${link},
         'warning', CURRENT_TIMESTAMP
       )
     `

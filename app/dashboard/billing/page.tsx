@@ -131,8 +131,18 @@ function UsageMeter({ workspaceId }: { workspaceId: string | null }) {
           <div className={`h-full ${barColor} transition-all duration-300`} style={{ width: `${Math.min(100, usage.percent)}%` }} />
         </div>
         <div className="flex items-center justify-between mt-3 text-xs">
-          <span className="text-gray-500">{usage.remaining.toLocaleString()} runs remaining</span>
-          {usage.nearLimit && (
+          {/* Sprint 17E (audit P2 #26): clamp negative remaining. The API
+              returned (limit - used) raw, so over-quota workspaces saw
+              "-12 runs remaining" which scans as a bug. Switch the copy
+              to "Limit reached — N over" with red type once we're under. */}
+          {usage.remaining < 0 ? (
+            <span className="text-red-400 font-medium">
+              Limit reached — {Math.abs(usage.remaining).toLocaleString()} over
+            </span>
+          ) : (
+            <span className="text-gray-500">{usage.remaining.toLocaleString()} runs remaining</span>
+          )}
+          {usage.nearLimit && usage.remaining >= 0 && (
             <span className="text-amber-400">Approaching limit — consider upgrading.</span>
           )}
         </div>

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { assertWorkspaceOwnership } from '@/lib/guards'
+import { fireSegmentTriggersForNewLead } from '@/lib/segment-trigger'
 
 // Sprint 8A: workspace ownership guards on the in-dashboard CRM path.
 // Public form submission flows (/api/lp-submit, /api/f/submit) are
@@ -89,6 +90,14 @@ export async function POST(req: NextRequest) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ workspaceId, triggerType: 'lead_captured', leadId: id, data: { source, campaign } }),
     }).catch(e => console.error('Workflow trigger failed (non-fatal):', e))
+
+    // Sprint 17C (audit P1 #7): fire lead_added_to_segment workflow
+    // triggers for every persisted segment this new lead matches.
+    void fireSegmentTriggersForNewLead({
+      workspaceId,
+      leadId: id,
+      contactEmail: email ?? null,
+    })
 
     // Log lead_created activity
     fetch(`${appUrl}/api/leads-captured/${id}/activity`, {

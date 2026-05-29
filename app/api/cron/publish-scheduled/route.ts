@@ -29,6 +29,7 @@ import { assertArtifactApproved } from '@/lib/guards'
 import { decryptSecret } from '@/lib/secrets'
 import { shortenAndTrackUrls } from '@/lib/link-tracker'
 import { buildAgentActiveCache } from '@/lib/agents'
+import { notifyPublishSuccess } from '@/lib/notifications'
 
 export const runtime = 'nodejs'
 export const maxDuration = 300
@@ -368,6 +369,39 @@ export async function GET(req: NextRequest) {
           SET status = 'published', error_message = NULL, updated_at = ${publishedAt}
           WHERE id = ${itemId}
         `
+
+        // ── Sprint 17D (audit P1 #17) — producer-side success signal ──────
+        // (a) Notify the user that the post went live; (b) seed a zeroed
+        //     post_metrics row so the analytics dashboard surfaces the post
+        //     immediately instead of waiting for the metrics-sync cron.
+        //
+        // Both side effects are non-fatal: a failure here must NOT roll
+        // back the publish, which is already durable via published_content.
+        try {
+          await notifyPublishSuccess(workspaceId, channel, dispatch.permalink || null)
+        } catch (err) {
+          console.warn('[publish-scheduled] notifyPublishSuccess failed:', err)
+        }
+        if (item.artifact_id) {
+          try {
+            await sql`
+              INSERT INTO post_metrics (
+                id, workspace_id, artifact_id, platform,
+                impressions, clicks, likes, comments, shares,
+                total_followers, followers_delta,
+                last_synced_at, created_at
+              ) VALUES (
+                ${newId()}, ${workspaceId}, ${item.artifact_id}, ${channel},
+                0, 0, 0, 0, 0,
+                NULL, 0,
+                ${publishedAt}, ${publishedAt}
+              )
+            `
+          } catch (err) {
+            console.warn('[publish-scheduled] post_metrics seed insert failed:', err)
+          }
+        }
+
         results.push({
           id: itemId, status: 'published', nativePostId: dispatch.nativePostId,
         })

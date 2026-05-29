@@ -170,6 +170,230 @@ function BarChart({ days, content, engagement, leads }: { days: string[]; conten
   )
 }
 
+// ── Follower Trendline (Sprint 17D — audit P1 #14) ────────────────────────────
+// Pure SVG, no chart lib. Renders one line per platform from
+// /api/analytics/followers (which reads post_metrics rows tagged with the
+// sentinel artifact_id='__followers__' — written by /api/cron/follower-sync).
+
+interface FollowerSeriesPoint {
+  date: string
+  platform: string
+  total_followers: number | null
+  delta: number
+}
+
+interface FollowerSummary {
+  platform: string
+  current: number | null
+  periodStart: number | null
+  delta: number | null
+  percentChange: number | null
+  lastSyncedAt: string | null
+}
+
+interface FollowerPayload {
+  platforms: string[]
+  series: FollowerSeriesPoint[]
+  summary: FollowerSummary[]
+  hasData: boolean
+  days: number
+}
+
+const PLATFORM_COLORS: Record<string, string> = {
+  linkedin: '#0a66c2',
+  twitter: '#1d9bf0',
+  x: '#e7e9ea',
+  meta: '#1877f2',
+  facebook: '#1877f2',
+  instagram: '#e1306c',
+}
+
+function colorFor(platform: string): string {
+  return PLATFORM_COLORS[platform.toLowerCase()] || '#a78bfa'
+}
+
+function FollowerTrendChart({ workspaceId, days }: { workspaceId: string | null; days: number }) {
+  const [payload, setPayload] = useState<FollowerPayload | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!workspaceId) return
+    let cancelled = false
+    setLoading(true); setError(null)
+    fetch(`/api/analytics/followers?workspaceId=${workspaceId}&days=${days}`)
+      .then(async r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`)
+        return r.json() as Promise<FollowerPayload>
+      })
+      .then(j => { if (!cancelled) setPayload(j) })
+      .catch(e => { if (!cancelled) setError(e instanceof Error ? e.message : String(e)) })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [workspaceId, days])
+
+  return (
+    <div className="bg-gray-900 border border-gray-800 rounded-2xl p-5">
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <h2 className="text-white font-semibold">Follower Growth</h2>
+          <p className="text-gray-500 text-xs mt-0.5">Last {days} days · synced 4× daily</p>
+        </div>
+        {payload && payload.hasData && (
+          <div className="flex items-center gap-3 text-[11px] flex-wrap">
+            {payload.platforms.map(p => (
+              <span key={p} className="flex items-center gap-1.5 text-gray-300">
+                <span className="w-3 h-2 rounded inline-block" style={{ background: colorFor(p) }} />
+                {p}
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {loading && !payload && (
+        <div className="h-40 flex items-center justify-center text-gray-600 text-sm">Loading…</div>
+      )}
+      {!loading && error && (
+        <div className="h-40 flex items-center justify-center text-red-400 text-sm">
+          Failed to load: {error}
+        </div>
+      )}
+      {!loading && !error && payload && !payload.hasData && (
+        <div className="h-40 flex items-center justify-center text-gray-500 text-sm text-center px-6">
+          No follower data yet — connect a social account to start tracking. Cron runs 4× daily.
+        </div>
+      )}
+
+      {!loading && !error && payload && payload.hasData && (
+        <>
+          {/* Per-platform summary cards: current, delta, % change */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+            {payload.summary.map(s => {
+              const sign = s.delta == null ? '' : s.delta > 0 ? '+' : ''
+              const tone = s.delta == null
+                ? 'text-gray-500'
+                : s.delta > 0 ? 'text-emerald-400'
+                : s.delta < 0 ? 'text-red-400'
+                : 'text-gray-400'
+              return (
+                <div key={s.platform} className="bg-gray-800/50 border border-gray-800 rounded-xl p-3">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="w-2 h-2 rounded-full" style={{ background: colorFor(s.platform) }} />
+                    <p className="text-gray-400 text-xs capitalize">{s.platform}</p>
+                  </div>
+                  <p className="text-white font-bold text-lg tabular-nums">
+                    {s.current != null ? s.current.toLocaleString() : '—'}
+                  </p>
+                  <p className={`text-xs mt-0.5 tabular-nums ${tone}`}>
+                    {s.delta != null
+                      ? `${sign}${s.delta.toLocaleString()}${s.percentChange != null ? ` (${sign}${s.percentChange}%)` : ''}`
+                      : 'Awaiting first sync'}
+                  </p>
+                </div>
+              )
+            })}
+          </div>
+
+          <FollowerSVGLines payload={payload} />
+        </>
+      )}
+    </div>
+  )
+}
+
+function FollowerSVGLines({ payload }: { payload: FollowerPayload }) {
+  // Sort unique dates ascending; x position is by date index.
+  const dates = Array.from(new Set(payload.series.map(s => s.date))).sort()
+  const platforms = payload.platforms
+
+  if (dates.length === 0) {
+    return <div className="h-40 flex items-center justify-center text-gray-600 text-sm">No data points.</div>
+  }
+
+  const W = 720, H = 200
+  const padL = 44, padR = 12, padT = 8, padB = 22
+  const innerW = W - padL - padR
+  const innerH = H - padT - padB
+
+  const lines = platforms.map(p => {
+    const points = dates
+      .map(d => {
+        const row = payload.series.find(s => s.date === d && s.platform === p)
+        return { d, v: row && row.total_followers != null ? row.total_followers : null }
+      })
+      .filter((pt): pt is { d: string; v: number } => pt.v !== null)
+    return { platform: p, points }
+  })
+
+  const allValues = lines.flatMap(l => l.points.map(p => p.v))
+  if (allValues.length === 0) {
+    return <div className="h-40 flex items-center justify-center text-gray-600 text-sm">No follower counts logged yet.</div>
+  }
+  const minV = Math.min(...allValues)
+  const maxV = Math.max(...allValues)
+  const range = maxV - minV || 1
+  const yMin = Math.max(0, Math.floor(minV - range * 0.1))
+  const yMax = Math.ceil(maxV + range * 0.1)
+  const yRange = yMax - yMin || 1
+
+  const xFor = (idx: number) =>
+    padL + (dates.length === 1 ? innerW / 2 : (idx / (dates.length - 1)) * innerW)
+  const yFor = (v: number) => padT + innerH - ((v - yMin) / yRange) * innerH
+
+  const ticks = [0, 0.25, 0.5, 0.75, 1].map(t => yMin + t * yRange)
+
+  return (
+    <div className="overflow-x-auto">
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-48" role="img" aria-label="Follower growth chart">
+        {ticks.map((v, i) => {
+          const y = yFor(v)
+          return (
+            <g key={i}>
+              <line x1={padL} y1={y} x2={W - padR} y2={y} stroke="#1f2937" strokeWidth={1} />
+              <text x={padL - 6} y={y + 3} textAnchor="end" fontSize={9} fill="#6b7280">
+                {Math.round(v).toLocaleString()}
+              </text>
+            </g>
+          )
+        })}
+
+        {[0, Math.floor(dates.length / 2), dates.length - 1]
+          .filter((v, i, a) => a.indexOf(v) === i && v >= 0)
+          .map(i => (
+            <text key={i} x={xFor(i)} y={H - 6} textAnchor="middle" fontSize={9} fill="#6b7280">
+              {dates[i].slice(5)}
+            </text>
+          ))}
+
+        {lines.map(line => {
+          if (line.points.length === 0) return null
+          const path = line.points
+            .map((pt, i) => {
+              const idx = dates.indexOf(pt.d)
+              return `${i === 0 ? 'M' : 'L'} ${xFor(idx).toFixed(2)} ${yFor(pt.v).toFixed(2)}`
+            })
+            .join(' ')
+          const color = colorFor(line.platform)
+          return (
+            <g key={line.platform}>
+              <path d={path} stroke={color} strokeWidth={2} fill="none" />
+              {line.points.map((pt) => {
+                const idx = dates.indexOf(pt.d)
+                return (
+                  <circle key={pt.d} cx={xFor(idx)} cy={yFor(pt.v)} r={2.5} fill={color}>
+                    <title>{`${line.platform} — ${pt.d}: ${pt.v.toLocaleString()}`}</title>
+                  </circle>
+                )
+              })}
+            </g>
+          )
+        })}
+      </svg>
+    </div>
+  )
+}
+
 // ── Report Builder Modal ───────────────────────────────────────────────────────
 
 // Sprint 6F: recommendations payload from /api/analytics/recommendations.
@@ -931,6 +1155,14 @@ export default function AnalyticsPage() {
               leads={(data?.dailySeries || []).map(d => d.leads)}
             />
           </div>
+
+          {/* Sprint 17D (audit P1 #14): follower trendline.
+              Reads /api/analytics/followers (post_metrics rows with sentinel
+              artifact_id='__followers__' written by /api/cron/follower-sync). */}
+          <FollowerTrendChart
+            workspaceId={workspaceId}
+            days={range === '7d' ? 7 : range === '90d' ? 90 : range === '12mo' ? 365 : 30}
+          />
 
           {/* Channel Breakdown */}
           <div className="bg-gray-900 border border-gray-800 rounded-2xl p-5">

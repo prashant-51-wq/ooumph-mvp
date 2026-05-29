@@ -1469,6 +1469,8 @@ export default function LeadsCRMPage() {
   const [showAddActivity, setShowAddActivity] = useState(false)
   const [showAddDeal, setShowAddDeal] = useState(false)
   const [showAddContact, setShowAddContact] = useState(false)
+  // Sprint 17C (audit P1 #6): bulk-enrol existing CRM leads in a workflow.
+  const [showEnrolWorkflow, setShowEnrolWorkflow] = useState(false)
   // Sprint 6E: deal opened in the edit modal (stage change + lost-reason capture).
   const [editingDeal, setEditingDeal] = useState<Deal | null>(null)
 
@@ -2105,6 +2107,13 @@ export default function LeadsCRMPage() {
               <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-gray-900 border border-indigo-700 rounded-xl px-5 py-3 flex items-center gap-3 shadow-2xl z-40">
                 <span className="text-indigo-300 text-sm font-medium">{selectedContacts.size} selected</span>
                 <div className="w-px h-5 bg-gray-700" />
+                {/* Sprint 17C (audit P1 #6): manual workflow enrolment for existing leads. */}
+                <button
+                  onClick={() => setShowEnrolWorkflow(true)}
+                  className="px-3 py-1.5 rounded-lg text-xs font-medium bg-indigo-700/40 text-indigo-200 hover:bg-indigo-700/60 transition-colors"
+                >
+                  Enrol in workflow
+                </button>
                 {['Email Selected','Add Tag','Change Stage','Export','Delete'].map(action => (
                   <button key={action} className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${action === 'Delete' ? 'bg-red-900/40 text-red-400 hover:bg-red-900/60' : 'bg-gray-800 text-gray-300 hover:bg-gray-700'}`}>
                     {action}
@@ -2457,6 +2466,152 @@ export default function LeadsCRMPage() {
       {editingDeal && <EditDealModal deal={editingDeal} onClose={() => setEditingDeal(null)} onSaved={() => { setEditingDeal(null); if (workspaceId) loadData(workspaceId) }} />}
       {showAddContact && <AddContactModal onClose={() => setShowAddContact(false)} workspaceId={workspaceId} onAdded={() => workspaceId && loadData(workspaceId)} />}
       {selectedContact && <ContactSlideover contact={selectedContact} onClose={() => setSelectedContact(null)} activities={selectedContactActivities} workspaceId={workspaceId} onUpdated={() => workspaceId && loadData(workspaceId)} />}
+      {showEnrolWorkflow && (
+        <EnrolWorkflowModal
+          workspaceId={workspaceId}
+          leadIds={Array.from(selectedContacts)}
+          onClose={() => setShowEnrolWorkflow(false)}
+          onEnrolled={() => { setShowEnrolWorkflow(false); setSelectedContacts(new Set()) }}
+        />
+      )}
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Sprint 17C (audit P1 #6) — EnrolWorkflowModal
+// Lists active workflows for this workspace and posts the chosen workflow id
+// + selected lead ids to /api/workflows/enroll.
+// ─────────────────────────────────────────────────────────────────────────────
+function EnrolWorkflowModal({
+  workspaceId, leadIds, onClose, onEnrolled,
+}: {
+  workspaceId: string | null
+  leadIds: string[]
+  onClose: () => void
+  onEnrolled: () => void
+}) {
+  const [workflows, setWorkflows] = useState<Array<{ id: string; name: string; description?: string }>>([])
+  const [selectedWorkflowId, setSelectedWorkflowId] = useState<string>('')
+  const [loading, setLoading] = useState(true)
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [resultMsg, setResultMsg] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!workspaceId) { setLoading(false); return }
+    let cancelled = false
+    fetch(`/api/workflows?workspaceId=${encodeURIComponent(workspaceId)}`)
+      .then(async r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`)
+        const data = await r.json() as Array<Record<string, unknown>>
+        if (cancelled) return
+        const active = (data || [])
+          .filter(w => String(w.status || '') === 'active')
+          .map(w => ({
+            id: String(w.id || ''),
+            name: String(w.name || 'Untitled'),
+            description: typeof w.description === 'string' ? w.description : undefined,
+          }))
+        setWorkflows(active)
+        if (active[0]) setSelectedWorkflowId(active[0].id)
+      })
+      .catch(e => { if (!cancelled) setError(String(e)) })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [workspaceId])
+
+  async function submit() {
+    if (!workspaceId || !selectedWorkflowId || leadIds.length === 0) return
+    setSubmitting(true)
+    setError(null)
+    try {
+      const res = await fetch('/api/workflows/enroll', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspaceId, workflowId: selectedWorkflowId, leadIds }),
+      })
+      const data = await res.json() as { ok?: boolean; enrolledCount?: number; error?: string }
+      if (!res.ok || !data.ok) {
+        setError(data.error || `HTTP ${res.status}`)
+        return
+      }
+      setResultMsg(`Enrolled ${data.enrolledCount ?? 0} leads.`)
+      setTimeout(() => onEnrolled(), 800)
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div onClick={e => e.stopPropagation()} className="bg-gray-900 border border-gray-800 rounded-xl max-w-lg w-full p-6">
+        <div className="flex items-start justify-between mb-4">
+          <div>
+            <h3 className="text-white font-semibold">Enrol in workflow</h3>
+            <p className="text-gray-500 text-xs mt-0.5">{leadIds.length} lead{leadIds.length === 1 ? '' : 's'} selected</p>
+          </div>
+          <button onClick={onClose} className="text-gray-500 hover:text-white">✕</button>
+        </div>
+
+        {loading ? (
+          <p className="text-gray-500 text-sm">Loading workflows…</p>
+        ) : workflows.length === 0 ? (
+          <div className="bg-gray-800/50 border border-dashed border-gray-700 rounded-lg p-4 text-sm text-gray-400">
+            No active workflows. Build one in the Workflows section and set its status to active.
+          </div>
+        ) : (
+          <div className="space-y-2 max-h-72 overflow-y-auto">
+            {workflows.map(wf => (
+              <label
+                key={wf.id}
+                className={`block p-3 rounded-lg border cursor-pointer transition-colors ${
+                  selectedWorkflowId === wf.id
+                    ? 'border-indigo-600 bg-indigo-900/20'
+                    : 'border-gray-800 bg-gray-800/40 hover:border-gray-700'
+                }`}
+              >
+                <input
+                  type="radio"
+                  name="workflow"
+                  className="mr-2"
+                  checked={selectedWorkflowId === wf.id}
+                  onChange={() => setSelectedWorkflowId(wf.id)}
+                />
+                <span className="text-white text-sm font-medium">{wf.name}</span>
+                {wf.description ? (
+                  <p className="text-gray-500 text-xs mt-0.5 ml-5">{wf.description}</p>
+                ) : null}
+              </label>
+            ))}
+          </div>
+        )}
+
+        {error && (
+          <p className="mt-3 text-rose-400 text-xs">{error}</p>
+        )}
+        {resultMsg && (
+          <p className="mt-3 text-emerald-400 text-xs">{resultMsg}</p>
+        )}
+
+        <div className="flex gap-2 mt-5">
+          <button
+            onClick={onClose}
+            className="flex-1 px-4 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg text-sm transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={() => void submit()}
+            disabled={!selectedWorkflowId || submitting || workflows.length === 0}
+            className="flex-1 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {submitting ? 'Enrolling…' : 'Enrol'}
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

@@ -8,15 +8,18 @@
  *   - total_followers = current count
  *   - followers_delta = current - previous (or current on first run)
  *
- * Why a new cron instead of bolting onto /api/cron/campaign-sync?
- *   - campaign-sync iterates ad campaigns. Follower stats are per workspace+
- *     platform, not per campaign. Different cardinality + different cadence.
- *   - 4×/day vs 1×/day — followers can spike on a viral post and trend
- *     dashboards become useless if we only see daily snapshots.
+ * Sprint 17D (audit P1 #15 + #16):
+ *   - Real follower fetches for Twitter/X, Meta page (fan_count), and
+ *     Instagram (Graph API) — previously these returned status='skipped'
+ *     silently which gave us under 25% coverage.
+ *   - Idempotency: skip the INSERT when the most-recent row for
+ *     (workspace, platform) shows an unchanged total_followers within the
+ *     last 24h. Just bump last_synced_at instead. For null fetches (dead
+ *     token), skip entirely if the previous row was also null within 7d
+ *     — avoids accumulating dead-null rows on dead tokens.
  *
  * Resilience: every platform's fetch is wrapped in try/catch so one
- * provider's outage doesn't block the others. Unknown / unimplemented
- * platforms log a warning and skip rather than blow up the cron.
+ * provider's outage doesn't block the others.
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
@@ -27,6 +30,8 @@ export const runtime = 'nodejs'
 export const maxDuration = 60
 
 const FOLLOWERS_SENTINEL_ARTIFACT_ID = '__followers__'
+const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000
+const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000
 
 interface OAuthRow {
   workspace_id: string
@@ -38,22 +43,16 @@ interface OAuthRow {
 interface PerPlatformResult {
   workspaceId: string
   platform: string
-  status: 'synced' | 'skipped' | 'failed'
+  status: 'synced' | 'skipped' | 'failed' | 'unchanged'
   totalFollowers?: number | null
   followersDelta?: number | null
   error?: string
 }
 
 /**
- * LinkedIn follower count — best-effort.
- *
- * For org pages we'd call /v2/organizationalEntityFollowerStatistics or
- * /v2/networkSizes/urn:li:organization:{id}. For personal profiles
- * /v2/networkSizes/urn:li:person:{id} works with r_1st_connections_size.
- *
- * In practice many Marketing API tokens are missing the right scope, so we
- * try in priority order and return null if none succeeds — the caller will
- * persist nulls and log a warning rather than failing the whole sync.
+ * LinkedIn follower count — best-effort. Many Marketing API tokens are
+ * missing the right scope, so we return null on failure and let the
+ * caller persist a null row + log a warning.
  */
 async function fetchLinkedInFollowerCount(
   accessToken: string,
@@ -64,7 +63,6 @@ async function fetchLinkedInFollowerCount(
     ? accountId
     : `urn:li:organization:${accountId}`
 
-  // Try org-level follower stats first (returns lifetime cumulative).
   try {
     const res = await fetchWithTimeout(
       `https://api.linkedin.com/v2/networkSizes/${encodeURIComponent(urn)}?edgeType=CompanyFollowedByMember`,
@@ -87,6 +85,110 @@ async function fetchLinkedInFollowerCount(
   return null
 }
 
+/**
+ * Twitter/X follower count via GET /2/users/me?user.fields=public_metrics.
+ * Requires the OAuth2 token to have users.read scope.
+ */
+async function fetchTwitterFollowerCount(accessToken: string): Promise<number | null> {
+  try {
+    const res = await fetchWithTimeout(
+      'https://api.twitter.com/2/users/me?user.fields=public_metrics',
+      { headers: { Authorization: `Bearer ${accessToken}` } },
+    )
+    if (!res.ok) {
+      console.warn('[follower-sync] Twitter users/me HTTP', res.status)
+      return null
+    }
+    const data = await res.json() as {
+      data?: { public_metrics?: { followers_count?: number } }
+    }
+    const count = data.data?.public_metrics?.followers_count
+    return typeof count === 'number' ? count : null
+  } catch (err) {
+    console.warn('[follower-sync] Twitter fetch failed', err)
+    return null
+  }
+}
+
+/**
+ * Meta page follower count. fan_count is the canonical Page followers
+ * value. accountId should be the Page ID; falls back to /me when missing.
+ */
+async function fetchMetaFollowerCount(
+  accessToken: string,
+  accountId: string | null,
+): Promise<number | null> {
+  try {
+    const target = accountId || 'me'
+    const res = await fetchWithTimeout(
+      `https://graph.facebook.com/v18.0/${encodeURIComponent(target)}?fields=followers_count,fan_count&access_token=${encodeURIComponent(accessToken)}`,
+    )
+    if (!res.ok) {
+      console.warn('[follower-sync] Meta page HTTP', res.status)
+      return null
+    }
+    const data = await res.json() as { followers_count?: number; fan_count?: number }
+    if (typeof data.fan_count === 'number') return data.fan_count
+    if (typeof data.followers_count === 'number') return data.followers_count
+    return null
+  } catch (err) {
+    console.warn('[follower-sync] Meta fetch failed', err)
+    return null
+  }
+}
+
+/**
+ * Instagram followers via the Graph API. account_id must be the IG User
+ * ID (returned by the OAuth flow when the user grants instagram_basic on
+ * a connected Page) and the same Meta access token is used.
+ */
+async function fetchInstagramFollowerCount(
+  accessToken: string,
+  accountId: string | null,
+): Promise<number | null> {
+  if (!accountId) return null
+  try {
+    const res = await fetchWithTimeout(
+      `https://graph.facebook.com/v18.0/${encodeURIComponent(accountId)}?fields=followers_count&access_token=${encodeURIComponent(accessToken)}`,
+    )
+    if (!res.ok) {
+      console.warn('[follower-sync] Instagram HTTP', res.status)
+      return null
+    }
+    const data = await res.json() as { followers_count?: number }
+    return typeof data.followers_count === 'number' ? data.followers_count : null
+  } catch (err) {
+    console.warn('[follower-sync] Instagram fetch failed', err)
+    return null
+  }
+}
+
+interface PrevRow {
+  total_followers: number | null
+  last_synced_at: string
+}
+
+async function lastSyncRow(
+  workspaceId: string,
+  platform: string,
+): Promise<PrevRow | null> {
+  const res = await sql`
+    SELECT total_followers, last_synced_at
+    FROM post_metrics
+    WHERE workspace_id = ${workspaceId}
+      AND platform = ${platform}
+      AND artifact_id = ${FOLLOWERS_SENTINEL_ARTIFACT_ID}
+    ORDER BY last_synced_at DESC
+    LIMIT 1
+  `
+  const row = res.rows[0] as { total_followers: number | null; last_synced_at: string } | undefined
+  if (!row) return null
+  return {
+    total_followers: typeof row.total_followers === 'number' ? row.total_followers : null,
+    last_synced_at: row.last_synced_at,
+  }
+}
+
 async function syncOne(row: OAuthRow): Promise<PerPlatformResult> {
   const accessToken = row.encrypted_access_token
     ? (decryptSecret(row.encrypted_access_token) || '')
@@ -97,19 +199,43 @@ async function syncOne(row: OAuthRow): Promise<PerPlatformResult> {
 
   let total: number | null = null
   try {
-    if (row.platform === 'linkedin') {
+    const platformKey = row.platform.toLowerCase()
+    if (platformKey === 'linkedin') {
       total = await fetchLinkedInFollowerCount(accessToken, row.account_id)
+    } else if (platformKey === 'twitter' || platformKey === 'x') {
+      total = await fetchTwitterFollowerCount(accessToken)
+    } else if (platformKey === 'meta' || platformKey === 'facebook') {
+      total = await fetchMetaFollowerCount(accessToken, row.account_id)
+    } else if (platformKey === 'instagram') {
+      total = await fetchInstagramFollowerCount(accessToken, row.account_id)
     } else {
-      // Twitter, Meta page likes, Instagram followers can be added here.
-      // We deliberately skip rather than fake values.
+      // Truly unknown platform — skip rather than fake values.
       return { workspaceId: row.workspace_id, platform: row.platform, status: 'skipped', error: 'platform not implemented' }
     }
   } catch (err) {
     return { workspaceId: row.workspace_id, platform: row.platform, status: 'failed', error: String(err) }
   }
 
+  // ─── Sprint 17D P1 #16 — idempotency / dedupe ────────────────────────────
+  const prev = await lastSyncRow(row.workspace_id, row.platform)
+  const now = new Date()
+  const nowIso = now.toISOString()
+
   if (total === null) {
-    console.warn(`[follower-sync] ${row.platform} follower count unavailable for workspace ${row.workspace_id}`)
+    // Failed/null fetch path. If the previous row was ALSO null and within
+    // 7d, skip entirely — don't accumulate dead-null rows on dead tokens.
+    if (prev && prev.total_followers === null) {
+      const ageMs = now.getTime() - new Date(prev.last_synced_at).getTime()
+      if (ageMs < SEVEN_DAYS_MS) {
+        console.warn(`[follower-sync] ${row.platform} still failing for ${row.workspace_id} (last null sync ${Math.round(ageMs / 3_600_000)}h ago) — skipping insert`)
+        return {
+          workspaceId: row.workspace_id,
+          platform: row.platform,
+          status: 'skipped',
+          error: 'consecutive null fetch within 7d',
+        }
+      }
+    }
     // Persist a null-followers row so the dashboard can show "last attempted"
     // but don't compute a delta against a null.
     await sql`
@@ -118,23 +244,36 @@ async function syncOne(row: OAuthRow): Promise<PerPlatformResult> {
         total_followers, followers_delta, last_synced_at, created_at
       ) VALUES (
         ${newId()}, ${row.workspace_id}, ${FOLLOWERS_SENTINEL_ARTIFACT_ID}, ${row.platform},
-        NULL, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        NULL, 0, ${nowIso}, ${nowIso}
       )
     `
-    return { workspaceId: row.workspace_id, platform: row.platform, status: 'synced', totalFollowers: null, followersDelta: null }
+    return {
+      workspaceId: row.workspace_id, platform: row.platform, status: 'synced',
+      totalFollowers: null, followersDelta: null,
+    }
   }
 
-  // Look up the previous total_followers to compute the delta.
-  const prevRes = await sql`
-    SELECT total_followers FROM post_metrics
-    WHERE workspace_id = ${row.workspace_id}
-      AND platform = ${row.platform}
-      AND artifact_id = ${FOLLOWERS_SENTINEL_ARTIFACT_ID}
-      AND total_followers IS NOT NULL
-    ORDER BY last_synced_at DESC
-    LIMIT 1
-  `
-  const prev = prevRes.rows[0] as { total_followers?: number | null } | undefined
+  // Successful fetch path. Skip-if-no-change: when previous total matches
+  // and previous sync was within 24h, just bump last_synced_at on the
+  // existing row rather than creating a duplicate snapshot.
+  if (prev && prev.total_followers === total) {
+    const ageMs = now.getTime() - new Date(prev.last_synced_at).getTime()
+    if (ageMs < TWENTY_FOUR_HOURS_MS) {
+      await sql`
+        UPDATE post_metrics
+        SET last_synced_at = ${nowIso}
+        WHERE workspace_id = ${row.workspace_id}
+          AND platform = ${row.platform}
+          AND artifact_id = ${FOLLOWERS_SENTINEL_ARTIFACT_ID}
+          AND last_synced_at = ${prev.last_synced_at}
+      `
+      return {
+        workspaceId: row.workspace_id, platform: row.platform, status: 'unchanged',
+        totalFollowers: total, followersDelta: 0,
+      }
+    }
+  }
+
   const prevTotal = typeof prev?.total_followers === 'number' ? prev.total_followers : 0
   const delta = total - prevTotal
 
@@ -144,7 +283,7 @@ async function syncOne(row: OAuthRow): Promise<PerPlatformResult> {
       total_followers, followers_delta, last_synced_at, created_at
     ) VALUES (
       ${newId()}, ${row.workspace_id}, ${FOLLOWERS_SENTINEL_ARTIFACT_ID}, ${row.platform},
-      ${total}, ${delta}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+      ${total}, ${delta}, ${nowIso}, ${nowIso}
     )
   `
 
@@ -157,26 +296,17 @@ async function syncOne(row: OAuthRow): Promise<PerPlatformResult> {
   }
 }
 
-// Sprint 17F (audit pass #3 P1 #11): align this cron's auth with peers
-// (agent-run-watchdog / oauth-health-check / publish-scheduled all use
-// the 3-way pattern). Previously only `Bearer ${CRON_SECRET}` was
-// accepted, blocking Vercel Cron's User-Agent path AND ADMIN_SECRET
-// admin invocations — inconsistent and undocumented.
-function isCronAuthorized(req: NextRequest): boolean {
+export async function GET(req: NextRequest) {
+  // Auth: 3-way — Vercel cron bearer, ADMIN_SECRET, or vercel-cron UA.
   const cronSecret = process.env.CRON_SECRET || ''
   const adminSecret = process.env.ADMIN_SECRET || ''
   const auth = req.headers.get('authorization') || ''
-  const x = req.headers.get('x-internal-secret') || ''
-  const vercelCronUA = req.headers.get('user-agent')?.includes('vercel-cron')
-  if (vercelCronUA) return true
-  if (cronSecret && (auth === `Bearer ${cronSecret}` || x === cronSecret)) return true
-  if (adminSecret && (auth === `Bearer ${adminSecret}` || x === adminSecret)) return true
-  // Dev-mode fall-through when no secret is set at all.
-  return !cronSecret && !adminSecret
-}
-
-export async function GET(req: NextRequest) {
-  if (!isCronAuthorized(req)) {
+  const internal = req.headers.get('x-internal-secret') || ''
+  const userAgent = req.headers.get('user-agent') || ''
+  const cronOk = cronSecret && auth === `Bearer ${cronSecret}`
+  const adminOk = adminSecret && (internal === adminSecret || auth === `Bearer ${adminSecret}`)
+  const vercelUaOk = /vercel-cron/i.test(userAgent)
+  if (!cronOk && !adminOk && !vercelUaOk) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
@@ -208,6 +338,7 @@ export async function GET(req: NextRequest) {
       syncedAt: new Date().toISOString(),
       total: results.length,
       succeeded: results.filter(r => r.status === 'synced').length,
+      unchanged: results.filter(r => r.status === 'unchanged').length,
       skipped: results.filter(r => r.status === 'skipped').length,
       failed: results.filter(r => r.status === 'failed').length,
       results,

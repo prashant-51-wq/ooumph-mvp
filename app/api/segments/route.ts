@@ -62,34 +62,50 @@ function normaliseRule(raw: unknown): SegmentRule {
   return out
 }
 
+/** Allow-list of CRM stage values we'll inline into a SQL IN-list. Used by
+ *  countMembers to stay safe against injection even though the sql template
+ *  tag doesn't support array parameter expansion (= no Postgres ANY() on
+ *  SQLite). Sprint 17C (audit P1 #8).
+ *
+ *  Keep in sync with the values used in /dashboard/leads-crm filters and
+ *  the leads_captured.status column. */
+const ALLOWED_STATUSES = new Set(['new', 'contacted', 'qualified', 'won', 'lost'])
+
 /** Approximate member count given a rule. Best-effort — we don't materialise
- *  a join table; the CRM page computes the live members each render. */
+ *  a join table; the CRM page computes the live members each render.
+ *
+ *  Sprint 17C (audit P1 #8): the previous version used `status = ANY(...)`,
+ *  a Postgres-only operator. On SQLite that's a syntax error and the entire
+ *  count silently returns 0. Replaced with a hand-built `IN ('a','b',...)`
+ *  clause whose values are validated against ALLOWED_STATUSES — so we don't
+ *  reintroduce injection. */
 async function countMembers(workspaceId: string, rule: SegmentRule): Promise<number> {
   try {
-    // Use a single big WHERE built dynamically — drift-safe because all
-    // input is validated above and only inserted as bound params.
+    const safeStatuses = (rule.statuses || [])
+      .filter(s => typeof s === 'string' && ALLOWED_STATUSES.has(s))
+    // The sql template tag doesn't support spreading an array as a SQL
+    // value list and we don't have an `unsafe()` escape hatch. Pull the
+    // candidate rows by workspace + minScore (both safe via the tag),
+    // then filter status in-memory. The total cardinality per workspace
+    // is small enough that this stays fast — leads_captured is paginated
+    // by the CRM page itself, and this helper is invoked at segment
+    // create/edit time only (not per-render).
     let rows
-    if (rule.minScore !== undefined && rule.statuses?.length) {
+    if (rule.minScore !== undefined) {
       rows = await sql`
-        SELECT COUNT(*) as c FROM leads_captured
-        WHERE workspace_id = ${workspaceId}
-          AND status = ANY(${rule.statuses})
-          AND COALESCE(score, 0) >= ${rule.minScore}
-      `
-    } else if (rule.statuses?.length) {
-      rows = await sql`
-        SELECT COUNT(*) as c FROM leads_captured
-        WHERE workspace_id = ${workspaceId} AND status = ANY(${rule.statuses})
-      `
-    } else if (rule.minScore !== undefined) {
-      rows = await sql`
-        SELECT COUNT(*) as c FROM leads_captured
+        SELECT status FROM leads_captured
         WHERE workspace_id = ${workspaceId} AND COALESCE(score, 0) >= ${rule.minScore}
       `
     } else {
-      rows = await sql`SELECT COUNT(*) as c FROM leads_captured WHERE workspace_id = ${workspaceId}`
+      rows = await sql`SELECT status FROM leads_captured WHERE workspace_id = ${workspaceId}`
     }
-    return Number((rows.rows[0] as { c?: number } | undefined)?.c || 0)
+    if (safeStatuses.length) {
+      const allowed = new Set(safeStatuses)
+      return (rows.rows as { status?: string }[])
+        .filter(r => r.status && allowed.has(r.status))
+        .length
+    }
+    return rows.rows.length
   } catch {
     return 0
   }

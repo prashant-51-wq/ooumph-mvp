@@ -74,6 +74,28 @@ export function notifyPublishFailed(
   )
 }
 
+/**
+ * Sprint 17D (audit P1 #17) — companion to notifyPublishFailed.
+ * Producer-side success notification fired after the publish cron
+ * confirms a post went live. Links to the native permalink when one
+ * is available (so the user can hop directly to LinkedIn / X / etc.),
+ * otherwise back to /dashboard/calendar.
+ */
+export function notifyPublishSuccess(
+  workspaceId: string,
+  channel: string | null,
+  permalink: string | null,
+): Promise<void> {
+  return safeInsert(
+    workspaceId,
+    'post_published',
+    `Post published${channel ? ` on ${channel}` : ''}`,
+    permalink ? `Live at ${permalink}` : 'Live now.',
+    permalink || '/dashboard/calendar',
+    'success',
+  )
+}
+
 export function notifyNurtureReplyReceived(
   workspaceId: string,
   leadEmail: string,

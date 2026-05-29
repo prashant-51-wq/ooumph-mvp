@@ -6,6 +6,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { notifyLeadCaptured } from '@/lib/notifications'
+import { fireSegmentTriggersForNewLead } from '@/lib/segment-trigger'
 
 export const runtime = 'nodejs'
 
@@ -120,6 +121,15 @@ export async function POST(req: NextRequest) {
         }).catch(() => {}) // fire-and-forget
       }
     }).catch(() => {})
+
+    // Sprint 17C (audit P1 #7): fire lead_added_to_segment triggers for
+    // every segment this new lead belongs to. Fire-and-forget; never
+    // blocks the redirect.
+    void fireSegmentTriggersForNewLead({
+      workspaceId,
+      leadId: id,
+      contactEmail: email,
+    })
 
     // Redirect to thank-you page
     const displayName = encodeURIComponent(name || email || 'there')

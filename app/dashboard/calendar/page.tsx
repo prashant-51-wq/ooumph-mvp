@@ -350,6 +350,31 @@ export default function CalendarPage() {
     }
   }, [workspaceId, pendingApprovalByArtifact, fetchItems])
 
+  /** Sprint 17E (audit P2 #25): retry a terminal-failed publish from a
+   *  calendar tile. Mirrors the /publishing page Retry button — flipping
+   *  status back to 'pending' is enough; the cron picks it up next sweep.
+   *  Without this, users seeing a red tile had to context-switch to the
+   *  Publishing surface to do anything about it. */
+  const retryTile = useCallback(async (item: ScheduledItem) => {
+    if (!workspaceId) return
+    setActionError(null)
+    try {
+      const res = await fetch('/api/publishing', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: item.id, workspaceId, status: 'pending' }),
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({})) as { error?: string }
+        throw new Error(data.error || `PATCH ${res.status}`)
+      }
+      setActionInfo('Re-queued. The cron will retry on its next sweep.')
+      await fetchItems()
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err))
+    }
+  }, [workspaceId, fetchItems])
+
   const cancelTile = useCallback(async (item: ScheduledItem) => {
     if (!workspaceId) return
     if (!confirm('Cancel this scheduled post? It will be soft-deleted (audit row preserved).')) return
@@ -483,6 +508,7 @@ export default function CalendarPage() {
                 onEdit={setEditingItem}
                 onApprove={approveTile}
                 onCancel={cancelTile}
+                onRetry={retryTile}
               />
             )}
             {view === 'week' && (
@@ -494,6 +520,7 @@ export default function CalendarPage() {
                 onEdit={setEditingItem}
                 onApprove={approveTile}
                 onCancel={cancelTile}
+                onRetry={retryTile}
               />
             )}
             {view === 'month' && (
@@ -523,7 +550,7 @@ export default function CalendarPage() {
 
 function TileMenu({
   item, hasPendingApproval,
-  onEdit, onApprove, onCancel,
+  onEdit, onApprove, onCancel, onRetry,
   compact = false,
 }: {
   item: ScheduledItem
@@ -531,6 +558,9 @@ function TileMenu({
   onEdit: (item: ScheduledItem) => void
   onApprove: (item: ScheduledItem) => void
   onCancel: (item: ScheduledItem) => void
+  // Sprint 17E (audit P2 #25): only set on failed tiles. Undefined elsewhere
+  // so the menu doesn't render the row.
+  onRetry?: (item: ScheduledItem) => void
   compact?: boolean
 }) {
   const [open, setOpen] = useState(false)
@@ -575,6 +605,16 @@ function TileMenu({
               <Check className="w-3 h-3" /> Approve
             </button>
           )}
+          {/* Sprint 17E (audit P2 #25): parity with /publishing — terminal
+              failed rows can be re-queued straight from the calendar tile. */}
+          {item.status === 'failed' && onRetry && (
+            <button
+              onClick={() => { setOpen(false); onRetry(item) }}
+              className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-indigo-300 hover:bg-gray-800"
+            >
+              <RefreshCw className="w-3 h-3" /> Retry
+            </button>
+          )}
           {editable && (
             <button
               onClick={() => { setOpen(false); onCancel(item) }}
@@ -583,7 +623,7 @@ function TileMenu({
               <Trash2 className="w-3 h-3" /> Cancel
             </button>
           )}
-          {!editable && !hasPendingApproval && (
+          {!editable && !hasPendingApproval && item.status !== 'failed' && (
             <div className="px-3 py-1.5 text-[11px] text-gray-500 italic">No actions — row locked</div>
           )}
         </div>
@@ -691,13 +731,14 @@ function EditTileModal({
 // ─── Agenda view ───────────────────────────────────────────────────────────
 
 function AgendaView({
-  items, publishedMap, pendingApprovalByArtifact, onEdit, onApprove, onCancel,
+  items, publishedMap, pendingApprovalByArtifact, onEdit, onApprove, onCancel, onRetry,
 }: {
   items: ScheduledItem[]; publishedMap: Record<string, PublishedRow>
   pendingApprovalByArtifact: Record<string, string>
   onEdit: (item: ScheduledItem) => void
   onApprove: (item: ScheduledItem) => void
   onCancel: (item: ScheduledItem) => void
+  onRetry: (item: ScheduledItem) => void
 }) {
   const grouped = useMemo(() => {
     const map = new Map<string, ScheduledItem[]>()
@@ -735,6 +776,7 @@ function AgendaView({
                 onEdit={onEdit}
                 onApprove={onApprove}
                 onCancel={onCancel}
+                onRetry={onRetry}
               />
             ))}
           </div>
@@ -745,13 +787,14 @@ function AgendaView({
 }
 
 function AgendaCard({
-  item, published, hasPendingApproval, onEdit, onApprove, onCancel,
+  item, published, hasPendingApproval, onEdit, onApprove, onCancel, onRetry,
 }: {
   item: ScheduledItem; published: PublishedRow | null
   hasPendingApproval: boolean
   onEdit: (item: ScheduledItem) => void
   onApprove: (item: ScheduledItem) => void
   onCancel: (item: ScheduledItem) => void
+  onRetry: (item: ScheduledItem) => void
 }) {
   const channel = getChannel(item)
   const body = getBody(item)
@@ -811,6 +854,7 @@ function AgendaCard({
           onEdit={onEdit}
           onApprove={onApprove}
           onCancel={onCancel}
+          onRetry={onRetry}
         />
       </div>
     </div>
@@ -821,7 +865,7 @@ function AgendaCard({
 
 function WeekView({
   items, publishedMap, anchorDate, onAnchorChange, onReschedule,
-  pendingApprovalByArtifact, onEdit, onApprove, onCancel,
+  pendingApprovalByArtifact, onEdit, onApprove, onCancel, onRetry,
 }: {
   items: ScheduledItem[]; publishedMap: Record<string, PublishedRow>
   anchorDate: Date; onAnchorChange: (d: Date) => void
@@ -830,6 +874,7 @@ function WeekView({
   onEdit: (item: ScheduledItem) => void
   onApprove: (item: ScheduledItem) => void
   onCancel: (item: ScheduledItem) => void
+  onRetry: (item: ScheduledItem) => void
 }) {
   const weekStart = startOfWeek(anchorDate)
   const days = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i))
@@ -921,6 +966,7 @@ function WeekView({
                     onEdit={onEdit}
                     onApprove={onApprove}
                     onCancel={onCancel}
+                    onRetry={onRetry}
                   />
                 ))}
               </div>
@@ -933,13 +979,14 @@ function WeekView({
 }
 
 function WeekTile({
-  item, published, hasPendingApproval, onEdit, onApprove, onCancel,
+  item, published, hasPendingApproval, onEdit, onApprove, onCancel, onRetry,
 }: {
   item: ScheduledItem; published: PublishedRow | null
   hasPendingApproval: boolean
   onEdit: (item: ScheduledItem) => void
   onApprove: (item: ScheduledItem) => void
   onCancel: (item: ScheduledItem) => void
+  onRetry: (item: ScheduledItem) => void
 }) {
   const channel = getChannel(item)
   const stat = statusOf(item.status)
@@ -973,6 +1020,7 @@ function WeekTile({
           onEdit={onEdit}
           onApprove={onApprove}
           onCancel={onCancel}
+          onRetry={onRetry}
           compact
         />
       </div>
