@@ -21,7 +21,8 @@
  * Auth: CRON_SECRET / Vercel Cron header.
  */
 import { NextRequest, NextResponse } from 'next/server'
-import { sql, newId } from '@/lib/db'
+import { sql } from '@/lib/db'
+import { notifyAgentRunFailed } from '@/lib/notifications'
 
 export const runtime = 'nodejs'
 
@@ -89,22 +90,20 @@ async function handleSweep() {
   let notified = 0
   for (const run of failedRuns) {
     if (seenRunIds.has(run.id)) continue
-    const title = `${run.agent_name.replace(/_/g, ' ')} run failed`
-    // Embed the run id in the body so the next sweep can dedup.
-    const body = `${run.error_message || 'No error message'} (run:${run.id})`
+    // Sprint 18H: route through the notifyAgentRunFailed helper so the
+    // workspace opt-out toggle (notifications.inApp.agentTasks) is
+    // honoured. Helper appends the run:<id> marker that the dedup check
+    // above keys on, so re-runs within the 60-min window stay no-op.
     try {
-      await sql`
-        INSERT INTO notifications (id, workspace_id, type, title, body, link, severity, created_at)
-        VALUES (
-          ${newId()}, ${run.workspace_id}, 'agent_run_failed',
-          ${title.slice(0, 200)}, ${body.slice(0, 500)},
-          ${'/dashboard/agents'}, 'error',
-          ${new Date().toISOString()}
-        )
-      `
+      await notifyAgentRunFailed(
+        run.workspace_id,
+        run.agent_name.replace(/_/g, ' '),
+        `${run.error_message || 'No error message'} (run:${run.id})`,
+        run.id,
+      )
       notified++
     } catch (err) {
-      console.error('[agent-run-watchdog] insert failed:', err)
+      console.error('[agent-run-watchdog] notify failed:', err)
     }
   }
 

@@ -199,3 +199,53 @@ export function notifyOAuthExpiring(
     'errors',
   )
 }
+
+/**
+ * Sprint 18H — agent failure + budget alert helpers, completing the set
+ * referenced by audit pass #5. notifyAgentRunFailed pairs with the
+ * agent_runs.status='failed' cron sweep so the bell explicitly raises
+ * a 🔴 instead of relying on the derived /api/notifications join (which
+ * caps at 5 and silently drops older failures).
+ */
+export function notifyAgentRunFailed(
+  workspaceId: string,
+  agentName: string,
+  errMsg: string,
+  runId?: string,
+): Promise<void> {
+  return safeInsert(
+    workspaceId,
+    'agent_run_failed',
+    `${agentName} failed`,
+    errMsg.slice(0, 480),
+    runId ? `/dashboard/activity?run=${runId}` : '/dashboard/activity',
+    'error',
+    'agentTasks',
+  )
+}
+
+/**
+ * Sprint 18H — fired by the ad-platform cost watcher when a campaign's
+ * spend crosses 80 / 100% of the configured daily / monthly cap. Severity
+ * escalates with the percentage.
+ */
+export function notifyBudgetAlert(
+  workspaceId: string,
+  campaignName: string,
+  percent: number,
+  scope: 'daily' | 'monthly' = 'daily',
+): Promise<void> {
+  const pct = Math.round(percent)
+  const sev: 'warning' | 'error' = pct >= 100 ? 'error' : 'warning'
+  return safeInsert(
+    workspaceId,
+    'budget_alert',
+    `${campaignName} hit ${pct}% of ${scope} budget`,
+    pct >= 100
+      ? 'Campaign auto-paused — raise the cap or wait for the next window to resume.'
+      : 'Approaching the cap — review pacing before it auto-pauses.',
+    '/dashboard/ads',
+    sev,
+    'errors',
+  )
+}
