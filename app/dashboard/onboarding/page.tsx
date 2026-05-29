@@ -38,6 +38,14 @@ const TEAM_ROLES = ['Admin', 'Manager', 'Analyst', 'Viewer']
 
 const STEP_NAMES = ['Setup', 'Brand', 'AI Models', 'Channels', 'Content', 'Team', 'Launch']
 
+// Sprint 16H (P1 #21): structured ICP options.
+const COMPANY_SIZES: { value: 'solopreneur' | 'smb' | 'mid-market' | 'enterprise'; label: string }[] = [
+  { value: 'solopreneur', label: 'Solopreneur' },
+  { value: 'smb', label: 'SMB (2–50)' },
+  { value: 'mid-market', label: 'Mid-market (51–500)' },
+  { value: 'enterprise', label: 'Enterprise (500+)' },
+]
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface TeamMember { email: string; role: string }
 
@@ -62,6 +70,20 @@ interface WizardState {
   painPoints: string
   jobTitles: string[]
   jobTitleInput: string
+  // Sprint 16H (P1 #15): logo upload state.
+  logoUrl: string
+  logoUploading: boolean
+  // Sprint 16H (P1 #16): competitor tag list (was hardcoded empty before).
+  competitors: string[]
+  competitorInput: string
+  // Sprint 16H (P1 #21): structured ICP collection.
+  icpIndustries: string[]
+  icpIndustryInput: string
+  icpJobRoles: string[]
+  icpJobRoleInput: string
+  icpCompanySize: '' | 'solopreneur' | 'smb' | 'mid-market' | 'enterprise'
+  icpGeos: string[]
+  icpGeoInput: string
   // Step 3
   useSharedKeys: boolean
   openaiKey: string
@@ -89,6 +111,12 @@ const defaultState: WizardState = {
   colorPrimary: '#6366f1', colorSecondary: '#8b5cf6', colorAccent: '#06b6d4',
   voiceAdjectives: [], toneExampleSocial: '', toneExampleEmail: '', toneExampleCTA: '',
   ageMin: 25, ageMax: 45, painPoints: '', jobTitles: [], jobTitleInput: '',
+  logoUrl: '', logoUploading: false,
+  competitors: [], competitorInput: '',
+  icpIndustries: [], icpIndustryInput: '',
+  icpJobRoles: [], icpJobRoleInput: '',
+  icpCompanySize: '',
+  icpGeos: [], icpGeoInput: '',
   useSharedKeys: true, openaiKey: '', anthropicKey: '', elevenlabsKey: '',
   modelQuality: 70, aiBudget: '',
   connectedChannels: [],
@@ -119,7 +147,7 @@ export default function OnboardingPage() {
     if (saved) {
       try {
         const parsed = JSON.parse(saved)
-        if (parsed.form) setForm(parsed.form)
+        if (parsed.form) setForm({ ...defaultState, ...parsed.form, logoUploading: false })
         if (parsed.step) setStep(parsed.step)
         if (parsed.completedSteps) setCompletedSteps(parsed.completedSteps)
       } catch { /* ignore */ }
@@ -183,6 +211,15 @@ export default function OnboardingPage() {
         form.ageMin && form.ageMax ? `Age: ${form.ageMin}-${form.ageMax}` : null,
       ].filter(Boolean).join(' | ')
 
+      // Sprint 16H (P1 #21): structured ICP payload that the PATCH below
+      // persists to brand_profiles.icp_json.
+      const icpJson = {
+        industries: form.icpIndustries,
+        jobRoles: form.icpJobRoles,
+        companySize: form.icpCompanySize,
+        geos: form.icpGeos,
+        painPoints: form.painPoints,
+      }
       const res = await fetch('/api/workspaces', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -196,7 +233,8 @@ export default function OnboardingPage() {
           uniqueValue: form.description || '',
           targetAudience,
           tone,
-          competitors: '',
+          // Sprint 16H (P1 #16): real competitors list, no longer hardcoded ''.
+          competitors: form.competitors.join(','),
           channels: form.connectedChannels.join(','),
           goals: goalsArray.join(', '),
           monthlyBudget: form.aiBudget || '',
@@ -246,12 +284,16 @@ export default function OnboardingPage() {
             uniqueValue: form.description || '',
             targetAudience,
             tone,
-            competitors: '',
+            // Sprint 16H (P1 #16): persist competitors on PATCH too.
+            competitors: form.competitors.join(','),
             channels: form.connectedChannels.join(','),
             goals: goalsArray.join(', '),
             monthlyBudget: form.aiBudget || '',
             prohibitedClaims: '',
             approvalEmail: approvalEmail || '',
+            // Sprint 16H (P1 #15, #21): logo + structured ICP end-to-end.
+            logoUrl: form.logoUrl || '',
+            icpJson,
             modelSettings: {
               defaultModel: form.modelQuality > 60 ? 'claude-sonnet-4-6' : 'claude-3-5-haiku-20241022',
             },
@@ -494,11 +536,9 @@ function Step2({ form, update, next, back, toggleArr, addTag, removeTag }: {
           </div>
         </div>
 
-        {/* Brand Logo */}
+        {/* Brand Logo — Sprint 16H (P1 #15): real file input + Cloudinary upload */}
         <Field label="Brand Logo">
-          <div className="flex items-center justify-center w-full h-20 rounded-lg border-2 border-dashed border-gray-700 hover:border-indigo-600 transition-colors cursor-pointer text-gray-500 text-sm">
-            📎 Drag & drop logo or click to upload
-          </div>
+          <LogoUploader form={form} update={update} />
         </Field>
 
         {/* Voice adjectives */}
@@ -545,6 +585,62 @@ function Step2({ form, update, next, back, toggleArr, addTag, removeTag }: {
               onAdd={() => addTag('jobTitles', 'jobTitleInput', form.jobTitles)}
               onRemove={v => removeTag('jobTitles', form.jobTitles, v)}
               placeholder="Add job title, press Enter"
+            />
+          </div>
+        </div>
+
+        {/* Sprint 16H (P1 #16): real competitor capture */}
+        <TagInput
+          label="Competitors"
+          tags={form.competitors}
+          inputValue={form.competitorInput}
+          onInputChange={v => update({ competitorInput: v })}
+          onAdd={() => addTag('competitors', 'competitorInput', form.competitors)}
+          onRemove={v => removeTag('competitors', form.competitors, v)}
+          placeholder="Add competitor name, press Enter"
+        />
+
+        {/* Sprint 16H (P1 #21): structured Ideal Customer Profile */}
+        <div className="pt-2 border-t border-gray-800">
+          <label className="block text-sm font-medium text-gray-200 mb-1">Ideal Customer Profile</label>
+          <p className="text-xs text-gray-500 mb-3">Help your AI agents target the right buyers.</p>
+          <div className="space-y-3">
+            <TagInput
+              label="Industries"
+              tags={form.icpIndustries}
+              inputValue={form.icpIndustryInput}
+              onInputChange={v => update({ icpIndustryInput: v })}
+              onAdd={() => addTag('icpIndustries', 'icpIndustryInput', form.icpIndustries)}
+              onRemove={v => removeTag('icpIndustries', form.icpIndustries, v)}
+              placeholder="e.g. SaaS, Healthcare — press Enter"
+            />
+            <TagInput
+              label="Job Roles / Titles"
+              tags={form.icpJobRoles}
+              inputValue={form.icpJobRoleInput}
+              onInputChange={v => update({ icpJobRoleInput: v })}
+              onAdd={() => addTag('icpJobRoles', 'icpJobRoleInput', form.icpJobRoles)}
+              onRemove={v => removeTag('icpJobRoles', form.icpJobRoles, v)}
+              placeholder="e.g. Head of Marketing, CTO — press Enter"
+            />
+            <Field label="Company Size">
+              <div className="flex flex-wrap gap-2 mt-1">
+                {COMPANY_SIZES.map(cs => (
+                  <button key={cs.value} type="button"
+                    onClick={() => update({ icpCompanySize: form.icpCompanySize === cs.value ? '' : cs.value })}
+                    className={cls('px-3 py-1.5 rounded-lg text-xs font-medium border transition-all', form.icpCompanySize === cs.value ? 'bg-indigo-600 border-indigo-600 text-white' : 'bg-gray-800 border-gray-700 text-gray-300 hover:border-indigo-600')}
+                  >{cs.label}</button>
+                ))}
+              </div>
+            </Field>
+            <TagInput
+              label="Geography"
+              tags={form.icpGeos}
+              inputValue={form.icpGeoInput}
+              onInputChange={v => update({ icpGeoInput: v })}
+              onAdd={() => addTag('icpGeos', 'icpGeoInput', form.icpGeos)}
+              onRemove={v => removeTag('icpGeos', form.icpGeos, v)}
+              placeholder="e.g. North America, EU — press Enter"
             />
           </div>
         </div>
@@ -1001,6 +1097,107 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
       <label className="block text-sm font-medium text-gray-200 mb-1.5">{label}</label>
       {hint && <p className="text-xs text-gray-500 mb-1.5">{hint}</p>}
       {children}
+    </div>
+  )
+}
+
+// Sprint 16H (P1 #15): real logo uploader. Reads a File → base64, POSTs to
+// /api/upload/logo which either uploads to Cloudinary or echoes back a data:
+// URL when CLOUDINARY_* env vars aren't configured.
+function LogoUploader({ form, update }: {
+  form: WizardState
+  update: (p: Partial<WizardState>) => void
+}) {
+  const [dragOver, setDragOver] = useState(false)
+  const [error, setError] = useState('')
+
+  const fileToBase64 = (file: File) =>
+    new Promise<{ base64: string; mimeType: string }>((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => {
+        const result = reader.result as string
+        const [meta, b64] = result.split(',')
+        const mimeMatch = meta.match(/data:([^;]+)/)
+        resolve({ base64: b64, mimeType: mimeMatch?.[1] || file.type || 'image/png' })
+      }
+      reader.onerror = () => reject(new Error('Failed to read file'))
+      reader.readAsDataURL(file)
+    })
+
+  const handleFile = async (file: File) => {
+    setError('')
+    if (!file.type.startsWith('image/')) {
+      setError('Please upload an image file.')
+      return
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      setError('Image too large (max 5MB).')
+      return
+    }
+    update({ logoUploading: true })
+    try {
+      const { base64, mimeType } = await fileToBase64(file)
+      const res = await fetch('/api/upload/logo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ base64, mimeType }),
+      })
+      const data = await res.json()
+      if (data?.url) {
+        update({ logoUrl: data.url, logoUploading: false })
+      } else {
+        // Graceful fallback — if the upload endpoint failed entirely, embed
+        // the data URL locally so the user still sees their logo in the
+        // wizard. Persisted as-is (server tolerates data URLs in logo_url).
+        update({ logoUrl: `data:${mimeType};base64,${base64}`, logoUploading: false })
+      }
+    } catch (err) {
+      console.error('[logo upload] failed:', err)
+      setError('Upload failed. Please try again.')
+      update({ logoUploading: false })
+    }
+  }
+
+  const onDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    setDragOver(false)
+    const file = e.dataTransfer.files?.[0]
+    if (file) handleFile(file)
+  }
+
+  if (form.logoUrl) {
+    return (
+      <div className="flex items-center gap-3 p-3 rounded-lg border border-gray-700 bg-gray-800">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={form.logoUrl} alt="Logo preview" className="w-12 h-12 rounded object-contain bg-white/5 border border-gray-700" />
+        <div className="flex-1 min-w-0">
+          <p className="text-xs text-gray-400">Logo uploaded</p>
+          <p className="text-[10px] text-gray-500 truncate">{form.logoUrl.startsWith('data:') ? 'Stored locally (no Cloudinary)' : form.logoUrl}</p>
+        </div>
+        <label className="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-gray-200 text-xs cursor-pointer transition-colors">
+          Replace
+          <input type="file" accept="image/*" className="hidden" onChange={e => e.target.files?.[0] && handleFile(e.target.files[0])} />
+        </label>
+        <button type="button" onClick={() => update({ logoUrl: '' })} className="text-gray-500 hover:text-red-400 text-xs transition-colors">Remove</button>
+      </div>
+    )
+  }
+
+  return (
+    <div>
+      <label
+        onDragOver={e => { e.preventDefault(); setDragOver(true) }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={onDrop}
+        className={cls(
+          'flex items-center justify-center w-full h-20 rounded-lg border-2 border-dashed transition-colors cursor-pointer text-sm',
+          dragOver ? 'border-indigo-500 bg-indigo-600/10 text-indigo-300' : 'border-gray-700 hover:border-indigo-600 text-gray-500',
+        )}
+      >
+        {form.logoUploading ? '⏳ Uploading…' : '📎 Drag & drop logo or click to upload'}
+        <input type="file" accept="image/*" className="hidden" onChange={e => e.target.files?.[0] && handleFile(e.target.files[0])} />
+      </label>
+      {error && <p className="text-xs text-red-400 mt-1">{error}</p>}
     </div>
   )
 }

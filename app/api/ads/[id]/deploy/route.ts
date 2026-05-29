@@ -47,6 +47,8 @@ interface AdCampaignRow {
   status: string
   error_log: string | null
   utm_override: string | null
+  objective: string | null
+  targeting_json: string | null
 }
 
 interface AdCreativeRow {
@@ -114,9 +116,16 @@ async function dispatchToProvider(
     if (hasRealIntegration && ['meta_ads', 'google_ads', 'dv360'].includes(platform)) {
       // Lazy import so we don't pay the cost in mock-only paths.
       const { publishCampaignToPlatform } = await import('@/lib/ad-platforms/index')
+      // Parse stored targeting_json (best-effort — corrupt JSON falls back to {})
+      let targeting: Record<string, unknown> = {}
+      if (campaign.targeting_json) {
+        try { targeting = JSON.parse(campaign.targeting_json) as Record<string, unknown> }
+        catch (e) { console.warn(`[ads/deploy] targeting_json parse failed for ${campaign.id}, using defaults`, e) }
+      }
       const brief: Record<string, unknown> = {
         campaignName: campaign.name,
-        campaignObjective: 'leads',
+        campaignObjective: campaign.objective || 'leads',
+        targeting,
         duration: '30 days',
         adSets: creatives.map(c => ({
           name: c.headline.slice(0, 60) || 'Ad Set',
@@ -279,7 +288,8 @@ export async function POST(req: NextRequest, ctx: RouteCtx) {
   `
   const campaignRes = await sql`
     SELECT id, workspace_id, platform, native_campaign_id, name,
-           daily_budget, status, error_log, utm_override
+           daily_budget, status, error_log, utm_override,
+           objective, targeting_json
     FROM ad_campaigns
     WHERE id = ${campaignId} AND workspace_id = ${workspaceId}
     LIMIT 1

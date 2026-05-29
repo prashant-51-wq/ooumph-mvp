@@ -66,6 +66,30 @@ interface Segment {
   type: 'builtin' | 'custom'
 }
 
+/**
+ * Sprint 16F TASK 1 — persisted segment row as it lands back from
+ * GET /api/segments. The CRM page is the source of truth for rule
+ * semantics (see `applySavedSegment` below); the server treats `rule`
+ * as an opaque blob.
+ */
+interface SavedSegmentRule {
+  statuses?: string[]
+  sources?: string[]
+  campaignLike?: string
+  minScore?: number
+  maxScore?: number
+  createdSince?: string
+}
+interface SavedSegment {
+  id: string
+  name: string
+  description: string | null
+  rule: SavedSegmentRule
+  member_count: number
+  created_at: string
+  updated_at: string
+}
+
 // ── Constants ──────────────────────────────────────────────────────────────────
 const AVATAR_COLORS = ['bg-indigo-600','bg-purple-600','bg-pink-600','bg-blue-600','bg-emerald-600','bg-orange-600','bg-rose-600','bg-cyan-600']
 const STAGES: Stage[] = ['Lead','Prospect','Qualified','Proposal','Customer','Churned']
@@ -888,69 +912,116 @@ function CSVImportModal({ onClose, workspaceId, onImported }: { onClose: () => v
 }
 
 // ── Segment Rule Builder Modal ────────────────────────────────────────────────
-function SegmentModal({ onClose }: { onClose: () => void }) {
+/**
+ * Sprint 16F TASK 1 — modal POSTs to /api/segments.
+ *
+ * Rule shape mirrors normaliseRule() in app/api/segments/route.ts:
+ *   statuses?, sources?, minScore?, maxScore?, campaignLike?, createdSince?
+ *
+ * The pre-Sprint-16F version used random match-counts and a no-op submit
+ * button — wired now so saved segments actually persist and show up in
+ * the saved-segment chip strip on next load.
+ */
+function SegmentModal({ onClose, workspaceId, onSaved }: {
+  onClose: () => void
+  workspaceId: string | null
+  onSaved: () => void
+}) {
   const [name, setName] = useState('')
-  const [logic, setLogic] = useState<'AND'|'OR'>('AND')
-  const [conditions, setConditions] = useState([{ field: 'score', operator: '>=', value: '70' }])
+  const [description, setDescription] = useState('')
+  const [statusesStr, setStatusesStr] = useState('')
+  const [sourcesStr, setSourcesStr] = useState('')
+  const [minScore, setMinScore] = useState('')
+  const [maxScore, setMaxScore] = useState('')
+  const [createdSince, setCreatedSince] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
-  const FIELDS = ['score','stage','rfm_tier','company','tags','last_activity','deal_value']
-  const OPERATORS = ['=','!=','>=','<=','contains','not contains']
-
-  function addCondition() {
-    setConditions(c => [...c, { field: 'score', operator: '>=', value: '' }])
+  async function submit() {
+    if (!workspaceId) { setError('No workspace'); return }
+    if (!name.trim()) { setError('Name is required'); return }
+    setError(null); setSaving(true)
+    try {
+      const rule: SavedSegmentRule = {}
+      if (statusesStr.trim()) rule.statuses = statusesStr.split(',').map(s => s.trim()).filter(Boolean)
+      if (sourcesStr.trim()) rule.sources = sourcesStr.split(',').map(s => s.trim()).filter(Boolean)
+      if (minScore !== '' && !Number.isNaN(Number(minScore))) rule.minScore = Number(minScore)
+      if (maxScore !== '' && !Number.isNaN(Number(maxScore))) rule.maxScore = Number(maxScore)
+      if (createdSince.trim()) rule.createdSince = createdSince
+      const res = await fetch('/api/segments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          workspaceId,
+          name: name.trim(),
+          description: description.trim() || undefined,
+          rule,
+        }),
+      })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({})) as { error?: string }
+        throw new Error(body.error || `Save failed (${res.status})`)
+      }
+      onSaved()
+      onClose()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally { setSaving(false) }
   }
-
-  const matchCount = Math.floor(Math.random() * 80) + 10
 
   return (
     <div className="fixed inset-0 bg-gray-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
       <div className="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-lg" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800">
-          <h2 className="text-white font-semibold">Create Segment</h2>
+          <h2 className="text-white font-semibold">Save Segment</h2>
           <button onClick={onClose} className="text-gray-500 hover:text-white">✕</button>
         </div>
         <div className="p-6 space-y-4">
           <div>
-            <label className="text-xs text-gray-500 uppercase tracking-wide mb-1.5 block">Segment Name</label>
-            <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. High-Value At-Risk" className={inputCls} />
+            <label className="text-xs text-gray-500 uppercase tracking-wide mb-1.5 block">Name *</label>
+            <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. High-Score Recent Leads" className={inputCls} />
           </div>
-
-          <div className="flex items-center gap-3">
-            <span className="text-gray-400 text-sm">Match</span>
-            <div className="flex">
-              {(['AND','OR'] as const).map(l => (
-                <button key={l} onClick={() => setLogic(l)} className={`px-4 py-1.5 text-sm border transition-colors first:rounded-l-lg last:rounded-r-lg ${logic === l ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-gray-800 border-gray-700 text-gray-400 hover:text-white'}`}>{l}</button>
-              ))}
+          <div>
+            <label className="text-xs text-gray-500 uppercase tracking-wide mb-1.5 block">Description</label>
+            <input value={description} onChange={e => setDescription(e.target.value)} placeholder="optional notes" className={inputCls} />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs text-gray-500 uppercase tracking-wide mb-1.5 block">Statuses</label>
+              <input value={statusesStr} onChange={e => setStatusesStr(e.target.value)} placeholder="new, contacted, qualified" className={inputCls} />
+              <p className="text-[10px] text-gray-600 mt-1">Comma-separated. e.g. new, hot, qualified.</p>
             </div>
-            <span className="text-gray-400 text-sm">of the following conditions</span>
+            <div>
+              <label className="text-xs text-gray-500 uppercase tracking-wide mb-1.5 block">Sources</label>
+              <input value={sourcesStr} onChange={e => setSourcesStr(e.target.value)} placeholder="meta_ads, google" className={inputCls} />
+            </div>
+            <div>
+              <label className="text-xs text-gray-500 uppercase tracking-wide mb-1.5 block">Min score</label>
+              <input value={minScore} onChange={e => setMinScore(e.target.value)} type="number" placeholder="0" className={inputCls} />
+            </div>
+            <div>
+              <label className="text-xs text-gray-500 uppercase tracking-wide mb-1.5 block">Max score</label>
+              <input value={maxScore} onChange={e => setMaxScore(e.target.value)} type="number" placeholder="100" className={inputCls} />
+            </div>
+            <div className="col-span-2">
+              <label className="text-xs text-gray-500 uppercase tracking-wide mb-1.5 block">Created since (ISO date)</label>
+              <input value={createdSince} onChange={e => setCreatedSince(e.target.value)} type="date" className={inputCls} />
+            </div>
           </div>
 
-          <div className="space-y-2">
-            {conditions.map((cond, i) => (
-              <div key={i} className="flex gap-2 items-center">
-                <select value={cond.field} onChange={e => setConditions(cs => cs.map((c,j) => j===i ? {...c, field:e.target.value} : c))} className={selectCls + ' flex-1'}>
-                  {FIELDS.map(f => <option key={f} value={f}>{f}</option>)}
-                </select>
-                <select value={cond.operator} onChange={e => setConditions(cs => cs.map((c,j) => j===i ? {...c, operator:e.target.value} : c))} className={selectCls + ' w-28'}>
-                  {OPERATORS.map(o => <option key={o} value={o}>{o}</option>)}
-                </select>
-                <input value={cond.value} onChange={e => setConditions(cs => cs.map((c,j) => j===i ? {...c, value:e.target.value} : c))} className={inputCls + ' w-24'} placeholder="value" />
-                {conditions.length > 1 && (
-                  <button onClick={() => setConditions(cs => cs.filter((_,j) => j!==i))} className="text-gray-600 hover:text-red-400 text-sm">✕</button>
-                )}
-              </div>
-            ))}
-          </div>
+          {error && (
+            <div className="bg-rose-950/30 border border-rose-800/40 rounded-lg px-4 py-2 text-rose-300 text-sm">{error}</div>
+          )}
 
-          <button onClick={addCondition} className="text-indigo-400 hover:text-indigo-300 text-sm font-medium">+ Add condition</button>
-
-          <div className="bg-indigo-950/30 border border-indigo-800/40 rounded-lg px-4 py-3">
-            <p className="text-indigo-300 text-sm">This segment matches <span className="font-bold">{matchCount} contacts</span></p>
-          </div>
-
-          <div className="flex gap-3">
+          <div className="flex gap-3 pt-2">
             <button onClick={onClose} className="flex-1 py-2.5 border border-gray-700 text-gray-400 rounded-lg text-sm hover:text-white">Cancel</button>
-            <button className="flex-1 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-medium transition-colors">Create Segment</button>
+            <button
+              onClick={() => void submit()}
+              disabled={saving || !name.trim()}
+              className="flex-1 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-900/40 disabled:text-gray-500 text-white rounded-lg text-sm font-medium transition-colors"
+            >
+              {saving ? 'Saving…' : 'Save Segment'}
+            </button>
           </div>
         </div>
       </div>
@@ -1392,6 +1463,9 @@ export default function LeadsCRMPage() {
 
   const [showImport, setShowImport] = useState(false)
   const [showSegmentModal, setShowSegmentModal] = useState(false)
+  // Sprint 16F TASK 1: persisted segments live alongside built-ins.
+  const [savedSegments, setSavedSegments] = useState<SavedSegment[]>([])
+  const [appliedSavedSegmentId, setAppliedSavedSegmentId] = useState<string | null>(null)
   const [showAddActivity, setShowAddActivity] = useState(false)
   const [showAddDeal, setShowAddDeal] = useState(false)
   const [showAddContact, setShowAddContact] = useState(false)
@@ -1473,6 +1547,38 @@ export default function LeadsCRMPage() {
     else if (sessionResolved) setLoading(false)
   }, [sessionWorkspaceId, sessionResolved, loadData])
 
+  // Sprint 16F TASK 1: load persisted segments from /api/segments.
+  const loadSavedSegments = useCallback(async (wsId: string) => {
+    try {
+      const res = await fetch(`/api/segments?workspaceId=${wsId}`)
+      if (!res.ok) return
+      const rows = await res.json() as Array<Record<string, unknown>>
+      const mapped: SavedSegment[] = (Array.isArray(rows) ? rows : []).map(r => ({
+        id: String(r.id || ''),
+        name: String(r.name || ''),
+        description: r.description == null ? null : String(r.description),
+        rule: (r.rule && typeof r.rule === 'object') ? r.rule as SavedSegmentRule : {},
+        member_count: Number(r.member_count || 0),
+        created_at: String(r.created_at || ''),
+        updated_at: String(r.updated_at || r.created_at || ''),
+      }))
+      setSavedSegments(mapped)
+    } catch { /* non-fatal — saved segments are an extra */ }
+  }, [])
+  useEffect(() => {
+    if (sessionWorkspaceId) loadSavedSegments(sessionWorkspaceId)
+  }, [sessionWorkspaceId, loadSavedSegments])
+
+  // Sprint 16F TASK 1: delete a saved segment.
+  async function deleteSavedSegment(id: string) {
+    if (!workspaceId) return
+    try {
+      await fetch(`/api/segments?id=${id}&workspaceId=${workspaceId}`, { method: 'DELETE' })
+      setSavedSegments(s => s.filter(x => x.id !== id))
+      if (appliedSavedSegmentId === id) setAppliedSavedSegmentId(null)
+    } catch { /* ignore */ }
+  }
+
   // Cross-CRM deep-link: the Voice AI call drawer (and any other surface) can
   // open this page with ?leadId=… and the matching contact's drawer pops
   // automatically. We watch `contacts` so the lookup runs once data lands —
@@ -1511,9 +1617,36 @@ export default function LeadsCRMPage() {
       }).catch(() => setSelectedContactActivities([]))
   }, [selectedContact?.id])
 
-  const filtered = contacts.filter(c =>
-    !search || c.name.toLowerCase().includes(search.toLowerCase()) || c.email.toLowerCase().includes(search.toLowerCase()) || c.company.toLowerCase().includes(search.toLowerCase())
-  )
+  // Sprint 16F TASK 1: apply rule of an active saved segment on top of the
+  // existing text-search filter. The rule shape matches normaliseRule() in
+  // /api/segments — statuses[] (status names), minScore/maxScore, sources[],
+  // campaignLike, createdSince. We translate `status` to our local Stage enum
+  // via statusToStage() so the chip's filter reads like the saved rule.
+  const appliedSegment = appliedSavedSegmentId
+    ? savedSegments.find(s => s.id === appliedSavedSegmentId) || null
+    : null
+  function ruleMatch(c: Contact, rule: SavedSegmentRule): boolean {
+    if (rule.statuses?.length) {
+      const targetStages = new Set(rule.statuses.map(statusToStage))
+      if (!targetStages.has(c.stage)) return false
+    }
+    if (typeof rule.minScore === 'number' && c.score < rule.minScore) return false
+    if (typeof rule.maxScore === 'number' && c.score > rule.maxScore) return false
+    if (rule.createdSince) {
+      const since = new Date(rule.createdSince).getTime()
+      if (!Number.isNaN(since) && new Date(c.created_at).getTime() < since) return false
+    }
+    return true
+  }
+  const filtered = contacts.filter(c => {
+    const textOk = !search
+      || c.name.toLowerCase().includes(search.toLowerCase())
+      || c.email.toLowerCase().includes(search.toLowerCase())
+      || c.company.toLowerCase().includes(search.toLowerCase())
+    if (!textOk) return false
+    if (appliedSegment && !ruleMatch(c, appliedSegment.rule)) return false
+    return true
+  })
 
   // ── Real segments derived from loaded contacts ─────────────────────────────
   // Every count below is computed from the workspace's actual `contacts` array
@@ -1688,6 +1821,69 @@ export default function LeadsCRMPage() {
           </div>
         )}
       </div>
+
+      {/* Sprint 16F TASK 1 — Saved segment chips strip.
+          Sits between toolbar and stats so it's visible in every tab. The
+          "Save as segment..." button opens the rule-builder modal which
+          POSTs to /api/segments. Active chip narrows the `filtered` list. */}
+      {(savedSegments.length > 0 || appliedSavedSegmentId) && (
+        <div className="flex items-center gap-2 flex-wrap px-4 py-2 border-b border-gray-800 bg-gray-950">
+          <span className="text-[10px] uppercase tracking-wider text-gray-600 font-medium mr-1">
+            Saved segments
+          </span>
+          {savedSegments.map(seg => {
+            const active = appliedSavedSegmentId === seg.id
+            return (
+              <span
+                key={seg.id}
+                className={`group inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs border transition-colors cursor-pointer ${
+                  active
+                    ? 'bg-indigo-600 border-indigo-500 text-white'
+                    : 'bg-gray-900 border-gray-800 text-gray-300 hover:border-indigo-700'
+                }`}
+                onClick={() => setAppliedSavedSegmentId(active ? null : seg.id)}
+                title={seg.description || `${seg.member_count} members`}
+              >
+                {seg.name}
+                <span className={`text-[10px] tabular-nums ${active ? 'text-indigo-200' : 'text-gray-500'}`}>
+                  {seg.member_count}
+                </span>
+                <button
+                  onClick={(e) => { e.stopPropagation(); void deleteSavedSegment(seg.id) }}
+                  className={`ml-0.5 text-[10px] ${active ? 'text-indigo-200 hover:text-white' : 'text-gray-600 hover:text-rose-400'}`}
+                  title="Delete saved segment"
+                >
+                  ✕
+                </button>
+              </span>
+            )
+          })}
+          {appliedSavedSegmentId && (
+            <button
+              onClick={() => setAppliedSavedSegmentId(null)}
+              className="text-[11px] text-gray-500 hover:text-gray-300 ml-1"
+            >
+              Clear filter
+            </button>
+          )}
+          <button
+            onClick={() => setShowSegmentModal(true)}
+            className="ml-auto text-[11px] text-indigo-300 hover:text-indigo-200 font-medium"
+          >
+            + Save as segment…
+          </button>
+        </div>
+      )}
+      {savedSegments.length === 0 && (
+        <div className="flex items-center justify-end px-4 py-1.5 border-b border-gray-800 bg-gray-950">
+          <button
+            onClick={() => setShowSegmentModal(true)}
+            className="text-[11px] text-indigo-300 hover:text-indigo-200 font-medium"
+          >
+            + Save current view as segment…
+          </button>
+        </div>
+      )}
 
       {/* ── Stats Bar ───────────────────────────────────────────────────── */}
       <div className="grid grid-cols-6 gap-px bg-gray-800 border-b border-gray-800 flex-shrink-0">
@@ -1959,6 +2155,87 @@ export default function LeadsCRMPage() {
                 </div>
               ))}
             </div>
+
+            {/* Sprint 16F TASK 1 — saved segments live BELOW the built-in
+                strip. Source of truth is /api/segments. Empty state is honest
+                so a fresh workspace doesn't see fake "Champions" rows. */}
+            <div className="mt-8">
+              <div className="flex items-center justify-between mb-3">
+                <div>
+                  <h3 className="text-white font-semibold text-sm">Saved Segments</h3>
+                  <p className="text-gray-500 text-xs">
+                    Persisted rules from /api/segments — shareable across the workspace.
+                  </p>
+                </div>
+                <button
+                  onClick={() => setShowSegmentModal(true)}
+                  className="text-xs text-indigo-300 hover:text-indigo-200 font-medium"
+                >
+                  + Save current view as segment…
+                </button>
+              </div>
+              {savedSegments.length === 0 ? (
+                <div className="bg-gray-900 border border-dashed border-gray-800 rounded-xl p-6 text-center text-sm text-gray-500">
+                  No saved segments yet — save a filter combination above to reuse it later.
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {savedSegments.map(seg => (
+                    <div key={seg.id} className="bg-gray-900 border border-indigo-900/40 rounded-xl p-5">
+                      <div className="flex items-start justify-between mb-3">
+                        <div>
+                          <h4 className="text-white font-semibold">{seg.name}</h4>
+                          {seg.description && (
+                            <p className="text-gray-500 text-xs mt-0.5">{seg.description}</p>
+                          )}
+                        </div>
+                        <div className="text-right">
+                          <p className="text-2xl font-bold text-indigo-300">{seg.member_count}</p>
+                          <p className="text-gray-500 text-xs">members</p>
+                        </div>
+                      </div>
+                      <div className="mb-3">
+                        <p className="text-xs text-gray-600 mb-1.5">Rule:</p>
+                        <div className="flex flex-wrap gap-1.5">
+                          {seg.rule.statuses?.length ? (
+                            <span className="px-2 py-0.5 bg-gray-800 text-gray-400 text-xs rounded border border-gray-700">status ∈ {seg.rule.statuses.join(',')}</span>
+                          ) : null}
+                          {typeof seg.rule.minScore === 'number' ? (
+                            <span className="px-2 py-0.5 bg-gray-800 text-gray-400 text-xs rounded border border-gray-700">score ≥ {seg.rule.minScore}</span>
+                          ) : null}
+                          {typeof seg.rule.maxScore === 'number' ? (
+                            <span className="px-2 py-0.5 bg-gray-800 text-gray-400 text-xs rounded border border-gray-700">score ≤ {seg.rule.maxScore}</span>
+                          ) : null}
+                          {seg.rule.sources?.length ? (
+                            <span className="px-2 py-0.5 bg-gray-800 text-gray-400 text-xs rounded border border-gray-700">source ∈ {seg.rule.sources.join(',')}</span>
+                          ) : null}
+                          {seg.rule.createdSince ? (
+                            <span className="px-2 py-0.5 bg-gray-800 text-gray-400 text-xs rounded border border-gray-700">created ≥ {seg.rule.createdSince.slice(0,10)}</span>
+                          ) : null}
+                          {Object.keys(seg.rule).length === 0 && (
+                            <span className="px-2 py-0.5 bg-gray-800 text-gray-500 text-xs rounded border border-gray-700 italic">no filters (all contacts)</span>
+                          )}
+                        </div>
+                      </div>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => { setMainTab('contacts'); setAppliedSavedSegmentId(seg.id) }}
+                          className="flex-1 py-1.5 bg-indigo-700/40 hover:bg-indigo-700/60 text-indigo-200 rounded-lg text-xs transition-colors"
+                        >
+                          Apply filter
+                        </button>
+                        <button
+                          onClick={() => void deleteSavedSegment(seg.id)}
+                          className="px-3 py-1.5 bg-gray-800 hover:bg-rose-900/40 text-gray-400 hover:text-rose-300 rounded-lg text-xs transition-colors"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         )}
 
@@ -2168,7 +2445,13 @@ export default function LeadsCRMPage() {
 
       {/* ── Modals ───────────────────────────────────────────────────────── */}
       {showImport && <CSVImportModal onClose={() => setShowImport(false)} workspaceId={workspaceId} onImported={() => workspaceId && loadData(workspaceId)} />}
-      {showSegmentModal && <SegmentModal onClose={() => setShowSegmentModal(false)} />}
+      {showSegmentModal && (
+        <SegmentModal
+          onClose={() => setShowSegmentModal(false)}
+          workspaceId={workspaceId}
+          onSaved={() => { if (workspaceId) void loadSavedSegments(workspaceId) }}
+        />
+      )}
       {showAddActivity && <AddActivityModal onClose={() => setShowAddActivity(false)} contacts={contacts} workspaceId={workspaceId} onLogged={() => workspaceId && loadData(workspaceId)} />}
       {showAddDeal && <AddDealModal onClose={() => setShowAddDeal(false)} contacts={contacts} workspaceId={workspaceId} onAdded={() => workspaceId && loadData(workspaceId)} />}
       {editingDeal && <EditDealModal deal={editingDeal} onClose={() => setEditingDeal(null)} onSaved={() => { setEditingDeal(null); if (workspaceId) loadData(workspaceId) }} />}

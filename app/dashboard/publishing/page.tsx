@@ -237,6 +237,12 @@ export default function PublishingHubPage() {
   const [publishMessage, setPublishMessage] = useState<{ kind: 'success' | 'error'; text: string } | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const [attachedFileName, setAttachedFileName] = useState<string | null>(null)
+  // Sprint 16I (P1 #22): media library bridge. The composer can now pull
+  // existing rows from media_assets (populated by Sprint 15D dual-write)
+  // and attach them to the outgoing post via the mediaUrls field that the
+  // /api/publishing POST already accepts.
+  const [showMediaPicker, setShowMediaPicker] = useState(false)
+  const [attachedMediaUrls, setAttachedMediaUrls] = useState<{ url: string; filename: string; assetType: string }[]>([])
 
   // ── Loaders ─────────────────────────────────────────────────────────────────
   const loadIntegrations = useCallback(async (wsId: string) => {
@@ -414,7 +420,10 @@ export default function PublishingHubPage() {
             channel: p,
             contentBody: allContent,
             scheduledAt,
-            mediaUrls: [], // Media upload not wired in this rewrite — see file header.
+            // Sprint 16I (P1 #22): attached media from the library now ride
+            // along on POST. The endpoint already stores media_urls as a
+            // JSON array; the cron worker consumes those for native uploads.
+            mediaUrls: attachedMediaUrls.map(m => m.url),
           }),
         })
         if (!res.ok) {
@@ -460,12 +469,39 @@ export default function PublishingHubPage() {
           setSelectedHashtags([])
           setScheduleDate('')
           setAttachedFileName(null)
+          setAttachedMediaUrls([])
         }
       } else if (succeeded > 0 && firstError) {
         setPublishMessage({ kind: 'error', text: `Partial: ${succeeded} succeeded. ${firstError}` })
       } else {
         setPublishMessage({ kind: 'error', text: firstError || 'Publish failed for all selected platforms.' })
       }
+    } finally {
+      setPublishing(false)
+    }
+  }
+
+  /** Sprint 16I (P1 #18): Retry a row that hit MAX_RETRY_COUNT and went
+   *  terminal-failed. The PATCH endpoint accepts status='pending', and
+   *  resetting status by itself is enough — the cron will pick the row
+   *  back up on its next sweep. We don't change scheduled_at: if the
+   *  user wants a different time they can use Edit. */
+  async function retryFailed(id: string) {
+    if (!workspaceId) return
+    setPublishing(true)
+    try {
+      const res = await fetch('/api/publishing', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, workspaceId, status: 'pending' }),
+      })
+      if (!res.ok) {
+        const t = await res.text().catch(() => '')
+        setPublishMessage({ kind: 'error', text: `Retry failed: ${res.status} ${t}` })
+      } else {
+        setPublishMessage({ kind: 'success', text: 'Re-queued. The cron will retry on its next sweep.' })
+      }
+      await loadQueue(workspaceId)
     } finally {
       setPublishing(false)
     }
@@ -677,6 +713,20 @@ export default function PublishingHubPage() {
                     {post.error_message && (
                       <span title={post.error_message} className="text-red-400 text-xs flex-shrink-0 cursor-help">!</span>
                     )}
+                    {/* Sprint 16I (P1 #18): retry button for terminal-failed rows.
+                        Resets status='pending' so the cron requeues. We surface
+                        the row's error_message on hover so the user knows what
+                        previously broke before they retry. */}
+                    {post.status === 'failed' && (
+                      <button
+                        onClick={() => retryFailed(post.id)}
+                        disabled={publishing}
+                        title={post.error_message || 'Retry — re-queues for the next cron sweep'}
+                        className="flex-shrink-0 px-2 py-1 rounded text-xs bg-amber-900/40 hover:bg-amber-900/60 disabled:opacity-50 text-amber-300 border border-amber-800/50 transition-colors"
+                      >
+                        ↻ Retry
+                      </button>
+                    )}
                   </div>
                 )
               })}
@@ -799,39 +849,59 @@ export default function PublishingHubPage() {
               </div>
             </div>
 
-            {/* Media attachment — file is collected but NOT uploaded.
-                AI caption / alt-text panel intentionally disabled with a
-                "Coming soon" notice. The previous handleMediaDrop was a
-                setTimeout fake; we'd rather show nothing than lie. */}
+            {/* Sprint 16I (P1 #22): Media bridge.
+                The composer now pulls from /api/media-assets (populated by
+                Sprint 15D's creative dual-write) and ships the chosen URLs
+                in mediaUrls[] on POST. The old "Upload + AI captioning"
+                drop zone has been removed — it captured a filename without
+                actually uploading anything, which was misleading. The local
+                drop zone hidden input is still wired so users can fall back
+                to a single inline filename if they want, but the primary
+                affordance is the media library picker. */}
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 space-y-3">
               <div className="flex items-center justify-between">
                 <h3 className="text-white text-sm font-semibold">Media</h3>
-                <span className="text-amber-400 text-[10px] bg-amber-900/20 border border-amber-800/40 px-2 py-0.5 rounded">AI captioning coming soon</span>
+                <button
+                  onClick={() => setShowMediaPicker(true)}
+                  className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium flex items-center gap-1.5"
+                >
+                  + Attach media
+                </button>
               </div>
-              <div
-                onDragOver={e => e.preventDefault()}
-                onDrop={e => {
-                  e.preventDefault()
-                  const f = e.dataTransfer?.files?.[0]
-                  setAttachedFileName(f ? f.name : null)
-                }}
-                onClick={() => fileRef.current?.click()}
-                className="border-2 border-dashed border-gray-700 hover:border-indigo-600 rounded-xl p-6 text-center cursor-pointer transition-colors"
-              >
-                <input ref={fileRef} type="file" accept="image/*,video/*" className="hidden" onChange={onFileChosen} />
-                <div className="text-3xl mb-2">🖼</div>
-                {attachedFileName ? (
-                  <p className="text-gray-300 text-sm">{attachedFileName}</p>
-                ) : (
-                  <>
-                    <p className="text-gray-400 text-sm">Click or drop a file to attach</p>
-                    <p className="text-gray-600 text-xs mt-1">Upload + AI captioning will arrive in the next release. For now, attach text-only posts.</p>
-                  </>
-                )}
-              </div>
+
+              {attachedMediaUrls.length === 0 ? (
+                <p className="text-gray-600 text-xs">
+                  Pull from your media library — images and videos from previous generations or uploads are stored there.
+                </p>
+              ) : (
+                <div className="grid grid-cols-4 gap-2">
+                  {attachedMediaUrls.map(m => (
+                    <div key={m.url} className="relative group rounded-lg overflow-hidden border border-gray-700 bg-gray-800 aspect-square">
+                      {m.assetType === 'video' ? (
+                        <video src={m.url} className="w-full h-full object-cover" muted />
+                      ) : (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={m.url} alt={m.filename} className="w-full h-full object-cover" />
+                      )}
+                      <button
+                        onClick={() => setAttachedMediaUrls(prev => prev.filter(x => x.url !== m.url))}
+                        className="absolute top-1 right-1 w-5 h-5 rounded-full bg-gray-950/80 hover:bg-red-900/80 text-white text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                        title="Remove"
+                      >
+                        ×
+                      </button>
+                      <p className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-gray-950/90 to-transparent px-1.5 py-1 text-[9px] text-gray-200 truncate">{m.filename}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Legacy local-file picker retained for now — the file is
+                  captured by name only, identical to pre-16I behavior. */}
+              <input ref={fileRef} type="file" accept="image/*,video/*" className="hidden" onChange={onFileChosen} />
               {attachedFileName && (
                 <p className="text-amber-300 text-xs">
-                  Note: file is selected but not uploaded yet. Media publishing will work once storage + captioning are wired. Your post will currently send text only.
+                  Local file selected ({attachedFileName}) — not uploaded. Use the media library to attach assets that will actually publish.
                 </p>
               )}
             </div>
@@ -1123,6 +1193,167 @@ export default function PublishingHubPage() {
         </div>
       </div>
 
+      {showMediaPicker && workspaceId && (
+        <MediaPickerModal
+          workspaceId={workspaceId}
+          alreadyAttachedUrls={attachedMediaUrls.map(m => m.url)}
+          onClose={() => setShowMediaPicker(false)}
+          onConfirm={(picked) => {
+            setAttachedMediaUrls(prev => {
+              const seen = new Set(prev.map(m => m.url))
+              const merged = [...prev]
+              for (const p of picked) if (!seen.has(p.url)) merged.push(p)
+              return merged
+            })
+            setShowMediaPicker(false)
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+// ─── Media Picker Modal (Sprint 16I P1 #22) ───────────────────────────────
+
+interface MediaAssetRow {
+  id: string
+  workspace_id: string
+  filename: string
+  url: string
+  asset_type: string
+  created_at: string
+}
+
+function MediaPickerModal({
+  workspaceId, alreadyAttachedUrls, onClose, onConfirm,
+}: {
+  workspaceId: string
+  alreadyAttachedUrls: string[]
+  onClose: () => void
+  onConfirm: (picked: { url: string; filename: string; assetType: string }[]) => void
+}) {
+  const [assets, setAssets] = useState<MediaAssetRow[] | null>(null)
+  const [filter, setFilter] = useState<'all' | 'image' | 'video'>('all')
+  const [error, setError] = useState<string | null>(null)
+  const [selected, setSelected] = useState<Record<string, MediaAssetRow>>({})
+
+  useEffect(() => {
+    let cancelled = false
+    setAssets(null)
+    setError(null)
+    fetch(`/api/media-assets?workspaceId=${encodeURIComponent(workspaceId)}`)
+      .then(async r => r.ok ? (r.json() as Promise<MediaAssetRow[]>) : Promise.reject(new Error(`HTTP ${r.status}`)))
+      .then(rows => {
+        if (cancelled) return
+        // Keep only image + video — audio/doc/thumbnail don't fit social posts.
+        const filtered = Array.isArray(rows)
+          ? rows.filter(r => r.asset_type === 'image' || r.asset_type === 'video')
+          : []
+        setAssets(filtered)
+      })
+      .catch(err => { if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load') })
+    return () => { cancelled = true }
+  }, [workspaceId])
+
+  const shown = useMemo(() => {
+    if (!assets) return []
+    if (filter === 'all') return assets
+    return assets.filter(a => a.asset_type === filter)
+  }, [assets, filter])
+
+  function toggle(a: MediaAssetRow) {
+    setSelected(prev => {
+      const next = { ...prev }
+      if (next[a.id]) delete next[a.id]
+      else next[a.id] = a
+      return next
+    })
+  }
+
+  const selectedCount = Object.keys(selected).length
+
+  return (
+    <div className="fixed inset-0 z-50 bg-gray-950/80 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-3xl max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-3 border-b border-gray-800">
+          <div>
+            <h2 className="text-white font-semibold text-sm">Attach media from library</h2>
+            <p className="text-gray-500 text-xs mt-0.5">Images + videos from /api/media-assets — populated by generation jobs and uploads.</p>
+          </div>
+          <button onClick={onClose} className="text-gray-500 hover:text-white text-lg leading-none">×</button>
+        </div>
+
+        <div className="flex items-center gap-2 px-5 py-2 border-b border-gray-800">
+          {(['all', 'image', 'video'] as const).map(f => (
+            <button
+              key={f}
+              onClick={() => setFilter(f)}
+              className={`px-2.5 py-1 rounded text-xs capitalize transition-colors ${
+                filter === f ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'
+              }`}
+            >
+              {f}
+            </button>
+          ))}
+          <span className="ml-auto text-gray-500 text-xs">
+            {assets ? `${shown.length} asset${shown.length === 1 ? '' : 's'}` : 'Loading…'}
+          </span>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-5">
+          {error && <p className="text-rose-300 text-sm">Failed to load: {error}</p>}
+          {!error && assets === null && <p className="text-gray-500 text-sm">Loading…</p>}
+          {!error && assets !== null && shown.length === 0 && (
+            <div className="text-center py-12 text-gray-500 text-sm">
+              <p className="text-3xl mb-3">🖼</p>
+              <p>No media yet.</p>
+              <p className="text-xs text-gray-600 mt-1">Generate a creative or upload to media library to populate this list.</p>
+            </div>
+          )}
+          {shown.length > 0 && (
+            <div className="grid grid-cols-3 sm:grid-cols-4 gap-3">
+              {shown.map(a => {
+                const isSelected = !!selected[a.id]
+                const isAlready = alreadyAttachedUrls.includes(a.url)
+                return (
+                  <button
+                    key={a.id}
+                    onClick={() => !isAlready && toggle(a)}
+                    disabled={isAlready}
+                    className={`relative aspect-square rounded-lg overflow-hidden border transition-all ${
+                      isSelected ? 'border-indigo-500 ring-2 ring-indigo-500/50' : 'border-gray-700 hover:border-gray-500'
+                    } ${isAlready ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+                  >
+                    {a.asset_type === 'video' ? (
+                      <video src={a.url} className="w-full h-full object-cover" muted />
+                    ) : (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={a.url} alt={a.filename} className="w-full h-full object-cover" />
+                    )}
+                    <div className="absolute top-1 right-1 w-5 h-5 rounded-full bg-gray-950/80 text-white text-[10px] flex items-center justify-center">
+                      {isAlready ? '✓' : isSelected ? '✓' : ''}
+                    </div>
+                    <p className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-gray-950/90 to-transparent px-1.5 py-1 text-[9px] text-gray-200 truncate">
+                      {a.filename}
+                    </p>
+                  </button>
+                )
+              })}
+            </div>
+          )}
+        </div>
+
+        <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-gray-800">
+          <button onClick={onClose} className="px-3 py-1.5 text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg">Cancel</button>
+          <button
+            onClick={() => onConfirm(Object.values(selected).map(a => ({ url: a.url, filename: a.filename, assetType: a.asset_type })))}
+            disabled={selectedCount === 0}
+            className="px-3 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white rounded-lg"
+          >
+            Attach {selectedCount > 0 ? `(${selectedCount})` : ''}
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

@@ -7,7 +7,7 @@ import { sql, newId } from '@/lib/db'
 import {
   createMetaCampaign, createMetaAdSet, updateMetaCampaign, updateMetaAdSet,
   getMetaCampaignInsights, buildMetaTargeting,
-  type MetaCredentials, type MetaInsights,
+  type MetaCredentials, type MetaInsights, type CampaignTargetingInput,
 } from './meta'
 import {
   createGoogleAdsCampaign, createGoogleAdsAdGroup, createGoogleAdsBudget,
@@ -155,6 +155,11 @@ async function _publishToMeta(
 
   const adSetIds: string[] = []
 
+  // Per-workspace targeting overrides flow in via brief.targeting (from
+  // ad_campaigns.targeting_json). Falls back to sensible defaults inside
+  // buildMetaTargeting when fields are missing or malformed.
+  const targetingInput = (brief.targeting as CampaignTargetingInput | undefined) || undefined
+
   // 2. Create ad sets
   for (const adSet of adSets) {
     const dailyBudget = parseDailyBudgetToMinorUnits(adSet.dailyBudget as string || '₹500', 'meta_ads')
@@ -163,7 +168,7 @@ async function _publishToMeta(
       name: adSet.name as string || 'Ad Set',
       objective,
       dailyBudget,
-      targeting: buildMetaTargeting(adSet.audience as string || '', adSet.platform as string || ''),
+      targeting: buildMetaTargeting(adSet.audience as string || '', adSet.platform as string || '', targetingInput),
     })
     adSetIds.push(adSetId)
   }

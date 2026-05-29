@@ -22,6 +22,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Workflow, RefreshCw, AlertCircle, Plus, ExternalLink, Edit3,
   Eye, MousePointerClick, TrendingUp, Target, ChevronRight, Mail,
+  Copy, Archive, Power, Pencil,
 } from 'lucide-react'
 import Link from 'next/link'
 
@@ -35,6 +36,23 @@ interface FunnelStep {
   view_count: number | string
   conversion_count: number | string
   created_at: string
+  funnel_id?: string | null
+  stage?: string
+  sequence?: number
+  is_active?: boolean | number
+}
+
+/** Sprint 16F TASK 3 — parent Funnel row (see /api/funnels). */
+interface Funnel {
+  id: string
+  workspace_id: string
+  name: string
+  goal: string | null
+  is_active: boolean | number
+  archived_at: string | null
+  created_at: string
+  updated_at: string
+  steps_count: number
 }
 
 interface FormSubmission {
@@ -83,6 +101,12 @@ export default function FunnelOverviewPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [sortKey, setSortKey] = useState<SortKey>('recent')
+  // Sprint 16F TASK 3 — parent funnels list + create modal state.
+  const [parentFunnels, setParentFunnels] = useState<Funnel[]>([])
+  const [showCreateFunnel, setShowCreateFunnel] = useState(false)
+  const [newFunnelName, setNewFunnelName] = useState('')
+  const [newFunnelGoal, setNewFunnelGoal] = useState('')
+  const [funnelBusyId, setFunnelBusyId] = useState<string | null>(null)
 
   // Resolve workspace
   useEffect(() => {
@@ -108,6 +132,15 @@ export default function FunnelOverviewPage() {
       const funnelRes = await fetch(`/api/funnel-steps?workspaceId=${workspaceId}`)
       const fRows = await funnelRes.json() as FunnelStep[]
       setFunnels(Array.isArray(fRows) ? fRows : [])
+
+      // Sprint 16F TASK 3 — parent funnels list (best-effort; non-fatal).
+      try {
+        const pRes = await fetch(`/api/funnels?workspaceId=${workspaceId}`)
+        if (pRes.ok) {
+          const pRows = await pRes.json() as Funnel[]
+          setParentFunnels(Array.isArray(pRows) ? pRows : [])
+        }
+      } catch { /* parent funnels are additive — analytics still works */ }
 
       // Best-effort: per-funnel last-N submissions roll-up.
       // We don't have a workspace-wide submissions endpoint yet; instead pull
@@ -188,6 +221,103 @@ export default function FunnelOverviewPage() {
     return Math.max(1, ...funnels.map(f => Number(f.view_count || 0)))
   }, [funnels])
 
+  // ─── Sprint 16F TASK 3 — Funnels parent CRUD handlers ────────────────────
+  async function createFunnel() {
+    if (!workspaceId || !newFunnelName.trim()) return
+    try {
+      const res = await fetch('/api/funnels', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          workspaceId,
+          name: newFunnelName.trim(),
+          goal: newFunnelGoal.trim() || undefined,
+        }),
+      })
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({})) as { error?: string }
+        throw new Error(j.error || `Create failed (${res.status})`)
+      }
+      setNewFunnelName('')
+      setNewFunnelGoal('')
+      setShowCreateFunnel(false)
+      await fetchAll()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  async function togglePublish(f: Funnel) {
+    if (!workspaceId) return
+    setFunnelBusyId(f.id)
+    try {
+      await fetch('/api/funnels', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: f.id, workspaceId, isActive: !(f.is_active === true || f.is_active === 1) }),
+      })
+      await fetchAll()
+    } finally { setFunnelBusyId(null) }
+  }
+
+  async function archiveFunnel(f: Funnel) {
+    if (!workspaceId) return
+    if (typeof window !== 'undefined' && !window.confirm(`Archive funnel "${f.name}"?`)) return
+    setFunnelBusyId(f.id)
+    try {
+      await fetch(`/api/funnels?id=${f.id}&workspaceId=${workspaceId}`, { method: 'DELETE' })
+      await fetchAll()
+    } finally { setFunnelBusyId(null) }
+  }
+
+  async function duplicateFunnel(f: Funnel) {
+    if (!workspaceId) return
+    setFunnelBusyId(f.id)
+    try {
+      // 1. Create the parent funnel copy
+      const res = await fetch('/api/funnels', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          workspaceId,
+          name: `${f.name} (copy)`,
+          goal: f.goal || undefined,
+        }),
+      })
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({})) as { error?: string }
+        throw new Error(j.error || 'Duplicate failed')
+      }
+      const { id: newFunnelId } = (await res.json()) as { id: string }
+      // 2. Clone each funnel_step that pointed at the original.
+      const sourceSteps = funnels.filter(s => s.funnel_id === f.id)
+      for (const step of sourceSteps) {
+        // Slug must be unique globally — append a short timestamp suffix
+        // so the duplicate doesn't collide. The user can rename later in
+        // the form-builder.
+        const suffix = Math.random().toString(36).slice(2, 7)
+        const newSlug = `${step.slug}-${suffix}`
+        await fetch('/api/funnel-steps', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            workspaceId,
+            slug: newSlug,
+            htmlContent: step.html_content,
+            funnelId: newFunnelId,
+            stage: step.stage,
+            sequence: step.sequence,
+            // Clones are drafts until the user publishes the new funnel.
+            isActive: false,
+          }),
+        })
+      }
+      await fetchAll()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally { setFunnelBusyId(null) }
+  }
+
   return (
     <div className="min-h-screen bg-gray-950 text-gray-100">
       <div className="max-w-7xl mx-auto px-6 py-8">
@@ -222,6 +352,96 @@ export default function FunnelOverviewPage() {
             <AlertCircle className="w-4 h-4" /> {error}
           </div>
         )}
+
+        {/* ─── Sprint 16F TASK 3 — Funnels parent section ─────────────────────
+            Lives above the analytics dashboard so the user sees the journey
+            grouping before drilling into per-page metrics. */}
+        <section className="mb-8">
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <h2 className="text-sm font-semibold text-white">Funnels</h2>
+              <p className="text-xs text-gray-500">
+                Group landing pages + forms into a single named journey. Publish to make all steps live.
+              </p>
+            </div>
+            <button
+              onClick={() => setShowCreateFunnel(true)}
+              className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs rounded-lg flex items-center gap-1.5"
+            >
+              <Plus className="w-3.5 h-3.5" /> New funnel
+            </button>
+          </div>
+
+          {parentFunnels.length === 0 ? (
+            <div className="bg-gray-900 border border-dashed border-gray-800 rounded-xl p-6 text-center">
+              <Workflow className="w-8 h-8 mx-auto mb-2 text-gray-700" />
+              <p className="text-sm text-gray-400">No funnels yet</p>
+              <p className="text-xs text-gray-600 mt-1">
+                Create your first funnel to group landing pages and forms into a single journey.
+              </p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+              {parentFunnels.map(f => {
+                const published = f.is_active === true || f.is_active === 1
+                const busy = funnelBusyId === f.id
+                return (
+                  <div key={f.id} className="bg-gray-900 border border-gray-800 rounded-xl p-4">
+                    <div className="flex items-start justify-between mb-2">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <h3 className="text-white font-semibold truncate" title={f.name}>{f.name}</h3>
+                          <span className={`text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded ${
+                            published ? 'bg-emerald-900/40 text-emerald-300 border border-emerald-800/50'
+                                      : 'bg-gray-800 text-gray-500 border border-gray-700'
+                          }`}>
+                            {published ? 'Live' : 'Draft'}
+                          </span>
+                        </div>
+                        {f.goal && (
+                          <p className="text-xs text-gray-500 mt-0.5 truncate" title={f.goal}>{f.goal}</p>
+                        )}
+                      </div>
+                      <div className="text-right">
+                        <p className="text-lg font-bold text-indigo-300 tabular-nums">{f.steps_count}</p>
+                        <p className="text-[10px] text-gray-500">step{f.steps_count === 1 ? '' : 's'}</p>
+                      </div>
+                    </div>
+                    <div className="flex gap-1.5 mt-3">
+                      <button
+                        disabled={busy}
+                        onClick={() => void togglePublish(f)}
+                        className={`flex-1 py-1.5 rounded-lg text-xs font-medium flex items-center justify-center gap-1 transition-colors ${
+                          published
+                            ? 'bg-amber-900/30 hover:bg-amber-900/50 text-amber-200 border border-amber-800/50'
+                            : 'bg-emerald-700/30 hover:bg-emerald-700/50 text-emerald-200 border border-emerald-800/50'
+                        } disabled:opacity-50`}
+                      >
+                        <Power className="w-3 h-3" /> {published ? 'Unpublish' : 'Publish'}
+                      </button>
+                      <button
+                        disabled={busy}
+                        onClick={() => void duplicateFunnel(f)}
+                        className="px-2.5 py-1.5 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg text-xs flex items-center gap-1 disabled:opacity-50"
+                        title="Duplicate funnel + its steps"
+                      >
+                        <Copy className="w-3 h-3" /> Copy
+                      </button>
+                      <button
+                        disabled={busy}
+                        onClick={() => void archiveFunnel(f)}
+                        className="px-2.5 py-1.5 bg-gray-800 hover:bg-rose-900/40 text-gray-400 hover:text-rose-300 rounded-lg text-xs flex items-center gap-1 disabled:opacity-50"
+                        title="Archive funnel"
+                      >
+                        <Archive className="w-3 h-3" />
+                      </button>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </section>
 
         {loading && funnels.length === 0 ? (
           <div className="text-center py-20 text-gray-500 text-sm">Loading funnels…</div>
@@ -427,6 +647,62 @@ export default function FunnelOverviewPage() {
           </>
         )}
       </div>
+
+      {/* Sprint 16F TASK 3 — Create-funnel modal. */}
+      {showCreateFunnel && (
+        <div
+          className="fixed inset-0 bg-gray-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+          onClick={() => setShowCreateFunnel(false)}
+        >
+          <div
+            className="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-md"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800">
+              <h2 className="text-white font-semibold flex items-center gap-2">
+                <Pencil className="w-4 h-4" /> New Funnel
+              </h2>
+              <button onClick={() => setShowCreateFunnel(false)} className="text-gray-500 hover:text-white">✕</button>
+            </div>
+            <div className="p-6 space-y-4">
+              <div>
+                <label className="text-xs text-gray-500 uppercase tracking-wide mb-1.5 block">Name *</label>
+                <input
+                  value={newFunnelName}
+                  onChange={e => setNewFunnelName(e.target.value)}
+                  placeholder="e.g. Q3 SaaS Demo Funnel"
+                  className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-gray-500 uppercase tracking-wide mb-1.5 block">Goal</label>
+                <input
+                  value={newFunnelGoal}
+                  onChange={e => setNewFunnelGoal(e.target.value)}
+                  placeholder="e.g. Book a product demo"
+                  className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500"
+                />
+                <p className="text-[10px] text-gray-600 mt-1">Optional — describe what visitors should do.</p>
+              </div>
+              <div className="flex gap-3 pt-2">
+                <button
+                  onClick={() => setShowCreateFunnel(false)}
+                  className="flex-1 py-2.5 border border-gray-700 text-gray-400 rounded-lg text-sm hover:text-white"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => void createFunnel()}
+                  disabled={!newFunnelName.trim()}
+                  className="flex-1 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-900/40 disabled:text-gray-500 text-white rounded-lg text-sm font-medium transition-colors"
+                >
+                  Create
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

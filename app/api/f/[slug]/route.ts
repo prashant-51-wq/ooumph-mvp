@@ -92,13 +92,43 @@ export async function GET(_req: NextRequest, ctx: RouteCtx) {
     return htmlResponse(FALLBACK_404_HTML, 404)
   }
 
+  // Sprint 16F TASK 4 — public render gate.
+  //   Prior to this gate every saved funnel_steps row was implicitly live
+  //   (the audit's "every saved row is publicly resolvable" finding).
+  //   Sprint 16A added `is_active` defaulting TRUE to keep existing rows
+  //   working, but new drafts can now opt in/out via the publish toggle.
+  //   We treat anything that's strictly false/0 as a 404 — null and
+  //   undefined (pre-migration rows) stay live to avoid breakage.
+  //   Additionally, if the step is grouped under a funnel, that funnel
+  //   must itself be active and not archived.
   const result = await sql`
-    SELECT id, workspace_id, html_content
-    FROM funnel_steps WHERE slug = ${slug} LIMIT 1
+    SELECT fs.id, fs.workspace_id, fs.html_content, fs.is_active,
+           fs.funnel_id,
+           f.is_active AS funnel_is_active, f.archived_at AS funnel_archived_at
+    FROM funnel_steps fs
+    LEFT JOIN funnels f ON f.id = fs.funnel_id
+    WHERE fs.slug = ${slug} LIMIT 1
   `
-  const row = result.rows[0] as { id?: string; workspace_id?: string; html_content?: string } | undefined
+  const row = result.rows[0] as {
+    id?: string; workspace_id?: string; html_content?: string
+    is_active?: boolean | number | null
+    funnel_id?: string | null
+    funnel_is_active?: boolean | number | null
+    funnel_archived_at?: string | null
+  } | undefined
   if (!row?.html_content) {
     return htmlResponse(FALLBACK_404_HTML, 404)
+  }
+  // Step inactive → treat as 404 (don't reveal that the slug exists).
+  if (row.is_active === false || row.is_active === 0) {
+    return htmlResponse(FALLBACK_404_HTML, 404)
+  }
+  // Parent funnel archived or unpublished → also 404.
+  if (row.funnel_id) {
+    if (row.funnel_archived_at) return htmlResponse(FALLBACK_404_HTML, 404)
+    if (row.funnel_is_active === false || row.funnel_is_active === 0) {
+      return htmlResponse(FALLBACK_404_HTML, 404)
+    }
   }
 
   // Lifecycle-safe atomic view_count bump. Vercel keeps the function alive

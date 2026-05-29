@@ -14,6 +14,35 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { assertWorkspaceOwnership } from '@/lib/guards'
+import { isAdObjective, SUPPORTED_OBJECTIVES, type CampaignTargetingInput } from '@/lib/ad-platforms/meta'
+
+// ── Targeting validator ──────────────────────────────────────────────────
+// Whitelists known keys + clamps values. Anything not in this shape is dropped.
+function normalizeTargeting(raw: unknown): CampaignTargetingInput | null {
+  if (!raw || typeof raw !== 'object') return null
+  const t = raw as Record<string, unknown>
+  const out: CampaignTargetingInput = {}
+  if (Array.isArray(t.geos)) {
+    out.geos = t.geos
+      .filter((g): g is string => typeof g === 'string')
+      .map(g => g.trim().toUpperCase())
+      .filter(g => /^[A-Z]{2}$/.test(g))
+      .slice(0, 25)
+  }
+  if (typeof t.ageMin === 'number' && Number.isFinite(t.ageMin)) {
+    out.ageMin = Math.max(13, Math.min(65, Math.floor(t.ageMin)))
+  }
+  if (typeof t.ageMax === 'number' && Number.isFinite(t.ageMax)) {
+    out.ageMax = Math.max(13, Math.min(65, Math.floor(t.ageMax)))
+  }
+  if (out.ageMin && out.ageMax && out.ageMax < out.ageMin) out.ageMax = out.ageMin
+  if (Array.isArray(t.interests)) {
+    out.interests = t.interests
+      .filter((i): i is string => typeof i === 'string')
+      .map(i => i.trim()).filter(Boolean).slice(0, 50)
+  }
+  return Object.keys(out).length > 0 ? out : null
+}
 
 export const runtime = 'nodejs'
 
@@ -66,8 +95,10 @@ export async function POST(req: NextRequest) {
       platform?: string
       dailyBudget?: number      // in cents
       utmOverride?: string
+      objective?: string
+      targeting?: unknown
     }
-    const { workspaceId, name, platform, dailyBudget, utmOverride } = body
+    const { workspaceId, name, platform, dailyBudget, utmOverride, objective } = body
     if (!workspaceId || !name?.trim() || !platform?.trim()) {
       return NextResponse.json({ error: 'workspaceId, name, and platform are required' }, { status: 400 })
     }
@@ -78,17 +109,30 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'dailyBudget must be a non-negative integer (cents)' }, { status: 400 })
     }
 
+    // Objective: optional on insert (defaults via column DEFAULT 'leads'),
+    // but if provided it MUST be on the whitelist.
+    const objectiveFinal = objective ? objective.toLowerCase() : 'leads'
+    if (!isAdObjective(objectiveFinal)) {
+      return NextResponse.json(
+        { error: `Unknown objective '${objective}'. Allowed: ${SUPPORTED_OBJECTIVES.join(', ')}` },
+        { status: 400 },
+      )
+    }
+
+    const targeting = normalizeTargeting(body.targeting)
+    const targetingStr = targeting ? JSON.stringify(targeting) : '{}'
+
     const id = newId()
     await sql`
       INSERT INTO ad_campaigns (
         id, workspace_id, platform, name, daily_budget,
-        status, utm_override, created_at
+        status, utm_override, objective, targeting_json, created_at
       ) VALUES (
         ${id}, ${workspaceId}, ${platform.toLowerCase()}, ${name.trim()}, ${Math.floor(budget)},
-        'draft', ${utmOverride || null}, CURRENT_TIMESTAMP
+        'draft', ${utmOverride || null}, ${objectiveFinal}, ${targetingStr}, CURRENT_TIMESTAMP
       )
     `
-    return NextResponse.json({ ok: true, id, status: 'draft' })
+    return NextResponse.json({ ok: true, id, status: 'draft', objective: objectiveFinal })
   } catch (err) {
     console.error('[/api/ad-campaigns POST]', err)
     return NextResponse.json({ error: String(err) }, { status: 500 })
@@ -106,6 +150,8 @@ export async function PATCH(req: NextRequest) {
       dailyBudget?: number
       utmOverride?: string | null
       status?: string
+      objective?: string
+      targeting?: unknown
     }
     const { id, workspaceId, status } = body
     if (!id || !workspaceId) {
@@ -130,14 +176,36 @@ export async function PATCH(req: NextRequest) {
       )
     }
 
+    // Validate objective on update — reject unknown values with 400.
+    let objectiveVal: string | null = null
+    if (body.objective !== undefined) {
+      const objLower = body.objective.toLowerCase()
+      if (!isAdObjective(objLower)) {
+        return NextResponse.json(
+          { error: `Unknown objective '${body.objective}'. Allowed: ${SUPPORTED_OBJECTIVES.join(', ')}` },
+          { status: 400 },
+        )
+      }
+      objectiveVal = objLower
+    }
+
+    // Targeting on update: caller can pass an object to replace, or omit to keep.
+    let targetingVal: string | null = null
+    if (body.targeting !== undefined) {
+      const normalized = normalizeTargeting(body.targeting)
+      targetingVal = normalized ? JSON.stringify(normalized) : '{}'
+    }
+
     const budgetVal = body.dailyBudget !== undefined ? Math.max(0, Math.floor(Number(body.dailyBudget))) : null
     await sql`
       UPDATE ad_campaigns SET
-        name          = COALESCE(${body.name ?? null}, name),
-        platform      = COALESCE(${body.platform?.toLowerCase() ?? null}, platform),
-        daily_budget  = COALESCE(${budgetVal}, daily_budget),
-        utm_override  = COALESCE(${body.utmOverride === undefined ? null : (body.utmOverride || null)}, utm_override),
-        status        = COALESCE(${status ?? null}, status)
+        name           = COALESCE(${body.name ?? null}, name),
+        platform       = COALESCE(${body.platform?.toLowerCase() ?? null}, platform),
+        daily_budget   = COALESCE(${budgetVal}, daily_budget),
+        utm_override   = COALESCE(${body.utmOverride === undefined ? null : (body.utmOverride || null)}, utm_override),
+        status         = COALESCE(${status ?? null}, status),
+        objective      = COALESCE(${objectiveVal}, objective),
+        targeting_json = COALESCE(${targetingVal}, targeting_json)
       WHERE id = ${id} AND workspace_id = ${workspaceId}
     `
     return NextResponse.json({ ok: true })

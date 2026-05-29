@@ -15,11 +15,13 @@ export interface MetaCredentials {
 // ─── Objective mapping ────────────────────────────────────────────────────────
 
 const OBJECTIVE_MAP: Record<string, string> = {
-  awareness:   'BRAND_AWARENESS',
+  awareness:   'OUTCOME_AWARENESS',
   traffic:     'LINK_CLICKS',
   leads:       'LEAD_GENERATION',
   conversions: 'OUTCOME_LEADS',
   sales:       'OUTCOME_SALES',
+  page_likes:  'OUTCOME_ENGAGEMENT',  // follower growth via Engagement objective (Meta deprecated PAGE_LIKES Jan 2024)
+  video_views: 'OUTCOME_AWARENESS',
 }
 
 const OPTIMIZATION_GOAL_MAP: Record<string, string> = {
@@ -28,6 +30,8 @@ const OPTIMIZATION_GOAL_MAP: Record<string, string> = {
   leads:       'LEAD_GENERATION',
   conversions: 'OFFSITE_CONVERSIONS',
   sales:       'OFFSITE_CONVERSIONS',
+  page_likes:  'PAGE_LIKES',
+  video_views: 'THRUPLAY',
 }
 
 const BILLING_EVENT_MAP: Record<string, string> = {
@@ -36,6 +40,20 @@ const BILLING_EVENT_MAP: Record<string, string> = {
   leads:       'IMPRESSIONS',
   conversions: 'IMPRESSIONS',
   sales:       'IMPRESSIONS',
+  page_likes:  'IMPRESSIONS',
+  video_views: 'IMPRESSIONS',
+}
+
+/**
+ * Internal objective enum we accept across the deploy pipeline + UI.
+ * Anything outside this set should be rejected with a 400 before persistence.
+ */
+export const SUPPORTED_OBJECTIVES = [
+  'leads', 'page_likes', 'awareness', 'conversions', 'sales', 'traffic', 'video_views',
+] as const
+export type AdObjective = typeof SUPPORTED_OBJECTIVES[number]
+export function isAdObjective(v: unknown): v is AdObjective {
+  return typeof v === 'string' && (SUPPORTED_OBJECTIVES as readonly string[]).includes(v)
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -283,16 +301,45 @@ export interface MetaTargeting {
   device_platforms?: string[]      // 'mobile', 'desktop'
 }
 
-export function buildMetaTargeting(audienceDescription: string, platform: string): MetaTargeting {
+export interface CampaignTargetingInput {
+  geos?: string[]          // ISO country codes, e.g. ["IN", "US"]
+  ageMin?: number
+  ageMax?: number
+  interests?: string[]     // free-text interest names; mapped to {name, id?:''} entries
+}
+
+export function buildMetaTargeting(
+  audienceDescription: string,
+  platform: string,
+  input?: CampaignTargetingInput,
+): MetaTargeting {
   const isInstagram = platform === 'instagram'
+
+  const geos = (input?.geos && input.geos.length > 0)
+    ? input.geos.map(g => g.trim().toUpperCase()).filter(Boolean)
+    : ['IN']  // default
+  const ageMin = Number.isFinite(input?.ageMin) && (input!.ageMin as number) >= 13 ? Math.floor(input!.ageMin as number) : 18
+  const ageMax = Number.isFinite(input?.ageMax) && (input!.ageMax as number) <= 65 && (input!.ageMax as number) >= ageMin
+    ? Math.floor(input!.ageMax as number) : 65
+
   const targeting: MetaTargeting = {
-    age_min: 18,
-    age_max: 65,
-    geo_locations: { countries: ['IN'] },  // default to India; can be overridden
+    age_min: ageMin,
+    age_max: ageMax,
+    geo_locations: { countries: geos },
     publisher_platforms: isInstagram ? ['instagram'] : ['facebook', 'instagram'],
     facebook_positions: isInstagram ? [] : ['feed'],
     instagram_positions: ['stream', 'story'],
     device_platforms: ['mobile', 'desktop'],
   }
+
+  if (input?.interests && input.interests.length > 0) {
+    // Meta expects {id, name}. Without a /search lookup we can only send names;
+    // Graph will resolve them when possible, otherwise the ad set will surface
+    // the error in publishCampaignToPlatform's catch.
+    targeting.interests = input.interests
+      .map(s => s.trim()).filter(Boolean)
+      .map(name => ({ id: '', name }))
+  }
+
   return targeting
 }
