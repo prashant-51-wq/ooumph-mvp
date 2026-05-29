@@ -1,5 +1,7 @@
 // YouTube Data API v3 & Analytics
 
+import { getCredential } from '@/lib/credential-context'
+
 const YT_DATA_BASE = 'https://www.googleapis.com/youtube/v3'
 
 export interface YouTubeChannel {
@@ -53,7 +55,7 @@ export async function searchVideos(
   query: string,
   maxResults = 10
 ): Promise<YouTubeVideo[]> {
-  const key = process.env.YOUTUBE_API_KEY
+  const key = getCredential('YOUTUBE_API_KEY')
   if (!key) return []
   try {
     const params = new URLSearchParams({
@@ -87,7 +89,7 @@ export async function searchVideos(
 export async function getVideoDetails(
   videoId: string
 ): Promise<YouTubeVideo | null> {
-  const key = process.env.YOUTUBE_API_KEY
+  const key = getCredential('YOUTUBE_API_KEY')
   if (!key) return null
   try {
     const params = new URLSearchParams({
@@ -131,5 +133,5 @@ export function getUploadInstructions(): { message: string; steps: string[] } {
 }
 
 export function isYouTubeAvailable(): boolean {
-  return !!process.env.YOUTUBE_API_KEY
+  return !!getCredential('YOUTUBE_API_KEY')
 }

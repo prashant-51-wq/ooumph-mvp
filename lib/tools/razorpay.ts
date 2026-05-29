@@ -1,5 +1,6 @@
 // Razorpay API
 import crypto from 'crypto'
+import { getCredential } from '@/lib/credential-context'
 
 const RAZORPAY_BASE = 'https://api.razorpay.com/v1'
 
@@ -26,8 +27,8 @@ export interface RazorpayOrder {
 }
 
 function razorpayHeaders(): Record<string, string> {
-  const keyId = process.env.RAZORPAY_KEY_ID || ''
-  const keySecret = process.env.RAZORPAY_KEY_SECRET || ''
+  const keyId = getCredential('RAZORPAY_KEY_ID') || ''
+  const keySecret = getCredential('RAZORPAY_KEY_SECRET') || ''
   const encoded = Buffer.from(`${keyId}:${keySecret}`).toString('base64')
   return {
     Authorization: `Basic ${encoded}`,
@@ -45,8 +46,8 @@ export async function createRazorpayPaymentLink(options: {
   callbackUrl?: string
   expireByTimestamp?: number
 }): Promise<RazorpayPaymentLink | null> {
-  const keyId = process.env.RAZORPAY_KEY_ID
-  const keySecret = process.env.RAZORPAY_KEY_SECRET
+  const keyId = getCredential('RAZORPAY_KEY_ID')
+  const keySecret = getCredential('RAZORPAY_KEY_SECRET')
   if (!keyId || !keySecret) return null
   try {
     const body: Record<string, unknown> = {
@@ -91,8 +92,8 @@ export async function createRazorpayPaymentLink(options: {
 export async function getRazorpayPaymentLinks(
   count: number = 10
 ): Promise<RazorpayPaymentLink[]> {
-  const keyId = process.env.RAZORPAY_KEY_ID
-  const keySecret = process.env.RAZORPAY_KEY_SECRET
+  const keyId = getCredential('RAZORPAY_KEY_ID')
+  const keySecret = getCredential('RAZORPAY_KEY_SECRET')
   if (!keyId || !keySecret) return []
   try {
     const res = await fetch(`${RAZORPAY_BASE}/payment_links?count=${count}`, {
@@ -122,8 +123,8 @@ export async function createRazorpayOrder(
   currency: string = 'INR',
   notes?: Record<string, string>
 ): Promise<RazorpayOrder | null> {
-  const keyId = process.env.RAZORPAY_KEY_ID
-  const keySecret = process.env.RAZORPAY_KEY_SECRET
+  const keyId = getCredential('RAZORPAY_KEY_ID')
+  const keySecret = getCredential('RAZORPAY_KEY_SECRET')
   if (!keyId || !keySecret) return null
   try {
     const body: Record<string, unknown> = {
@@ -161,8 +162,8 @@ export async function getRazorpayStats(): Promise<{
   currency: string
   transactions: number
 } | null> {
-  const keyId = process.env.RAZORPAY_KEY_ID
-  const keySecret = process.env.RAZORPAY_KEY_SECRET
+  const keyId = getCredential('RAZORPAY_KEY_ID')
+  const keySecret = getCredential('RAZORPAY_KEY_SECRET')
   if (!keyId || !keySecret) return null
   try {
     const res = await fetch(`${RAZORPAY_BASE}/payments?count=100`, {
@@ -200,7 +201,7 @@ export function verifyRazorpaySignature(
   paymentId: string,
   signature: string
 ): boolean {
-  const keySecret = process.env.RAZORPAY_KEY_SECRET
+  const keySecret = getCredential('RAZORPAY_KEY_SECRET')
   if (!keySecret) return false
   try {
     const expectedSignature = crypto
@@ -214,5 +215,5 @@ export function verifyRazorpaySignature(
 }
 
 export function isRazorpayAvailable(): boolean {
-  return !!(process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET)
+  return !!(getCredential('RAZORPAY_KEY_ID') && getCredential('RAZORPAY_KEY_SECRET'))
 }

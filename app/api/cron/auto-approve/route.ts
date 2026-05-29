@@ -62,6 +62,7 @@ interface ResultRow {
   status: 'approved' | 'skipped_off' | 'skipped_paused' | 'skipped_no_settings' | 'failed'
   approvedCount?: number
   error?: string
+  partialError?: string
 }
 
 function authCron(req: NextRequest): boolean {
@@ -181,8 +182,26 @@ async function run(req: NextRequest) {
     }
 
     if (approvedCount > 0) {
-      results.push({ workspaceId: ws.id, status: 'approved', approvedCount })
+      // Sprint 18L (audit #6 P1): if SOME succeeded but a `lastError`
+      // also fired, the previous logic reported pure 'approved' status
+      // and silently lost the partial failure. Fan it out to the bell
+      // through notifyAgentRunFailed so operators see the diagnostic.
+      if (lastError) {
+        try {
+          const { notifyAgentRunFailed } = await import('@/lib/notifications')
+          await notifyAgentRunFailed(
+            ws.id,
+            'auto-approve cron',
+            `Approved ${approvedCount} item${approvedCount === 1 ? '' : 's'}, but at least one failed — ${lastError}`,
+          )
+        } catch { /* notification miss is non-fatal */ }
+      }
+      results.push({ workspaceId: ws.id, status: 'approved', approvedCount, partialError: lastError })
     } else if (lastError) {
+      try {
+        const { notifyAgentRunFailed } = await import('@/lib/notifications')
+        await notifyAgentRunFailed(ws.id, 'auto-approve cron', lastError)
+      } catch { /* */ }
       results.push({ workspaceId: ws.id, status: 'failed', error: lastError })
     } else {
       results.push({ workspaceId: ws.id, status: 'approved', approvedCount: 0 })

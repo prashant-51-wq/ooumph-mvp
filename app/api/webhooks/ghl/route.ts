@@ -19,9 +19,12 @@ import { sql, newId } from '@/lib/db'
 
 // ─── Signature verification ────────────────────────────────────────────────────
 
+// Audit pass #6 P1: removed the `if (!secret) return true` dev-mode bypass.
+// Caller now treats unset secret as 503 (fail-closed) so misconfigured prod
+// can't silently accept unsigned events.
 function verifyGhlSignature(rawBody: string, signature: string): boolean {
   const secret = process.env.GHL_WEBHOOK_SECRET
-  if (!secret) return true // dev mode: skip verification
+  if (!secret) return false
 
   const expected = crypto
     .createHmac('sha256', secret)
@@ -29,7 +32,10 @@ function verifyGhlSignature(rawBody: string, signature: string): boolean {
     .digest('hex')
 
   try {
-    return crypto.timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(signature, 'hex'))
+    const a = Buffer.from(expected, 'hex')
+    const b = Buffer.from(signature, 'hex')
+    if (a.length !== b.length) return false
+    return crypto.timingSafeEqual(a, b)
   } catch {
     return false
   }
@@ -120,11 +126,22 @@ interface GhlWebhookBody {
 // ─── Main handler ──────────────────────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
+  // Audit pass #6 P1: fail-closed when GHL_WEBHOOK_SECRET is unset. Previously
+  // an unset secret bypassed verification entirely, which is unsafe in prod.
+  if (!process.env.GHL_WEBHOOK_SECRET) {
+    return NextResponse.json(
+      { error: 'GHL_WEBHOOK_SECRET not configured — webhook intake refused' },
+      { status: 503 },
+    )
+  }
+
   const rawBody = await req.text()
 
-  // Signature check
+  // Audit pass #6 P1: REQUIRE the signature header. The previous
+  // `if (signature && !verify(...))` form let an attacker omit x-ghl-signature
+  // entirely to skip verification.
   const signature = req.headers.get('x-ghl-signature') || ''
-  if (signature && !verifyGhlSignature(rawBody, signature)) {
+  if (!signature || !verifyGhlSignature(rawBody, signature)) {
     return NextResponse.json({ error: 'Invalid signature' }, { status: 401 })
   }
 
@@ -209,9 +226,9 @@ export async function POST(req: NextRequest) {
 
     // Log activity
     await sql`
-      INSERT INTO lead_activities (id, workspace_id, lead_id, type, title, description, metadata_json, created_at)
+      INSERT INTO lead_activities (id, workspace_id, lead_id, type, title, description, metadata_json, ghl_contact_id, created_at)
       VALUES (${newId()}, ${workspaceId}, ${leadId}, 'ghl_contact_created', 'GHL Contact Created',
-              ${'GHL contact ID: ' + c.id}, ${JSON.stringify({ ghl_contact_id: c.id, tags: tagsJson })}, ${now})
+              ${'GHL contact ID: ' + c.id}, ${JSON.stringify({ ghl_contact_id: c.id, tags: tagsJson })}, ${c.id}, ${now})
     `
 
     // Fire workflow trigger (fire-and-forget)
@@ -251,9 +268,9 @@ export async function POST(req: NextRequest) {
           WHERE id = ${leadId}
         `
         await sql`
-          INSERT INTO lead_activities (id, workspace_id, lead_id, type, title, metadata_json, created_at)
+          INSERT INTO lead_activities (id, workspace_id, lead_id, type, title, metadata_json, ghl_contact_id, created_at)
           VALUES (${newId()}, ${workspaceId}, ${leadId}, 'ghl_contact_updated', 'GHL Contact Updated',
-                  ${JSON.stringify({ ghl_contact_id: c.id })}, ${now})
+                  ${JSON.stringify({ ghl_contact_id: c.id })}, ${c.id}, ${now})
         `
       }
     }
@@ -272,7 +289,7 @@ export async function POST(req: NextRequest) {
       const actResult = await sql`
         SELECT lead_id FROM lead_activities
         WHERE workspace_id = ${workspaceId}
-          AND metadata_json LIKE ${'%"ghl_contact_id":"' + opp.contactId + '"%'}
+          AND ghl_contact_id = ${opp.contactId}
         LIMIT 1
       `
       if (actResult.rows[0]) {
@@ -292,12 +309,20 @@ export async function POST(req: NextRequest) {
       const newStatus = opp.status?.toLowerCase() === 'won' ? 'converted' :
                         opp.status?.toLowerCase() === 'lost' ? 'lost' : undefined
 
-      await sql`
-        UPDATE leads_captured
-        SET score = LEAST(100, GREATEST(0, score + ${scoreDelta}))
-            ${newStatus ? sql`, status = ${newStatus}` : sql``}
-        WHERE id = ${leadId}
-      `
+      if (newStatus) {
+        await sql`
+          UPDATE leads_captured
+          SET score = LEAST(100, GREATEST(0, score + ${scoreDelta})),
+              status = ${newStatus}
+          WHERE id = ${leadId}
+        `
+      } else {
+        await sql`
+          UPDATE leads_captured
+          SET score = LEAST(100, GREATEST(0, score + ${scoreDelta}))
+          WHERE id = ${leadId}
+        `
+      }
 
       await sql`
         INSERT INTO lead_activities (id, workspace_id, lead_id, type, title, description, metadata_json, created_at)
@@ -329,7 +354,7 @@ export async function POST(req: NextRequest) {
       const actResult = await sql`
         SELECT lead_id FROM lead_activities
         WHERE workspace_id = ${workspaceId}
-          AND metadata_json LIKE ${'%"ghl_contact_id":"' + note.contactId + '"%'}
+          AND ghl_contact_id = ${note.contactId}
         LIMIT 1
       `
       if (actResult.rows[0]) leadId = String(actResult.rows[0].lead_id)
@@ -337,11 +362,11 @@ export async function POST(req: NextRequest) {
 
     if (leadId) {
       await sql`
-        INSERT INTO lead_activities (id, workspace_id, lead_id, type, title, description, metadata_json, created_at)
+        INSERT INTO lead_activities (id, workspace_id, lead_id, type, title, description, metadata_json, ghl_contact_id, created_at)
         VALUES (${newId()}, ${workspaceId}, ${leadId}, 'note_added', 'GHL Note',
                 ${note.body || null},
                 ${JSON.stringify({ ghl_note_id: note.id, ghl_contact_id: note.contactId })},
-                ${now})
+                ${note.contactId || null}, ${now})
       `
     }
 
@@ -357,7 +382,7 @@ export async function POST(req: NextRequest) {
       const actResult = await sql`
         SELECT lead_id FROM lead_activities
         WHERE workspace_id = ${workspaceId}
-          AND metadata_json LIKE ${'%"ghl_contact_id":"' + task.contactId + '"%'}
+          AND ghl_contact_id = ${task.contactId}
         LIMIT 1
       `
       if (actResult.rows[0]) leadId = String(actResult.rows[0].lead_id)
@@ -365,11 +390,11 @@ export async function POST(req: NextRequest) {
 
     if (leadId) {
       await sql`
-        INSERT INTO lead_activities (id, workspace_id, lead_id, type, title, description, metadata_json, created_at)
+        INSERT INTO lead_activities (id, workspace_id, lead_id, type, title, description, metadata_json, ghl_contact_id, created_at)
         VALUES (${newId()}, ${workspaceId}, ${leadId}, 'task_created', ${task.title || 'GHL Task'},
                 ${task.dueDate ? 'Due: ' + task.dueDate : null},
                 ${JSON.stringify({ ghl_task_id: task.id, ghl_contact_id: task.contactId, due_date: task.dueDate })},
-                ${now})
+                ${task.contactId || null}, ${now})
       `
     }
 

@@ -1,5 +1,7 @@
 // OpenAI API
 
+import { getCredential } from '@/lib/credential-context'
+
 const OPENAI_BASE = 'https://api.openai.com/v1'
 
 export interface ImageGenResult {
@@ -17,7 +19,7 @@ export async function generateImage(
   prompt: string,
   options?: ImageGenOptions
 ): Promise<ImageGenResult | null> {
-  const key = process.env.OPENAI_API_KEY
+  const key = getCredential('OPENAI_API_KEY')
   if (!key) return null
   try {
     const res = await fetch(`${OPENAI_BASE}/images/generations`, {
@@ -53,7 +55,7 @@ export async function openAIChat(
   messages: { role: string; content: string }[],
   options?: { model?: string; temperature?: number; maxTokens?: number }
 ): Promise<string | null> {
-  const key = process.env.OPENAI_API_KEY
+  const key = getCredential('OPENAI_API_KEY')
   if (!key) return null
   try {
     const res = await fetch(`${OPENAI_BASE}/chat/completions`, {
@@ -78,7 +80,7 @@ export async function openAIChat(
 }
 
 export async function createEmbedding(text: string): Promise<number[] | null> {
-  const key = process.env.OPENAI_API_KEY
+  const key = getCredential('OPENAI_API_KEY')
   if (!key) return null
   try {
     const res = await fetch(`${OPENAI_BASE}/embeddings`, {
@@ -101,5 +103,5 @@ export async function createEmbedding(text: string): Promise<number[] | null> {
 }
 
 export function isOpenAIAvailable(): boolean {
-  return !!process.env.OPENAI_API_KEY
+  return !!getCredential('OPENAI_API_KEY')
 }

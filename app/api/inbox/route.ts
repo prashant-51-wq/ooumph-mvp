@@ -28,7 +28,7 @@ export async function GET(req: NextRequest) {
         (SELECT direction FROM inbox_messages WHERE conversation_id = c.id ORDER BY created_at DESC LIMIT 1) as last_message_dir
       FROM inbox_conversations c
       WHERE c.workspace_id = ${workspaceId}
-        AND (c.contact_name ILIKE ${'%' + search + '%'} OR c.contact_email ILIKE ${'%' + search + '%'} OR c.subject ILIKE ${'%' + search + '%'})
+        AND (LOWER(c.contact_name) LIKE LOWER(${'%' + search + '%'}) OR LOWER(c.contact_email) LIKE LOWER(${'%' + search + '%'}) OR LOWER(c.subject) LIKE LOWER(${'%' + search + '%'}))
       ORDER BY COALESCE(c.last_message_at, c.created_at) DESC
       LIMIT 50
     `

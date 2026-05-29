@@ -1,5 +1,7 @@
 // Stripe API
 
+import { getCredential } from '@/lib/credential-context'
+
 const STRIPE_BASE = 'https://api.stripe.com/v1'
 
 export interface StripePaymentLink {
@@ -27,7 +29,7 @@ export interface StripeCheckoutSession {
 }
 
 function stripeHeaders(): Record<string, string> {
-  const key = process.env.STRIPE_SECRET_KEY || ''
+  const key = getCredential('STRIPE_SECRET_KEY') || ''
   const encoded = Buffer.from(key + ':').toString('base64')
   return {
     Authorization: `Basic ${encoded}`,
@@ -46,7 +48,7 @@ export async function createStripePaymentLink(
   currency: string = 'usd',
   description?: string
 ): Promise<StripePaymentLink | null> {
-  const key = process.env.STRIPE_SECRET_KEY
+  const key = getCredential('STRIPE_SECRET_KEY')
   if (!key) return null
   try {
     // 1. Create product
@@ -108,7 +110,7 @@ export async function createStripeCheckoutSession(
   successUrl: string,
   cancelUrl: string
 ): Promise<StripeCheckoutSession | null> {
-  const key = process.env.STRIPE_SECRET_KEY
+  const key = getCredential('STRIPE_SECRET_KEY')
   if (!key) return null
   try {
     const params = new URLSearchParams()
@@ -140,7 +142,7 @@ export async function createStripeCheckoutSession(
 }
 
 export async function getStripePaymentLinks(limit: number = 10): Promise<StripePaymentLink[]> {
-  const key = process.env.STRIPE_SECRET_KEY
+  const key = getCredential('STRIPE_SECRET_KEY')
   if (!key) return []
   try {
     const res = await fetch(`${STRIPE_BASE}/payment_links?limit=${limit}`, {
@@ -164,7 +166,7 @@ export async function getStripePaymentLinks(limit: number = 10): Promise<StripeP
 export async function getStripeRevenueStats(
   days: number = 30
 ): Promise<{ totalRevenue: number; currency: string; transactions: number; avgOrderValue: number } | null> {
-  const key = process.env.STRIPE_SECRET_KEY
+  const key = getCredential('STRIPE_SECRET_KEY')
   if (!key) return null
   try {
     const cutoff = Math.floor(Date.now() / 1000) - days * 86400
@@ -197,7 +199,7 @@ export async function createStripeSubscription(
   interval: 'month' | 'year',
   currency: string = 'usd'
 ): Promise<{ priceId: string; productId: string } | null> {
-  const key = process.env.STRIPE_SECRET_KEY
+  const key = getCredential('STRIPE_SECRET_KEY')
   if (!key) return null
   try {
     // 1. Create product
@@ -230,5 +232,5 @@ export async function createStripeSubscription(
 }
 
 export function isStripeAvailable(): boolean {
-  return !!process.env.STRIPE_SECRET_KEY
+  return !!getCredential('STRIPE_SECRET_KEY')
 }

@@ -1,6 +1,7 @@
 // Cloudinary Image Upload & Management
 
 import crypto from 'crypto'
+import { getCredential } from '@/lib/credential-context'
 
 export interface CloudinaryAsset {
   publicId: string
@@ -68,9 +69,9 @@ export async function uploadImageUrl(
   imageUrl: string,
   folder?: string
 ): Promise<CloudinaryAsset | null> {
-  const cloudName = process.env.CLOUDINARY_CLOUD_NAME
-  const apiKey = process.env.CLOUDINARY_API_KEY
-  const apiSecret = process.env.CLOUDINARY_API_SECRET
+  const cloudName = getCredential('CLOUDINARY_CLOUD_NAME')
+  const apiKey = getCredential('CLOUDINARY_API_KEY')
+  const apiSecret = getCredential('CLOUDINARY_API_SECRET')
   if (!cloudName || !apiKey || !apiSecret) return null
   try {
     return await uploadFormData(imageUrl, folder, cloudName, apiKey, apiSecret)
@@ -84,9 +85,9 @@ export async function uploadBase64(
   folder?: string,
   mimeType?: string
 ): Promise<CloudinaryAsset | null> {
-  const cloudName = process.env.CLOUDINARY_CLOUD_NAME
-  const apiKey = process.env.CLOUDINARY_API_KEY
-  const apiSecret = process.env.CLOUDINARY_API_SECRET
+  const cloudName = getCredential('CLOUDINARY_CLOUD_NAME')
+  const apiKey = getCredential('CLOUDINARY_API_KEY')
+  const apiSecret = getCredential('CLOUDINARY_API_SECRET')
   if (!cloudName || !apiKey || !apiSecret) return null
   try {
     const fileValue = `data:${mimeType ?? 'image/png'};base64,${base64Data}`
@@ -100,7 +101,7 @@ export function buildCloudinaryUrl(
   publicId: string,
   transformations?: string
 ): string {
-  const cloudName = process.env.CLOUDINARY_CLOUD_NAME ?? ''
+  const cloudName = getCredential('CLOUDINARY_CLOUD_NAME') ?? ''
   const t = transformations ? `${transformations}/` : ''
   return `https://res.cloudinary.com/${cloudName}/image/upload/${t}${publicId}`
 }
@@ -109,9 +110,9 @@ export async function listCloudinaryImages(
   folder?: string,
   maxResults = 50
 ): Promise<CloudinaryAsset[]> {
-  const cloudName = process.env.CLOUDINARY_CLOUD_NAME
-  const apiKey = process.env.CLOUDINARY_API_KEY
-  const apiSecret = process.env.CLOUDINARY_API_SECRET
+  const cloudName = getCredential('CLOUDINARY_CLOUD_NAME')
+  const apiKey = getCredential('CLOUDINARY_API_KEY')
+  const apiSecret = getCredential('CLOUDINARY_API_SECRET')
   if (!cloudName || !apiKey || !apiSecret) return []
   try {
     const params = new URLSearchParams({
@@ -133,9 +134,9 @@ export async function listCloudinaryImages(
 }
 
 export async function deleteCloudinaryImage(publicId: string): Promise<boolean> {
-  const cloudName = process.env.CLOUDINARY_CLOUD_NAME
-  const apiKey = process.env.CLOUDINARY_API_KEY
-  const apiSecret = process.env.CLOUDINARY_API_SECRET
+  const cloudName = getCredential('CLOUDINARY_CLOUD_NAME')
+  const apiKey = getCredential('CLOUDINARY_API_KEY')
+  const apiSecret = getCredential('CLOUDINARY_API_SECRET')
   if (!cloudName || !apiKey || !apiSecret) return false
   try {
     const timestamp = Math.floor(Date.now() / 1000)
@@ -165,8 +166,8 @@ export async function deleteCloudinaryImage(publicId: string): Promise<boolean> 
 
 export function isCloudinaryAvailable(): boolean {
   return (
-    !!process.env.CLOUDINARY_CLOUD_NAME &&
-    !!process.env.CLOUDINARY_API_KEY &&
-    !!process.env.CLOUDINARY_API_SECRET
+    !!getCredential('CLOUDINARY_CLOUD_NAME') &&
+    !!getCredential('CLOUDINARY_API_KEY') &&
+    !!getCredential('CLOUDINARY_API_SECRET')
   )
 }

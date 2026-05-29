@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { publishTweet } from '@/lib/twitter-oauth'
-import { assertWorkspaceOwnership } from '@/lib/guards'
+import { assertWorkspaceOwnership, assertArtifactApproved } from '@/lib/guards'
 import { readAccessToken } from '@/lib/integrations'
 
 const BASE_URL = process.env.NEXT_PUBLIC_BASE_URL || 'https://ooumph-mvp.vercel.app'
@@ -307,6 +307,11 @@ export async function POST(req: NextRequest) {
     // /publish/direct got in Sprint 7E).
     const denied = assertWorkspaceOwnership(req, workspaceId)
     if (denied) return denied
+
+    // Audit pass #6 P0: HITL approval gate — no external social post
+    // without an approved artifact (matches /publish/direct behavior).
+    const gate = await assertArtifactApproved(workspaceId, artifactId)
+    if (gate) return gate
 
     // Sprint 9B: select both token columns; readAccessToken() prefers
     // encrypted (decrypted) over legacy plaintext.

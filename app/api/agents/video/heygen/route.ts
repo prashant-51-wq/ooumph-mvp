@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
+import { withCredentials } from '@/lib/credential-context'
 import {
   getHeyGenAvatars,
   getHeyGenVoices,
@@ -36,12 +37,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'workspaceId and action are required' }, { status: 400 })
     }
 
-    // 1. Fetch workspace settings and inject API key
+    // 1. Fetch workspace settings and run handler with request-scoped credentials.
     const ws = await sql`SELECT model_settings FROM workspaces WHERE id = ${workspaceId}`
     const settings = (ws.rows[0]?.model_settings || {}) as Record<string, string>
 
-    process.env.HEYGEN_API_KEY = settings.heygenApiKey || ''
-
+    return await withCredentials({ HEYGEN_API_KEY: settings.heygenApiKey }, async () => {
     if (!isHeyGenAvailable()) {
       return NextResponse.json({
         ok: false,
@@ -150,6 +150,7 @@ export async function POST(req: NextRequest) {
     }
 
     return NextResponse.json({ error: `Unknown action: ${action}` }, { status: 400 })
+    })
   } catch (error) {
     console.error('HeyGen agent error:', error)
     return NextResponse.json({ ok: false, error: String(error) }, { status: 500 })

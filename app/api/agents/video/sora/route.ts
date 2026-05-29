@@ -18,6 +18,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { assertWorkspaceOwnership } from '@/lib/guards'
 import { assertAgentRunQuota } from '@/lib/quota'
+import { withCredentials } from '@/lib/credential-context'
 import {
   generateSoraFromText,
   getSoraTaskStatus,
@@ -49,8 +50,8 @@ export async function POST(req: NextRequest) {
 
     const ws = await sql`SELECT model_settings FROM workspaces WHERE id = ${workspaceId}`
     const settings = (ws.rows[0]?.model_settings || {}) as Record<string, string>
-    if (settings.openaiApiKey) process.env.OPENAI_API_KEY = settings.openaiApiKey
 
+    return await withCredentials({ OPENAI_API_KEY: settings.openaiApiKey }, async () => {
     if (!isSoraConfigured()) {
       return NextResponse.json({
         ok: false,
@@ -147,6 +148,7 @@ export async function POST(req: NextRequest) {
     }
 
     return NextResponse.json({ error: `Unknown action: ${action}` }, { status: 400 })
+    })
   } catch (error) {
     console.error('Sora agent error:', error)
     return NextResponse.json({ ok: false, error: String(error) }, { status: 500 })

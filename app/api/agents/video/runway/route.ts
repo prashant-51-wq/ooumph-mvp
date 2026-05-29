@@ -3,6 +3,7 @@ import { sql, newId } from '@/lib/db'
 import { assertAgentRunQuota } from '@/lib/quota'
 import { assertWorkspaceOwnership } from '@/lib/guards'
 import { recordMediaAsset } from '@/lib/media-assets'
+import { withCredentials } from '@/lib/credential-context'
 import {
   generateVideoFromText,
   generateVideoFromImage,
@@ -47,12 +48,11 @@ export async function POST(req: NextRequest) {
       if (overQuota) return overQuota
     }
 
-    // 1. Fetch workspace settings and inject API key
+    // 1. Fetch workspace settings and run handler with request-scoped credentials.
     const ws = await sql`SELECT model_settings FROM workspaces WHERE id = ${workspaceId}`
     const settings = (ws.rows[0]?.model_settings || {}) as Record<string, string>
 
-    process.env.RUNWAY_API_KEY = settings.runwayApiKey || ''
-
+    return await withCredentials({ RUNWAY_API_KEY: settings.runwayApiKey }, async () => {
     // 2. Check availability
     if (!isRunwayAvailable()) {
       return NextResponse.json({
@@ -203,6 +203,7 @@ export async function POST(req: NextRequest) {
     }
 
     return NextResponse.json({ error: `Unknown action: ${action}` }, { status: 400 })
+    })
   } catch (error) {
     console.error('Runway agent error:', error)
     return NextResponse.json({ ok: false, error: String(error) }, { status: 500 })

@@ -3,6 +3,7 @@ import { sql, newId } from '@/lib/db'
 import { assertWorkspaceOwnership } from '@/lib/guards'
 import { assertAgentRunQuota } from '@/lib/quota'
 import { recordMediaAsset } from '@/lib/media-assets'
+import { withCredentials } from '@/lib/credential-context'
 
 export const runtime = 'nodejs'
 
@@ -48,27 +49,25 @@ export async function POST(req: NextRequest) {
       })
     }
 
-    process.env.ELEVENLABS_API_KEY = settings.elevenLabsApiKey
-    if (settings.elevenLabsVoiceId) {
-      process.env.ELEVENLABS_VOICE_ID = settings.elevenLabsVoiceId
-    }
-
-    // 2. Generate voiceover
-    const { textToSpeech, isElevenLabsAvailable } = await import('@/lib/tools/elevenlabs')
-
-    if (!isElevenLabsAvailable()) {
-      return NextResponse.json({
-        ok: false,
-        error: 'ElevenLabs API key not configured. Add it in Settings → AI Assistants.',
-        requiresSetup: true,
-      })
-    }
-
-    const result = await textToSpeech(text, {
-      voiceId: voiceId || settings.elevenLabsVoiceId,
-      stability,
-      similarityBoost,
-    })
+    // Sprint 18I: request-scoped credentials. Previously this route
+    // mutated process.env directly — concurrent calls from different
+    // workspaces could overwrite each other's ElevenLabs key. Now the
+    // creds are confined to this async chain via AsyncLocalStorage.
+    const result = await withCredentials(
+      {
+        ELEVENLABS_API_KEY: settings.elevenLabsApiKey,
+        ELEVENLABS_VOICE_ID: settings.elevenLabsVoiceId,
+      },
+      async () => {
+        const { textToSpeech, isElevenLabsAvailable } = await import('@/lib/tools/elevenlabs')
+        if (!isElevenLabsAvailable()) return null
+        return textToSpeech(text, {
+          voiceId: voiceId || settings.elevenLabsVoiceId,
+          stability,
+          similarityBoost,
+        })
+      },
+    )
     if (!result) {
       return NextResponse.json({ ok: false, error: 'Voiceover generation failed. Check your ElevenLabs API key.' }, { status: 500 })
     }
@@ -158,10 +157,14 @@ export async function GET(req: NextRequest) {
       })
     }
 
-    process.env.ELEVENLABS_API_KEY = settings.elevenLabsApiKey
-
-    const { getVoices } = await import('@/lib/tools/elevenlabs')
-    const voices = await getVoices()
+    // Sprint 18I: request-scoped credentials (see POST handler above).
+    const voices = await withCredentials(
+      { ELEVENLABS_API_KEY: settings.elevenLabsApiKey },
+      async () => {
+        const { getVoices } = await import('@/lib/tools/elevenlabs')
+        return getVoices()
+      },
+    )
 
     return NextResponse.json({ ok: true, voices })
   } catch (error) {

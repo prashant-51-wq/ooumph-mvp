@@ -5,6 +5,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
 import { getChannelInfo, searchVideos, getUploadInstructions, isYouTubeAvailable } from '@/lib/tools/youtube'
+import { withCredentials } from '@/lib/credential-context'
 import Anthropic from '@anthropic-ai/sdk'
 
 interface YouTubeRequest {
@@ -64,21 +65,20 @@ export async function POST(req: NextRequest) {
     if (action === 'search') {
       if (!query) return NextResponse.json({ error: 'Missing query for search' }, { status: 400 })
 
-      // Inject API key from settings
-      if (settings.youtubeApiKey) {
-        process.env.YOUTUBE_API_KEY = settings.youtubeApiKey as string
-      }
-
-      if (!isYouTubeAvailable()) {
-        return NextResponse.json({
-          ok: false,
-          error: 'YouTube API key not configured. Add it in Settings → Social Publishing.',
-          requiresSetup: true,
-        })
-      }
-
-      const videos = await searchVideos(query, 10)
-      return NextResponse.json({ ok: true, videos })
+      return await withCredentials(
+        { YOUTUBE_API_KEY: settings.youtubeApiKey as string | undefined },
+        async () => {
+          if (!isYouTubeAvailable()) {
+            return NextResponse.json({
+              ok: false,
+              error: 'YouTube API key not configured. Add it in Settings → Social Publishing.',
+              requiresSetup: true,
+            })
+          }
+          const videos = await searchVideos(query, 10)
+          return NextResponse.json({ ok: true, videos })
+        }
+      )
     }
 
     // ── Upload Info ──────────────────────────────────────────────────────────

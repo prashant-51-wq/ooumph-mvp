@@ -165,7 +165,11 @@ export async function requireRole(
     const ownerRes = await sql`SELECT user_id FROM workspaces WHERE id = ${workspaceId} LIMIT 1`
     const owner = ownerRes.rows[0] as { user_id?: string } | undefined
     if (owner?.user_id === userId) return null
-  } catch { /* table missing on bootstrap — fall through */ }
+  } catch (err) {
+    // Audit pass #6 P1: surface schema drift so missing-table failures aren't
+    // silently swallowed as generic 403s.
+    console.error('[requireRole] workspaces:', err)
+  }
 
   // 2. workspace_members table — most common path for invited collaborators.
   try {
@@ -182,7 +186,9 @@ export async function requireRole(
         { status: 403 },
       )
     }
-  } catch { /* table missing — fall through */ }
+  } catch (err) {
+    console.error('[requireRole] workspace_members:', err)
+  }
 
   // 3. workspace_invites — pending invite that hasn't been promoted yet.
   try {
@@ -199,7 +205,9 @@ export async function requireRole(
         if ((ROLE_RANK[role] ?? -1) >= ROLE_RANK[minRole]) return null
       }
     }
-  } catch { /* table missing — fall through */ }
+  } catch (err) {
+    console.error('[requireRole] workspace_invites:', err)
+  }
 
   return NextResponse.json(
     { error: `Workspace role of '${minRole}' or higher required` },

@@ -1,5 +1,7 @@
 // Apollo.io People & Company Enrichment
 
+import { getCredential } from '@/lib/credential-context'
+
 const APOLLO_BASE = 'https://api.apollo.io/api/v1'
 
 export interface ApolloPerson {
@@ -31,7 +33,7 @@ export interface ApolloCompany {
 }
 
 export async function enrichPerson(email: string): Promise<ApolloPerson | null> {
-  const key = process.env.APOLLO_API_KEY
+  const key = getCredential('APOLLO_API_KEY')
   if (!key) return null
   try {
     const res = await fetch(`${APOLLO_BASE}/people/match`, {
@@ -52,7 +54,7 @@ export async function enrichPerson(email: string): Promise<ApolloPerson | null> 
 }
 
 export async function enrichCompany(domain: string): Promise<ApolloCompany | null> {
-  const key = process.env.APOLLO_API_KEY
+  const key = getCredential('APOLLO_API_KEY')
   if (!key) return null
   try {
     const res = await fetch(`${APOLLO_BASE}/organizations/enrich`, {
@@ -74,7 +76,7 @@ export async function searchPeople(filters: {
   locations?: string[]
   page?: number
 }): Promise<ApolloPerson[]> {
-  const key = process.env.APOLLO_API_KEY
+  const key = getCredential('APOLLO_API_KEY')
   if (!key) return []
   try {
     const body: Record<string, unknown> = {
@@ -100,5 +102,5 @@ export async function searchPeople(filters: {
 }
 
 export function isApolloAvailable(): boolean {
-  return !!process.env.APOLLO_API_KEY
+  return !!getCredential('APOLLO_API_KEY')
 }

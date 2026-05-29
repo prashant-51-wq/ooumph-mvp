@@ -21,6 +21,8 @@
  * Docs: https://platform.openai.com/docs/guides/sora-api
  */
 
+import { getCredential } from '@/lib/credential-context'
+
 const OPENAI_VIDEO_BASE = 'https://api.openai.com/v1/videos'
 
 export interface SoraTask {
@@ -42,7 +44,7 @@ export interface SoraGenOptions {
 }
 
 function openaiHeaders(): Record<string, string> | null {
-  const key = process.env.OPENAI_API_KEY || ''
+  const key = getCredential('OPENAI_API_KEY') || ''
   if (!key) return null
   return {
     Authorization: `Bearer ${key}`,
@@ -127,5 +129,5 @@ export async function getSoraTaskStatus(taskId: string): Promise<SoraTask | null
 }
 
 export function isSoraConfigured(): boolean {
-  return !!process.env.OPENAI_API_KEY
+  return !!getCredential('OPENAI_API_KEY')
 }

@@ -15,6 +15,8 @@
  * Docs (as of writing): https://docs.lumalabs.ai/docs/api
  */
 
+import { getCredential } from '@/lib/credential-context'
+
 const LUMA_BASE = 'https://api.lumalabs.ai/dream-machine/v1'
 
 export interface LumaTask {
@@ -39,7 +41,7 @@ export interface LumaGenOptions {
 }
 
 function lumaHeaders(): Record<string, string> {
-  const key = process.env.LUMA_API_KEY || ''
+  const key = getCredential('LUMA_API_KEY') || ''
   return {
     Authorization: `Bearer ${key}`,
     'Content-Type': 'application/json',
@@ -80,7 +82,7 @@ export async function generateLumaFromText(
   prompt: string,
   options?: LumaGenOptions,
 ): Promise<{ id: string } | null> {
-  const key = process.env.LUMA_API_KEY
+  const key = getCredential('LUMA_API_KEY')
   if (!key) return null
   try {
     const res = await fetch(`${LUMA_BASE}/generations`, {
@@ -107,7 +109,7 @@ export async function generateLumaFromImage(
   prompt: string,
   options?: LumaGenOptions,
 ): Promise<{ id: string } | null> {
-  const key = process.env.LUMA_API_KEY
+  const key = getCredential('LUMA_API_KEY')
   if (!key) return null
   try {
     // Luma uses keyframes for image-to-video — frame 0 is the start image.
@@ -133,7 +135,7 @@ export async function generateLumaFromImage(
 }
 
 export async function getLumaTaskStatus(taskId: string): Promise<LumaTask | null> {
-  const key = process.env.LUMA_API_KEY
+  const key = getCredential('LUMA_API_KEY')
   if (!key) return null
   try {
     const res = await fetch(`${LUMA_BASE}/generations/${encodeURIComponent(taskId)}`, {
@@ -148,5 +150,5 @@ export async function getLumaTaskStatus(taskId: string): Promise<LumaTask | null
 }
 
 export function isLumaAvailable(): boolean {
-  return !!process.env.LUMA_API_KEY
+  return !!getCredential('LUMA_API_KEY')
 }

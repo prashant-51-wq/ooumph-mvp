@@ -6,6 +6,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { createWPPost, testWPConnection, createGhostPost, testGhostConnection } from '@/lib/tools'
+import { assertWorkspaceOwnership, assertArtifactApproved } from '@/lib/guards'
 
 type PublishAction = 'publish_blog' | 'schedule_social' | 'publish_newsletter' | 'get_status'
 
@@ -91,7 +92,7 @@ async function publishBlog(
 
   return {
     success: true,
-    message: `Blog post published to ${platform} as "${status}".`,
+    message: `Blog post published to ${platform} as "${rawStatus}".`,
     publishedUrls: publishedUrl ? [publishedUrl] : [],
     publishedId,
     platform,
@@ -114,11 +115,16 @@ async function publishNewsletter(
   const recipientTag = options.recipientTag as string | undefined
 
   // Fetch subscriber count for confirmation
-  const subsResult = await sql`
-    SELECT COUNT(*) as count FROM subscribers
-    WHERE workspace_id = ${workspaceId}
-    ${recipientTag ? sql`AND tags @> ARRAY[${recipientTag}]` : sql``}
-  `.catch(() => ({ rows: [{ count: 0 }] }))
+  const subsResult = recipientTag
+    ? await sql`
+        SELECT COUNT(*) as count FROM email_subscribers
+        WHERE workspace_id = ${workspaceId}
+          AND tags @> ARRAY[${recipientTag}]
+      `.catch(() => ({ rows: [{ count: 0 }] }))
+    : await sql`
+        SELECT COUNT(*) as count FROM email_subscribers
+        WHERE workspace_id = ${workspaceId}
+      `.catch(() => ({ rows: [{ count: 0 }] }))
 
   const subscriberCount = Number(subsResult.rows[0]?.count || 0)
 
@@ -203,6 +209,18 @@ export async function POST(req: NextRequest) {
 
     if (!workspaceId) return NextResponse.json({ error: 'Missing workspaceId' }, { status: 400 })
     if (!action) return NextResponse.json({ error: 'Missing action' }, { status: 400 })
+
+    // Audit pass #6 P0: ownership before any external publish path.
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
+
+    // Audit pass #6 P0: enforce HITL approval gate for any artifact-bound
+    // publish action. Status/raw-content routes (no artifactId) skip naturally.
+    const isExternalPublish = action === 'publish_blog' || action === 'publish_newsletter'
+    if (isExternalPublish && artifactId) {
+      const gate = await assertArtifactApproved(workspaceId, artifactId)
+      if (gate) return gate
+    }
 
     // Load workspace model_settings
     const wsResult = await sql`SELECT model_settings FROM workspaces WHERE id = ${workspaceId} LIMIT 1`

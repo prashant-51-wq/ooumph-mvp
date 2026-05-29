@@ -5,9 +5,18 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
 
+// Audit pass #6 P1: header-only check. The previous `?adminSecret=` URL
+// fallback leaked the cleartext into access logs and referrer headers.
+// Accepts: x-admin-secret OR Authorization: Bearer <ADMIN_SECRET>.
 function requireAdmin(req: NextRequest): boolean {
-  const secret = req.headers.get('x-admin-secret') || new URL(req.url).searchParams.get('adminSecret')
-  return secret === process.env.ADMIN_SECRET
+  const expected = process.env.ADMIN_SECRET || ''
+  if (!expected) return false
+  const header = req.headers.get('x-admin-secret') || ''
+  if (header && header === expected) return true
+  const auth = req.headers.get('authorization') || ''
+  const match = auth.match(/^Bearer\s+(.+)$/i)
+  if (match && match[1] === expected) return true
+  return false
 }
 
 export async function GET(req: NextRequest) {

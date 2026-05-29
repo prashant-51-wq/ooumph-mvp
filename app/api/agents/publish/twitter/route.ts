@@ -5,6 +5,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { postTweet, postThread, isTwitterAvailable } from '@/lib/tools/twitter'
+import { withCredentials } from '@/lib/credential-context'
 import { assertWorkspaceOwnership } from '@/lib/guards'
 import { isAgentActive } from '@/lib/agents'
 
@@ -83,86 +84,86 @@ export async function POST(req: NextRequest) {
     const settings = await getSettings(workspaceId)
     if (!settings) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 })
 
-    // Inject bearer token if present
-    if (settings.twitterBearerToken) {
-      process.env.TWITTER_BEARER_TOKEN = settings.twitterBearerToken as string
-    }
-
     const effectiveToken = accessToken || (settings.twitterAccessToken as string | undefined)
 
-    // ── Preview ──────────────────────────────────────────────────────────────
-    if (action === 'preview') {
-      if (!content) return NextResponse.json({ error: 'Missing content for preview' }, { status: 400 })
-      const preview = splitIntoTweets(content)
-      return NextResponse.json({ ok: true, preview, tweetCount: preview.length })
-    }
+    return await withCredentials(
+      { TWITTER_BEARER_TOKEN: settings.twitterBearerToken as string | undefined },
+      async () => {
+        // ── Preview ──────────────────────────────────────────────────────────────
+        if (action === 'preview') {
+          if (!content) return NextResponse.json({ error: 'Missing content for preview' }, { status: 400 })
+          const preview = splitIntoTweets(content)
+          return NextResponse.json({ ok: true, preview, tweetCount: preview.length })
+        }
 
-    // All posting actions require a token
-    if (!effectiveToken) {
-      return NextResponse.json({
-        ok: false,
-        error: 'Twitter access token not configured. Add it in Settings → Social Publishing.',
-        requiresSetup: true,
-      })
-    }
+        // All posting actions require a token
+        if (!effectiveToken) {
+          return NextResponse.json({
+            ok: false,
+            error: 'Twitter access token not configured. Add it in Settings → Social Publishing.',
+            requiresSetup: true,
+          })
+        }
 
-    // ── Single Tweet ─────────────────────────────────────────────────────────
-    if (action === 'tweet') {
-      if (!content) return NextResponse.json({ error: 'Missing content' }, { status: 400 })
-      let tweetText = content
-      if (tweetText.length > 280) {
-        tweetText = tweetText.slice(0, 277) + '...'
+        // ── Single Tweet ─────────────────────────────────────────────────────────
+        if (action === 'tweet') {
+          if (!content) return NextResponse.json({ error: 'Missing content' }, { status: 400 })
+          let tweetText = content
+          if (tweetText.length > 280) {
+            tweetText = tweetText.slice(0, 277) + '...'
+          }
+          const tweet = await postTweet(tweetText, effectiveToken)
+          const tweetId = tweet?.id ?? ''
+
+          // Save artifact
+          const artifactId = newId()
+          await sql`
+            INSERT INTO artifacts (id, workspace_id, agent_run_id, type, title, content_json, status)
+            VALUES (
+              ${artifactId},
+              ${workspaceId},
+              ${null},
+              ${'published_tweet'},
+              ${'Tweet: ' + tweetText.slice(0, 80)},
+              ${JSON.stringify({ text: tweetText, tweetId, platform: 'twitter' })},
+              ${'approved'}
+            )
+          `.catch(() => { /* ignore if artifacts table structure differs */ })
+
+          return NextResponse.json({
+            ok: true,
+            tweet,
+            tweetUrl: tweetId ? `https://twitter.com/i/status/${tweetId}` : null,
+          })
+        }
+
+        // ── Thread ───────────────────────────────────────────────────────────────
+        if (action === 'thread') {
+          const tweetsArray = tweets && tweets.length > 0
+            ? tweets
+            : content
+              ? splitIntoTweets(content)
+              : null
+
+          if (!tweetsArray || tweetsArray.length === 0) {
+            return NextResponse.json({ error: 'Missing tweets or content for thread' }, { status: 400 })
+          }
+
+          const postedTweets = await postThread(tweetsArray, effectiveToken)
+          const firstId = Array.isArray(postedTweets) && postedTweets.length > 0
+            ? (postedTweets[0] as { id?: string })?.id ?? ''
+            : ''
+
+          return NextResponse.json({
+            ok: true,
+            tweets: postedTweets,
+            threadUrl: firstId ? `https://twitter.com/i/status/${firstId}` : null,
+          })
+        }
+
+        return NextResponse.json({ error: 'Unknown action' }, { status: 400 })
       }
-      const tweet = await postTweet(tweetText, effectiveToken)
-      const tweetId = tweet?.id ?? ''
-
-      // Save artifact
-      const artifactId = newId()
-      await sql`
-        INSERT INTO artifacts (id, workspace_id, agent_run_id, type, title, content_json, status)
-        VALUES (
-          ${artifactId},
-          ${workspaceId},
-          ${null},
-          ${'published_tweet'},
-          ${'Tweet: ' + tweetText.slice(0, 80)},
-          ${JSON.stringify({ text: tweetText, tweetId, platform: 'twitter' })},
-          ${'approved'}
-        )
-      `.catch(() => { /* ignore if artifacts table structure differs */ })
-
-      return NextResponse.json({
-        ok: true,
-        tweet,
-        tweetUrl: tweetId ? `https://twitter.com/i/status/${tweetId}` : null,
-      })
-    }
-
-    // ── Thread ───────────────────────────────────────────────────────────────
-    if (action === 'thread') {
-      const tweetsArray = tweets && tweets.length > 0
-        ? tweets
-        : content
-          ? splitIntoTweets(content)
-          : null
-
-      if (!tweetsArray || tweetsArray.length === 0) {
-        return NextResponse.json({ error: 'Missing tweets or content for thread' }, { status: 400 })
-      }
-
-      const postedTweets = await postThread(tweetsArray, effectiveToken)
-      const firstId = Array.isArray(postedTweets) && postedTweets.length > 0
-        ? (postedTweets[0] as { id?: string })?.id ?? ''
-        : ''
-
-      return NextResponse.json({
-        ok: true,
-        tweets: postedTweets,
-        threadUrl: firstId ? `https://twitter.com/i/status/${firstId}` : null,
-      })
-    }
-
-    return NextResponse.json({ error: 'Unknown action' }, { status: 400 })
+    )
   } catch (error) {
     console.error('Twitter route error:', error)
     return NextResponse.json({ ok: false, error: String(error) }, { status: 500 })

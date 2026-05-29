@@ -3,6 +3,7 @@ import { sql, newId } from '@/lib/db'
 import { assertWorkspaceOwnership } from '@/lib/guards'
 import { assertAgentRunQuota } from '@/lib/quota'
 import { recordMediaAsset } from '@/lib/media-assets'
+import { withCredentials } from '@/lib/credential-context'
 
 export const runtime = 'nodejs'
 
@@ -47,34 +48,39 @@ export async function POST(req: NextRequest) {
       })
     }
 
-    // Inject API key temporarily for tool functions
-    process.env.OPENAI_API_KEY = settings.openaiApiKey
-
-    // 2. Generate image
+    // 2. Generate image — credentials are request-scoped via AsyncLocalStorage
+    // so concurrent workspaces never see each other's API keys.
     const { generateImage, isOpenAIAvailable } = await import('@/lib/tools/openai')
 
-    if (!isOpenAIAvailable()) {
-      return NextResponse.json({
-        ok: false,
-        error: 'OpenAI API key not configured. Add it in Settings → AI Assistants.',
-        requiresSetup: true,
-      })
-    }
-
-    const result = await generateImage(prompt, { size, quality, style })
+    const result = await withCredentials(
+      { OPENAI_API_KEY: settings.openaiApiKey },
+      async () => {
+        if (!isOpenAIAvailable()) return null
+        return generateImage(prompt, { size, quality, style })
+      }
+    )
     if (!result) {
       return NextResponse.json({ ok: false, error: 'Image generation failed. Check your OpenAI API key and try again.' }, { status: 500 })
     }
 
-    // 3. Optionally upload to Cloudinary
+    // 3. Optionally upload to Cloudinary. Cloudinary creds live in the same
+    // workspace settings; scope them just like the OpenAI call above.
     let cloudinaryUrl: string | undefined
     if (uploadToCloudinary) {
       try {
         const { uploadImageUrl, isCloudinaryAvailable } = await import('@/lib/tools/cloudinary')
-        if (isCloudinaryAvailable()) {
-          const uploaded = await uploadImageUrl(result.url, 'ooumph/generated')
-          if (uploaded) cloudinaryUrl = uploaded.secureUrl
-        }
+        cloudinaryUrl = await withCredentials(
+          {
+            CLOUDINARY_CLOUD_NAME: settings.cloudinaryCloudName,
+            CLOUDINARY_API_KEY: settings.cloudinaryApiKey,
+            CLOUDINARY_API_SECRET: settings.cloudinaryApiSecret,
+          },
+          async () => {
+            if (!isCloudinaryAvailable()) return undefined
+            const uploaded = await uploadImageUrl(result.url, 'ooumph/generated')
+            return uploaded?.secureUrl
+          }
+        )
       } catch {
         // Cloudinary unavailable — continue without it
       }

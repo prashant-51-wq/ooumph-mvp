@@ -3,6 +3,7 @@ import { after } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { sendApprovalConfirmationEmail } from '@/lib/email'
 import { assertWorkspaceOwnership } from '@/lib/guards'
+import { notifyPublishFailed } from '@/lib/notifications'
 
 const BASE_URL = process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000'
 
@@ -240,7 +241,10 @@ export async function PATCH(req: NextRequest) {
       const creativeReq = creativeReqResult.rows[0]
       if (creativeReq?.publish_platforms) {
         const platforms = JSON.parse(creativeReq.publish_platforms as string) as string[]
-        // Fire-and-forget publish to each platform (HITL gate was the approval itself)
+        // Fire-and-forget publish to each platform (HITL gate was the approval itself).
+        // Sprint 18L (audit pass #6 P2): bell-fan-out on terminal failure
+        // — pre-fix the only failure signal was a console.error a user
+        // would never see.
         Promise.allSettled(
           platforms.map(platform =>
             fetch(`${BASE_URL}/api/publish`, {
@@ -249,8 +253,18 @@ export async function PATCH(req: NextRequest) {
               body: JSON.stringify({ workspaceId, artifactId: artifact.id, platform }),
             }).then(async r => {
               const data = await r.json() as { ok?: boolean; error?: string; postUrl?: string }
-              if (!data.ok) console.error(`Auto-publish to ${platform} failed:`, data.error)
-              else console.log(`Auto-published to ${platform}:`, data.postUrl)
+              if (!data.ok) {
+                console.error(`Auto-publish to ${platform} failed:`, data.error)
+                try {
+                  await notifyPublishFailed(workspaceId, platform, data.error || 'Auto-publish failed')
+                } catch { /* notification miss is non-fatal */ }
+              } else {
+                console.log(`Auto-published to ${platform}:`, data.postUrl)
+              }
+            }).catch(async (err: unknown) => {
+              const msg = err instanceof Error ? err.message : String(err)
+              console.error(`Auto-publish to ${platform} threw:`, msg)
+              try { await notifyPublishFailed(workspaceId, platform, msg) } catch { /* */ }
             })
           )
         ).catch(e => console.error('Auto-publish batch error:', e))

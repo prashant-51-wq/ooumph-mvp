@@ -1,5 +1,7 @@
 // Runway ML API
 
+import { getCredential } from '@/lib/credential-context'
+
 const RUNWAY_BASE = 'https://api.dev.runwayml.com/v1'
 
 export interface RunwayTask {
@@ -19,7 +21,7 @@ export interface RunwayGenOptions {
 }
 
 function runwayHeaders(): Record<string, string> {
-  const key = process.env.RUNWAY_API_KEY || ''
+  const key = getCredential('RUNWAY_API_KEY') || ''
   return {
     Authorization: `Bearer ${key}`,
     'X-Runway-Version': '2024-11-06',
@@ -31,7 +33,7 @@ export async function generateVideoFromText(
   prompt: string,
   options?: RunwayGenOptions
 ): Promise<{ id: string } | null> {
-  const key = process.env.RUNWAY_API_KEY
+  const key = getCredential('RUNWAY_API_KEY')
   if (!key) return null
   try {
     const res = await fetch(`${RUNWAY_BASE}/text_to_video`, {
@@ -59,7 +61,7 @@ export async function generateVideoFromImage(
   prompt: string,
   options?: RunwayGenOptions
 ): Promise<{ id: string } | null> {
-  const key = process.env.RUNWAY_API_KEY
+  const key = getCredential('RUNWAY_API_KEY')
   if (!key) return null
   try {
     const res = await fetch(`${RUNWAY_BASE}/image_to_video`, {
@@ -84,7 +86,7 @@ export async function generateVideoFromImage(
 }
 
 export async function getRunwayTaskStatus(taskId: string): Promise<RunwayTask | null> {
-  const key = process.env.RUNWAY_API_KEY
+  const key = getCredential('RUNWAY_API_KEY')
   if (!key) return null
   try {
     const res = await fetch(`${RUNWAY_BASE}/tasks/${taskId}`, {
@@ -106,7 +108,7 @@ export async function getRunwayTaskStatus(taskId: string): Promise<RunwayTask | 
 }
 
 export async function cancelRunwayTask(taskId: string): Promise<boolean> {
-  const key = process.env.RUNWAY_API_KEY
+  const key = getCredential('RUNWAY_API_KEY')
   if (!key) return false
   try {
     const res = await fetch(`${RUNWAY_BASE}/tasks/${taskId}/cancel`, {
@@ -120,5 +122,5 @@ export async function cancelRunwayTask(taskId: string): Promise<boolean> {
 }
 
 export function isRunwayAvailable(): boolean {
-  return !!process.env.RUNWAY_API_KEY
+  return !!getCredential('RUNWAY_API_KEY')
 }

@@ -21,6 +21,8 @@
  * Docs (subject to change): https://devapi.pika.art
  */
 
+import { getCredential } from '@/lib/credential-context'
+
 const PIKA_BASE = 'https://devapi.pika.art'
 
 export interface PikaTask {
@@ -38,7 +40,7 @@ export interface PikaGenOptions {
 }
 
 function pikaHeaders(): Record<string, string> | null {
-  const key = process.env.PIKA_API_KEY || ''
+  const key = getCredential('PIKA_API_KEY') || ''
   if (!key) return null
   return {
     Authorization: `Bearer ${key}`,
@@ -116,5 +118,5 @@ export async function getPikaTaskStatus(taskId: string): Promise<PikaTask | null
 }
 
 export function isPikaConfigured(): boolean {
-  return !!process.env.PIKA_API_KEY
+  return !!getCredential('PIKA_API_KEY')
 }

@@ -1,5 +1,7 @@
 // LinkedIn Ads API
 
+import { getCredential } from '@/lib/credential-context'
+
 const LINKEDIN_ADS_BASE = 'https://api.linkedin.com/v2'
 
 export interface LinkedInAdCampaignGroup {
@@ -41,8 +43,8 @@ export async function getLinkedInCampaignGroups(
   accessToken?: string,
   accountId?: string
 ): Promise<LinkedInAdCampaignGroup[]> {
-  const token = accessToken || process.env.LINKEDIN_ADS_ACCESS_TOKEN
-  const account = accountId || process.env.LINKEDIN_ADS_ACCOUNT_ID
+  const token = accessToken || getCredential('LINKEDIN_ADS_ACCESS_TOKEN')
+  const account = accountId || getCredential('LINKEDIN_ADS_ACCOUNT_ID')
   if (!token || !account) return []
   try {
     const encodedAccount = encodeURIComponent(account)
@@ -69,8 +71,8 @@ export async function getLinkedInCampaigns(
   accessToken?: string,
   accountId?: string
 ): Promise<LinkedInAdCampaign[]> {
-  const token = accessToken || process.env.LINKEDIN_ADS_ACCESS_TOKEN
-  const account = accountId || process.env.LINKEDIN_ADS_ACCOUNT_ID
+  const token = accessToken || getCredential('LINKEDIN_ADS_ACCESS_TOKEN')
+  const account = accountId || getCredential('LINKEDIN_ADS_ACCOUNT_ID')
   if (!token || !account) return []
   try {
     const encodedAccount = encodeURIComponent(account)
@@ -99,7 +101,7 @@ export async function getLinkedInCampaignAnalytics(
   campaignId: string,
   accessToken?: string
 ): Promise<LinkedInAdAnalytics | null> {
-  const token = accessToken || process.env.LINKEDIN_ADS_ACCESS_TOKEN
+  const token = accessToken || getCredential('LINKEDIN_ADS_ACCESS_TOKEN')
   if (!token) return null
   try {
     const campaignUrn = encodeURIComponent(`urn:li:sponsoredCampaign:${campaignId}`)
@@ -136,7 +138,7 @@ export async function pauseLinkedInCampaign(
   campaignId: string,
   accessToken?: string
 ): Promise<boolean> {
-  const token = accessToken || process.env.LINKEDIN_ADS_ACCESS_TOKEN
+  const token = accessToken || getCredential('LINKEDIN_ADS_ACCESS_TOKEN')
   if (!token) return false
   try {
     const res = await fetch(`${LINKEDIN_ADS_BASE}/adCampaigns/${campaignId}`, {
@@ -154,5 +156,5 @@ export async function pauseLinkedInCampaign(
 }
 
 export function isLinkedInAdsAvailable(): boolean {
-  return !!process.env.LINKEDIN_ADS_ACCESS_TOKEN
+  return !!getCredential('LINKEDIN_ADS_ACCESS_TOKEN')
 }

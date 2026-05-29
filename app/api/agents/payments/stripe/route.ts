@@ -4,6 +4,8 @@
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
+import { assertWorkspaceOwnership } from '@/lib/guards'
+import { withCredentials } from '@/lib/credential-context'
 import {
   createStripePaymentLink,
   createStripeCheckoutSession,
@@ -54,77 +56,83 @@ export async function POST(req: NextRequest) {
     if (!workspaceId) return NextResponse.json({ error: 'Missing workspaceId' }, { status: 400 })
     if (!action) return NextResponse.json({ error: 'Missing action' }, { status: 400 })
 
+    // Sprint 18I/J: ownership gate so a logged-in user can't drive
+    // another workspace's Stripe account.
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
+
     const settings = await getSettings(workspaceId)
     if (!settings) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 })
 
-    // Inject Stripe secret key from workspace settings
-    if (settings.stripeSecretKey) {
-      process.env.STRIPE_SECRET_KEY = settings.stripeSecretKey as string
-    }
+    // Sprint 18I: request-scoped Stripe credential — was process.env mutation.
+    return withCredentials(
+      { STRIPE_SECRET_KEY: settings.stripeSecretKey as string | undefined },
+      async () => {
+        if (!isStripeAvailable()) {
+          return NextResponse.json({
+            ok: false,
+            error: 'Stripe not configured. Add your secret key in Settings → Payments.',
+            requiresSetup: true,
+          })
+        }
 
-    if (!isStripeAvailable()) {
-      return NextResponse.json({
-        ok: false,
-        error: 'Stripe not configured. Add your secret key in Settings → Payments.',
-        requiresSetup: true,
-      })
-    }
+        // ── Create Payment Link ───────────────────────────────────────────────
+        if (action === 'create_link') {
+          if (!productName || !amountCents) {
+            return NextResponse.json({ error: 'Missing productName or amountCents' }, { status: 400 })
+          }
+          const link = await createStripePaymentLink(productName, amountCents, currency, description)
+          if (!link) return NextResponse.json({ ok: false, error: 'Failed to create payment link. Check your Stripe key.' }, { status: 500 })
+          return NextResponse.json({ ok: true, link: { id: link.id, url: link.url } })
+        }
 
-    // ── Create Payment Link ───────────────────────────────────────────────────
-    if (action === 'create_link') {
-      if (!productName || !amountCents) {
-        return NextResponse.json({ error: 'Missing productName or amountCents' }, { status: 400 })
-      }
-      const link = await createStripePaymentLink(productName, amountCents, currency, description)
-      if (!link) return NextResponse.json({ ok: false, error: 'Failed to create payment link. Check your Stripe key.' }, { status: 500 })
-      return NextResponse.json({ ok: true, link: { id: link.id, url: link.url } })
-    }
+        // ── Create Checkout Session ───────────────────────────────────────────
+        if (action === 'create_checkout') {
+          if (!productName || !amountCents) {
+            return NextResponse.json({ error: 'Missing productName or amountCents' }, { status: 400 })
+          }
+          const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://ooumph-mvp.vercel.app'
+          const session = await createStripeCheckoutSession(
+            productName,
+            amountCents,
+            currency || 'usd',
+            successUrl || `${appUrl}/dashboard/payments?success=1`,
+            cancelUrl || `${appUrl}/dashboard/payments`,
+          )
+          if (!session) return NextResponse.json({ ok: false, error: 'Failed to create checkout session.' }, { status: 500 })
+          return NextResponse.json({ ok: true, session: { id: session.id, url: session.url } })
+        }
 
-    // ── Create Checkout Session ───────────────────────────────────────────────
-    if (action === 'create_checkout') {
-      if (!productName || !amountCents) {
-        return NextResponse.json({ error: 'Missing productName or amountCents' }, { status: 400 })
-      }
-      const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://ooumph-mvp.vercel.app'
-      const session = await createStripeCheckoutSession(
-        productName,
-        amountCents,
-        currency || 'usd',
-        successUrl || `${appUrl}/dashboard/payments?success=1`,
-        cancelUrl || `${appUrl}/dashboard/payments`,
-      )
-      if (!session) return NextResponse.json({ ok: false, error: 'Failed to create checkout session.' }, { status: 500 })
-      return NextResponse.json({ ok: true, session: { id: session.id, url: session.url } })
-    }
+        // ── List Payment Links ────────────────────────────────────────────────
+        if (action === 'list_links') {
+          const links = await getStripePaymentLinks(limit || 20)
+          return NextResponse.json({ ok: true, links })
+        }
 
-    // ── List Payment Links ────────────────────────────────────────────────────
-    if (action === 'list_links') {
-      const links = await getStripePaymentLinks(limit || 20)
-      return NextResponse.json({ ok: true, links })
-    }
+        // ── Revenue Stats ─────────────────────────────────────────────────────
+        if (action === 'revenue') {
+          const stats = await getStripeRevenueStats(days || 30)
+          return NextResponse.json({ ok: true, stats: stats || { totalRevenue: 0, currency: 'usd', transactions: 0, avgOrderValue: 0 } })
+        }
 
-    // ── Revenue Stats ─────────────────────────────────────────────────────────
-    if (action === 'revenue') {
-      const stats = await getStripeRevenueStats(days || 30)
-      return NextResponse.json({ ok: true, stats: stats || { totalRevenue: 0, currency: 'usd', transactions: 0, avgOrderValue: 0 } })
-    }
+        // ── Create Subscription ───────────────────────────────────────────────
+        if (action === 'create_subscription') {
+          if (!productName || !amountCents) {
+            return NextResponse.json({ error: 'Missing productName or amountCents' }, { status: 400 })
+          }
+          const result = await createStripeSubscription(
+            productName,
+            amountCents,
+            interval || 'month',
+            currency,
+          )
+          if (!result) return NextResponse.json({ ok: false, error: 'Failed to create subscription price.' }, { status: 500 })
+          return NextResponse.json({ ok: true, priceId: result.priceId, productId: result.productId })
+        }
 
-    // ── Create Subscription ───────────────────────────────────────────────────
-    if (action === 'create_subscription') {
-      if (!productName || !amountCents) {
-        return NextResponse.json({ error: 'Missing productName or amountCents' }, { status: 400 })
-      }
-      const result = await createStripeSubscription(
-        productName,
-        amountCents,
-        interval || 'month',
-        currency,
-      )
-      if (!result) return NextResponse.json({ ok: false, error: 'Failed to create subscription price.' }, { status: 500 })
-      return NextResponse.json({ ok: true, priceId: result.priceId, productId: result.productId })
-    }
-
-    return NextResponse.json({ error: 'Unknown action' }, { status: 400 })
+        return NextResponse.json({ error: 'Unknown action' }, { status: 400 })
+      },
+    )
   } catch (error) {
     console.error('Stripe payments route error:', error)
     return NextResponse.json({ ok: false, error: String(error) }, { status: 500 })

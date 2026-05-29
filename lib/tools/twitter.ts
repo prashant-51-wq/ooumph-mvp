@@ -1,5 +1,7 @@
 // Twitter / X API v2
 
+import { getCredential } from '@/lib/credential-context'
+
 const TWITTER_BASE = 'https://api.twitter.com/2'
 
 export interface Tweet {
@@ -72,7 +74,7 @@ export async function searchTweets(
   query: string,
   maxResults = 10
 ): Promise<Tweet[]> {
-  const bearerToken = process.env.TWITTER_BEARER_TOKEN
+  const bearerToken = getCredential('TWITTER_BEARER_TOKEN')
   if (!bearerToken) return []
   try {
     const params = new URLSearchParams({
@@ -114,5 +116,5 @@ export async function getUserTimeline(
 }
 
 export function isTwitterAvailable(): boolean {
-  return !!process.env.TWITTER_BEARER_TOKEN
+  return !!getCredential('TWITTER_BEARER_TOKEN')
 }

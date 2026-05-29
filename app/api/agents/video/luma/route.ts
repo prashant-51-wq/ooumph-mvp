@@ -14,6 +14,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { assertWorkspaceOwnership } from '@/lib/guards'
 import { assertAgentRunQuota } from '@/lib/quota'
+import { withCredentials } from '@/lib/credential-context'
 import {
   generateLumaFromText,
   generateLumaFromImage,
@@ -45,11 +46,11 @@ export async function POST(req: NextRequest) {
       if (overQuota) return overQuota
     }
 
-    // Workspace BYOK → env shim, matching the Runway handler.
+    // Workspace BYOK → request-scoped credentials. Falls back to env.
     const ws = await sql`SELECT model_settings FROM workspaces WHERE id = ${workspaceId}`
     const settings = (ws.rows[0]?.model_settings || {}) as Record<string, string>
-    if (settings.lumaApiKey) process.env.LUMA_API_KEY = settings.lumaApiKey
 
+    return await withCredentials({ LUMA_API_KEY: settings.lumaApiKey }, async () => {
     if (!isLumaAvailable()) {
       return NextResponse.json({
         ok: false,
@@ -162,6 +163,7 @@ export async function POST(req: NextRequest) {
     }
 
     return NextResponse.json({ error: `Unknown action: ${action}` }, { status: 400 })
+    })
   } catch (error) {
     console.error('Luma agent error:', error)
     return NextResponse.json({ ok: false, error: String(error) }, { status: 500 })

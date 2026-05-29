@@ -1,5 +1,7 @@
 // Deepgram Speech-to-Text API
 
+import { getCredential } from '@/lib/credential-context'
+
 const DEEPGRAM_BASE = 'https://api.deepgram.com/v1'
 
 const DEFAULT_PARAMS =
@@ -42,7 +44,7 @@ export async function transcribeUrl(
   audioUrl: string,
   options?: { language?: string; model?: string }
 ): Promise<DeepgramTranscript | null> {
-  const key = process.env.DEEPGRAM_API_KEY
+  const key = getCredential('DEEPGRAM_API_KEY')
   if (!key) return null
   try {
     let params = DEFAULT_PARAMS
@@ -70,7 +72,7 @@ export async function transcribeBase64(
   mimeType: string,
   options?: { language?: string }
 ): Promise<DeepgramTranscript | null> {
-  const key = process.env.DEEPGRAM_API_KEY
+  const key = getCredential('DEEPGRAM_API_KEY')
   if (!key) return null
   try {
     let params = DEFAULT_PARAMS
@@ -94,5 +96,5 @@ export async function transcribeBase64(
 }
 
 export function isDeepgramAvailable(): boolean {
-  return !!process.env.DEEPGRAM_API_KEY
+  return !!getCredential('DEEPGRAM_API_KEY')
 }

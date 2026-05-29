@@ -20,6 +20,11 @@ export function getModel(modelSettings?: Record<string, unknown> | null): string
 // Backward compatible singleton bound to the env key. Existing callers that
 // import `claude` directly continue to work; new code should prefer
 // `getClaudeClient(workspaceId)` so BYOK is honoured.
+//
+// @deprecated Sprint 18L (audit pass #6 P2): direct imports of `claude`
+// silently bypass workspace BYOK keys. New call sites should call
+// `await getClaudeClient(workspaceId)` instead. Migration of the remaining
+// `from '@/lib/claude'` → `.messages.create` callers tracked separately.
 export const claude = new Anthropic({ apiKey: sanitizeApiKey(process.env.ANTHROPIC_API_KEY) })
 
 export const MODEL = _DEFAULT_MODEL

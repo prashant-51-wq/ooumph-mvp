@@ -19,6 +19,7 @@
  */
 
 import crypto from 'crypto'
+import { getCredential } from '@/lib/credential-context'
 
 const KLING_BASE = 'https://api.klingai.com'
 
@@ -47,8 +48,8 @@ export interface KlingGenOptions {
  * HS256, 30-min default expiry, with iss = ak (access key).
  */
 function buildKlingJWT(): string | null {
-  const ak = process.env.KLING_ACCESS_KEY || ''
-  const sk = process.env.KLING_SECRET_KEY || ''
+  const ak = getCredential('KLING_ACCESS_KEY') || ''
+  const sk = getCredential('KLING_SECRET_KEY') || ''
   if (!ak || !sk) return null
 
   const header = { alg: 'HS256', typ: 'JWT' }
@@ -193,5 +194,5 @@ export async function getKlingTaskStatus(taskId: string): Promise<KlingTask | nu
 }
 
 export function isKlingAvailable(): boolean {
-  return !!(process.env.KLING_ACCESS_KEY && process.env.KLING_SECRET_KEY)
+  return !!(getCredential('KLING_ACCESS_KEY') && getCredential('KLING_SECRET_KEY'))
 }

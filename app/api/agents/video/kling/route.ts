@@ -16,6 +16,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { assertWorkspaceOwnership } from '@/lib/guards'
 import { assertAgentRunQuota } from '@/lib/quota'
+import { withCredentials } from '@/lib/credential-context'
 import {
   generateKlingFromText,
   generateKlingFromImage,
@@ -50,9 +51,11 @@ export async function POST(req: NextRequest) {
 
     const ws = await sql`SELECT model_settings FROM workspaces WHERE id = ${workspaceId}`
     const settings = (ws.rows[0]?.model_settings || {}) as Record<string, string>
-    if (settings.klingAccessKey) process.env.KLING_ACCESS_KEY = settings.klingAccessKey
-    if (settings.klingSecretKey) process.env.KLING_SECRET_KEY = settings.klingSecretKey
 
+    return await withCredentials({
+      KLING_ACCESS_KEY: settings.klingAccessKey,
+      KLING_SECRET_KEY: settings.klingSecretKey,
+    }, async () => {
     if (!isKlingAvailable()) {
       return NextResponse.json({
         ok: false,
@@ -166,6 +169,7 @@ export async function POST(req: NextRequest) {
     }
 
     return NextResponse.json({ error: `Unknown action: ${action}` }, { status: 400 })
+    })
   } catch (error) {
     console.error('Kling agent error:', error)
     return NextResponse.json({ ok: false, error: String(error) }, { status: 500 })

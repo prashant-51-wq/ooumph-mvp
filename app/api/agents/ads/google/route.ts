@@ -4,6 +4,9 @@
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
+import { assertWorkspaceOwnership } from '@/lib/guards'
+import { assertAgentRunQuota } from '@/lib/quota'
+import { withCredentials } from '@/lib/credential-context'
 import {
   getGoogleAdsCampaigns,
   getGoogleAdsCampaignMetrics,
@@ -41,62 +44,68 @@ export async function POST(req: NextRequest) {
     if (!workspaceId) return NextResponse.json({ error: 'Missing workspaceId' }, { status: 400 })
     if (!action) return NextResponse.json({ error: 'Missing action' }, { status: 400 })
 
+    // Audit pass #6 P0: ownership + quota guards before any external ad-platform call.
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
+    const overQuota = await assertAgentRunQuota(req, workspaceId)
+    if (overQuota) return overQuota
+
     const settings = await getSettings(workspaceId)
     if (!settings) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 })
 
-    // Inject developer token (shared, not user-specific)
-    if (settings.googleAdsDeveloperToken) {
-      process.env.GOOGLE_ADS_DEVELOPER_TOKEN = settings.googleAdsDeveloperToken as string
-    }
-
-    // User-specific OAuth token and customer ID are passed directly to tool functions
+    // User-specific OAuth token and customer ID are passed directly to tool functions.
     const accessToken = settings.googleAdsAccessToken as string | undefined
     const customerId = settings.googleAdsCustomerId as string | undefined
 
-    // Check availability after injecting credentials
-    if (!isGoogleAdsAvailable()) {
-      return NextResponse.json({
-        ok: false,
-        error: 'Google Ads not configured. Add your Google Ads Developer Token in Settings → API Keys.',
-        requiresSetup: true,
-      })
-    }
+    // Developer token + customer ID are request-scoped via AsyncLocalStorage
+    // so concurrent workspaces don't see each other's credentials.
+    return await withCredentials({
+      GOOGLE_ADS_DEVELOPER_TOKEN: settings.googleAdsDeveloperToken as string | undefined,
+      GOOGLE_ADS_CUSTOMER_ID: customerId,
+    }, async () => {
+      if (!isGoogleAdsAvailable()) {
+        return NextResponse.json({
+          ok: false,
+          error: 'Google Ads not configured. Add your Google Ads Developer Token in Settings → API Keys.',
+          requiresSetup: true,
+        })
+      }
 
-    // Access token is required for all actions
-    if (!accessToken) {
-      return NextResponse.json({
-        ok: false,
-        error: 'Google Ads access token not configured. Add your OAuth token in Settings → API Keys.',
-        requiresSetup: true,
-      })
-    }
+      if (!accessToken) {
+        return NextResponse.json({
+          ok: false,
+          error: 'Google Ads access token not configured. Add your OAuth token in Settings → API Keys.',
+          requiresSetup: true,
+        })
+      }
 
-    // ── List Campaigns ────────────────────────────────────────────────────────
-    if (action === 'campaigns') {
-      const campaigns = await getGoogleAdsCampaigns(accessToken, customerId)
-      return NextResponse.json({ ok: true, campaigns })
-    }
+      // ── List Campaigns ────────────────────────────────────────────────────────
+      if (action === 'campaigns') {
+        const campaigns = await getGoogleAdsCampaigns(accessToken, customerId)
+        return NextResponse.json({ ok: true, campaigns })
+      }
 
-    // ── Campaign Metrics ──────────────────────────────────────────────────────
-    if (action === 'metrics') {
-      const metrics = await getGoogleAdsCampaignMetrics(accessToken, customerId, dateRange || 'LAST_7_DAYS')
-      return NextResponse.json({ ok: true, metrics })
-    }
+      // ── Campaign Metrics ──────────────────────────────────────────────────────
+      if (action === 'metrics') {
+        const metrics = await getGoogleAdsCampaignMetrics(accessToken, customerId, dateRange || 'LAST_7_DAYS')
+        return NextResponse.json({ ok: true, metrics })
+      }
 
-    // ── Keyword Ideas ─────────────────────────────────────────────────────────
-    if (action === 'keywords') {
-      const ideas = await getKeywordIdeas(seeds || [], accessToken, customerId)
-      return NextResponse.json({ ok: true, ideas })
-    }
+      // ── Keyword Ideas ─────────────────────────────────────────────────────────
+      if (action === 'keywords') {
+        const ideas = await getKeywordIdeas(seeds || [], accessToken, customerId)
+        return NextResponse.json({ ok: true, ideas })
+      }
 
-    // ── Pause Campaign ────────────────────────────────────────────────────────
-    if (action === 'pause') {
-      if (!campaignId) return NextResponse.json({ error: 'Missing campaignId' }, { status: 400 })
-      const paused = await pauseGoogleCampaign(campaignId, accessToken, customerId)
-      return NextResponse.json({ ok: paused })
-    }
+      // ── Pause Campaign ────────────────────────────────────────────────────────
+      if (action === 'pause') {
+        if (!campaignId) return NextResponse.json({ error: 'Missing campaignId' }, { status: 400 })
+        const paused = await pauseGoogleCampaign(campaignId, accessToken, customerId)
+        return NextResponse.json({ ok: paused })
+      }
 
-    return NextResponse.json({ error: 'Unknown action' }, { status: 400 })
+      return NextResponse.json({ error: 'Unknown action' }, { status: 400 })
+    })
   } catch (error) {
     console.error('Google Ads route error:', error)
     return NextResponse.json({ ok: false, error: String(error) }, { status: 500 })
