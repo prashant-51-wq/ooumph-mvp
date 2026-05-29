@@ -337,7 +337,43 @@ export async function PATCH(req: NextRequest) {
               (existing.rows as { channel?: string; scheduled_at?: string }[])
                 .map(r => `${r.channel || ''}|${r.scheduled_at || ''}`)
             )
-            const baseTime = Date.now() + 30 * 60_000  // first entry +30 min from approval
+            // Sprint 18G (audit pass #5 P1 #11): workspace timezone.
+            // Previously every calendar entry landed at "approval_time + N*24h"
+            // computed in server-local UTC, so a Pacific-time workspace got
+            // its "9am morning post" published at 2am their time. Now we
+            // read the workspace timezone from calendar_availability (which
+            // is already the timezone source-of-truth for the booking
+            // system) and anchor day N to 9am local in that TZ.
+            let workspaceTz = 'UTC'
+            try {
+              const tzRow = await sql`
+                SELECT timezone FROM calendar_availability
+                WHERE workspace_id = ${workspaceId} LIMIT 1
+              `
+              const tz = (tzRow.rows[0] as { timezone?: string } | undefined)?.timezone
+              if (tz && typeof tz === 'string') workspaceTz = tz
+            } catch { /* table may not exist on legacy installs */ }
+            // Compute the UTC ms offset for "9am tomorrow in workspaceTz".
+            // The round-trip-through-locale trick gives us a current
+            // offset accurate to within a DST boundary, which is plenty.
+            const computeBaseTime = (): number => {
+              try {
+                const now = new Date()
+                const utcStr = now.toLocaleString('en-US', { timeZone: 'UTC' })
+                const tzStr = now.toLocaleString('en-US', { timeZone: workspaceTz })
+                const tzOffsetMs = new Date(tzStr).getTime() - new Date(utcStr).getTime()
+                // Midnight today in workspaceTz, expressed as UTC ms:
+                const midnightLocalUtcMs = Math.floor((Date.now() + tzOffsetMs) / 86_400_000) * 86_400_000 - tzOffsetMs
+                const nineAmTodayUtcMs = midnightLocalUtcMs + 9 * 3600_000
+                // If we're already past 9am local, start tomorrow.
+                return nineAmTodayUtcMs > Date.now() + 30 * 60_000
+                  ? nineAmTodayUtcMs
+                  : nineAmTodayUtcMs + 24 * 3600_000
+              } catch {
+                return Date.now() + 30 * 60_000
+              }
+            }
+            const baseTime = computeBaseTime()
             let inserted = 0
             const queuedChannels = new Set<string>()
             for (let i = 0; i < entries.length; i++) {
