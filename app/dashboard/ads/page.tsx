@@ -21,7 +21,7 @@
  * exceeded, artifact not approved, provider rejection) are surfaced inline.
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Suspense, useCallback, useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
 import {
   Megaphone, Plus, RefreshCw, Rocket, Pause, Archive, AlertCircle,
@@ -113,7 +113,19 @@ const PLATFORM_OPTIONS = [
 
 // ─── Page ──────────────────────────────────────────────────────────────────
 
+// Sprint 18M: wrap the page body in <Suspense> so the prerender doesn't bail
+// on useSearchParams(). The boundary is at the page level (not deeper)
+// because the entire page depends on the linkedCampaignId param at first
+// render.
 export default function AdsPage() {
+  return (
+    <Suspense fallback={null}>
+      <AdsPageInner />
+    </Suspense>
+  )
+}
+
+function AdsPageInner() {
   // Sprint 18A (audit pass #5 P0 #5 — Sprint 17 self-regression):
   // /api/ads/[id]/deploy writes budget_alert notifications with
   // link=`/dashboard/ads?campaign=<id>`. Without this, the bell click
