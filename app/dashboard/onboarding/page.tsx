@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
+import { clearWorkspaceCache } from '@/lib/hooks/use-workspace-id'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const INDUSTRIES = ['SaaS', 'E-commerce', 'Local Business', 'Agency', 'Healthcare', 'Real Estate', 'Finance', 'Other']
@@ -370,6 +371,12 @@ export default function OnboardingPage() {
       } catch { /* non-fatal */ }
 
       localStorage.removeItem('onboarding_progress')
+      // Sprint 18N (user-reported infinite redirect): useWorkspaceId
+      // caches /api/auth/me for 60s in a module-level variable. Without
+      // this cache bust the dashboard layout reads the stale
+      // onboardingCompletedAt: null and redirects right back to the
+      // wizard. Clear before navigating so the next /me hits the wire.
+      clearWorkspaceCache()
       router.push('/dashboard')
     } catch (err) {
       console.error('[onboarding] launch failed:', err)
