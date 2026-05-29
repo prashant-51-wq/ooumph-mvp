@@ -157,9 +157,26 @@ async function syncOne(row: OAuthRow): Promise<PerPlatformResult> {
   }
 }
 
+// Sprint 17F (audit pass #3 P1 #11): align this cron's auth with peers
+// (agent-run-watchdog / oauth-health-check / publish-scheduled all use
+// the 3-way pattern). Previously only `Bearer ${CRON_SECRET}` was
+// accepted, blocking Vercel Cron's User-Agent path AND ADMIN_SECRET
+// admin invocations — inconsistent and undocumented.
+function isCronAuthorized(req: NextRequest): boolean {
+  const cronSecret = process.env.CRON_SECRET || ''
+  const adminSecret = process.env.ADMIN_SECRET || ''
+  const auth = req.headers.get('authorization') || ''
+  const x = req.headers.get('x-internal-secret') || ''
+  const vercelCronUA = req.headers.get('user-agent')?.includes('vercel-cron')
+  if (vercelCronUA) return true
+  if (cronSecret && (auth === `Bearer ${cronSecret}` || x === cronSecret)) return true
+  if (adminSecret && (auth === `Bearer ${adminSecret}` || x === adminSecret)) return true
+  // Dev-mode fall-through when no secret is set at all.
+  return !cronSecret && !adminSecret
+}
+
 export async function GET(req: NextRequest) {
-  const authHeader = req.headers.get('authorization')
-  if (process.env.CRON_SECRET && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+  if (!isCronAuthorized(req)) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 

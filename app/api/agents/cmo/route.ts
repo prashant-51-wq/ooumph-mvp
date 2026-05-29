@@ -107,7 +107,8 @@ You have access to these agents:
 - strategy: Creates brand positioning, channel strategy, competitive analysis, and marketing roadmap
 - content: Builds content calendars, editorial plans, topic clusters across all channels
 - blog: Writes long-form blog posts, thought leadership articles, LinkedIn posts
-- email: Creates email sequences, newsletters, drip campaigns
+- email_campaign: Creates ONE-TIME broadcast emails (newsletters, announcements, promotional blasts). Use when the user says "send an email to my list", "newsletter", "announcement", "promo blast".
+- email_sequence: Creates MULTI-STEP nurture sequences delivered over days/weeks (welcome series, drip campaigns, re-engagement, abandoned-cart flows). Use when the user says "nurture", "drip", "5-day welcome", "follow-up sequence", "re-engagement".
 - leads: Designs lead generation funnels, lead magnets, qualifying systems
 - funnel: Builds conversion funnels, landing page copy, nurture flows
 - ads: Creates paid ad campaigns, ad copy variants, audience targeting plans

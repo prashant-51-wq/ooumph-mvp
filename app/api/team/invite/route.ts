@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
-import { assertWorkspaceOwnership, getSessionUserId } from '@/lib/guards'
+import { assertWorkspaceOwnership, getSessionUserId, requireRole } from '@/lib/guards'
 import { Resend } from 'resend'
 import crypto from 'crypto'
 
@@ -24,6 +24,11 @@ export async function POST(req: NextRequest) {
 
     const denied = assertWorkspaceOwnership(req, workspaceId)
     if (denied) return denied
+    // Sprint 17F (audit pass #3 P1 #9): require admin role to invite. The
+    // Sprint 16B requireRole helper had zero call sites — this is its
+    // first real use. Owners pass through (owner > admin in the rank).
+    const roleDenied = await requireRole(req, workspaceId, 'admin')
+    if (roleDenied) return roleDenied
 
     const invitedBy = getSessionUserId(req)
 

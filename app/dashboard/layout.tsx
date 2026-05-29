@@ -74,6 +74,9 @@ const ADVANCED_NAV = [
       { href: '/dashboard/leads', label: 'Lead Gen', icon: '🎯' },
       { href: '/dashboard/funnel', label: 'Funnel Plan', icon: '🔮' },
       { href: '/dashboard/funnel/form-builder', label: 'Form Builder', icon: '📋' },
+      // Sprint 17B TASK 3 — backend CRUD shipped Sprint 16E but no nav
+      // entry existed, so the feature was orphaned (audit P1 #12).
+      { href: '/dashboard/lead-magnets', label: 'Lead Magnets', icon: '🎁' },
       // Sprint 15F (P1 #16): renamed from "Campaigns" — the page is a
       // read-only performance ledger. Multi-channel campaign creation
       // happens via the CMO chat, not here.
@@ -161,6 +164,7 @@ function getPageTitle(pathname: string): string {
     // resolved URL after the redirect fires.
     '/dashboard/funnel': 'Funnel Plan',
     '/dashboard/funnel/form-builder': 'Form Builder',
+    '/dashboard/lead-magnets': 'Lead Magnets',
     '/dashboard/super-admin': 'Super Admin',
     '/dashboard/health': 'System Health',
     '/dashboard/workspace': 'Workspace Hub',
@@ -649,6 +653,18 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                         const sevIcons: Record<string, string> = {
                           info: 'ℹ️', success: '✅', warning: '⚠️', error: '❌',
                         }
+                        const typeIcons: Record<string, string> = {
+                          lead_captured: '🎯',
+                          publish_failed: '⚠️',
+                          publish_success: '🚀',
+                          post_queued: '⏰',
+                          calendar_queued: '📅',
+                          nurture_reply: '💬',
+                          oauth_expiring: '🔑',
+                          agent_run_failed: '🔴',
+                          budget_alert: '💸',
+                        }
+                        const pickIcon = (n: any) => typeIcons[n.type] || sevIcons[n.severity] || '🔔'
                         const ago = (iso: string) => {
                           const diff = Date.now() - new Date(iso).getTime()
                           if (diff < 60_000) return 'just now'
@@ -659,7 +675,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                         const Content = (
                           <>
                             <div className="flex items-start gap-2">
-                              <span className="text-sm flex-shrink-0">{sevIcons[n.severity] || 'ℹ️'}</span>
+                              <span className="text-sm flex-shrink-0">{pickIcon(n)}</span>
                               <div className="flex-1 min-w-0">
                                 <p className={`text-xs leading-snug ${n.read ? 'text-gray-400' : 'text-white font-medium'}`}>{n.title}</p>
                                 {n.body && <p className="text-[11px] text-gray-500 mt-0.5 line-clamp-2">{n.body}</p>}

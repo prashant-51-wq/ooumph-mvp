@@ -19,6 +19,19 @@ interface ApprovalItem {
    *  has been set. UI uses it to render the friendly /lp/<slug> URL
    *  instead of /lp/<uuid>. NULL otherwise. */
   lp_slug?: string | null
+  /** Sprint 16J: audit trail. Joined from approvals table — populated by
+   *  the PATCH handler when an approver acts. */
+  approved_by?: string | null
+  approved_at?: string | null
+}
+
+interface ApprovalEvent {
+  id: string
+  actor_id: string | null
+  actor_email: string | null
+  action: string
+  notes: string | null
+  created_at: string
 }
 
 const TYPE_LABELS: Record<string, string> = {
@@ -529,11 +542,29 @@ export default function ApprovalsPage() {
       )}
 
       {!loading && filtered.length === 0 && (
-        <div className="bg-gray-900 border border-gray-800 rounded-xl p-12 text-center">
-          <div className="text-5xl mb-4">📥</div>
-          <p className="text-white font-medium mb-2">No {filter === 'all' ? '' : filter} items</p>
-          <p className="text-gray-500 text-sm">Generate content first, then come back to review and approve.</p>
-        </div>
+        // Sprint 17E (audit P1 #21): polished empty state for the most-
+        // visited filter (pending). "All caught up" tells the user the
+        // queue actually drained — not that the page broke. CTA routes
+        // to /strategy where they can kick off a new generation.
+        filter === 'pending' ? (
+          <div className="bg-gray-900 border border-gray-800 rounded-2xl p-12 text-center">
+            <div className="text-6xl mb-4">🌿</div>
+            <p className="text-white text-lg font-semibold mb-1">All caught up</p>
+            <p className="text-gray-500 text-sm mb-6">Generate new content to populate the queue.</p>
+            <button
+              onClick={() => router.push('/dashboard/strategy')}
+              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium transition-colors"
+            >
+              ✨ Generate content →
+            </button>
+          </div>
+        ) : (
+          <div className="bg-gray-900 border border-gray-800 rounded-xl p-12 text-center">
+            <div className="text-5xl mb-4">📥</div>
+            <p className="text-white font-medium mb-2">No {filter === 'all' ? '' : filter} items</p>
+            <p className="text-gray-500 text-sm">Generate content first, then come back to review and approve.</p>
+          </div>
+        )
       )}
 
       <div className="grid grid-cols-1 gap-4">
@@ -750,6 +781,15 @@ export default function ApprovalsPage() {
                     </div>
                   )}
 
+                  {/* Sprint 17F (audit pass #3 P1 #10): compact audit-trail
+                      footer for approved/rejected rows. The data was being
+                      written to approvals.approved_by/approved_at and the
+                      approval_events table since Sprint 16J but no UI ever
+                      surfaced it — compliance value was zero. */}
+                  {(item.status === 'approved' || item.status === 'rejected') && (item.approved_by || item.approved_at) && sessionWorkspaceId && (
+                    <ApprovalAuditFooter item={item} workspaceId={sessionWorkspaceId} />
+                  )}
+
                   {/* Sprint 13A: public URL panel for landing_page artifacts.
                       Shows the live URL with copy-link, lets the operator
                       set a custom slug (e.g. "acme-launch") instead of
@@ -839,6 +879,73 @@ function StatusBadge({ status }: { status: string }) {
     <span className={`px-2.5 py-1 rounded-full text-xs font-medium border capitalize ${colors[status] || 'bg-gray-800 text-gray-400'}`}>
       {status}
     </span>
+  )
+}
+
+/**
+ * Sprint 17F (audit pass #3 P1 #10) — surfaces the approval audit trail
+ * recorded by Sprint 16J. Shows the most-recent approver inline and
+ * lazy-loads the full event history when the user expands it.
+ */
+function ApprovalAuditFooter({ item, workspaceId }: { item: ApprovalItem; workspaceId: string }) {
+  const [expanded, setExpanded] = useState(false)
+  const [events, setEvents] = useState<ApprovalEvent[] | null>(null)
+  const [loading, setLoading] = useState(false)
+
+  const loadEvents = async () => {
+    if (events !== null) return
+    setLoading(true)
+    try {
+      const res = await fetch(`/api/approvals/events?approvalId=${item.id}&workspaceId=${workspaceId}`)
+      const data = await res.json()
+      setEvents(Array.isArray(data) ? data : [])
+    } catch {
+      setEvents([])
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const whenISO = item.approved_at
+  const whenLabel = whenISO ? new Date(whenISO).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : '—'
+  const actor = item.approved_by || 'unknown'
+
+  return (
+    <div className="mt-4 px-3 py-2 rounded-lg bg-gray-950 border border-gray-800 text-xs">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-gray-500">
+          {item.status === 'approved' ? '✓ Approved' : '✕ Rejected'} by <span className="text-gray-300">{actor}</span> · {whenLabel}
+        </span>
+        <button
+          onClick={() => { setExpanded(v => !v); if (!expanded) loadEvents() }}
+          className="text-indigo-400 hover:text-indigo-300 text-[11px]"
+        >
+          {expanded ? 'Hide history' : 'View history'}
+        </button>
+      </div>
+      {expanded && (
+        <div className="mt-2 pt-2 border-t border-gray-800">
+          {loading && <p className="text-gray-600">Loading…</p>}
+          {!loading && events && events.length === 0 && (
+            <p className="text-gray-600">No additional events recorded.</p>
+          )}
+          {!loading && events && events.length > 0 && (
+            <ul className="space-y-1.5">
+              {events.map(e => (
+                <li key={e.id} className="text-gray-400">
+                  <span className={`font-medium ${e.action === 'approve' ? 'text-emerald-400' : e.action === 'reject' ? 'text-rose-400' : 'text-gray-300'}`}>
+                    {e.action}
+                  </span>
+                  {' '}by {e.actor_email || e.actor_id || 'unknown'} ·{' '}
+                  {new Date(e.created_at).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' })}
+                  {e.notes && <span className="text-gray-500"> — {e.notes}</span>}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
   )
 }
 
