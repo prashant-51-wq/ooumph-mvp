@@ -232,6 +232,33 @@ export async function POST(req: NextRequest) {
           CURRENT_TIMESTAMP
         )
       `
+
+      // Sprint 16E (audit P2 #29): auto-score parity with /api/lp-submit.
+      // The audit found lp-submit fires /api/agents/funnel/qualify but
+      // f/submit didn't — inconsistent. Now both paths score equally.
+      try {
+        const modelResult = await sql`
+          SELECT id FROM artifacts
+          WHERE workspace_id = ${funnel.workspace_id} AND type = 'lead_scoring_model'
+          LIMIT 1
+        `
+        if (modelResult.rows[0]) {
+          const appUrl = process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000'
+          const internalSecretScore = process.env.CRON_SECRET || process.env.ADMIN_SECRET || ''
+          await fetch(`${appUrl}/api/agents/funnel/qualify`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...(internalSecretScore ? { 'x-internal-secret': internalSecretScore } : {}),
+            },
+            body: JSON.stringify({
+              workspaceId: funnel.workspace_id,
+              mode: 'score_lead',
+              leadData: { id: leadId, name: inferredName, email, phone: inferredPhone, source: 'funnel_form' },
+            }),
+          }).catch(() => undefined)
+        }
+      } catch { /* non-fatal */ }
     } catch (err) {
       console.error('[api/f/submit] CRM ingestion failed (non-fatal):', err)
     }

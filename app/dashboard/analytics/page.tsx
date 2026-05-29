@@ -94,7 +94,13 @@ const REPORT_TEMPLATES = [
 // no daily-aggregated history is available. No hardcoded daily numbers.
 
 function BarChart({ days, content, engagement, leads }: { days: string[]; content: number[]; engagement: number[]; leads: number[] }) {
-  const maxVal = Math.max(...leads, 1)
+  // Sprint 16E (audit P2 #26): proper per-series scaling + y-axis labels.
+  // The previous chart used (leads-based maxVal) * 100% for leads, * 60%
+  // for engagement, * 30% for content — which mis-proportioned series
+  // and looked unscientific. Now each series scales against the overall
+  // max value, gridlines render at 25/50/75/100% with numeric labels.
+  const allValues = [...leads, ...engagement, ...content]
+  const maxVal = Math.max(...allValues, 1)
   if (days.length === 0) {
     return (
       <div className="h-40 flex items-center justify-center text-gray-600 text-sm">
@@ -102,30 +108,64 @@ function BarChart({ days, content, engagement, leads }: { days: string[]; conten
       </div>
     )
   }
+  const tickValues = [maxVal, Math.round(maxVal * 0.75), Math.round(maxVal * 0.5), Math.round(maxVal * 0.25), 0]
   return (
-    <div className="flex items-end gap-2 h-40">
-      {days.map((day, i) => (
-        <div key={day} className="flex-1 flex flex-col items-center gap-1">
-          <div className="w-full flex flex-col justify-end gap-0.5" style={{ height: 120 }}>
-            <div
-              className="w-full bg-indigo-500/60 rounded-t-sm"
-              style={{ height: `${(leads[i] / maxVal) * 100}%` }}
-              title={`Leads: ${leads[i]}`}
-            />
-            <div
-              className="w-full bg-purple-500/50 rounded-t-sm"
-              style={{ height: `${(engagement[i] / maxVal) * 60}%` }}
-              title={`Engagement score: ${engagement[i]}`}
-            />
-            <div
-              className="w-full bg-pink-500/40 rounded-t-sm"
-              style={{ height: `${(content[i] / maxVal) * 30}%` }}
-              title={`Content: ${content[i]}`}
-            />
-          </div>
-          <span className="text-gray-600 text-xs whitespace-nowrap" style={{ fontSize: 9 }}>{day}</span>
+    <div>
+      <div className="flex gap-2">
+        {/* Y-axis labels */}
+        <div className="flex flex-col justify-between h-40 text-[10px] text-gray-600 tabular-nums pr-1" style={{ minWidth: 24 }}>
+          {tickValues.map(v => (
+            <div key={v} className="leading-none">{v}</div>
+          ))}
         </div>
-      ))}
+        {/* Chart with gridlines */}
+        <div className="flex-1 relative h-40">
+          {/* Gridlines */}
+          <div className="absolute inset-0 flex flex-col justify-between pointer-events-none">
+            {[0, 1, 2, 3, 4].map(i => (
+              <div key={i} className="border-t border-gray-800/60" />
+            ))}
+          </div>
+          {/* Bars */}
+          <div className="absolute inset-0 flex items-end gap-2">
+            {days.map((day, i) => (
+              <div key={day} className="flex-1 flex items-end justify-center gap-px h-full">
+                {/* Three side-by-side bars — same scale, no mystery 60%/30% multipliers */}
+                <div
+                  className="flex-1 bg-indigo-500/80 rounded-t-sm"
+                  style={{ height: `${(leads[i] / maxVal) * 100}%` }}
+                  title={`${day} — Leads: ${leads[i]}`}
+                />
+                <div
+                  className="flex-1 bg-purple-500/70 rounded-t-sm"
+                  style={{ height: `${(engagement[i] / maxVal) * 100}%` }}
+                  title={`${day} — Posts published: ${engagement[i]}`}
+                />
+                <div
+                  className="flex-1 bg-pink-500/60 rounded-t-sm"
+                  style={{ height: `${(content[i] / maxVal) * 100}%` }}
+                  title={`${day} — Artifacts created: ${content[i]}`}
+                />
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+      {/* X-axis day labels */}
+      <div className="flex gap-2 mt-1">
+        <div style={{ minWidth: 24 }} />
+        <div className="flex-1 flex gap-2">
+          {days.map((day, i) => (
+            <span key={i} className="flex-1 text-gray-600 text-xs text-center whitespace-nowrap" style={{ fontSize: 9 }}>{day}</span>
+          ))}
+        </div>
+      </div>
+      {/* Legend */}
+      <div className="flex justify-end gap-3 mt-2 text-[10px] text-gray-500">
+        <span className="flex items-center gap-1"><span className="w-2 h-2 bg-indigo-500/80 rounded-sm" /> Leads</span>
+        <span className="flex items-center gap-1"><span className="w-2 h-2 bg-purple-500/70 rounded-sm" /> Posts published</span>
+        <span className="flex items-center gap-1"><span className="w-2 h-2 bg-pink-500/60 rounded-sm" /> Artifacts created</span>
+      </div>
     </div>
   )
 }

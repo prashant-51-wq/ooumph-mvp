@@ -51,6 +51,96 @@ function parseFeatures(features: string[] | string | undefined): string[] {
 
 // ── Subcomponents ─────────────────────────────────────────────────────────────
 
+interface UsageData {
+  used: number; limit: number; remaining: number
+  planName: string; periodStart: string; periodEnd: string
+  percent: number; nearLimit: boolean
+}
+
+/**
+ * Sprint 16E (audit P1 #10) — current plan-period usage meter.
+ *
+ * Renders a progress bar + numeric counter sourced from
+ * /api/billing/usage (which reads lib/quota.ts getAgentRunQuotaUsage).
+ * Honest empty state when the workspace has no usage yet.
+ */
+function UsageMeter({ workspaceId }: { workspaceId: string | null }) {
+  const [usage, setUsage] = useState<UsageData | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!workspaceId) return
+    setLoading(true)
+    fetch(`/api/billing/usage?workspaceId=${workspaceId}`)
+      .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
+      .then((data: UsageData | { error?: string }) => {
+        if ('error' in data && !('used' in data)) {
+          setError((data as { error?: string }).error || 'Unable to load usage')
+        } else {
+          setUsage(data as UsageData)
+        }
+      })
+      .catch(e => setError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setLoading(false))
+  }, [workspaceId])
+
+  if (loading) {
+    return (
+      <div className="mb-6">
+        <h2 className="text-white font-semibold text-lg mb-3">Usage this period</h2>
+        <div className="bg-gray-900 border border-gray-800 rounded-2xl p-5 text-gray-500 text-sm">Loading…</div>
+      </div>
+    )
+  }
+  if (error || !usage) {
+    return (
+      <div className="mb-6">
+        <h2 className="text-white font-semibold text-lg mb-3">Usage this period</h2>
+        <div className="bg-gray-900 border border-gray-800 rounded-2xl p-5 text-gray-500 text-sm">
+          {error || 'No usage data yet.'}
+        </div>
+      </div>
+    )
+  }
+
+  const barColor = usage.percent >= 100
+    ? 'bg-red-500'
+    : usage.percent >= 80
+      ? 'bg-amber-500'
+      : 'bg-indigo-500'
+  const period = `${new Date(usage.periodStart).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} – ${new Date(usage.periodEnd).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`
+
+  return (
+    <div className="mb-6">
+      <div className="flex items-baseline justify-between mb-3">
+        <h2 className="text-white font-semibold text-lg">Usage this period</h2>
+        <p className="text-gray-500 text-xs">{usage.planName} · {period}</p>
+      </div>
+      <div className="bg-gray-900 border border-gray-800 rounded-2xl p-5">
+        <div className="flex items-baseline justify-between mb-2">
+          <div>
+            <span className="text-3xl font-bold text-white tabular-nums">{usage.used.toLocaleString()}</span>
+            <span className="text-gray-500 text-sm ml-1">/ {usage.limit.toLocaleString()} AI runs</span>
+          </div>
+          <span className={`text-sm font-medium ${usage.percent >= 100 ? 'text-red-400' : usage.percent >= 80 ? 'text-amber-400' : 'text-gray-400'}`}>
+            {usage.percent.toFixed(1)}%
+          </span>
+        </div>
+        <div className="h-2.5 bg-gray-800 rounded-full overflow-hidden">
+          <div className={`h-full ${barColor} transition-all duration-300`} style={{ width: `${Math.min(100, usage.percent)}%` }} />
+        </div>
+        <div className="flex items-center justify-between mt-3 text-xs">
+          <span className="text-gray-500">{usage.remaining.toLocaleString()} runs remaining</span>
+          {usage.nearLimit && (
+            <span className="text-amber-400">Approaching limit — consider upgrading.</span>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function FaqItem({ q, a }: { q: string; a: string }) {
   const [open, setOpen] = useState(false)
   return (
@@ -423,6 +513,11 @@ export default function BillingPage() {
           </div>
         </div>
       </div>
+
+      {/* Sprint 16E (P1 #10): real usage meter consuming /api/billing/usage,
+          which exposes lib/quota.ts getAgentRunQuotaUsage() — previously a
+          dead export with no UI consumer. */}
+      <UsageMeter workspaceId={workspaceId} />
 
       {/* ── Add-ons removed Sprint 15F (P1 #15) ──
           The grid was UI-only — clicking "Add" just toggled local state and

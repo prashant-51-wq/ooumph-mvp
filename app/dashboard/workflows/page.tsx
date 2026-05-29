@@ -79,64 +79,11 @@ function makeNode(type: NodeType, config: Record<string,string> = {}): WorkflowN
   return { id: nid(), type, label: NODE_META[type].label, config: { ...defaults[type], ...config } }
 }
 
-// ── Mock workflows ─────────────────────────────────────────────────────────────
-// Sprint 15F (P2 #19): retained only as reference shapes for the template
-// gallery. NOT hydrated into state any more — that was misleading users
-// into thinking demo workflows were live. State now starts [] and the
-// /api/workflows fetch effect populates real rows.
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-const INITIAL_WORKFLOWS_REFERENCE: WorkflowDef[] = [
-  {
-    id:'wf1', name:'Lead Nurture — 7-Step', triggerIcon:'🌱', status:'Active', enrolled:247, lastRun:'2m ago',
-    stats:{ enrolled:247, completed:89, convRate:36, emailsSent:1438, avgTime:'8 days' },
-    nodes:[
-      makeNode('trigger', { event:'Lead Captured' }),
-      makeNode('email', { subject:'Welcome! Here\'s what Ooumph can do for you', template:'Welcome Email' }),
-      makeNode('wait', { duration:'1', unit:'days' }),
-      makeNode('condition', { field:'email_opened', operator:'=', value:'true', branch_a:'Opened', branch_b:'Not Opened' }),
-      makeNode('email', { subject:'Quick follow-up — did you get my last email?', template:'Follow-up Email' }),
-      makeNode('wait', { duration:'3', unit:'days' }),
-      makeNode('ai_action', { action:'Generate personalized email', prompt:'Personalize based on signup source and behavior' }),
-    ],
-  },
-  {
-    id:'wf2', name:'New Customer Onboarding', triggerIcon:'🎉', status:'Active', enrolled:58, lastRun:'15m ago',
-    stats:{ enrolled:58, completed:41, convRate:71, emailsSent:312, avgTime:'14 days' },
-    nodes:[
-      makeNode('trigger', { event:'Deal Closed Won' }),
-      makeNode('tag', { action:'Add', tag:'Customer' }),
-      makeNode('update_contact', { field:'stage', value:'Customer' }),
-      makeNode('email', { subject:'🎉 Welcome aboard! Your account is ready', template:'Onboarding Welcome' }),
-      makeNode('notification', { message:'New customer: {{contact_name}} ({{deal_value}})', channel:'Slack #sales' }),
-      makeNode('wait', { duration:'3', unit:'days' }),
-      makeNode('email', { subject:'Getting started — 3 things to do first', template:'Day 3 Onboarding' }),
-      makeNode('wait', { duration:'7', unit:'days' }),
-      makeNode('ai_action', { action:'Score contact with AI', prompt:'Analyze onboarding engagement and risk' }),
-    ],
-  },
-  {
-    id:'wf3', name:'Win-back Campaign', triggerIcon:'🔄', status:'Paused', enrolled:31, lastRun:'2 days ago',
-    stats:{ enrolled:31, completed:6, convRate:19, emailsSent:87, avgTime:'21 days' },
-    nodes:[
-      makeNode('trigger', { event:'Tag Added: At Risk' }),
-      makeNode('wait', { duration:'1', unit:'days' }),
-      makeNode('email', { subject:'We miss you — here\'s 20% off', template:'Win-back Offer' }),
-      makeNode('wait', { duration:'5', unit:'days' }),
-      makeNode('condition', { field:'email_clicked', operator:'=', value:'true', branch_a:'Clicked', branch_b:'Ignored' }),
-      makeNode('ai_action', { action:'Generate personalized email', prompt:'Last-chance personalized win-back message' }),
-    ],
-  },
-  {
-    id:'wf4', name:'Appointment Reminder', triggerIcon:'📅', status:'Draft', enrolled:0, lastRun:'Never',
-    stats:{ enrolled:0, completed:0, convRate:0, emailsSent:0, avgTime:'—' },
-    nodes:[
-      makeNode('trigger', { event:'Meeting Booked' }),
-      makeNode('email', { subject:'Reminder: Your call is in 24 hours', template:'Reminder Email' }),
-      makeNode('wait', { duration:'23', unit:'hours' }),
-      makeNode('sms', { message:'Reminder: Your call with {{rep_name}} is in 1 hour. Join: {{meeting_link}}' }),
-    ],
-  },
-]
+// Sprint 16E (audit P2 #30): INITIAL_WORKFLOWS_REFERENCE removed. Real
+// guided templates now live in lib/workflow-templates.ts (added in
+// Sprint 16I) and are consumed by TemplateWizard below. The page state
+// starts [] and hydrates from /api/workflows so users never see fake
+// demo workflows that were never executable.
 
 const TEMPLATES: Template[] = [
   { id:'t1', name:'Lead Nurture (7-step email)', stepCount:7, category:'Nurture', description:'Automated 7-email sequence for new leads over 21 days', nodes:[makeNode('trigger',{event:'Lead Captured'}),makeNode('email'),makeNode('wait',{duration:'1',unit:'days'}),makeNode('condition'),makeNode('email'),makeNode('wait',{duration:'3',unit:'days'}),makeNode('email')] },
