@@ -160,8 +160,17 @@ export async function PATCH(req: NextRequest) {
     const denied = assertWorkspaceOwnership(req, workspaceId)
     if (denied) return denied
 
-    const existing = await sql`SELECT status FROM ad_campaigns WHERE id = ${id} AND workspace_id = ${workspaceId} LIMIT 1`
-    const row = existing.rows[0] as { status?: string } | undefined
+    // Sprint 17A (audit pass #3 P0 #2/#3): we need native_campaign_id +
+    // platform so a status transition can actually flip the live platform
+    // entity. Previously the PATCH flipped local rows only — paused Meta
+    // campaigns kept burning budget.
+    const existing = await sql`
+      SELECT status, native_campaign_id, platform FROM ad_campaigns
+      WHERE id = ${id} AND workspace_id = ${workspaceId} LIMIT 1
+    `
+    const row = existing.rows[0] as {
+      status?: string; native_campaign_id?: string | null; platform?: string
+    } | undefined
     if (!row) return NextResponse.json({ error: 'Campaign not found' }, { status: 404 })
     if (PROTECTED_STATUSES.has(row.status || '')) {
       return NextResponse.json(
@@ -169,9 +178,14 @@ export async function PATCH(req: NextRequest) {
         { status: 409 },
       )
     }
-    if (status && !ALLOWED_PATCH_STATUSES.has(status)) {
+    // Sprint 17A: allow re-activating a paused campaign. Previously only
+    // /api/ads/[id]/deploy could transition to 'active' and it required
+    // status='draft', so a paused campaign was permanently stuck. We now
+    // accept 'active' too — the actual platform-side resume is wired below.
+    const ALLOWED_PATCH_STATUSES_LOCAL = new Set([...ALLOWED_PATCH_STATUSES, 'active'])
+    if (status && !ALLOWED_PATCH_STATUSES_LOCAL.has(status)) {
       return NextResponse.json(
-        { error: `Status '${status}' cannot be set here. Use /api/ads/[id]/deploy for activation.` },
+        { error: `Status '${status}' cannot be set here.` },
         { status: 422 },
       )
     }
@@ -208,6 +222,42 @@ export async function PATCH(req: NextRequest) {
         targeting_json = COALESCE(${targetingVal}, targeting_json)
       WHERE id = ${id} AND workspace_id = ${workspaceId}
     `
+
+    // Sprint 17A (audit pass #3 P0 #2/#3): when status transitions to
+    // 'paused' or 'active' AND the campaign has a native_campaign_id
+    // (meaning it was actually deployed to the platform), forward the
+    // status change so the live platform entity stops/starts spending.
+    //
+    // Previously: PATCH flipped only the local row. A paused Meta
+    // campaign continued to burn the user's daily budget until they
+    // logged into Ads Manager. Real money risk.
+    if (status && (status === 'paused' || status === 'active') && row.native_campaign_id && row.platform) {
+      try {
+        const { setPlatformCampaignStatus } = await import('@/lib/ad-platforms')
+        const platformAdapter = row.platform.toLowerCase()
+        if (platformAdapter === 'meta_ads' || platformAdapter === 'google_ads' || platformAdapter === 'dv360') {
+          await setPlatformCampaignStatus(
+            workspaceId,
+            platformAdapter,
+            row.native_campaign_id,
+            status === 'active' ? 'active' : 'paused',
+          )
+        }
+      } catch (err) {
+        // Roll the local status back so the UI doesn't lie about the
+        // platform state. The user will retry once they fix credentials.
+        console.error('[/api/ad-campaigns PATCH] platform status sync failed:', err)
+        await sql`UPDATE ad_campaigns SET status = ${row.status} WHERE id = ${id} AND workspace_id = ${workspaceId}`.catch(() => undefined)
+        return NextResponse.json(
+          {
+            error: `Status flip rejected — platform sync failed. The campaign is still ${row.status}. Reason: ${err instanceof Error ? err.message : String(err)}`,
+            platformError: true,
+          },
+          { status: 502 },
+        )
+      }
+    }
+
     return NextResponse.json({ ok: true })
   } catch (err) {
     console.error('[/api/ad-campaigns PATCH]', err)

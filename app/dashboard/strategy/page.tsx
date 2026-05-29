@@ -821,6 +821,35 @@ export default function StrategyPage() {
                       `⚡ Regenerate ${TF_LABELS[activeTab]} Strategy`
                     )}
                   </button>
+                  {/* Sprint 17A (audit pass #3 P0 #5): make the orphaned
+                      growth optimizer reachable. Reads recent post_metrics
+                      and produces concrete recommendations. */}
+                  <button
+                    onClick={async () => {
+                      const wid = localStorage.getItem('workspaceId') || ''
+                      if (!wid) return
+                      try {
+                        const res = await fetch('/api/agents/growth/optimizer', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ workspaceId: wid, rangeDays: 30 }),
+                        })
+                        const data = await res.json()
+                        if (data?.ok) {
+                          alert(`Growth optimizer: ${data.recommendations?.length || 0} recommendation${data.recommendations?.length === 1 ? '' : 's'} saved as artifact. Check /dashboard/approvals.`)
+                        } else {
+                          alert(`Growth optimizer: ${data?.message || data?.error || 'failed'}`)
+                        }
+                      } catch (e) {
+                        alert(`Growth optimizer failed: ${e instanceof Error ? e.message : String(e)}`)
+                      }
+                    }}
+                    disabled={editingId === activeCard.id}
+                    className="px-4 py-2 rounded-lg bg-purple-900/30 hover:bg-purple-900/50 border border-purple-800 disabled:opacity-50 text-purple-200 text-sm font-medium transition-colors flex items-center gap-2"
+                    title="Analyses your recent post performance and proposes 5-10 ranked recommendations."
+                  >
+                    🧪 Growth Optimizer
+                  </button>
                 </div>
               </div>
 

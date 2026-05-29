@@ -1137,10 +1137,22 @@ function LogoUploader({ form, update }: {
     update({ logoUploading: true })
     try {
       const { base64, mimeType } = await fileToBase64(file)
+      // Sprint 17A (P0 #1): route now requires workspaceId to gate ownership.
+      // The wizard has a workspaceId by the time the user reaches the Brand
+      // step (Step 1 creates it). Fall back to localStorage for the rare
+      // case where state was hydrated mid-flow.
+      const workspaceId = typeof window !== 'undefined'
+        ? window.localStorage.getItem('workspaceId') || ''
+        : ''
+      if (!workspaceId) {
+        // No workspaceId yet — degrade to data URL so the wizard still works.
+        update({ logoUrl: `data:${mimeType};base64,${base64}`, logoUploading: false })
+        return
+      }
       const res = await fetch('/api/upload/logo', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ base64, mimeType }),
+        body: JSON.stringify({ workspaceId, base64, mimeType }),
       })
       const data = await res.json()
       if (data?.url) {

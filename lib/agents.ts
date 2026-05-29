@@ -60,6 +60,11 @@ export const DEFAULT_AGENTS: Array<{ name: string; category: 'supervisor' | 'wor
   { name: 'brand-monitor',   category: 'worker' },
   { name: 'reputation',      category: 'worker' },
   { name: 'analytics',       category: 'worker' },
+  // Sprint 17A (audit pass #3 P0 #5): registry entry for the growth
+  // optimizer that shipped in Sprint 16J but was orphaned (not in
+  // registry, not in CMO dispatch, no UI button). Adding it here gives
+  // it a pause-state and surfaces it on /dashboard/agents.
+  { name: 'growth-optimizer', category: 'worker' },
 ]
 
 export type AgentStatus = 'active' | 'paused' | 'error' | 'disabled'

@@ -262,6 +262,29 @@ export default function AdsPage() {
     }
   }
 
+  // Sprint 17A (audit pass #3 P0 #3): re-activate a paused campaign.
+  // The backend now forwards the status flip to setPlatformCampaignStatus
+  // so Meta/Google actually resume serving — not just the local row.
+  const resume = async (id: string) => {
+    if (!workspaceId) return
+    setActionError(null); setActionSuccess(null)
+    try {
+      const res = await fetch('/api/ad-campaigns', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, workspaceId, status: 'active' }),
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({})) as { error?: string }
+        throw new Error(data.error || `Resume failed (${res.status})`)
+      }
+      setActionSuccess('Campaign resumed — platform delivery is active.')
+      fetchAll()
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
   return (
     <div className="min-h-screen bg-gray-950 text-gray-100">
       <div className="max-w-7xl mx-auto px-6 py-8">
@@ -354,6 +377,9 @@ export default function AdsPage() {
                       const isDeploying = deployingId === c.id || c.status === 'deploying'
                       const canDeploy = c.status === 'draft'
                       const canPause = c.status === 'active'
+                      // Sprint 17A (P0 #3): paused → active via PATCH now
+                      // forwards to setPlatformCampaignStatus.
+                      const canResume = c.status === 'paused'
                       const canArchive = c.status !== 'deploying' && c.status !== 'archived'
                       return (
                         <tr
@@ -392,8 +418,18 @@ export default function AdsPage() {
                               <button
                                 onClick={() => pause(c.id)}
                                 className="px-3 py-1 text-xs bg-amber-900/40 hover:bg-amber-900/60 border border-amber-800 text-amber-200 rounded inline-flex items-center gap-1.5"
+                                title="Pauses both the local row AND the live platform delivery."
                               >
                                 <Pause className="w-3 h-3" /> Pause
+                              </button>
+                            )}
+                            {canResume && (
+                              <button
+                                onClick={() => resume(c.id)}
+                                className="px-3 py-1 text-xs bg-emerald-900/40 hover:bg-emerald-900/60 border border-emerald-800 text-emerald-200 rounded inline-flex items-center gap-1.5"
+                                title="Resumes platform delivery — Meta/Google starts serving again."
+                              >
+                                <Rocket className="w-3 h-3" /> Resume
                               </button>
                             )}
                             {canArchive && c.status !== 'active' && (
