@@ -121,7 +121,11 @@ const ADVANCED_NAV = [
   {
     label: 'PLATFORM',
     items: [
-      { href: '/dashboard/super-admin', label: 'Super Admin', icon: '🛡️' },
+      // Sprint 18Q: industry-standard admin panel — visible only to
+      // super-admins. The layout filters this group out for non-admin
+      // sessions based on /api/auth/me's isAdmin flag.
+      { href: '/dashboard/admin', label: 'Admin Panel', icon: '⚡' },
+      { href: '/dashboard/super-admin', label: 'Super Admin (legacy)', icon: '🛡️' },
     ],
   },
 ]
