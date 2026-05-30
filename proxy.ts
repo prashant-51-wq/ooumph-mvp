@@ -92,8 +92,11 @@ export async function proxy(req: NextRequest) {
   const adminSecret = process.env.ADMIN_SECRET || ''
   const cronSecret = process.env.CRON_SECRET || ''
 
-  // ── 1. Dashboard protection — redirect to login ──────────────────────────────
-  if (pathname.startsWith('/dashboard')) {
+  // ── 1. Dashboard + Admin portal protection — redirect to login ──────────────
+  // Sprint 18T: /admin is its own top-level portal (not nested under /dashboard).
+  // Same session-cookie protection applies; the admin layout's own client-side
+  // gate + each API route's assertSuperAdmin enforce the super-admin check.
+  if (pathname.startsWith('/dashboard') || pathname.startsWith('/admin')) {
     const token = req.cookies.get(COOKIE_NAME)?.value
     if (!token || !(await verifyEdgeToken(token))) {
       const loginUrl = new URL('/login', req.url)
@@ -175,6 +178,7 @@ export default proxy
 export const config = {
   matcher: [
     '/dashboard/:path*',
+    '/admin/:path*',
     '/api/:path*',
   ],
 }

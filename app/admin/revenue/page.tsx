@@ -36,17 +36,13 @@ export default function AdminRevenuePage() {
   const [filterVendor, setFilterVendor] = useState('')
   const [limitVal, setLimitVal] = useState('200')
 
-  const getSecret = () =>
-    typeof window !== 'undefined'
-      ? (window as Window & { __adminSecret?: string }).__adminSecret || sessionStorage.getItem('adminSecret') || ''
-      : ''
-
+  // Sprint 18T: session-cookie auth (removed ?adminSecret URL param —
+  // proxy + assertSuperAdmin gate this route via the signed session cookie).
   const load = useCallback(async () => {
     setLoading(true)
-    const secret = getSecret()
-    const params = new URLSearchParams({ adminSecret: secret, limit: limitVal })
+    const params = new URLSearchParams({ limit: limitVal })
     if (filterVendor) params.set('vendorWorkspaceId', filterVendor)
-    const res = await fetch(`/api/admin/commissions?${params}`)
+    const res = await fetch(`/api/admin/commissions?${params}`, { credentials: 'include' })
     if (res.ok) {
       const data = await res.json() as { entries: CommissionEntry[]; summary: Summary }
       setEntries(data.entries)

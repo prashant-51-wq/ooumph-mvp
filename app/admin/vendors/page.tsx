@@ -31,14 +31,11 @@ export default function AdminVendorsPage() {
   const [editRate, setEditRate] = useState('')
   const [saving, setSaving] = useState(false)
 
-  const getSecret = () =>
-    typeof window !== 'undefined'
-      ? (window as Window & { __adminSecret?: string }).__adminSecret || sessionStorage.getItem('adminSecret') || ''
-      : ''
-
+  // Sprint 18T: session-cookie auth (removed sessionStorage admin secret —
+  // proxy + assertSuperAdmin gate these routes via the signed session cookie).
   const load = useCallback(async () => {
     setLoading(true)
-    const res = await fetch(`/api/admin/vendors?adminSecret=${encodeURIComponent(getSecret())}`)
+    const res = await fetch('/api/admin/vendors', { credentials: 'include' })
     if (res.ok) setVendors(await res.json())
     setLoading(false)
   }, [])
@@ -46,11 +43,11 @@ export default function AdminVendorsPage() {
   useEffect(() => { void load() }, [load])
 
   async function patch(workspaceId: string, body: Record<string, unknown>) {
-    const secret = getSecret()
     setSaving(true)
     await fetch('/api/admin/vendors', {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json', 'x-admin-secret': secret },
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify({ workspaceId, ...body }),
     })
     setSaving(false)
@@ -65,10 +62,10 @@ export default function AdminVendorsPage() {
   }
 
   async function impersonate(workspaceId: string) {
-    const secret = getSecret()
     const res = await fetch('/api/admin/workspaces', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-admin-secret': secret },
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify({ workspaceId, action: 'impersonate' }),
     })
     if (!res.ok) return

@@ -121,10 +121,11 @@ const ADVANCED_NAV = [
   {
     label: 'PLATFORM',
     items: [
-      // Sprint 18Q: industry-standard admin panel — visible only to
-      // super-admins. The layout filters this group out for non-admin
-      // sessions based on /api/auth/me's isAdmin flag.
-      { href: '/dashboard/admin', label: 'Admin Panel', icon: '⚡' },
+      // Sprint 18T: admin panel is its own top-level portal at /admin
+      // (separate root layout, no user-dashboard sidebar). The layout
+      // filters this group out for non-admin sessions based on
+      // /api/auth/me's isAdmin flag. Click opens the standalone portal.
+      { href: '/admin', label: 'Admin Panel', icon: '⚡' },
       { href: '/dashboard/super-admin', label: 'Super Admin (legacy)', icon: '🛡️' },
     ],
   },

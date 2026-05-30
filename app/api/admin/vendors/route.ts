@@ -4,22 +4,11 @@
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
-
-// Audit pass #6 P1: header-only check. The previous `?adminSecret=` URL
-// fallback leaked the cleartext into access logs and referrer headers.
-function requireAdmin(req: NextRequest): boolean {
-  const expected = process.env.ADMIN_SECRET || ''
-  if (!expected) return false
-  const header = req.headers.get('x-admin-secret') || ''
-  if (header && header === expected) return true
-  const auth = req.headers.get('authorization') || ''
-  const match = auth.match(/^Bearer\s+(.+)$/i)
-  if (match && match[1] === expected) return true
-  return false
-}
+import { assertSuperAdmin } from '@/lib/guards'
 
 export async function GET(req: NextRequest) {
-  if (!requireAdmin(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  const denied = await assertSuperAdmin(req)
+  if (denied) return denied
 
   try {
     const result = await sql`
@@ -62,7 +51,8 @@ export async function GET(req: NextRequest) {
 }
 
 export async function PATCH(req: NextRequest) {
-  if (!requireAdmin(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  const denied = await assertSuperAdmin(req)
+  if (denied) return denied
 
   try {
     const body = await req.json() as {
