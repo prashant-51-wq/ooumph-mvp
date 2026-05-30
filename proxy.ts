@@ -125,11 +125,19 @@ export async function proxy(req: NextRequest) {
     return NextResponse.next()
   }
 
-  // ── Admin routes: require x-admin-secret ────────────────────────────────────
+  // ── Admin routes: x-admin-secret OR signed session cookie ───────────────────
+  // Sprint 18S: the new dashboard admin panel calls /api/admin/* from the
+  // browser using a session cookie — browsers can't send x-admin-secret.
+  // Proxy verifies the cookie HMAC is valid here; the route handler's
+  // assertSuperAdmin then enforces users.is_admin = 1 / SUPER_ADMIN_EMAILS.
+  // Defense in depth: forged cookie → 401 at edge; non-admin user → 403 in handler.
   if (pathname.startsWith('/api/admin/')) {
     const adminHdr = req.headers.get('x-admin-secret') || ''
-    const adminQp = req.nextUrl.searchParams.get('adminSecret') || ''
-    if (adminSecret && (adminHdr === adminSecret || adminQp === adminSecret)) {
+    if (adminSecret && adminHdr === adminSecret) {
+      return NextResponse.next()
+    }
+    const adminToken = req.cookies.get(COOKIE_NAME)?.value
+    if (adminToken && (await verifyEdgeToken(adminToken))) {
       return NextResponse.next()
     }
     return NextResponse.json({ error: 'Admin access required' }, { status: 401 })
