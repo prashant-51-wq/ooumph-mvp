@@ -1433,7 +1433,7 @@ export default function SettingsPage() {
                   </label>
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <Field label="Full Name"><input className={inp} value={profile.fullName} onChange={e => { setProfile(p => ({ ...p, fullName: e.target.value })); markUnsaved('profile') }} /></Field>
                 <Field label="Job Title"><input className={inp} value={profile.jobTitle} onChange={e => { setProfile(p => ({ ...p, jobTitle: e.target.value })); markUnsaved('profile') }} placeholder="e.g. Marketing Manager" /></Field>
               </div>
@@ -1443,7 +1443,7 @@ export default function SettingsPage() {
                   <button className={btnSm} onClick={() => setModal('changeEmail')}>Change Email</button>
                 </div>
               </Field>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <Field label="Phone Number"><input className={inp} value={profile.phone} onChange={e => { setProfile(p => ({ ...p, phone: e.target.value })); markUnsaved('profile') }} placeholder="+91 98765 43210" /></Field>
                 <Field label="Timezone">
                   <select className={inp} value={profile.timezone} onChange={e => { setProfile(p => ({ ...p, timezone: e.target.value })); markUnsaved('profile') }}>
@@ -1478,7 +1478,7 @@ export default function SettingsPage() {
                 </div>
               </div>
               <Field label="Workspace Name"><input className={inp} value={workspace.name} onChange={e => { setWorkspace(w => ({ ...w, name: e.target.value })); setForm(f => ({ ...f, businessName: e.target.value })); markUnsaved('workspace') }} /></Field>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <Field label="Industry">
                   <select className={inp} value={workspace.industry} onChange={e => { setWorkspace(w => ({ ...w, industry: e.target.value })); setForm(f => ({ ...f, industry: e.target.value })); markUnsaved('workspace') }}>
                     <option value="">Select industry</option>
@@ -1493,7 +1493,7 @@ export default function SettingsPage() {
               </div>
               <Field label="Website URL"><input className={inp} value={workspace.website} placeholder="https://" onChange={e => { setWorkspace(w => ({ ...w, website: e.target.value })); setForm(f => ({ ...f, website: e.target.value })); markUnsaved('workspace') }} /></Field>
               <Field label="Business Description"><textarea className={ta} rows={3} value={workspace.description} onChange={e => { setWorkspace(w => ({ ...w, description: e.target.value })); markUnsaved('workspace') }} placeholder="What does your business do?" /></Field>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <Field label="Default Currency">
                   <select className={inp} value={workspace.currency} onChange={e => { setWorkspace(w => ({ ...w, currency: e.target.value })); markUnsaved('workspace') }}>
                     {CURRENCIES.map(c => <option key={c}>{c}</option>)}
@@ -2285,7 +2285,7 @@ export default function SettingsPage() {
       {/* Backup Codes */}
       <Modal open={modal === 'backupCodes'} onClose={() => setModal(null)} title="Backup Codes">
         <p className="text-gray-400 text-sm">Store these in a safe place. Each code can only be used once.</p>
-        <div className="grid grid-cols-2 gap-2">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
           {['a1b2c3d4', 'e5f6g7h8', 'i9j0k1l2', 'm3n4o5p6', 'q7r8s9t0', 'u1v2w3x4', 'y5z6a7b8', 'c9d0e1f2'].map(c => (
             <code key={c} className="px-3 py-1.5 bg-gray-800 rounded text-green-300 text-xs text-center">{c}</code>
           ))}

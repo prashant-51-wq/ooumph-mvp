@@ -1128,7 +1128,7 @@ function TextPreview({ item }: { item: ApprovalItem }) {
       return (
         <div className="space-y-3 text-sm">
           <p className="text-white font-bold">{c.coverText as string}</p>
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
             {slides?.slice(0, 4).map((slide, i) => (
               <div key={i} className="p-3 rounded-lg bg-gray-700">
                 <p className="text-xs text-gray-400 mb-1">Slide {i + 1}</p>

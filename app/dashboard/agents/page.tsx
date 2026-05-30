@@ -277,7 +277,7 @@ function AgentCard({
       )}
 
       {/* Stats row */}
-      <div className="grid grid-cols-3 gap-2">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
         <div className="bg-gray-800/60 rounded-lg px-2.5 py-2 text-center">
           <p className="text-white font-bold text-sm">{agent.tasksToday}</p>
           <p className="text-gray-500 text-xs">tasks today</p>
@@ -421,7 +421,7 @@ function ConfigSlideover({ agent, onClose, onSave }: { agent: Agent; onClose: ()
           {/* Tone */}
           <div>
             <label className="text-white text-sm font-medium block mb-2">Tone</label>
-            <div className="grid grid-cols-4 gap-2">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
               {(['Professional', 'Casual', 'Formal', 'Friendly'] as ToneOption[]).map(t => (
                 <button key={t} onClick={() => setCfg(p => ({ ...p, tone: t }))}
                   className={`py-2 rounded-lg text-xs font-medium border transition-colors ${cfg.tone === t ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-gray-800 border-gray-700 text-gray-400 hover:text-white'}`}>
@@ -432,7 +432,7 @@ function ConfigSlideover({ agent, onClose, onSave }: { agent: Agent; onClose: ()
           </div>
 
           {/* Max tasks + Cost cap */}
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="text-white text-sm font-medium block mb-2">Max Tasks/Day</label>
               <input type="number" value={cfg.maxTasksPerDay} onChange={e => setCfg(p => ({ ...p, maxTasksPerDay: +e.target.value }))}
@@ -448,7 +448,7 @@ function ConfigSlideover({ agent, onClose, onSave }: { agent: Agent; onClose: ()
           {/* Priority */}
           <div>
             <label className="text-white text-sm font-medium block mb-2">Priority</label>
-            <div className="grid grid-cols-4 gap-2">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
               {(['Low', 'Normal', 'High', 'Critical'] as PriorityOption[]).map(p => (
                 <button key={p} onClick={() => setCfg(prev => ({ ...prev, priority: p }))}
                   className={`py-2 rounded-lg text-xs font-medium border transition-colors ${cfg.priority === p ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-gray-800 border-gray-700 text-gray-400 hover:text-white'}`}>
@@ -461,7 +461,7 @@ function ConfigSlideover({ agent, onClose, onSave }: { agent: Agent; onClose: ()
           {/* Allowed tools */}
           <div>
             <label className="text-white text-sm font-medium block mb-2">Allowed Tools</label>
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               {DEFAULT_TOOLS.map(tool => (
                 <label key={tool} className="flex items-center gap-2.5 cursor-pointer">
                   <input type="checkbox" checked={cfg.allowedTools.includes(tool)} onChange={() => toggleTool(tool)}
@@ -483,7 +483,7 @@ function ConfigSlideover({ agent, onClose, onSave }: { agent: Agent; onClose: ()
           {/* Schedule */}
           <div>
             <label className="text-white text-sm font-medium block mb-2">Schedule</label>
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
               {(['Always on', 'Business hours', 'Custom schedule'] as ScheduleOption[]).map(s => (
                 <button key={s} onClick={() => setCfg(p => ({ ...p, schedule: s }))}
                   className={`py-2 rounded-lg text-xs font-medium border transition-colors ${cfg.schedule === s ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-gray-800 border-gray-700 text-gray-400 hover:text-white'}`}>
@@ -571,7 +571,7 @@ function LogModal({ agent, onClose }: { agent: Agent; onClose: () => void }) {
                 </div>
               </button>
               {expanded === log.id && (
-                <div className="px-4 pb-4 pt-2 border-t border-gray-800 grid grid-cols-2 gap-4">
+                <div className="px-4 pb-4 pt-2 border-t border-gray-800 grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
                     <p className="text-gray-500 text-xs mb-1.5 font-medium uppercase tracking-wider">Input</p>
                     <p className="text-gray-300 text-xs bg-gray-800 rounded-lg px-3 py-2">{log.input}</p>

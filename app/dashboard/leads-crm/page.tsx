@@ -468,7 +468,7 @@ function ContactSlideover({ contact, onClose, activities, workspaceId, onUpdated
           </div>
 
           {/* Stage + RFM */}
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="text-xs text-gray-500 uppercase tracking-wide mb-1.5 block">Stage</label>
               <select value={editStage} disabled={savingStage} onChange={e => saveStage(e.target.value as Stage)} className={selectCls}>
@@ -985,7 +985,7 @@ function SegmentModal({ onClose, workspaceId, onSaved }: {
             <label className="text-xs text-gray-500 uppercase tracking-wide mb-1.5 block">Description</label>
             <input value={description} onChange={e => setDescription(e.target.value)} placeholder="optional notes" className={inputCls} />
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="text-xs text-gray-500 uppercase tracking-wide mb-1.5 block">Statuses</label>
               <input value={statusesStr} onChange={e => setStatusesStr(e.target.value)} placeholder="new, contacted, qualified" className={inputCls} />
@@ -1064,7 +1064,7 @@ function AddActivityModal({ onClose, contacts, workspaceId, onLogged }: { onClos
         <div className="p-6 space-y-4">
           <div>
             <label className="text-xs text-gray-500 uppercase tracking-wide mb-2 block">Activity Type</label>
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
               {(['call','email','note','meeting','deal','alert'] as ActivityType[]).map(t => (
                 <button key={t} onClick={() => setType(t)} className={`py-2 rounded-lg text-sm border flex items-center justify-center gap-1.5 transition-colors ${type===t ? 'border-indigo-500 bg-indigo-950/40 text-indigo-300' : 'border-gray-700 bg-gray-800 text-gray-400 hover:text-white'}`}>
                   <span>{ACTIVITY_ICONS[t]}</span>
@@ -1083,7 +1083,7 @@ function AddActivityModal({ onClose, contacts, workspaceId, onLogged }: { onClos
             <label className="text-xs text-gray-500 uppercase tracking-wide mb-1.5 block">Notes</label>
             <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={3} className={inputCls + ' resize-none'} placeholder="What happened?" />
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="text-xs text-gray-500 uppercase tracking-wide mb-1.5 block">Outcome</label>
               <input value={outcome} onChange={e => setOutcome(e.target.value)} className={inputCls} placeholder="e.g. Positive" />
@@ -1272,7 +1272,7 @@ function EditDealModal({ deal, onClose, onSaved }: { deal: Deal; onClose: () => 
               {DEAL_STAGES.map(s => <option key={s} value={s}>{s}</option>)}
             </select>
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="text-xs text-gray-500 uppercase tracking-wide mb-1.5 block">Value ($)</label>
               <input value={value} onChange={e => setValue(e.target.value)} className={inputCls} />
@@ -1986,7 +1986,7 @@ export default function LeadsCRMPage() {
       )}
 
       {/* ── Stats Bar ───────────────────────────────────────────────────── */}
-      <div className="grid grid-cols-6 gap-px bg-gray-800 border-b border-gray-800 flex-shrink-0">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-px bg-gray-800 border-b border-gray-800 flex-shrink-0">
         {[
           { label: 'Total Contacts', value: contacts.length, color: 'text-white' },
           { label: 'New This Week', value: newThisWeek, color: 'text-blue-300' },
@@ -2369,7 +2369,7 @@ export default function LeadsCRMPage() {
                 {contacts.length === 0 ? (
                   <p className="text-gray-500 text-sm">No contacts yet — add contacts to see RFM analysis.</p>
                 ) : (
-                  <div className="grid grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     {(Object.keys(rfmTierCounts) as RFMTier[]).map(tier => (
                       <div key={tier} className={`border rounded-lg p-3 ${RFM_COLORS[tier]}`}>
                         <p className="text-xs text-gray-300 font-medium leading-tight mb-1">{tier}</p>

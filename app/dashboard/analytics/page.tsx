@@ -505,7 +505,7 @@ function ReportBuilderModal({
         {step === 'build' ? (
           <div className="p-6 space-y-6">
             {/* Settings */}
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
                 <label className="text-gray-400 text-xs mb-1.5 block">Date Range</label>
                 <select
@@ -535,7 +535,7 @@ function ReportBuilderModal({
             {/* Sections */}
             <div>
               <label className="text-gray-400 text-xs mb-3 block uppercase tracking-wider">Include Sections</label>
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 {template.sections.map(sec => (
                   <label key={sec} className="flex items-center gap-2 cursor-pointer">
                     <input
@@ -553,7 +553,7 @@ function ReportBuilderModal({
             {/* Branding */}
             <div>
               <label className="text-gray-400 text-xs mb-3 block uppercase tracking-wider">Branding</label>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="text-gray-500 text-xs mb-1.5 block">Agency Name</label>
                   <input
@@ -612,7 +612,7 @@ function ReportBuilderModal({
             {scheduleOpen && (
               <div className="bg-gray-800 border border-gray-700 rounded-xl p-4 space-y-3">
                 <p className="text-white text-sm font-medium">Schedule Recurring Delivery</p>
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label className="text-gray-500 text-xs mb-1 block">Frequency</label>
                     <select
@@ -1496,7 +1496,7 @@ export default function AnalyticsPage() {
                   {data ? `Captured across ${data.leadsBySource.length} source${data.leadsBySource.length === 1 ? '' : 's'} over the last ${data.days} days.` : 'Loading…'}
                 </p>
               </div>
-              <div className="mt-4 grid grid-cols-2 gap-3">
+              <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div className="bg-white/10 rounded-lg p-3">
                   <p className="text-indigo-200 text-xs">Top Source</p>
                   <p className="text-white font-semibold text-sm">{data?.leadsBySource[0]?.source || '—'}</p>
@@ -1674,7 +1674,7 @@ export default function AnalyticsPage() {
                     <span>$50K</span>
                   </div>
                 </div>
-                <div className="bg-gray-800 rounded-xl p-4 grid grid-cols-2 gap-3">
+                <div className="bg-gray-800 rounded-xl p-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <p className="text-gray-500 text-xs">Projected Revenue</p>
                     <p className="text-emerald-400 font-bold text-xl">${(roisPend * roiRoas).toLocaleString()}</p>

@@ -729,7 +729,7 @@ export default function StrategyPage() {
       )}
 
       {/* Stats bar */}
-      <div className="grid grid-cols-4 gap-4 mb-6">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4 mb-6">
         {[
           { label: 'Active Projects', value: activeCount, sub: 'in progress' },
           { label: 'Avg Performance', value: `${avgScore || 0}%`, sub: 'across projects' },
@@ -859,7 +859,7 @@ export default function StrategyPage() {
                   Tactics + Channels stay read-only here — they're derived
                   from contentPillars / channelStrategy and a future
                   sprint can add a dedicated structured editor. */}
-              <div className="grid grid-cols-2 gap-4 mb-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
                 {editingId === activeCard.id ? (
                   <>
                     <div>
@@ -917,7 +917,7 @@ export default function StrategyPage() {
                 )}
               </div>
 
-              <div className="grid grid-cols-2 gap-4 mb-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
                 <div>
                   <p className="text-gray-500 text-xs uppercase tracking-wide mb-2">Key Tactics</p>
                   {activeCard.tactics.length === 0 ? (
@@ -973,7 +973,7 @@ export default function StrategyPage() {
               </button>
             </div>
 
-            <div className="grid grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
               {kanbanCols.map(col => (
                 <div key={col.key}>
                   <div className={`flex items-center gap-2 mb-3 pb-2 border-b ${col.color}`}>

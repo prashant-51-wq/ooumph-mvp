@@ -544,7 +544,7 @@ function BudgetMeter({ snapshot }: { snapshot: BudgetSnapshot }) {
             </span>
           </p>
         </div>
-        <div className="grid grid-cols-3 gap-3 text-xs">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 text-xs">
           <Metric label="Active" value={centsToCurrency(currentActiveSpend)} tone="emerald" />
           <Metric label="Deploying" value={centsToCurrency(currentDeployingSpend)} tone="blue" />
           <Metric label="Headroom" value={centsToCurrency(remaining)} tone={remaining > 0 ? 'gray' : 'rose'} />
@@ -791,7 +791,7 @@ function NewCampaignModal({
               className="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:border-indigo-600 focus:outline-none"
             />
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="block text-xs uppercase text-gray-500 mb-1.5">Platform *</label>
               <select
@@ -845,7 +845,7 @@ function NewCampaignModal({
                     className="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-white font-mono uppercase focus:border-indigo-600 focus:outline-none"
                   />
                 </div>
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label className="block text-xs uppercase text-gray-500 mb-1.5">Age min</label>
                     <input
@@ -969,7 +969,7 @@ function AddCreativeModal({
               UTM params are auto-injected at deploy. Don't add them here.
             </p>
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="block text-xs uppercase text-gray-500 mb-1.5">Artifact ID (HITL gate)</label>
               <input

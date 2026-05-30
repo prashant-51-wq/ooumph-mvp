@@ -840,7 +840,7 @@ function WorkspaceSnapshot({
 
       {open && (
         <div className="px-4 pb-3 space-y-2" style={{ animation: 'msgFadeIn 0.15s ease-out both' }}>
-          <div className="grid grid-cols-2 gap-2 text-xs">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
             <div className="bg-gray-900 border border-gray-800 rounded-lg px-3 py-2">
               <p className="text-gray-600">Business</p>
               <p className="text-gray-200 font-medium truncate">{businessName || 'Ooumph Workspace'}</p>
@@ -1859,7 +1859,7 @@ export default function DashboardPage() {
             {showTemplates && (
               <div className="px-4 pb-3">
                 <p className="text-xs text-gray-600 uppercase tracking-wider font-medium mb-2 text-center">Or pick a quick start</p>
-                <div className="grid grid-cols-3 gap-2">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
                   {[
                     { id: 'launch', icon: '🚀', label: 'Product Launch', prompt: 'I want to run a full product launch campaign. I need strategy, content calendar, email sequences, ad campaigns, and PR outreach all working together.' },
                     { id: 'leadgen', icon: '🎯', label: 'Lead Gen Sprint', prompt: 'I need to generate more leads. Help me build a complete lead generation system with a funnel, lead magnet, landing page copy, and email nurture sequence.' },
@@ -1970,7 +1970,7 @@ export default function DashboardPage() {
             {/* Quick Stats */}
             <div className="p-4 border-b border-gray-800">
               <p className="text-xs text-gray-500 uppercase tracking-wider font-medium mb-3">Quick Stats</p>
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 <div className="bg-gray-900 border border-gray-800 rounded-xl p-3">
                   <p className="text-gray-500 text-[11px] mb-1">Artifacts</p>
                   <p className="text-white text-xl font-bold">{stats.artifacts}</p>
