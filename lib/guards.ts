@@ -241,14 +241,17 @@ export async function assertSuperAdmin(req: NextRequest): Promise<NextResponse |
   // Dynamic import to avoid circular deps
   const { sql } = await import('@/lib/db')
   const result = await sql`SELECT email, is_admin FROM users WHERE id = ${userId} LIMIT 1`
-  const user = result.rows[0] as { email?: string; is_admin?: number } | undefined
+  const user = result.rows[0] as { email?: string; is_admin?: number | string | boolean } | undefined
 
   if (!user) {
     return NextResponse.json({ error: 'User not found' }, { status: 401 })
   }
 
-  // Method 1: users.is_admin column
-  if (user.is_admin === 1) return null
+  // Method 1: users.is_admin column.
+  // Sprint 18R: coercion-tolerant — Neon/Vercel Postgres may return INTEGER
+  // columns as either number or string depending on driver version. Use a
+  // truthy check that handles 1, '1', true, and the rare BigInt 1n.
+  if (Number(user.is_admin) === 1 || user.is_admin === true) return null
 
   // Method 2: SUPER_ADMIN_EMAILS env var allowlist
   const adminEmails = (process.env.SUPER_ADMIN_EMAILS || '')
@@ -379,9 +382,10 @@ export async function isSessionSuperAdmin(req: NextRequest): Promise<boolean> {
   if (!userId) return false
   const { sql } = await import('@/lib/db')
   const result = await sql`SELECT email, is_admin FROM users WHERE id = ${userId} LIMIT 1`
-  const user = result.rows[0] as { email?: string; is_admin?: number } | undefined
+  const user = result.rows[0] as { email?: string; is_admin?: number | string | boolean } | undefined
   if (!user) return false
-  if (user.is_admin === 1) return true
+  // Sprint 18R: coercion-tolerant (see assertSuperAdmin for context)
+  if (Number(user.is_admin) === 1 || user.is_admin === true) return true
   const adminEmails = (process.env.SUPER_ADMIN_EMAILS || '')
     .split(',')
     .map(e => e.trim().toLowerCase())

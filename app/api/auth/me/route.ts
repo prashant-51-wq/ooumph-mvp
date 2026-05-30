@@ -13,7 +13,7 @@ export async function GET(req: NextRequest) {
     if (!session) return NextResponse.json({ user: null })
 
     const result = await sql`SELECT id, email, name, is_admin FROM users WHERE id = ${session.userId} LIMIT 1`
-    const user = result.rows[0] as { id: string; email: string; name: string; is_admin?: number } | undefined
+    const user = result.rows[0] as { id: string; email: string; name: string; is_admin?: number | string | boolean } | undefined
     if (!user) return NextResponse.json({ user: null })
 
     // Sprint 16B (audit P0 #3): also return onboarding_completed_at so the
@@ -62,7 +62,9 @@ export async function GET(req: NextRequest) {
       .split(',')
       .map(e => e.trim().toLowerCase())
       .filter(Boolean)
-    const isAdmin = user.is_admin === 1 || (user.email && adminEmails.includes(user.email.toLowerCase()))
+    // Sprint 18R: coercion-tolerant — Neon may return INTEGER as number or string.
+    const isAdmin = Number(user.is_admin) === 1 || user.is_admin === true
+      || (user.email && adminEmails.includes(user.email.toLowerCase()))
 
     return NextResponse.json({
       user: {
