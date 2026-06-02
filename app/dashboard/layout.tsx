@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { useWorkspaceId } from '@/lib/hooks/use-workspace-id'
+import { readJsonArray } from '@/lib/hooks/fetch-array'
 
 interface AgentRun {
   id: string
@@ -423,9 +424,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     try {
       const me = await fetch('/api/auth/me').then(r => r.json())
       if (!me?.user?.id) return
-      const res = await fetch('/api/workspaces')
-      const list = await res.json() as Array<{ id: string; name: string; user_id?: string }>
-      // Filter to workspaces owned by current user
+      // Sprint 19T: array-safe fetch. /api/workspaces can return an
+      // error object on auth failures; the old `as Array<...>` cast
+      // crashed the layout on the very next .filter call.
+      const list = await readJsonArray<{ id: string; name: string; user_id?: string }>(
+        await fetch('/api/workspaces')
+      )
       const mine = list.filter(w => !w.user_id || w.user_id === me.user.id)
       setWorkspaces(mine.length ? mine : list)
     } catch { /* ignore */ }
@@ -453,8 +457,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       const res = await fetch(`/api/notifications?workspaceId=${wid}`)
       if (!res.ok) return
       const data = await res.json()
-      setNotifications(data.items || [])
-      setUnreadCount(data.unreadCount || 0)
+      // Sprint 19T: guard against shape drift; .map on non-array crashes the bell.
+      setNotifications(Array.isArray(data?.items) ? data.items : [])
+      setUnreadCount(typeof data?.unreadCount === 'number' ? data.unreadCount : 0)
     } catch { /* ignore */ }
   }, [sessionWorkspaceId])
 
@@ -482,8 +487,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     const wid = sessionWorkspaceId  // Sprint 10C
     if (!wid) return
     try {
-      const res = await fetch(`/api/agent-runs?workspaceId=${wid}&limit=8`)
-      const data: AgentRun[] = await res.json()
+      // Sprint 19T: array-safe. /api/agent-runs can return `{error}` or
+      // a paginated `{rows, nextCursor}` shape; both used to crash the
+      // bottom activity bar's .some/.filter/.slice calls on render.
+      const data = await readJsonArray<AgentRun>(
+        await fetch(`/api/agent-runs?workspaceId=${wid}&limit=8`)
+      )
       setAgentRuns(data)
       setHasRunning(data.some(r => r.status === 'running'))
     } catch { /* ignore */ }

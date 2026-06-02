@@ -1917,10 +1917,9 @@ export default function DashboardPage() {
                   value={input}
                   onChange={handleInputChange}
                   onKeyDown={handleKeyDown}
-                  disabled={loading || executing}
-                  placeholder="Tell me what you need..."
+                  placeholder={loading || executing ? "Type your next message…" : "Tell me what you need..."}
                   rows={1}
-                  className="flex-1 bg-transparent text-white placeholder-gray-600 text-sm resize-none outline-none leading-relaxed disabled:opacity-50"
+                  className="flex-1 bg-transparent text-white placeholder-gray-600 text-sm resize-none outline-none leading-relaxed"
                   style={{ maxHeight: '112px' }}
                 />
 

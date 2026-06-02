@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
+import { readJsonArray } from '@/lib/hooks/fetch-array'
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -1024,8 +1025,10 @@ export default function AgentsPage() {
           }
           return
         }
-        const rows = await res.json() as RegistryRow[]
-        if (cancelled || !Array.isArray(rows)) return
+        // Sprint 19T: array-safe — registry endpoint can return {error} or
+        // {rows} shapes on auth/migration drift.
+        const rows = await readJsonArray<RegistryRow>(res)
+        if (cancelled) return
         // First load: build the catalog from scratch using the registry as
         // the truth. We do this only when `agents` is still empty so
         // subsequent re-fetches don't blow away locally-hydrated stats.
@@ -1082,7 +1085,8 @@ export default function AgentsPage() {
     try {
       const res = await fetch(`/api/agents/registry?workspaceId=${wid}`)
       if (!res.ok) return
-      const rows = await res.json() as RegistryRow[]
+      // Sprint 19T: array-safe
+      const rows = await readJsonArray<RegistryRow>(res)
       const byName = new Map(rows.map(r => [r.name, r]))
       setAgents(prev => prev.map(a => {
         const reg = byName.get(a.id)

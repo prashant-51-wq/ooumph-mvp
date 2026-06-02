@@ -476,7 +476,10 @@ export default function StrategyPage() {
     setLoading(true)
     try {
       const res = await fetch(`/api/artifacts?workspaceId=${wid}&type=strategy&limit=50`)
-      const rows: ArtifactRow[] = await res.json()
+      // Sprint 19T: array-safe; an error/wrapped response used to crash the
+      // entire strategy page on the next .forEach call.
+      const _raw = await res.json()
+      const rows: ArtifactRow[] = Array.isArray(_raw) ? _raw : Array.isArray(_raw?.rows) ? _raw.rows : []
       setAllArtifacts(rows)
 
       // Build version history (most-recent first)

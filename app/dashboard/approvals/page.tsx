@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { useWorkspaceId } from '@/lib/hooks/use-workspace-id'
+import { readJsonArray } from '@/lib/hooks/fetch-array'
 
 interface ApprovalItem {
   id: string
@@ -228,7 +229,8 @@ export default function ApprovalsPage() {
     if (!workspaceId) { router.push('/dashboard/onboarding'); return }
     try {
       const res = await fetch(`/api/approvals?workspaceId=${workspaceId}`)
-      const data = await res.json() as ApprovalItem[]
+      // Sprint 19T: array-safe — endpoint returns array OR {rows} OR {error}
+      const data = await readJsonArray<ApprovalItem>(res)
       setItems(data)
       // Seed brand-voice scores from cached column values
       const seeded: Record<string, { score: number; reasoning: string[] }> = {}
