@@ -668,9 +668,18 @@ function MessageBubble({
           />
         )}
 
-        {/* Footer: timestamp + feedback (CMO) + token info */}
+        {/* Footer: timestamp + feedback (CMO) + token info
+            Sprint 20F: `suppressHydrationWarning` on the timestamp <p>.
+            toLocaleTimeString depends on locale + timezone — server (UTC,
+            en-US) renders "12:00 AM" while a client in IST (en-IN) renders
+            "05:30 AM" for the SAME instant. React's hydration sees these
+            as a text-node mismatch and throws #418, which trips the
+            dashboard error boundary (sidebar gone, no nav). With suppression
+            React lets the client-rendered value win without throwing. The
+            timestamp is purely cosmetic — a locale-aware string is exactly
+            the right behavior. */}
         <div className={`flex items-center gap-2 mt-1 px-1 ${isCmo ? '' : 'justify-end'}`}>
-          <p className="text-gray-700 text-xs">
+          <p className="text-gray-700 text-xs" suppressHydrationWarning>
             {(msg.timestamp instanceof Date ? msg.timestamp : new Date(msg.timestamp)).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
           </p>
           {isCmo && msg.tokens && (
