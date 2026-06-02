@@ -51,10 +51,17 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Invalid signature' }, { status: 400 })
     }
   } else {
-    // Dev-only path. We log loudly so a missing-secret deployment is
-    // obvious in the logs even if no one's actively watching.
+    // Sprint 18Z (audit pass #8 P1 #8): fail-closed in production when
+    // STRIPE_WEBHOOK_SECRET is unset. Previously this path accepted any
+    // JSON body with only a console.error — attacker could fake
+    // checkout.session.completed to activate paid subscriptions on any
+    // misconfigured prod deploy.
     if (process.env.NODE_ENV === 'production') {
-      console.error('[stripe-webhook] STRIPE_WEBHOOK_SECRET is unset in production — webhook is INSECURE. Set the env var immediately.')
+      console.error('[stripe-webhook] STRIPE_WEBHOOK_SECRET is unset in production — refusing webhook. Set the env var to enable Stripe webhooks.')
+      return NextResponse.json(
+        { error: 'Stripe webhook secret not configured — webhook refused' },
+        { status: 503 },
+      )
     }
     try {
       event = JSON.parse(body) as import('stripe').Stripe.Event

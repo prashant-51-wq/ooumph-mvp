@@ -23,12 +23,15 @@ const MAX_BYTES = 10 * 1024 * 1024
 const MAX_TEXT_CHARS = 250_000
 
 export async function POST(req: NextRequest) {
+  // Sprint 18Z (audit pass #8 P2): workspaceId was optional — uploads
+  // without it bypassed ownership. Now required.
   const url = new URL(req.url)
   const workspaceId = url.searchParams.get('workspaceId')
-  if (workspaceId) {
-    const denied = assertWorkspaceOwnership(req, workspaceId)
-    if (denied) return denied
+  if (!workspaceId) {
+    return NextResponse.json({ error: 'workspaceId query param required' }, { status: 400 })
   }
+  const denied = assertWorkspaceOwnership(req, workspaceId)
+  if (denied) return denied
 
   let formData: FormData
   try {

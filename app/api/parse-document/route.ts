@@ -12,8 +12,49 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server'
+import dns from 'dns/promises'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 
 export const runtime = 'nodejs'
+
+const MAX_UPLOAD_BYTES = 10 * 1024 * 1024 // 10 MB
+
+/**
+ * Sprint 18Z (audit pass #8 P1 #5): SSRF protection. Resolve the URL's
+ * hostname and refuse if any A/AAAA record falls in a private / loopback /
+ * link-local range. Blocks localhost, 127/8, 10/8, 172.16-31/12, 192.168/16,
+ * 169.254/16 (AWS metadata), ::1, fc00::/7, fe80::/10.
+ */
+function isPrivateIp(ip: string): boolean {
+  const v = ip.toLowerCase()
+  if (v === '::1' || v === '0:0:0:0:0:0:0:1') return true
+  if (v.startsWith('fe80:') || v.startsWith('fc') || v.startsWith('fd')) return true
+  // IPv4 (also catches ::ffff:1.2.3.4 mapped form)
+  const m = v.match(/(\d+)\.(\d+)\.(\d+)\.(\d+)/)
+  if (m) {
+    const a = parseInt(m[1], 10), b = parseInt(m[2], 10)
+    if (a === 10) return true
+    if (a === 127) return true
+    if (a === 169 && b === 254) return true
+    if (a === 192 && b === 168) return true
+    if (a === 172 && b >= 16 && b <= 31) return true
+    if (a === 0) return true // 0.0.0.0/8 — current network
+  }
+  return false
+}
+
+async function isSafePublicHost(hostname: string): Promise<boolean> {
+  const lc = hostname.toLowerCase()
+  if (lc === 'localhost' || lc.endsWith('.local') || lc.endsWith('.internal')) return false
+  // Reject literal IPs that are already private without DNS roundtrip.
+  if (isPrivateIp(lc)) return false
+  // Resolve and reject if any record is private.
+  const v4 = await dns.resolve4(lc).catch(() => [] as string[])
+  const v6 = await dns.resolve6(lc).catch(() => [] as string[])
+  if (v4.length === 0 && v6.length === 0) return false // unresolvable
+  for (const ip of [...v4, ...v6]) if (isPrivateIp(ip)) return false
+  return true
+}
 
 async function extractPdf(buffer: Buffer): Promise<string> {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -39,15 +80,30 @@ function stripHtml(html: string): string {
 
 export async function POST(req: NextRequest) {
   try {
+    // Sprint 18Z (P1 #5): require workspace ownership + size cap.
+    const workspaceId = req.nextUrl.searchParams.get('workspaceId') || ''
+    if (!workspaceId) {
+      return NextResponse.json({ error: 'workspaceId query param required' }, { status: 400 })
+    }
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
+
     const contentType = req.headers.get('content-type') || ''
     if (!contentType.includes('multipart/form-data')) {
       return NextResponse.json({ error: 'Expected multipart/form-data' }, { status: 400 })
+    }
+    const declaredLength = parseInt(req.headers.get('content-length') || '0', 10)
+    if (declaredLength > MAX_UPLOAD_BYTES) {
+      return NextResponse.json({ error: `Upload exceeds ${MAX_UPLOAD_BYTES} bytes` }, { status: 413 })
     }
 
     const formData = await req.formData()
     const file = formData.get('file') as File | null
     if (!file) {
       return NextResponse.json({ error: 'No file provided' }, { status: 400 })
+    }
+    if (file.size > MAX_UPLOAD_BYTES) {
+      return NextResponse.json({ error: `File exceeds ${MAX_UPLOAD_BYTES} bytes` }, { status: 413 })
     }
 
     const filename = file.name || 'upload'
@@ -94,12 +150,20 @@ export async function POST(req: NextRequest) {
 
 export async function GET(req: NextRequest) {
   try {
+    // Sprint 18Z (P1 #5): SSRF — require ownership + DNS-resolve the host
+    // and refuse any private/loopback/link-local IPs.
+    const workspaceId = req.nextUrl.searchParams.get('workspaceId') || ''
+    if (!workspaceId) {
+      return NextResponse.json({ error: 'workspaceId query param required' }, { status: 400 })
+    }
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
+
     const url = req.nextUrl.searchParams.get('url')
     if (!url) {
       return NextResponse.json({ error: 'url query param required' }, { status: 400 })
     }
 
-    // Basic safety: only allow http(s)
     let parsed: URL
     try {
       parsed = new URL(url)
@@ -108,6 +172,9 @@ export async function GET(req: NextRequest) {
     }
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
       return NextResponse.json({ error: 'Only http(s) URLs supported' }, { status: 400 })
+    }
+    if (!(await isSafePublicHost(parsed.hostname))) {
+      return NextResponse.json({ error: 'URL resolves to a private / loopback / unresolvable host' }, { status: 400 })
     }
 
     const res = await fetch(url, {

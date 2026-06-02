@@ -29,12 +29,18 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Email is required' }, { status: 400 })
     }
 
-    // Look up workspace_id and artifact title from the artifact
+    // Look up workspace_id and artifact title from the artifact.
+    // Sprint 18Z (audit pass #8 P1 #10): only accept approved
+    // landing_page artifacts. Previously any artifact_id that existed
+    // would accept the submission — letting an attacker pollute CRM
+    // and fire workflows against draft / internal artifact IDs.
     let workspaceId = ''
     let artifactTitle = 'landing_page'
     if (artifactId) {
       const artResult = await sql`
-        SELECT workspace_id, title FROM artifacts WHERE id = ${artifactId} LIMIT 1
+        SELECT workspace_id, title, status, type FROM artifacts
+        WHERE id = ${artifactId} AND type = 'landing_page' AND status = 'approved'
+        LIMIT 1
       `
       if (artResult.rows[0]) {
         workspaceId = String(artResult.rows[0].workspace_id || '')
@@ -43,7 +49,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (!workspaceId) {
-      return NextResponse.json({ error: 'Invalid landing page' }, { status: 400 })
+      return NextResponse.json({ error: 'Invalid or unapproved landing page' }, { status: 404 })
     }
 
     // Insert lead

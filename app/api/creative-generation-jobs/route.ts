@@ -35,7 +35,7 @@ import { generateImage as openaiGenerateImage } from '@/lib/tools/openai'
 import { generateVideoFromText as runwayGenerateVideo, getRunwayTaskStatus } from '@/lib/tools/runway'
 import { textToSpeech as elevenlabsTts } from '@/lib/tools/elevenlabs'
 import { generateStabilityImage } from '@/lib/tools/stability'
-import { withCredentials } from '@/lib/credential-context'
+import { withCredentials, getCredential } from '@/lib/credential-context'
 
 export const runtime = 'nodejs'
 export const maxDuration = 300
@@ -324,7 +324,10 @@ async function dispatchProvider(
   _negativePrompt?: string,
 ): Promise<ProviderResult> {
   if (provider === 'openai_dalle') {
-    if (!process.env.OPENAI_API_KEY) return mockImageResult(provider, prompt)
+    // Sprint 18Z (audit pass #8 P1 #6): was reading process.env directly —
+    // shadowed BYOK keys set via withCredentials(). Now reads through the
+    // request-scoped credential context.
+    if (!getCredential('OPENAI_API_KEY')) return mockImageResult(provider, prompt)
     const opts = options as { size?: 'square' | 'landscape' | 'portrait' | string }
     const sizeMap: Record<string, '1024x1024' | '1792x1024' | '1024x1792'> = {
       square: '1024x1024',
@@ -350,7 +353,7 @@ async function dispatchProvider(
   }
 
   if (provider === 'runway_gen3') {
-    if (!process.env.RUNWAY_API_KEY) return mockVideoResult(provider, prompt)
+    if (!getCredential('RUNWAY_API_KEY')) return mockVideoResult(provider, prompt)
     const opts = options as { aspectRatio?: string; durationSeconds?: 5 | 10 }
     // Runway expects `ratio` (specific pixel pairs) + `duration` (5|10).
     // Map our friendly aspectRatio strings to Runway's pixel format.
@@ -390,7 +393,7 @@ async function dispatchProvider(
   }
 
   if (provider === 'elevenlabs') {
-    if (!process.env.ELEVENLABS_API_KEY) return mockAudioResult(provider, prompt)
+    if (!getCredential('ELEVENLABS_API_KEY')) return mockAudioResult(provider, prompt)
     const opts = options as { voiceId?: string; modelId?: string }
     const ttsResult = await elevenlabsTts(prompt, {
       voiceId: opts.voiceId || 'EXAVITQu4vr4xnSDxMaL',

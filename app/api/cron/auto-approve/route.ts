@@ -67,7 +67,14 @@ interface ResultRow {
 
 function authCron(req: NextRequest): boolean {
   const secret = process.env.CRON_SECRET || ''
-  if (!secret) return true  // dev mode
+  if (!secret) {
+    // Sprint 18Z (audit pass #8 P1 #7): in production a missing
+    // CRON_SECRET previously fell open (returned true) and silently
+    // auto-approved every workspace's queue. Now fail-closed in prod
+    // to match the AUTH_SECRET boot-fail policy from Sprint 18A.
+    if (process.env.NODE_ENV === 'production') return false
+    return true  // dev mode — convenience only
+  }
   return req.headers.get('authorization') === `Bearer ${secret}`
 }
 

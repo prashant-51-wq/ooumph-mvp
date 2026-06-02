@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { seedWorkspace } from '@/lib/seed-workspace'
 import { seedDefaultAgents } from '@/lib/agents'
-import { assertWorkspaceOwnership } from '@/lib/guards'
+import { assertWorkspaceOwnership, assertSuperAdmin } from '@/lib/guards'
 import { setWorkspaceSecret, getWorkspaceSecret } from '@/lib/secrets'
 
 /**
@@ -251,7 +251,12 @@ export async function GET(req: NextRequest) {
       })
     }
 
-    const result = await sql`SELECT * FROM workspaces ORDER BY created_at DESC LIMIT 20`
+    // Sprint 18Z (audit pass #8 P0 #1): bare GET /api/workspaces — no
+    // ?id — previously returned the first 20 workspaces unauthenticated.
+    // One-curl tenant enumeration leak. Now super-admin only.
+    const sadminDenied = await assertSuperAdmin(req)
+    if (sadminDenied) return sadminDenied
+    const result = await sql`SELECT id, name, industry, website, owner_email, status, created_at FROM workspaces ORDER BY created_at DESC LIMIT 20`
     return NextResponse.json(result.rows)
   } catch (error) {
     console.error('Workspace fetch error:', error)

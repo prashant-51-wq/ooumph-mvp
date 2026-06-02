@@ -319,16 +319,16 @@ async function syncOne(row: OAuthRow): Promise<PerPlatformResult> {
 }
 
 export async function GET(req: NextRequest) {
-  // Auth: 3-way — Vercel cron bearer, ADMIN_SECRET, or vercel-cron UA.
+  // Sprint 18Z: 2-way auth — Vercel cron bearer or ADMIN_SECRET. The
+  // vercel-cron UA fallback was removed because User-Agent is client-
+  // spoofable.
   const cronSecret = process.env.CRON_SECRET || ''
   const adminSecret = process.env.ADMIN_SECRET || ''
   const auth = req.headers.get('authorization') || ''
   const internal = req.headers.get('x-internal-secret') || ''
-  const userAgent = req.headers.get('user-agent') || ''
   const cronOk = cronSecret && auth === `Bearer ${cronSecret}`
   const adminOk = adminSecret && (internal === adminSecret || auth === `Bearer ${adminSecret}`)
-  const vercelUaOk = /vercel-cron/i.test(userAgent)
-  if (!cronOk && !adminOk && !vercelUaOk) {
+  if (!cronOk && !adminOk) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 

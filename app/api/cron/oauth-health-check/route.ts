@@ -25,12 +25,12 @@ import { notifyOAuthExpiring } from '@/lib/notifications'
 export const runtime = 'nodejs'
 
 function isCronAuthorized(req: NextRequest): boolean {
+  // Sprint 18Z: UA-only auth removed — User-Agent is client-spoofable.
+  // Rely on Vercel Cron's automatic Authorization: Bearer ${CRON_SECRET}.
   const cronSecret = process.env.CRON_SECRET || ''
   const adminSecret = process.env.ADMIN_SECRET || ''
   const auth = req.headers.get('authorization') || ''
   const x = req.headers.get('x-internal-secret') || ''
-  const vercelCronUA = req.headers.get('user-agent')?.includes('vercel-cron')
-  if (vercelCronUA) return true
   if (cronSecret && (auth === `Bearer ${cronSecret}` || x === cronSecret)) return true
   if (adminSecret && (auth === `Bearer ${adminSecret}` || x === adminSecret)) return true
   return false
