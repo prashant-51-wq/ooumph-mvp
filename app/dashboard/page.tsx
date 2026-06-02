@@ -1067,11 +1067,21 @@ function NotificationDropdown({
 // closed the menu. No upload/URL/context-add code path existed. Honesty over
 // fake interactivity — bring it back when the underlying handlers ship.
 
+// Sprint 20E: was `timestamp: new Date()` at module top-level. That
+// evaluated at module IMPORT time — once on the server bundle and once
+// on the client bundle, with different wall-clock values. The greeting
+// rendered with timestamp X on the server and timestamp Y on the client
+// → hydration mismatch → React error #418 → dashboard error boundary
+// kicked in and replaced the layout (sidebar gone). Using a stable
+// string constant (the epoch in ISO) lets both bundles produce the
+// same initial HTML. The render-site (`(t instanceof Date ? t : new
+// Date(t)).toLocaleTimeString(...)`) already handles string timestamps
+// per Sprint 19S.
 const GREETING: Message = {
   id: 'greeting',
   role: 'cmo',
   text: "Hi! I'm your AI CMO. Tell me what you want to achieve — I'll assemble the right team and get to work. You can also pick a template below to get started fast.",
-  timestamp: new Date(),
+  timestamp: '1970-01-01T00:00:00.000Z',
 }
 
 export default function DashboardPage() {
