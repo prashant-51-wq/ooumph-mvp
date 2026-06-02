@@ -226,6 +226,28 @@ export default function VideoGenPage() {
   // lets the user merge other generated clips (Runway / Pika / Luma / etc.)
   // into the base video via Cloudinary's fl_splice transform.
   interface EditTurn { instruction: string; resultUrl: string; spec: Record<string, unknown>; ok: boolean; error?: string }
+  // Sprint 19B: Cloudinary configured-ness — gates the editor UI behind a
+  // 'Get Cloudinary free' CTA when keys are missing. We sniff via a HEAD
+  // request to a known-broken URL; if Cloudinary returns 404 (vs network
+  // error) the cloudName resolves which means at least the name is right.
+  // More robust: just check the workspace's model_settings via /api/auth/me
+  // or a dedicated endpoint. For now we check model_settings client-side.
+  const [cloudinaryReady, setCloudinaryReady] = useState<boolean | null>(null)
+  useEffect(() => {
+    if (!workspaceId) return
+    let cancelled = false
+    fetch(`/api/workspaces?id=${workspaceId}`, { credentials: 'include' })
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (cancelled) return
+        const ms = (data?.model_settings || {}) as Record<string, string>
+        const ready = Boolean(ms.cloudinaryCloudName && ms.cloudinaryApiKey && ms.cloudinaryApiSecret)
+        setCloudinaryReady(ready)
+      })
+      .catch(() => { if (!cancelled) setCloudinaryReady(false) })
+    return () => { cancelled = true }
+  }, [workspaceId])
+
   const [editorInstruction, setEditorInstruction] = useState('')
   const [editorBusy, setEditorBusy] = useState(false)
   const [editorTurns, setEditorTurns] = useState<EditTurn[]>([])
@@ -740,11 +762,51 @@ export default function VideoGenPage() {
               <div className="mx-4 mb-4 mt-3">
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-gray-500 text-xs font-medium">AI Editor</span>
-                  <span className="text-emerald-400 text-[10px] bg-emerald-900/20 px-2 py-0.5 rounded">
-                    {editorBaseUrl ? 'Ready' : 'Generate or select a video first'}
+                  <span className={`text-[10px] px-2 py-0.5 rounded ${cloudinaryReady === false ? 'text-amber-400 bg-amber-900/20' : 'text-emerald-400 bg-emerald-900/20'}`}>
+                    {cloudinaryReady === false ? 'Cloudinary not connected' : editorBaseUrl ? 'Ready' : 'Generate or select a video first'}
                   </span>
                 </div>
-                <div className="bg-gray-900 rounded-xl border border-gray-800 overflow-hidden">
+
+                {/* Sprint 19B: in-product Cloudinary signup CTA when keys aren't set.
+                    We can't programmatically create a Cloudinary account on the
+                    user's behalf — they don't expose that API — but we can put
+                    a one-click "Sign up free" button right where the user needs
+                    it and route them back to Settings to paste keys + Test. */}
+                {cloudinaryReady === false && (
+                  <div className="mb-3 bg-amber-950/30 border border-amber-900/50 rounded-xl p-4">
+                    <div className="flex items-start gap-3">
+                      <span className="text-2xl">📼</span>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-white text-sm font-medium mb-1">Connect Cloudinary to enable the editor</p>
+                        <p className="text-gray-400 text-xs leading-relaxed">
+                          The prompt-driven editor + multi-clip assembly runs on Cloudinary&apos;s video
+                          transformation API. <span className="text-emerald-300 font-medium">Free tier covers
+                          25 GB delivery + 25 transformation credits per month</span> — no card required.
+                        </p>
+                        <div className="mt-3 flex flex-wrap items-center gap-2">
+                          <a
+                            href="https://cloudinary.com/users/register/free"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="px-3 py-1.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium inline-flex items-center gap-1.5">
+                            <span>Sign up free at Cloudinary</span>
+                            <span aria-hidden>↗</span>
+                          </a>
+                          <a
+                            href="/dashboard/settings#storage"
+                            className="px-3 py-1.5 rounded bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium">
+                            Paste keys + Test →
+                          </a>
+                          <span className="text-gray-500 text-[10px]">
+                            After signup → paste keys in Settings → click Test Connection. Editor unlocks automatically.
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                <div className={`bg-gray-900 rounded-xl border border-gray-800 overflow-hidden ${cloudinaryReady === false ? 'opacity-50 pointer-events-none' : ''}`}>
                   {/* Assembly tray — merge other clips into the base */}
                   <div className="p-3 border-b border-gray-800">
                     <div className="flex items-center justify-between mb-2">

@@ -191,6 +191,13 @@ interface UseCaseProvider {
   testProvider?: string
   /** Link to where the user finds their key. */
   docUrl?: string
+  /** Sprint 19B: link to the provider's free-tier signup page. Renders a
+   *  'Sign up free' button on the card alongside docUrl. We can't sign
+   *  the user up programmatically (no provider exposes that API), but we
+   *  can shortcut them to the right page so they don't have to hunt. */
+  signupUrl?: string
+  /** Short note rendered under the inputs — e.g. 'Free tier: 25 credits/mo'. */
+  freeTierNote?: string
   /** Reduces visual weight — used for "you only need this if you already
    *  use $tool" providers (e.g. n8n, Buffer, Ghost). */
   optional?: boolean
@@ -236,6 +243,8 @@ const KEY_USE_CASES: UseCase[] = [
         whatFor: 'Default brain for every agent. Required for strategy, content drafts, brand-voice scoring.',
         testProvider: 'anthropic',
         docUrl: 'https://console.anthropic.com/settings/keys',
+        signupUrl: 'https://console.anthropic.com/login',
+        freeTierNote: '$5 free credit on signup. Pay-as-you-go after.',
         fields: [
           { field: 'anthropicApiKey', label: 'API Key', placeholder: 'sk-ant-…', hint: 'Get one at console.anthropic.com/settings/keys', type: 'password' },
           { field: 'claudeModel', label: 'Default model', type: 'text', options: ['claude-sonnet-4-6', 'claude-3-5-sonnet-20241022', 'claude-3-opus-20240229', 'claude-3-haiku-20240307'] },
@@ -247,6 +256,8 @@ const KEY_USE_CASES: UseCase[] = [
         whatFor: 'Backup brain when Claude is unavailable. Also powers DALL-E image generation (next section).',
         testProvider: 'openai',
         docUrl: 'https://platform.openai.com/api-keys',
+        signupUrl: 'https://platform.openai.com/signup',
+        freeTierNote: 'Pay-as-you-go. Pre-paid balance starts at $5.',
         fields: [
           { field: 'openaiApiKey', label: 'API Key', placeholder: 'sk-proj-…', hint: 'Get one at platform.openai.com/api-keys', type: 'password' },
           { field: 'openaiModel', label: 'Default model', type: 'text', options: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo'] },
@@ -258,6 +269,8 @@ const KEY_USE_CASES: UseCase[] = [
         whatFor: 'Alternative brain — free tier available. Good for bulk classification tasks.',
         testProvider: 'gemini',
         docUrl: 'https://aistudio.google.com/app/apikey',
+        signupUrl: 'https://aistudio.google.com/',
+        freeTierNote: 'Generous free tier — 15 RPM on Gemini 1.5 Flash. Sign in with Google.',
         optional: true,
         fields: [
           { field: 'geminiApiKey', label: 'API Key', placeholder: 'AIza…', hint: 'Free at aistudio.google.com/app/apikey', type: 'password' },
@@ -269,6 +282,8 @@ const KEY_USE_CASES: UseCase[] = [
         name: 'Groq',
         whatFor: 'Cheapest option for bulk text tasks (lead scoring, summarisation). Free tier is generous.',
         docUrl: 'https://console.groq.com/keys',
+        signupUrl: 'https://console.groq.com/login',
+        freeTierNote: 'Free tier — 30 RPM on Llama 3.1 70B. No card required.',
         optional: true,
         fields: [
           { field: 'groqApiKey', label: 'API Key', placeholder: 'gsk_…', hint: 'Free at console.groq.com/keys', type: 'password' },
@@ -301,6 +316,8 @@ const KEY_USE_CASES: UseCase[] = [
         whatFor: 'Stable Diffusion XL — cheapest per image. Good for stylised art.',
         testProvider: 'stability',
         docUrl: 'https://platform.stability.ai/account/keys',
+        signupUrl: 'https://platform.stability.ai/',
+        freeTierNote: '25 free credits on signup (~25 images). Pay-as-you-go after.',
         fields: [
           { field: 'stabilityApiKey', label: 'API Key', placeholder: 'sk-…', hint: 'Get one at platform.stability.ai/account/keys', type: 'password' },
         ],
@@ -413,6 +430,8 @@ const KEY_USE_CASES: UseCase[] = [
         whatFor: 'Highest-quality AI voices. Used by /voiceover and /voice-ai.',
         testProvider: 'elevenLabs',
         docUrl: 'https://elevenlabs.io/app/settings/api-keys',
+        signupUrl: 'https://elevenlabs.io/sign-up',
+        freeTierNote: 'Free tier — 10,000 characters/month. No card required.',
         fields: [
           { field: 'elevenLabsApiKey', label: 'API Key', placeholder: 'sk_…', hint: 'Free tier at elevenlabs.io', type: 'password' },
           { field: 'elevenLabsVoiceModel', label: 'Voice model', options: ['eleven_multilingual_v2', 'eleven_english_v1', 'eleven_turbo_v2'] },
@@ -772,11 +791,13 @@ const KEY_USE_CASES: UseCase[] = [
       {
         id: 'cloudinary',
         name: 'Cloudinary',
-        whatFor: 'Hosts and transforms generated media.',
+        whatFor: 'Hosts and transforms generated media. Powers the prompt-driven video editor + multi-clip assembly at /dashboard/video-gen.',
         docUrl: 'https://console.cloudinary.com/settings/api-keys',
-        optional: true,
+        signupUrl: 'https://cloudinary.com/users/register/free',
+        freeTierNote: 'Free tier: 25 GB delivery + 25 transformation credits / month. Card not required.',
+        testProvider: 'cloudinary',
         fields: [
-          { field: 'cloudinaryCloudName', label: 'Cloud Name', placeholder: 'mycloud' },
+          { field: 'cloudinaryCloudName', label: 'Cloud Name', placeholder: 'mycloud', hint: 'The subdomain shown in your Cloudinary console URL.' },
           { field: 'cloudinaryApiKey', label: 'API Key', placeholder: 'Cloudinary API Key' },
           { field: 'cloudinaryApiSecret', label: 'API Secret', placeholder: 'Cloudinary API Secret', type: 'password' },
         ],
@@ -966,12 +987,31 @@ function ProviderCard({
           </div>
           <p className="text-gray-400 text-xs mt-1.5 leading-relaxed">{provider.whatFor}</p>
         </div>
-        {provider.docUrl && (
-          <a href={provider.docUrl} target="_blank" rel="noopener noreferrer" className="text-indigo-400 hover:text-indigo-300 text-xs whitespace-nowrap" title="Open the provider's key-management page">
-            Get key ↗
-          </a>
-        )}
+        <div className="flex flex-col gap-1.5 items-end shrink-0">
+          {provider.signupUrl && !filled && (
+            <a
+              href={provider.signupUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="px-2.5 py-1 rounded bg-emerald-700/30 hover:bg-emerald-700/50 border border-emerald-800/60 text-emerald-300 text-xs whitespace-nowrap font-medium"
+              title="Opens the provider's free-signup page in a new tab. After signing up, come back and paste your keys here."
+            >
+              Sign up free ↗
+            </a>
+          )}
+          {provider.docUrl && (
+            <a href={provider.docUrl} target="_blank" rel="noopener noreferrer" className="text-indigo-400 hover:text-indigo-300 text-xs whitespace-nowrap" title="Open the provider's key-management page">
+              {filled ? 'Manage keys ↗' : 'Get key ↗'}
+            </a>
+          )}
+        </div>
       </div>
+
+      {provider.freeTierNote && !filled && (
+        <div className="text-[11px] text-gray-400 bg-gray-950/60 border border-gray-800 rounded px-3 py-2">
+          <span className="text-emerald-400 font-medium">Free tier ·</span> {provider.freeTierNote}
+        </div>
+      )}
 
       {provider.fields.map(f => {
         const value = (ms as unknown as Record<string, string>)[f.field as string] || ''
@@ -1293,6 +1333,41 @@ export default function SettingsPage() {
   }
 
   const testConnection = async (provider: string) => {
+    // Sprint 19B: Cloudinary uses 3 keys (cloudName + apiKey + apiSecret) and
+    // a dedicated /api/integrations/cloudinary/test endpoint that hits
+    // Cloudinary's /usage with HTTP Basic auth. Special-case it here before
+    // the single-key PROVIDER_MAP path.
+    if (provider === 'cloudinary') {
+      const ms = modelSettings as unknown as Record<string, string>
+      const cloudName = (ms.cloudinaryCloudName || '').trim()
+      const apiKey = (ms.cloudinaryApiKey || '').trim()
+      const apiSecret = (ms.cloudinaryApiSecret || '').trim()
+      if (!cloudName || !apiKey || !apiSecret) {
+        setTestResults(prev => ({ ...prev, [provider]: '⚠ All three fields required' }))
+        setTimeout(() => setTestResults(prev => { const s = { ...prev }; delete s[provider]; return s }), 4000)
+        return
+      }
+      setTestResults(prev => ({ ...prev, [provider]: 'Testing…' }))
+      try {
+        const workspaceId = localStorage.getItem('workspaceId') || ''
+        const res = await fetch('/api/integrations/cloudinary/test', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ workspaceId, cloudName, apiKey, apiSecret }),
+        })
+        const data = await res.json() as { ok: boolean; message?: string; plan?: string }
+        if (data.ok) {
+          setTestResults(prev => ({ ...prev, [provider]: `✅ ${data.message || 'Connected'}${data.plan ? ` (plan: ${data.plan})` : ''}` }))
+        } else {
+          setTestResults(prev => ({ ...prev, [provider]: `❌ ${data.message || 'Connection failed'}` }))
+        }
+      } catch (err) {
+        setTestResults(prev => ({ ...prev, [provider]: `❌ ${err instanceof Error ? err.message : 'Network error'}` }))
+      }
+      setTimeout(() => setTestResults(prev => { const s = { ...prev }; delete s[provider]; return s }), 8000)
+      return
+    }
+
     // Map UI provider slug → BYOK provider name + ModelSettings field
     const PROVIDER_MAP: Record<string, { byok: string; field: keyof ModelSettings }> = {
       openai:     { byok: 'openai',     field: 'openaiApiKey' },
