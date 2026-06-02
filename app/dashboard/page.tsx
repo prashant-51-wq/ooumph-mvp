@@ -1814,10 +1814,15 @@ export default function DashboardPage() {
         <div className="flex flex-1 min-w-0 min-h-0 overflow-hidden">
 
           {/* ── Left: Chat panel ──────────────────────────────────────────────── */}
-          <div className="flex-1 flex flex-col min-w-0 border-r border-gray-800">
-
-            {/* Campaign template carousel */}
-            <CampaignCarousel onDeploy={handleTemplateSelect} />
+          {/* Sprint 19U: added `min-h-0 overflow-hidden` so the column is
+              actually bounded by its parent. Without these, the sum of fixed-
+              height children (carousel, context bar, templates, chips, input,
+              snapshot) overflows the column, making the whole panel scroll
+              and pushing the input bar out of view. Removed CampaignCarousel
+              from this column — it duplicated the Templates empty-state and
+              ate ~180px of vertical space at the top. The templates still
+              render below the empty Messages area as a "quick start" grid. */}
+          <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden border-r border-gray-800">
 
             {/* Context awareness bar — real values from page state.
                 Sprint audit pass #7: previously hardcoded "24 knowledge nodes /
@@ -1842,8 +1847,12 @@ export default function DashboardPage() {
               </div>
             </div>
 
-            {/* Messages */}
-            <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
+            {/* Messages — Sprint 19U: min-h-0 lets this flex-1 child shrink
+                below its content's intrinsic height (critical when templates
+                + chips + input + snapshot collectively want a lot of space
+                in a short viewport). Otherwise the column overflows and the
+                whole panel scrolls instead of just the messages list. */}
+            <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-5 py-5 space-y-4">
               {messages.map((msg) => (
                 <MessageBubble
                   key={msg.id}
@@ -1863,9 +1872,10 @@ export default function DashboardPage() {
               <div ref={bottomRef} />
             </div>
 
-            {/* Templates (shown only at start) */}
+            {/* Templates (shown only at start) — Sprint 19U: flex-shrink-0
+                so it doesn't compete with the messages flex-1 area for height. */}
             {showTemplates && (
-              <div className="px-4 pb-3">
+              <div className="px-4 pb-3 flex-shrink-0">
                 <p className="text-xs text-gray-600 uppercase tracking-wider font-medium mb-2 text-center">Or pick a quick start</p>
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
                   {[
@@ -1905,13 +1915,11 @@ export default function DashboardPage() {
               </div>
             </div>
 
-            {/* Input bar
-                Sprint audit pass #7: the paperclip (AttachmentMenu) and mic
-                (toggleRecording) buttons were removed — neither had real
-                handlers behind them. Layout still works: the textarea has
-                flex-1, the send button stays right-aligned. */}
-            <div className="px-4 pb-3 flex-shrink-0 border-t border-gray-800 pt-2">
-              <div className="flex items-end gap-2 bg-gray-900 border border-gray-700 focus-within:border-indigo-600 rounded-xl px-3 py-2 transition-colors relative">
+            {/* Input bar — Sprint 19U: anchored at the bottom of the chat
+                column via flex-shrink-0. Padding bumped from px-4 pb-3 to
+                px-5 pb-4 for breathing room. Caption tightened. */}
+            <div className="px-5 pb-4 pt-3 flex-shrink-0 border-t border-gray-800 bg-gray-950">
+              <div className="flex items-end gap-2 bg-gray-900 border border-gray-700 focus-within:border-indigo-600 rounded-2xl px-4 py-2.5 transition-colors relative shadow-sm">
                 <textarea
                   ref={textareaRef}
                   value={input}
@@ -1919,8 +1927,7 @@ export default function DashboardPage() {
                   onKeyDown={handleKeyDown}
                   placeholder={loading || executing ? "Type your next message…" : "Tell me what you need..."}
                   rows={1}
-                  className="flex-1 bg-transparent text-white placeholder-gray-600 text-sm resize-none outline-none leading-relaxed"
-                  style={{ maxHeight: '112px' }}
+                  className="flex-1 bg-transparent text-white placeholder-gray-600 text-sm resize-none outline-none leading-relaxed max-h-28"
                 />
 
                 {/* Send */}
