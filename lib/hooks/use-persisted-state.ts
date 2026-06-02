@@ -62,8 +62,26 @@ export function usePersistedState<T>(
           console.warn(`[usePersistedState] discarding bloated ${storageKey} (${(raw.length / 1024).toFixed(0)} KB) — using default`)
           try { window.localStorage.removeItem(storageKey) } catch { /* */ }
         } else {
-          const parsed = JSON.parse(raw) as T
-          setValue(parsed)
+          const parsed = JSON.parse(raw)
+          // Sprint 19R (user-reported 'e.slice is not a function'): the
+          // persisted value's TYPE must match the default's type. If the
+          // default is an array and the persisted blob isn't, a downstream
+          // .slice/.map call would throw — crash the whole page. Validate
+          // shape before applying. Light check (null/array/typeof) covers
+          // the common drift cases. Anything mismatched gets discarded.
+          const defaultIsArray = Array.isArray(defaultValue)
+          const parsedIsArray = Array.isArray(parsed)
+          const sameType =
+            parsed === null && defaultValue === null ? true :
+            defaultIsArray ? parsedIsArray :
+            defaultValue === null || defaultValue === undefined ? true :
+            typeof parsed === typeof defaultValue && !parsedIsArray
+          if (!sameType) {
+            console.warn(`[usePersistedState] type mismatch for ${storageKey} (default ${defaultIsArray ? 'array' : typeof defaultValue} vs persisted ${parsedIsArray ? 'array' : typeof parsed}) — discarding`)
+            try { window.localStorage.removeItem(storageKey) } catch { /* */ }
+          } else {
+            setValue(parsed as T)
+          }
         }
       }
     } catch {
@@ -71,7 +89,7 @@ export function usePersistedState<T>(
       try { window.localStorage.removeItem(storageKey) } catch { /* */ }
     }
     hydrated.current = true
-  }, [storageKey])
+  }, [storageKey, defaultValue])
 
   // Mirror to localStorage with a 500ms debounce. Sprint 19O: previously
   // every state change triggered an immediate JSON.stringify + setItem,
@@ -119,7 +137,18 @@ export function usePersistedState<T>(
         return
       }
       try {
-        setValue(JSON.parse(e.newValue) as T)
+        const parsed = JSON.parse(e.newValue)
+        // Sprint 19R: same type-guard as the initial hydrate path —
+        // a sibling tab writing an unexpected shape shouldn't corrupt
+        // this tab's state into something downstream code can't handle.
+        const defaultIsArray = Array.isArray(initial.current)
+        const parsedIsArray = Array.isArray(parsed)
+        const sameType =
+          parsed === null && initial.current === null ? true :
+          defaultIsArray ? parsedIsArray :
+          initial.current === null || initial.current === undefined ? true :
+          typeof parsed === typeof initial.current && !parsedIsArray
+        if (sameType) setValue(parsed as T)
       } catch { /* ignore */ }
     }
     window.addEventListener('storage', onStorage)

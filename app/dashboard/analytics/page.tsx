@@ -861,7 +861,7 @@ export default function AnalyticsPage() {
     setTopPostsLoading(true)
     fetch(`/api/analytics/posts?workspaceId=${workspaceId}&range=${range}&sortBy=engagement&limit=6`)
       .then(async r => r.ok ? r.json() as Promise<{ posts: TopPost[] }> : Promise.reject(new Error(`HTTP ${r.status}`)))
-      .then(json => { if (!cancelled) setTopPosts(json.posts || []) })
+      .then(json => { if (!cancelled) setTopPosts(Array.isArray(json?.posts) ? json.posts : []) })
       .catch(() => { if (!cancelled) setTopPosts([]) })
       .finally(() => { if (!cancelled) setTopPostsLoading(false) })
     return () => { cancelled = true }

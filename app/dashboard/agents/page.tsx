@@ -812,7 +812,12 @@ export default function AgentsPage() {
       try {
         const res = await fetch(`/api/agent-runs?workspaceId=${wid}&limit=200`)
         if (!res.ok) return
-        const runs = await res.json() as Array<{
+        const raw = await res.json()
+        // Sprint 19R: the endpoint normally returns an array, but error shapes
+        // ({ error: ... }) and paginated shapes ({ rows, nextCursor }) can leak
+        // through. Iterating a non-array crashed the page with
+        // "e.slice is not a function" / "runs is not iterable" in prod.
+        type RunRow = {
           id: string
           agent_name: string
           status: string
@@ -822,10 +827,13 @@ export default function AgentsPage() {
           error_message?: string
           created_at: string
           completed_at?: string
-        }>
+        }
+        const runs: RunRow[] =
+          Array.isArray(raw) ? raw as RunRow[] :
+          Array.isArray(raw?.rows) ? raw.rows as RunRow[] :
+          []
         if (cancelled) return
         const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0)
-        type RunRow = typeof runs[number]
         interface Agg {
           tasks: number
           cost: number

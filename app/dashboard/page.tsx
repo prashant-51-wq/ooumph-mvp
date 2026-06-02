@@ -1201,7 +1201,10 @@ export default function DashboardPage() {
     try {
       // Larger limit so we can compute "cost today" client-side
       const res = await fetch(`/api/agent-runs?workspaceId=${workspaceId}&limit=100`)
-      const data: AgentRun[] = await res.json()
+      const raw = await res.json()
+      // Sprint 19R: API can return { error } on a 401/500 — guard against
+      // assuming array shape so .slice doesn't crash the CMO page.
+      const data: AgentRun[] = Array.isArray(raw) ? raw : []
       setRuns(data.slice(0, 10))
       setRunsLoading(false)
 
@@ -1275,7 +1278,15 @@ export default function DashboardPage() {
     if (!workspaceId) return
     try {
       const res = await fetch(`/api/approvals?workspaceId=${workspaceId}`)
-      const rows = await res.json() as Array<Record<string, unknown>>
+      const raw = await res.json()
+      // Sprint 19R: /api/approvals returns either a plain array OR
+      // { rows, nextCursor } depending on whether pagination params were
+      // sent (Sprint 18F back-compat). Also returns { error } on 401/500.
+      // Normalise to a flat array before any array ops.
+      const rows: Array<Record<string, unknown>> =
+        Array.isArray(raw) ? raw :
+        Array.isArray(raw?.rows) ? raw.rows :
+        []
       const pending: PendingApproval[] = rows
         .filter(r => r.status === 'pending')
         .slice(0, 3)
