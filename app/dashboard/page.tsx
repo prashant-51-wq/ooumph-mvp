@@ -1141,6 +1141,14 @@ export default function DashboardPage() {
 
   // Scroll ref
   const bottomRef = useRef<HTMLDivElement>(null)
+  const messagesContainerRef = useRef<HTMLDivElement>(null)
+  // Sprint 19V: whether the user is currently parked near the bottom of
+  // the message list. The auto-scroll effect only fires when this is
+  // true — otherwise scrolling up to re-read an older message would
+  // immediately yank you back down on every state tick (e.g. a streaming
+  // token, a `loading` flip, a new artifact arriving). Defaults to true
+  // so the first paint pins to the latest message.
+  const isNearBottomRef = useRef(true)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const notifRef = useRef<HTMLDivElement>(null)
 
@@ -1404,10 +1412,24 @@ export default function DashboardPage() {
   }, [workspaceId])
 
   // ── Auto-scroll ───────────────────────────────────────────────────────────────
-
+  // Sprint 19V: only auto-scroll if the user is already parked near the
+  // bottom. If they've scrolled up to read history, leave them alone —
+  // otherwise every streaming token / state tick yanks the viewport.
   useEffect(() => {
+    if (!isNearBottomRef.current) return
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, loading])
+
+  // Track whether the user is parked near the bottom of the message list.
+  // We attach this via onScroll on the container below; the ref pattern
+  // avoids re-rendering on every scroll pixel.
+  const handleMessagesScroll = useCallback(() => {
+    const el = messagesContainerRef.current
+    if (!el) return
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+    // 120px tolerance — within ~2 lines of the bottom counts as "at bottom".
+    isNearBottomRef.current = distanceFromBottom < 120
+  }, [])
 
   // ── Close notification dropdown on outside click ──────────────────────────────
 
@@ -1851,8 +1873,13 @@ export default function DashboardPage() {
                 below its content's intrinsic height (critical when templates
                 + chips + input + snapshot collectively want a lot of space
                 in a short viewport). Otherwise the column overflows and the
-                whole panel scrolls instead of just the messages list. */}
-            <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-5 py-5 space-y-4">
+                whole panel scrolls instead of just the messages list.
+                Sprint 19V: messagesContainerRef + onScroll track the user's
+                position; the auto-scroll effect now defers to that ref. */}
+            <div
+              ref={messagesContainerRef}
+              onScroll={handleMessagesScroll}
+              className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-5 py-5 space-y-4">
               {messages.map((msg) => (
                 <MessageBubble
                   key={msg.id}
