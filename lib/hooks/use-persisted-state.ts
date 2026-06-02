@@ -60,14 +60,39 @@ export function usePersistedState<T>(
     hydrated.current = true
   }, [storageKey])
 
-  // Mirror every change back to localStorage.
+  // Mirror to localStorage with a 500ms debounce. Sprint 19O: previously
+  // every state change triggered an immediate JSON.stringify + setItem,
+  // which on the CMO page (where messages mutate token-by-token during
+  // SSE streaming) could lock the main thread for hundreds of ms per
+  // second and eventually cause browser tabs to crash with "This page
+  // couldn't load." Debouncing collapses rapid updates into one write
+  // after activity settles.
+  const writeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => {
     if (typeof window === 'undefined') return
-    if (!hydrated.current) return  // skip pre-hydration default write
-    try {
-      window.localStorage.setItem(storageKey, JSON.stringify(value))
-    } catch {
-      // Quota exceeded / private mode — fail open, in-memory state still works.
+    if (!hydrated.current) return
+    if (writeTimer.current) clearTimeout(writeTimer.current)
+    writeTimer.current = setTimeout(() => {
+      try {
+        const serialised = JSON.stringify(value)
+        // Sprint 19O: refuse to persist payloads > 1 MB. Browser quotas
+        // are ~5-10 MB total per origin; a single key over 1 MB hints
+        // at unbounded growth (chat that's never trimmed, etc.) and
+        // would silently degrade performance anyway.
+        if (serialised.length > 1_000_000) {
+          console.warn(`[usePersistedState] skipping ${storageKey} — payload ${(serialised.length / 1024).toFixed(0)} KB exceeds 1 MB cap`)
+          return
+        }
+        window.localStorage.setItem(storageKey, serialised)
+      } catch {
+        // Quota exceeded / private mode — fail open.
+      }
+    }, 500)
+    return () => {
+      if (writeTimer.current) {
+        clearTimeout(writeTimer.current)
+        writeTimer.current = null
+      }
     }
   }, [storageKey, value])
 
