@@ -218,6 +218,107 @@ export default function VideoGenPage() {
   const [charLock, setCharLock] = useState(false)
   const [applyBrand, setApplyBrand] = useState(true)
 
+  // Sprint 19A: prompt-driven editor + multi-clip assembly state.
+  // The editor sits where the old "Editing disabled" timeline used to be.
+  // Each instruction the user types is parsed by Claude into a VideoEditSpec
+  // (a JSON shape Cloudinary's transformation URL grammar can render) and
+  // the result URL replaces the preview. The "additional clips" tray below
+  // lets the user merge other generated clips (Runway / Pika / Luma / etc.)
+  // into the base video via Cloudinary's fl_splice transform.
+  interface EditTurn { instruction: string; resultUrl: string; spec: Record<string, unknown>; ok: boolean; error?: string }
+  const [editorInstruction, setEditorInstruction] = useState('')
+  const [editorBusy, setEditorBusy] = useState(false)
+  const [editorTurns, setEditorTurns] = useState<EditTurn[]>([])
+  const [editorSpec, setEditorSpec] = useState<Record<string, unknown> | undefined>(undefined)
+  const [extraClipUrls, setExtraClipUrls] = useState<string[]>([])
+  const [extraClipInput, setExtraClipInput] = useState('')
+  const [assembleBusy, setAssembleBusy] = useState(false)
+  const [assembledUrl, setAssembledUrl] = useState<string | null>(null)
+  const [assembleError, setAssembleError] = useState<string | null>(null)
+
+  const editorBaseUrl: string | null = assembledUrl || latestVideoUrl
+  const editorLatestUrl: string | null =
+    editorTurns.length > 0 ? editorTurns[editorTurns.length - 1].resultUrl : editorBaseUrl
+
+  async function runEditorPrompt() {
+    if (!workspaceId || !editorBaseUrl || !editorInstruction.trim()) return
+    setEditorBusy(true)
+    try {
+      const res = await fetch('/api/agents/video/edit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          workspaceId,
+          videoUrl: editorLatestUrl || editorBaseUrl,
+          instruction: editorInstruction.trim(),
+          currentSpec: editorSpec,
+        }),
+      })
+      const data = await res.json() as { ok: boolean; editedUrl?: string; spec?: Record<string, unknown>; error?: string }
+      const turn: EditTurn = {
+        instruction: editorInstruction.trim(),
+        resultUrl: data.editedUrl || (editorLatestUrl || editorBaseUrl || ''),
+        spec: data.spec || {},
+        ok: Boolean(data.ok),
+        error: data.error,
+      }
+      setEditorTurns(prev => [...prev, turn])
+      if (data.ok && data.spec) setEditorSpec(data.spec)
+      setEditorInstruction('')
+    } catch (err) {
+      setEditorTurns(prev => [...prev, {
+        instruction: editorInstruction.trim(),
+        resultUrl: editorLatestUrl || editorBaseUrl || '',
+        spec: editorSpec || {},
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      }])
+    } finally {
+      setEditorBusy(false)
+    }
+  }
+
+  async function runAssemble() {
+    if (!workspaceId || !latestVideoUrl) return
+    if (extraClipUrls.length === 0) return
+    setAssembleBusy(true); setAssembleError(null)
+    try {
+      const res = await fetch('/api/agents/video/assemble', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          workspaceId,
+          videoUrls: [latestVideoUrl, ...extraClipUrls],
+        }),
+      })
+      const data = await res.json() as { ok: boolean; mergedUrl?: string; error?: string }
+      if (data.ok && data.mergedUrl) {
+        setAssembledUrl(data.mergedUrl)
+        setEditorTurns([])           // reset edit history when base changes
+        setEditorSpec(undefined)
+      } else {
+        setAssembleError(data.error || 'Assembly failed')
+      }
+    } catch (err) {
+      setAssembleError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setAssembleBusy(false)
+    }
+  }
+
+  function addExtraClip() {
+    const trimmed = extraClipInput.trim()
+    if (!trimmed) return
+    if (!/^https?:\/\//.test(trimmed)) { setAssembleError('Clip must be an http(s) URL'); return }
+    setExtraClipUrls(prev => [...prev, trimmed])
+    setExtraClipInput('')
+    setAssembleError(null)
+  }
+
+  function removeExtraClip(idx: number) {
+    setExtraClipUrls(prev => prev.filter((_, i) => i !== idx))
+  }
+
   useEffect(() => {
     if (typeof window !== 'undefined') {
       setWorkspaceId(localStorage.getItem('workspaceId'))
@@ -631,22 +732,113 @@ export default function VideoGenPage() {
                 )}
               </div>
 
-              {/* Visual timeline (preview only) — honestly disabled.
-                  Sprint 18K: cleaned up the misleading "coming soon" badge.
-                  Multi-clip editing, captions, and BGM mixing require
-                  server-side ffmpeg or Remotion-style rendering — neither
-                  is wired. Single-clip generation works end-to-end. */}
+              {/* Sprint 19A: prompt-driven Cloudinary editor + multi-clip
+                  assembly. Replaces the "Editing disabled" placeholder.
+                  Powered by /api/agents/video/edit (Claude parses the
+                  instruction → VideoEditSpec → Cloudinary URL) and
+                  /api/agents/video/assemble (fl_splice multi-clip merge). */}
               <div className="mx-4 mb-4 mt-3">
                 <div className="flex items-center justify-between mb-2">
-                  <span className="text-gray-500 text-xs font-medium">Timeline</span>
-                  <span className="text-amber-400 text-[10px] bg-amber-900/20 px-2 py-0.5 rounded">Editing disabled</span>
+                  <span className="text-gray-500 text-xs font-medium">AI Editor</span>
+                  <span className="text-emerald-400 text-[10px] bg-emerald-900/20 px-2 py-0.5 rounded">
+                    {editorBaseUrl ? 'Ready' : 'Generate or select a video first'}
+                  </span>
                 </div>
-                <div className="bg-gray-900 rounded-xl border border-gray-800 overflow-hidden p-4 text-center">
-                  <p className="text-gray-600 text-xs">
-                    Single-clip generation only today. Multi-clip editing, burned-in captions,
-                    and BGM mixing need server-side ffmpeg — not yet wired. Export the generated
-                    clip and assemble in CapCut / Premiere / DaVinci Resolve.
-                  </p>
+                <div className="bg-gray-900 rounded-xl border border-gray-800 overflow-hidden">
+                  {/* Assembly tray — merge other clips into the base */}
+                  <div className="p-3 border-b border-gray-800">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-gray-400 text-[11px] font-medium">Merge other clips (Runway / Pika / Luma / etc.)</span>
+                      {extraClipUrls.length > 0 && (
+                        <button
+                          onClick={() => void runAssemble()}
+                          disabled={assembleBusy || !latestVideoUrl}
+                          className="px-3 py-1 rounded bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-[11px] font-medium">
+                          {assembleBusy ? 'Merging…' : `Merge ${extraClipUrls.length} clip${extraClipUrls.length === 1 ? '' : 's'}`}
+                        </button>
+                      )}
+                    </div>
+                    <div className="flex gap-2">
+                      <input
+                        type="url"
+                        value={extraClipInput}
+                        onChange={e => setExtraClipInput(e.target.value)}
+                        placeholder="Paste an MP4 URL (e.g. from a previous Kling generation)"
+                        className="flex-1 px-2 py-1.5 rounded bg-gray-950 border border-gray-800 text-white text-[11px] placeholder-gray-600 focus:outline-none focus:border-indigo-500"
+                      />
+                      <button
+                        onClick={addExtraClip}
+                        disabled={!extraClipInput.trim()}
+                        className="px-3 py-1.5 rounded bg-gray-800 hover:bg-gray-700 disabled:opacity-50 text-white text-[11px]">
+                        Add
+                      </button>
+                    </div>
+                    {extraClipUrls.length > 0 && (
+                      <ul className="mt-2 space-y-1">
+                        {extraClipUrls.map((u, i) => (
+                          <li key={i} className="flex items-center justify-between text-[10px] text-gray-400 bg-gray-950 rounded px-2 py-1">
+                            <span className="truncate">#{i + 2} · {u.length > 60 ? u.slice(0, 60) + '…' : u}</span>
+                            <button onClick={() => removeExtraClip(i)} className="text-gray-500 hover:text-rose-400 ml-2">✕</button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    {assembleError && (
+                      <p className="text-rose-400 text-[10px] mt-1.5">{assembleError}</p>
+                    )}
+                    {assembledUrl && (
+                      <p className="text-emerald-400 text-[10px] mt-1.5">
+                        Merged. Editing now applies to the merged video.
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Edit history */}
+                  {editorTurns.length > 0 && (
+                    <div className="p-3 border-b border-gray-800 max-h-48 overflow-y-auto space-y-1.5">
+                      {editorTurns.map((t, i) => (
+                        <div key={i} className={`text-[11px] rounded px-2 py-1.5 ${t.ok ? 'bg-gray-950 border border-gray-800' : 'bg-rose-950/30 border border-rose-900/50'}`}>
+                          <div className="flex items-start gap-2">
+                            <span className={t.ok ? 'text-emerald-400' : 'text-rose-400'}>{t.ok ? '✓' : '✕'}</span>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-white truncate">{t.instruction}</p>
+                              {t.error && <p className="text-rose-300 mt-0.5">{t.error}</p>}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Prompt input */}
+                  <div className="p-3 flex gap-2">
+                    <input
+                      type="text"
+                      value={editorInstruction}
+                      onChange={e => setEditorInstruction(e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void runEditorPrompt() } }}
+                      placeholder='e.g. "trim to first 5 seconds, add fade in, overlay logo bottom-right"'
+                      disabled={!editorBaseUrl || editorBusy}
+                      className="flex-1 px-3 py-2 rounded-lg bg-gray-950 border border-gray-800 text-white text-xs placeholder-gray-600 focus:outline-none focus:border-indigo-500 disabled:opacity-50"
+                    />
+                    <button
+                      onClick={() => void runEditorPrompt()}
+                      disabled={!editorBaseUrl || !editorInstruction.trim() || editorBusy}
+                      className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-medium">
+                      {editorBusy ? 'Editing…' : 'Apply'}
+                    </button>
+                  </div>
+
+                  {/* Result preview */}
+                  {editorLatestUrl && editorLatestUrl !== latestVideoUrl && (
+                    <div className="p-3 border-t border-gray-800">
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="text-gray-500 text-[10px] uppercase tracking-wider">Edited result</span>
+                        <a href={editorLatestUrl} target="_blank" rel="noopener noreferrer" className="text-indigo-400 hover:text-indigo-300 text-[10px]">Open ↗</a>
+                      </div>
+                      <video src={editorLatestUrl} controls className="w-full rounded-lg bg-black aspect-video" />
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
