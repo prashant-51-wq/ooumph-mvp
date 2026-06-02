@@ -6,6 +6,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import Anthropic from '@anthropic-ai/sdk'
 import { assertWorkspaceOwnership } from '@/lib/guards'
+import { getWorkspaceSecret } from '@/lib/secrets'
 
 interface AdGenerateRequest {
   workspaceId: string
@@ -57,8 +58,11 @@ export async function POST(req: NextRequest) {
     const settings = await getSettings(workspaceId)
     if (!settings) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 })
 
-    // Get Anthropic API key from workspace settings or environment
-    const anthropicKey = (settings.anthropicApiKey as string | undefined) || process.env.ANTHROPIC_API_KEY
+    // Sprint 19G: read from workspace_secrets (encrypted, Sprint 18B) with
+    // fallback to legacy model_settings field and env var.
+    const anthropicKey = (await getWorkspaceSecret(workspaceId, 'anthropic'))
+      || (settings.anthropicApiKey as string | undefined)
+      || process.env.ANTHROPIC_API_KEY
     if (!anthropicKey) {
       return NextResponse.json({
         ok: false,

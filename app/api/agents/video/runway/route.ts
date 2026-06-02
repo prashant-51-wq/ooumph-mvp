@@ -4,6 +4,7 @@ import { assertAgentRunQuota } from '@/lib/quota'
 import { assertWorkspaceOwnership } from '@/lib/guards'
 import { recordMediaAsset } from '@/lib/media-assets'
 import { withCredentials } from '@/lib/credential-context'
+import { getWorkspaceSecret } from '@/lib/secrets'
 import {
   generateVideoFromText,
   generateVideoFromImage,
@@ -49,10 +50,15 @@ export async function POST(req: NextRequest) {
     }
 
     // 1. Fetch workspace settings and run handler with request-scoped credentials.
+    // Sprint 19G: BYOK from workspace_secrets first.
     const ws = await sql`SELECT model_settings FROM workspaces WHERE id = ${workspaceId}`
     const settings = (ws.rows[0]?.model_settings || {}) as Record<string, string>
+    const runwayKey = (await getWorkspaceSecret(workspaceId, 'runway'))
+      || settings.runwayApiKey
+      || process.env.RUNWAY_API_KEY
+      || ''
 
-    return await withCredentials({ RUNWAY_API_KEY: settings.runwayApiKey }, async () => {
+    return await withCredentials({ RUNWAY_API_KEY: runwayKey }, async () => {
     // 2. Check availability
     if (!isRunwayAvailable()) {
       return NextResponse.json({

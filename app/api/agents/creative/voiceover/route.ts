@@ -3,6 +3,7 @@ import { sql, newId } from '@/lib/db'
 import { assertWorkspaceOwnership } from '@/lib/guards'
 import { assertAgentRunQuota } from '@/lib/quota'
 import { recordMediaAsset } from '@/lib/media-assets'
+import { getWorkspaceSecret } from '@/lib/secrets'
 import { withCredentials } from '@/lib/credential-context'
 
 export const runtime = 'nodejs'
@@ -37,11 +38,17 @@ export async function POST(req: NextRequest) {
     const overQuota = await assertAgentRunQuota(req, workspaceId)
     if (overQuota) return overQuota
 
-    // 1. Fetch workspace model_settings and inject API keys
+    // 1. Fetch workspace model_settings and inject API keys.
+    // Sprint 19G: BYOK keys now live in workspace_secrets (Sprint 18B).
+    // Fall back to legacy model_settings field, then env.
     const ws = await sql`SELECT model_settings FROM workspaces WHERE id=${workspaceId}`
     const settings = (ws.rows[0]?.model_settings || {}) as Record<string, string>
+    const elevenLabsKey = (await getWorkspaceSecret(workspaceId, 'elevenlabs'))
+      || settings.elevenLabsApiKey
+      || process.env.ELEVENLABS_API_KEY
+      || ''
 
-    if (!settings.elevenLabsApiKey) {
+    if (!elevenLabsKey) {
       return NextResponse.json({
         ok: false,
         error: 'ElevenLabs API key not configured. Add it in Settings → AI Assistants.',
@@ -55,7 +62,7 @@ export async function POST(req: NextRequest) {
     // creds are confined to this async chain via AsyncLocalStorage.
     const result = await withCredentials(
       {
-        ELEVENLABS_API_KEY: settings.elevenLabsApiKey,
+        ELEVENLABS_API_KEY: elevenLabsKey,
         ELEVENLABS_VOICE_ID: settings.elevenLabsVoiceId,
       },
       async () => {
@@ -147,8 +154,13 @@ export async function GET(req: NextRequest) {
 
     const ws = await sql`SELECT model_settings FROM workspaces WHERE id=${workspaceId}`
     const settings = (ws.rows[0]?.model_settings || {}) as Record<string, string>
+    // Sprint 19G: same resolve order as POST.
+    const elevenLabsKey = (await getWorkspaceSecret(workspaceId, 'elevenlabs'))
+      || settings.elevenLabsApiKey
+      || process.env.ELEVENLABS_API_KEY
+      || ''
 
-    if (!settings.elevenLabsApiKey) {
+    if (!elevenLabsKey) {
       return NextResponse.json({
         ok: false,
         error: 'ElevenLabs API key not configured.',
@@ -159,7 +171,7 @@ export async function GET(req: NextRequest) {
 
     // Sprint 18I: request-scoped credentials (see POST handler above).
     const voices = await withCredentials(
-      { ELEVENLABS_API_KEY: settings.elevenLabsApiKey },
+      { ELEVENLABS_API_KEY: elevenLabsKey },
       async () => {
         const { getVoices } = await import('@/lib/tools/elevenlabs')
         return getVoices()

@@ -17,6 +17,7 @@ import { sql, newId } from '@/lib/db'
 import { assertWorkspaceOwnership } from '@/lib/guards'
 import { assertAgentRunQuota } from '@/lib/quota'
 import { withCredentials } from '@/lib/credential-context'
+import { getWorkspaceSecret } from '@/lib/secrets'
 import {
   generateKlingFromText,
   generateKlingFromImage,
@@ -51,9 +52,14 @@ export async function POST(req: NextRequest) {
 
     const ws = await sql`SELECT model_settings FROM workspaces WHERE id = ${workspaceId}`
     const settings = (ws.rows[0]?.model_settings || {}) as Record<string, string>
+    // Sprint 19G: BYOK from workspace_secrets first.
+    const klingAccessKey = (await getWorkspaceSecret(workspaceId, 'kling'))
+      || settings.klingAccessKey
+      || process.env.KLING_ACCESS_KEY
+      || ''
 
     return await withCredentials({
-      KLING_ACCESS_KEY: settings.klingAccessKey,
+      KLING_ACCESS_KEY: klingAccessKey,
       KLING_SECRET_KEY: settings.klingSecretKey,
     }, async () => {
     if (!isKlingAvailable()) {

@@ -4,6 +4,7 @@ import { assertWorkspaceOwnership } from '@/lib/guards'
 import { assertAgentRunQuota } from '@/lib/quota'
 import { recordMediaAsset } from '@/lib/media-assets'
 import { withCredentials } from '@/lib/credential-context'
+import { getWorkspaceSecret } from '@/lib/secrets'
 
 export const runtime = 'nodejs'
 
@@ -36,11 +37,16 @@ export async function POST(req: NextRequest) {
     const overQuota = await assertAgentRunQuota(req, workspaceId)
     if (overQuota) return overQuota
 
-    // 1. Fetch workspace model_settings and inject API key
+    // Sprint 19G: read the OpenAI key from workspace_secrets (encrypted store
+    // since Sprint 18B). The previous code read settings.openaiApiKey from
+    // model_settings, which Sprint 18B moved OUT of that table — so saved
+    // BYOK keys were always invisible to this route. Fall back to env if the
+    // workspace hasn't set its own key.
     const ws = await sql`SELECT model_settings FROM workspaces WHERE id=${workspaceId}`
     const settings = (ws.rows[0]?.model_settings || {}) as Record<string, string>
+    const openaiKey = (await getWorkspaceSecret(workspaceId, 'openai')) || process.env.OPENAI_API_KEY || ''
 
-    if (!settings.openaiApiKey) {
+    if (!openaiKey) {
       return NextResponse.json({
         ok: false,
         error: 'OpenAI API key not configured. Add it in Settings → AI Assistants.',
@@ -53,7 +59,7 @@ export async function POST(req: NextRequest) {
     const { generateImage, isOpenAIAvailable } = await import('@/lib/tools/openai')
 
     const result = await withCredentials(
-      { OPENAI_API_KEY: settings.openaiApiKey },
+      { OPENAI_API_KEY: openaiKey },
       async () => {
         if (!isOpenAIAvailable()) return null
         return generateImage(prompt, { size, quality, style })

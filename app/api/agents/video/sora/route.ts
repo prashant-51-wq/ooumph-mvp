@@ -19,6 +19,7 @@ import { sql, newId } from '@/lib/db'
 import { assertWorkspaceOwnership } from '@/lib/guards'
 import { assertAgentRunQuota } from '@/lib/quota'
 import { withCredentials } from '@/lib/credential-context'
+import { getWorkspaceSecret } from '@/lib/secrets'
 import {
   generateSoraFromText,
   getSoraTaskStatus,
@@ -50,8 +51,13 @@ export async function POST(req: NextRequest) {
 
     const ws = await sql`SELECT model_settings FROM workspaces WHERE id = ${workspaceId}`
     const settings = (ws.rows[0]?.model_settings || {}) as Record<string, string>
+    // Sprint 19G: resolve from workspace_secrets first.
+    const openaiKey = (await getWorkspaceSecret(workspaceId, 'openai'))
+      || settings.openaiApiKey
+      || process.env.OPENAI_API_KEY
+      || ''
 
-    return await withCredentials({ OPENAI_API_KEY: settings.openaiApiKey }, async () => {
+    return await withCredentials({ OPENAI_API_KEY: openaiKey }, async () => {
     if (!isSoraConfigured()) {
       return NextResponse.json({
         ok: false,
