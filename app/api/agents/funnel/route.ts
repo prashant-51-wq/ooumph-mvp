@@ -123,6 +123,13 @@ export async function POST(req: NextRequest) {
         },
         forwardCookie,
       ),
+      // Note: the funnel supervisor calls /api/agents/email/sequence (the
+      // parameterised variant) because it has specific user-passed args
+      // (goal, audience, numEmails, daysBetween, tone) that the route honours
+      // verbatim. The CMO orchestrator uses the alternative
+      // /api/agents/funnel/email-sequence which derives context from the
+      // workspace's existing strategy + funnel + leads artifacts (sequenceType
+      // shorthand only). Both write `type='email_sequence'` artifacts.
       callSubAgent<{ sequence: unknown[]; metadata: Record<string, unknown> }>(
         '/api/agents/email/sequence',
         {

@@ -1055,31 +1055,12 @@ function NotificationDropdown({
   )
 }
 
-// ─── Attachment Menu ───────────────────────────────────────────────────────────
-
-function AttachmentMenu({ onClose }: { onClose: () => void }) {
-  const options = [
-    { icon: '📄', label: 'Upload Document' },
-    { icon: '🔗', label: 'Share URL' },
-    { icon: '📝', label: 'Add Context' },
-  ]
-  return (
-    <div className="absolute bottom-full left-0 mb-2 bg-gray-900 border border-gray-800 rounded-xl shadow-xl overflow-hidden z-20 w-44">
-      {options.map((o) => (
-        <button
-          key={o.label}
-          onClick={onClose}
-          className="w-full flex items-center gap-2.5 px-3 py-2.5 text-xs text-gray-300 hover:bg-gray-800 hover:text-white transition-colors"
-        >
-          <span>{o.icon}</span>
-          <span>{o.label}</span>
-        </button>
-      ))}
-    </div>
-  )
-}
-
 // ─── Main page ────────────────────────────────────────────────────────────────
+//
+// AttachmentMenu was removed in audit pass #7: it surfaced three options
+// ("Upload Document", "Share URL", "Add Context") whose handlers all just
+// closed the menu. No upload/URL/context-add code path existed. Honesty over
+// fake interactivity — bring it back when the underlying handlers ship.
 
 const GREETING: Message = {
   id: 'greeting',
@@ -1128,8 +1109,8 @@ export default function DashboardPage() {
   // UI state
   const [showNotifications, setShowNotifications] = useState(false)
   const [showContextModal, setShowContextModal] = useState(false)
-  const [showAttachMenu, setShowAttachMenu] = useState(false)
-  const [isRecording, setIsRecording] = useState(false)
+  // showAttachMenu / AttachmentMenu removed in audit pass #7 (fake handlers).
+  // isRecording removed in audit pass #7 (no audio capture wired up).
 
   // ── Agent Console (right-side rail) ──────────────────────────────────────
   // Persisted across reloads so the user's last preference is honored.
@@ -1659,12 +1640,13 @@ export default function DashboardPage() {
     void sendMessage(prompt)
   }
 
-  // ── Voice input ───────────────────────────────────────────────────────────────
-
-  function toggleRecording() {
-    setIsRecording((prev) => !prev)
-    // Real voice logic would go here
-  }
+  // ── Voice input ──────────────────────────────────────────────────────────────
+  //
+  // Removed in audit pass #7. The previous toggleRecording() only flipped a
+  // boolean — no audio capture, no transcription, no backend wiring. Showing
+  // "Listening…" with nothing actually listening is the kind of fake we are
+  // explicitly weeding out. Re-add when a real MediaRecorder + transcription
+  // pipeline ships.
 
   // ── Cost badge color ──────────────────────────────────────────────────────────
 
@@ -1821,16 +1803,26 @@ export default function DashboardPage() {
             {/* Campaign template carousel */}
             <CampaignCarousel onDeploy={handleTemplateSelect} />
 
-            {/* Context awareness bar */}
+            {/* Context awareness bar — real values from page state.
+                Sprint audit pass #7: previously hardcoded "24 knowledge nodes /
+                Growth Sprint / 91% / 6 agents". Now sourced from /api/stats
+                (learningNotes), the brandVoiceScore state, and the agent
+                registry status map. "Active: <strategy>" was dropped because
+                this page has no strategy/sprint state in scope. */}
             <div className="flex-shrink-0 px-4 py-2 bg-gray-900/70 border-b border-gray-800 flex items-center gap-3 overflow-x-auto hide-scrollbar">
               <div className="flex items-center gap-3 text-xs text-gray-500 whitespace-nowrap">
-                <span>📚 24 knowledge nodes</span>
+                <span>📚 {stats.learningNotes} knowledge {stats.learningNotes === 1 ? 'node' : 'nodes'}</span>
                 <span className="text-gray-700">·</span>
-                <span>🎯 Active: Growth Sprint</span>
+                <span>📊 Brand Score: {brandVoiceScore ? `${brandVoiceScore}%` : '—'}</span>
                 <span className="text-gray-700">·</span>
-                <span>📊 Brand Score: 91%</span>
-                <span className="text-gray-700">·</span>
-                <span className="text-indigo-400">6 agents ready</span>
+                <span className="text-indigo-400">
+                  {(() => {
+                    const readyCount = Object.values(agentStatuses).filter(
+                      (s) => s === 'active'
+                    ).length
+                    return `${readyCount} ${readyCount === 1 ? 'agent' : 'agents'} ready`
+                  })()}
+                </span>
               </div>
             </div>
 
@@ -1897,41 +1889,24 @@ export default function DashboardPage() {
               </div>
             </div>
 
-            {/* Input bar */}
+            {/* Input bar
+                Sprint audit pass #7: the paperclip (AttachmentMenu) and mic
+                (toggleRecording) buttons were removed — neither had real
+                handlers behind them. Layout still works: the textarea has
+                flex-1, the send button stays right-aligned. */}
             <div className="px-4 pb-3 flex-shrink-0 border-t border-gray-800 pt-2">
               <div className="flex items-end gap-2 bg-gray-900 border border-gray-700 focus-within:border-indigo-600 rounded-xl px-3 py-2 transition-colors relative">
-                {/* Attachment menu */}
-                <div className="relative">
-                  {showAttachMenu && <AttachmentMenu onClose={() => setShowAttachMenu(false)} />}
-                  <button
-                    onClick={() => setShowAttachMenu(!showAttachMenu)}
-                    className="flex-shrink-0 w-7 h-7 flex items-center justify-center text-gray-600 hover:text-gray-400 transition-colors text-base mb-0.5"
-                    title="Attach"
-                  >
-                    📎
-                  </button>
-                </div>
-
                 <textarea
                   ref={textareaRef}
                   value={input}
                   onChange={handleInputChange}
                   onKeyDown={handleKeyDown}
                   disabled={loading || executing}
-                  placeholder={isRecording ? '🎤 Listening...' : 'Tell me what you need...'}
+                  placeholder="Tell me what you need..."
                   rows={1}
                   className="flex-1 bg-transparent text-white placeholder-gray-600 text-sm resize-none outline-none leading-relaxed disabled:opacity-50"
                   style={{ maxHeight: '112px' }}
                 />
-
-                {/* Voice input */}
-                <button
-                  onClick={toggleRecording}
-                  className={`flex-shrink-0 w-7 h-7 flex items-center justify-center text-base transition-colors mb-0.5 ${isRecording ? 'text-red-400 animate-pulse' : 'text-gray-600 hover:text-gray-400'}`}
-                  title={isRecording ? 'Stop recording' : 'Voice input'}
-                >
-                  🎤
-                </button>
 
                 {/* Send */}
                 <button

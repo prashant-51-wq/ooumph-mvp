@@ -120,11 +120,14 @@ function buildAgentFromRegistry(row: RegistryRow): Agent {
   }
   // Map registry lifecycle status → UI status. 'disabled' is treated as
   // 'paused' for display since the slide-over doesn't model a fourth state.
+  // Registry 'active' is authoritative — keep it as 'active'. The
+  // runs-hydration effect may override to 'active' anyway when a run is
+  // currently running, but we should not downgrade 'active' to 'idle' here.
   const status: AgentStatus =
     row.status === 'paused'   ? 'paused' :
     row.status === 'error'    ? 'error'  :
     row.status === 'disabled' ? 'paused' :
-    'idle' // 'active' from registry → 'idle' until runs-hydration promotes
+    'active'
   return {
     id: row.name,
     name: AGENT_META[row.name] ? friendlyName(row.name) : titleCaseFromSlug(row.name),
@@ -192,20 +195,70 @@ function makeConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
 // Sprint 18D moved the agents-list source of truth to
 // /api/agents/registry — see useEffect → registry hydration in AgentsPage.
 
-const ACTIVITY_FEED: ActivityItem[] = [
-  { agentId: 'blog-writer', agentName: 'Blog Writer Agent', agentIcon: '✍️', message: 'Published "Top 10 SaaS Tools for 2026" to WordPress', timeAgo: '2m ago' },
-  { agentId: 'analytics-agent', agentName: 'Analytics Agent', agentIcon: '📊', message: 'Generated Q2 performance report — 14 slides', timeAgo: '4m ago' },
-  { agentId: 'lead-scorer', agentName: 'Lead Scorer Agent', agentIcon: '⚡', message: 'Scored 47 leads — 12 marked High Intent', timeAgo: '6m ago' },
-  { agentId: 'social-agent', agentName: 'Social Media Agent', agentIcon: '📱', message: 'Scheduled 8 posts across LinkedIn, X, Instagram', timeAgo: '9m ago' },
-  { agentId: 'brand-monitor', agentName: 'Brand Monitor Agent', agentIcon: '👁️', message: 'Detected 3 negative mentions on Reddit — escalated to Brand Supervisor', timeAgo: '11m ago' },
-  { agentId: 'cmo', agentName: 'CMO Agent', agentIcon: '🧠', message: 'Q2 strategy update completed — sent to approvals', timeAgo: '15m ago' },
-  { agentId: 'crm-agent', agentName: 'CRM Agent', agentIcon: '🗄️', message: 'Updated 23 deal stages in CRM', timeAgo: '18m ago' },
-  { agentId: 'ad-copy', agentName: 'Ad Copy Agent', agentIcon: '📢', message: 'Created 5 Meta ad variants for summer campaign', timeAgo: '21m ago' },
-  { agentId: 'seo-agent', agentName: 'SEO Agent', agentIcon: '🔍', message: 'SEO audit complete: 5 posts optimized, avg score 84/100', timeAgo: '27m ago' },
-  { agentId: 'research-agent', agentName: 'Research Agent', agentIcon: '🧪', message: 'Competitor pricing analysis complete — Notion saved', timeAgo: '33m ago' },
-  { agentId: 'reputation-agent', agentName: 'Reputation Agent', agentIcon: '⭐', message: 'Responded to 2 G2 reviews and 1 Trustpilot review', timeAgo: '41m ago' },
-  { agentId: 'email-copy', agentName: 'Email Copywriter Agent', agentIcon: '📧', message: 'Drafted 3 follow-up emails for demo pipeline', timeAgo: '52m ago' },
-]
+// Sprint 18D follow-up: ACTIVITY_FEED is now built from /api/agent-runs at
+// runtime — see the activity-feed useEffect below. The hardcoded sample was
+// removed during audit pass #7.
+
+// Format a Date or ISO string as a compact "Xm ago" / "Xh ago" / "Xd ago".
+function timeAgo(d: string | Date): string {
+  const t = typeof d === 'string' ? new Date(d).getTime() : d.getTime()
+  const diff = Math.max(0, Date.now() - t)
+  const s = Math.floor(diff / 1000)
+  if (s < 60) return `${s}s ago`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}m ago`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `${h}h ago`
+  const dy = Math.floor(h / 24)
+  return `${dy}d ago`
+}
+
+// Format a duration in milliseconds as "X.Ys" or "X.Xm".
+function formatDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return '—'
+  const s = ms / 1000
+  if (s < 60) return `${s.toFixed(1)}s`
+  const m = s / 60
+  return `${m.toFixed(1)}m`
+}
+
+// Best-effort short summary for a run: prefer error_message on failure,
+// otherwise a tiny slice of output_json or input_json. Falls back to the
+// status verb so the row is never blank.
+function summarizeRun(r: {
+  status: string
+  input_json?: string
+  output_json?: string
+  error_message?: string
+}): string {
+  if (r.status === 'failed' && r.error_message) return r.error_message.slice(0, 140)
+  const pickFrom = (raw: string | undefined): string | null => {
+    if (!raw) return null
+    try {
+      const parsed = JSON.parse(raw)
+      if (typeof parsed === 'string') return parsed
+      if (parsed && typeof parsed === 'object') {
+        const candidates = ['summary', 'message', 'title', 'task', 'prompt', 'result', 'text']
+        for (const k of candidates) {
+          const v = (parsed as Record<string, unknown>)[k]
+          if (typeof v === 'string' && v.trim()) return v.trim()
+        }
+        return JSON.stringify(parsed).slice(0, 140)
+      }
+    } catch {
+      return raw.slice(0, 140)
+    }
+    return null
+  }
+  return (
+    pickFrom(r.output_json) ||
+    pickFrom(r.input_json) ||
+    (r.status === 'running' ? 'Run in progress' :
+     r.status === 'completed' ? 'Run completed' :
+     r.status === 'pending' ? 'Run queued' :
+     r.status === 'failed' ? 'Run failed' : 'Activity')
+  )
+}
 
 const AVAILABLE_MODELS = [
   'Claude 3.5 Sonnet', 'Claude 3.5 Haiku', 'Claude 3 Opus',
@@ -735,6 +788,10 @@ export default function AgentsPage() {
   const [busyAgentId, setBusyAgentId] = useState<string | null>(null)
   // Top-line success/error toast for operator feedback after a write.
   const [statusMsg, setStatusMsg] = useState<{ kind: 'success' | 'error'; text: string } | null>(null)
+  // Live activity feed (sidebar). Sprint 18D audit pass #7: was a hardcoded
+  // sample array — now fetched from /api/agent-runs.
+  const [activity, setActivity] = useState<ActivityItem[]>([])
+  const [activityLoaded, setActivityLoaded] = useState(false)
 
   // Hydrate the static agent catalog with real run data from /api/agent-runs.
   // The static AGENTS list is the registry of available agents; we layer
@@ -761,12 +818,22 @@ export default function AgentsPage() {
         }>
         if (cancelled) return
         const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0)
-        const aggregates = new Map<string, { tasks: number; cost: number; running: number; latest: string | null }>()
+        type RunRow = typeof runs[number]
+        interface Agg {
+          tasks: number
+          cost: number
+          running: number
+          latest: string | null
+          // All runs for this agent, newest first (input is already newest-first
+          // from the API ORDER BY created_at DESC).
+          allRuns: RunRow[]
+        }
+        const aggregates = new Map<string, Agg>()
         for (const r of runs) {
           // Match runs to agents by name/slug (case-insensitive, partial)
           const key = (r.agent_name || '').toLowerCase()
           if (!key) continue
-          const existing = aggregates.get(key) || { tasks: 0, cost: 0, running: 0, latest: null }
+          const existing: Agg = aggregates.get(key) || { tasks: 0, cost: 0, running: 0, latest: null, allRuns: [] }
           if (new Date(r.created_at) >= todayStart) {
             existing.tasks += 1
             existing.cost += Number(r.cost_estimate || 0)
@@ -775,6 +842,7 @@ export default function AgentsPage() {
           if (!existing.latest || new Date(r.created_at) > new Date(existing.latest)) {
             existing.latest = r.created_at
           }
+          existing.allRuns.push(r)
           aggregates.set(key, existing)
         }
 
@@ -782,7 +850,7 @@ export default function AgentsPage() {
         setAgents(prev => prev.map(a => {
           // Try several matching strategies against the run agent_name
           const candidates = [a.id, a.name.toLowerCase().replace(/\s+/g, '_'), a.role.toLowerCase()]
-          let agg: { tasks: number; cost: number; running: number; latest: string | null } | undefined
+          let agg: Agg | undefined
           for (const c of candidates) {
             if (aggregates.has(c)) { agg = aggregates.get(c); break }
             // Try fuzzy: any aggregate key contains the candidate
@@ -792,12 +860,58 @@ export default function AgentsPage() {
             if (agg) break
           }
           if (!agg) return a
-          const newStatus: AgentStatus = agg.running > 0 ? 'active' : a.status === 'paused' ? 'paused' : 'idle'
+          // Preserve registry-authoritative paused/error; promote to 'active'
+          // if a run is currently running; otherwise keep the existing status
+          // (which was set from the registry — usually 'active').
+          const newStatus: AgentStatus =
+            a.status === 'paused' || a.status === 'error' ? a.status :
+            agg.running > 0 ? 'active' :
+            a.status
+
+          // avgResponseTime — average (completed_at − created_at) across the
+          // last 20 completed runs. If none have completed, fall back to '—'.
+          const completed = agg.allRuns
+            .filter(r => r.status === 'completed' && r.completed_at)
+            .slice(0, 20)
+          let avgResp = '—'
+          if (completed.length > 0) {
+            const totalMs = completed.reduce((sum, r) => {
+              const start = new Date(r.created_at).getTime()
+              const end = new Date(r.completed_at as string).getTime()
+              return sum + Math.max(0, end - start)
+            }, 0)
+            avgResp = formatDuration(totalMs / completed.length)
+          }
+
+          // logs — last 20 runs mapped to the LogEntry shape used by LogModal.
+          const logs: LogEntry[] = agg.allRuns.slice(0, 20).map(r => {
+            const start = new Date(r.created_at).getTime()
+            const end = r.completed_at ? new Date(r.completed_at).getTime() : null
+            const summary = summarizeRun(r)
+            return {
+              id: r.id,
+              timestamp: r.created_at,
+              taskType: r.status === 'failed' ? 'Failed run' :
+                        r.status === 'running' ? 'Running' :
+                        r.status === 'pending' ? 'Pending' :
+                        'Completed run',
+              input: summary,
+              output: r.status === 'failed' && r.error_message
+                ? r.error_message
+                : (summary === 'Run completed' ? 'OK' : summary),
+              cost: Number(r.cost_estimate || 0),
+              duration: end ? formatDuration(end - start) : '—',
+              status: r.status === 'failed' ? 'failed' : 'success',
+            }
+          })
+
           return {
             ...a,
             tasksToday: agg.tasks,
             costToday: parseFloat(agg.cost.toFixed(3)),
+            avgResponseTime: avgResp,
             status: newStatus,
+            logs,
           }
         }))
       } catch (err) {
@@ -807,6 +921,64 @@ export default function AgentsPage() {
 
     hydrate()
     const interval = setInterval(hydrate, 15000) // refresh every 15s
+    return () => { cancelled = true; clearInterval(interval) }
+  }, [])
+
+  // ── Live activity feed (Sprint 18D audit pass #7) ───────────────────────
+  // Fetch the last 20 agent_runs and shape into ActivityItem rows for the
+  // sidebar. Refreshes every 15s alongside the per-agent stats hydration.
+  useEffect(() => {
+    const wid = typeof window !== 'undefined' ? localStorage.getItem('workspaceId') : null
+    if (!wid) { setActivityLoaded(true); return }
+    let cancelled = false
+
+    const loadActivity = async () => {
+      try {
+        const res = await fetch(`/api/agent-runs?workspaceId=${wid}&limit=20`)
+        if (!res.ok) {
+          if (!cancelled) setActivityLoaded(true)
+          return
+        }
+        const runs = await res.json() as Array<{
+          id: string
+          agent_name: string
+          status: string
+          input_json?: string
+          output_json?: string
+          error_message?: string
+          created_at: string
+          completed_at?: string
+        }>
+        if (cancelled || !Array.isArray(runs)) return
+        const items: ActivityItem[] = runs.map(r => {
+          const slug = (r.agent_name || '').toLowerCase()
+          const meta = AGENT_META[slug]
+          const icon = meta?.icon || (r.status === 'failed' ? '⚠️' : r.status === 'running' ? '⚙️' : '🤖')
+          const displayName = AGENT_DISPLAY_NAME[slug] || titleCaseFromSlug(slug || 'agent')
+          const verb = r.status === 'running' ? 'Working —' :
+                       r.status === 'completed' ? 'Completed —' :
+                       r.status === 'failed' ? 'Failed —' :
+                       r.status === 'pending' ? 'Queued —' : ''
+          const summary = summarizeRun(r)
+          const message = verb ? `${verb} ${summary}` : summary
+          return {
+            agentId: slug,
+            agentName: displayName,
+            agentIcon: icon,
+            message,
+            timeAgo: timeAgo(r.created_at),
+          }
+        })
+        setActivity(items)
+        setActivityLoaded(true)
+      } catch (err) {
+        console.error('[agents] activity load failed', err)
+        if (!cancelled) setActivityLoaded(true)
+      }
+    }
+
+    loadActivity()
+    const interval = setInterval(loadActivity, 15000)
     return () => { cancelled = true; clearInterval(interval) }
   }, [])
 
@@ -858,7 +1030,7 @@ export default function AgentsPage() {
             let status = a.status
             if (reg.status === 'paused') status = 'paused'
             else if (reg.status === 'error') status = 'error'
-            else if (a.status === 'paused') status = 'idle' // resumed
+            else if (a.status === 'paused') status = 'active' // resumed
             next.push({ ...a, status })
           }
           // Any new rows in the registry that the page hasn't seen yet
@@ -902,10 +1074,10 @@ export default function AgentsPage() {
         if (!reg) return a
         if (reg.status === 'paused') return { ...a, status: 'paused' }
         if (reg.status === 'error') return { ...a, status: 'error' }
-        // Resume → drop back to 'idle' so the runs-hydration effect can
-        // promote to 'active' on its next tick if there's running work.
+        // Resume → reflect the registry's 'active' immediately. The
+        // runs-hydration effect will keep it 'active' on its next tick.
         if (a.status === 'paused' && reg.status === 'active') {
-          return { ...a, status: 'idle' }
+          return { ...a, status: 'active' }
         }
         return a
       }))
@@ -1257,7 +1429,15 @@ export default function AgentsPage() {
               </span>
             </div>
             <div className="p-3 space-y-0 max-h-[600px] overflow-y-auto">
-              {ACTIVITY_FEED.map((item, i) => (
+              {!activityLoaded && (
+                <p className="text-gray-500 text-xs px-2 py-4 text-center">Loading…</p>
+              )}
+              {activityLoaded && activity.length === 0 && (
+                <p className="text-gray-500 text-xs px-2 py-4 text-center leading-relaxed">
+                  No agent activity yet — runs will appear here as agents work.
+                </p>
+              )}
+              {activity.map((item, i) => (
                 <div key={i} className="flex items-start gap-2.5 py-2.5 border-b border-gray-800 last:border-0">
                   <span className="text-base flex-shrink-0 mt-0.5">{item.agentIcon}</span>
                   <div className="flex-1 min-w-0">
