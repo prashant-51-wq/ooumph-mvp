@@ -33,16 +33,18 @@ export async function generateImage(
       Authorization: `Bearer ${key}`,
       'Content-Type': 'application/json',
     },
-    // Sprint 19J: OpenAI deprecated `response_format` for dall-e-3 — the
-    // endpoint now returns a URL by default. Removing the param fixes
-    // "Unknown parameter: 'response_format'" 400 from OpenAI.
+    // Sprint 19K: OpenAI's images API has churned hard — `response_format`,
+    // `style`, and possibly `quality` are no longer accepted for newer
+    // model versions on some accounts. Send only the universally-accepted
+    // params (model, prompt, n, size). The 'style' and 'quality' options
+    // from the caller are now ignored at this layer; if you need fine
+    // creative control, prefer the Stability AI path (lib/tools/stability)
+    // which exposes a richer parameter surface that doesn't churn.
     body: JSON.stringify({
       model: 'dall-e-3',
       prompt,
       n: 1,
       size: options?.size ?? '1024x1024',
-      quality: options?.quality ?? 'standard',
-      style: options?.style ?? 'vivid',
     }),
   })
   if (!res.ok) {
