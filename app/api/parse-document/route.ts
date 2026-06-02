@@ -27,6 +27,8 @@ const MAX_UPLOAD_BYTES = 10 * 1024 * 1024 // 10 MB
  */
 function isPrivateIp(ip: string): boolean {
   const v = ip.toLowerCase()
+  // Sprint 19F (audit pass #9 P2-2): also reject unspecified address ::
+  if (v === '::' || v === '0:0:0:0:0:0:0:0') return true
   if (v === '::1' || v === '0:0:0:0:0:0:0:1') return true
   if (v.startsWith('fe80:') || v.startsWith('fc') || v.startsWith('fd')) return true
   // IPv4 (also catches ::ffff:1.2.3.4 mapped form)

@@ -88,14 +88,26 @@ export async function POST(req: NextRequest) {
       `
 
       try {
+        // Sprint 19F (audit pass #9 P2-4): validate scheme before sending to
+        // Cloudinary. file:// / s3:// / etc. would 5xx noisily anyway, but
+        // surfacing a clear error here is cleaner.
+        for (const u of videoUrls) {
+          if (!/^https?:\/\//i.test(u)) {
+            throw new Error(`Clip URL must be http(s): ${u}`)
+          }
+        }
+
         const folder = `ooumph/${workspaceId}/video-assembly`
         // Upload every input URL to Cloudinary so we get stable public IDs.
         // Skip already-Cloudinary-hosted URLs (we can derive their public ID
         // directly without re-upload).
+        // Sprint 19F (P1-4): anchored regex on hostname so an attacker URL
+        // like https://attacker.com/?to=res.cloudinary.com/... can't sneak
+        // past the upload step.
+        const CLOUDINARY_URL_RE = /^https:\/\/res\.cloudinary\.com\/[^/]+\/video\/upload\//
         const uploaded: { publicId: string; secureUrl: string; durationSec?: number }[] = []
         for (const url of videoUrls) {
-          if (/res\.cloudinary\.com\//.test(url)) {
-            // Extract public_id from existing Cloudinary URL.
+          if (CLOUDINARY_URL_RE.test(url)) {
             const m = url.match(/\/upload\/(?:[^/]+\/)*([^.?]+)\./)
             if (m) {
               uploaded.push({ publicId: m[1], secureUrl: url })
@@ -104,10 +116,10 @@ export async function POST(req: NextRequest) {
           }
           const asset = await uploadVideoUrl(url, folder)
           if (!asset) {
-            return NextResponse.json({
-              ok: false,
-              error: `Failed to upload clip to Cloudinary: ${url}`,
-            }, { status: 502 })
+            // Sprint 19F (P1-11): throw so the outer catch marks the run
+            // 'failed'. The previous early-return left the agent_runs row
+            // stuck on 'running' forever.
+            throw new Error(`Failed to upload clip to Cloudinary: ${url}`)
           }
           uploaded.push({ publicId: asset.publicId, secureUrl: asset.secureUrl, durationSec: asset.durationSec })
         }
@@ -123,6 +135,15 @@ export async function POST(req: NextRequest) {
           const a = await uploadVideoUrl(body.bgmUrl, folder + '/audio')
           bgmPublicId = a?.publicId
         }
+        // Sprint 19F (P1-2): upload SRT to Cloudinary first so we have a
+        // real public_id. Previously we extracted the filename from the
+        // URL which produced a bogus public_id for any non-Cloudinary URL
+        // and silently broke the subtitle overlay.
+        let subtitlesPublicId: string | undefined
+        if (body.subtitleSrtUrl) {
+          const sub = await uploadVideoUrl(body.subtitleSrtUrl, folder + '/subs')
+          subtitlesPublicId = sub?.publicId
+        }
 
         const base = uploaded[0].publicId
         const concatRest = uploaded.slice(1).map(u => u.publicId)
@@ -133,7 +154,7 @@ export async function POST(req: NextRequest) {
           voiceoverPublicId,
           bgmPublicId,
           bgmVolumePct: bgmPublicId ? 25 : undefined,   // duck BGM under voiceover
-          subtitlesPublicId: body.subtitleSrtUrl ? body.subtitleSrtUrl.split('/').pop()?.replace(/\.[a-z]+$/, '') : undefined,
+          subtitlesPublicId,
           crop: body.crop,
         }
 

@@ -58,11 +58,14 @@ Overlay shape:
 - TextOverlay:  { "type": "text", "text": "...", "fontFamily": "Arial", "fontSize": 48, "color": "FFFFFF", "position": "...", "startSec": number, "durationSec": number }
 
 Rules:
-- Only include fields the user explicitly asks for. Set unused fields to null.
+- OMIT any field you are NOT changing (don't include it in the JSON at all).
+- To CLEAR a previously-set field (e.g. user says "remove the fade in"),
+  output that field with the value null. The orchestrator interprets
+  explicit null as a deletion marker.
 - If the user says "trim to 5 seconds" interpret as startSec=0, durationSec=5.
 - If the user says "speed up 2x" → speedPct=200. "Slow down half" → speedPct=50.
 - Common positions: "bottom right", "top left", etc.
-- If the user asks for something you can't express in this schema (e.g. "remove the background", "track this object"), include an "unsupported" key with a one-sentence explanation and set everything else to null.
+- If the user asks for something you can't express in this schema (e.g. "remove the background", "track this object"), include an "unsupported" key with a one-sentence explanation and OMIT all other fields.
 - ALWAYS return valid JSON. No prose, no markdown fences.`
 
 interface EditBody {
@@ -73,12 +76,20 @@ interface EditBody {
 }
 
 function mergeSpecs(prev: VideoEditSpec | undefined, next: Partial<VideoEditSpec>): VideoEditSpec {
+  // Sprint 19F (audit pass #9 P1-1): explicit null = deletion marker, so
+  // users can say "remove the fade in" and Claude can express that by
+  // setting fadeInMs to null. Previously null was treated the same as
+  // 'unchanged' and the field could never be cleared.
   // Last-write-wins per top-level field. Arrays (overlays, concatPublicIds)
   // are replaced wholesale, not merged — Claude returns the new desired set.
   const out: VideoEditSpec = { ...(prev || {}) }
   for (const k of Object.keys(next) as Array<keyof VideoEditSpec>) {
     const v = next[k]
-    if (v === null || v === undefined) continue
+    if (v === undefined) continue
+    if (v === null) {
+      delete out[k]
+      continue
+    }
     // @ts-expect-error - dynamic key copy
     out[k] = v
   }

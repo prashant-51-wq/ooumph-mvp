@@ -166,7 +166,13 @@ function verifyTwilioSignature(req: NextRequest, rawBody: string, contentType: s
   const sig = req.headers.get('x-twilio-signature') || ''
   if (!sig) return false
 
-  const url = req.url
+  // Sprint 19F (audit pass #9 P1-8): behind Vercel's edge proxy `req.url`
+  // can be the internal host, but Twilio signs with the PUBLIC URL it
+  // dialled. Reconstruct using the forwarded headers so the HMAC matches.
+  const parsed = new URL(req.url)
+  const fwdProto = req.headers.get('x-forwarded-proto') || parsed.protocol.replace(':', '')
+  const fwdHost = req.headers.get('x-forwarded-host') || req.headers.get('host') || parsed.host
+  const url = `${fwdProto}://${fwdHost}${parsed.pathname}${parsed.search}`
   let validationString = url
   if (contentType.toLowerCase().includes('application/x-www-form-urlencoded')) {
     const params = new URLSearchParams(rawBody)

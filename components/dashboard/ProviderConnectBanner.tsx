@@ -20,7 +20,7 @@
  * the component calls `onConnected()` so the parent can refetch state +
  * unlock its own UI.
  */
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 export interface ProviderFieldDef {
   /** Display label, e.g. 'API Key', 'Cloud Name'. */
@@ -76,6 +76,20 @@ export function ProviderConnectBanner(props: Props) {
   const [resultMsg, setResultMsg] = useState<string | null>(null)
   const [resultOk, setResultOk] = useState<boolean | null>(null)
 
+  // Sprint 19F (audit pass #9 P1-6): track the auto-close timeout so we
+  // can cancel it if the component unmounts before it fires. Avoids
+  // 'setState on unmounted component' warnings and stale-closure
+  // onConnected() calls when the user navigates away mid-success.
+  const autoCloseRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const mountedRef = useRef(true)
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      if (autoCloseRef.current) clearTimeout(autoCloseRef.current)
+    }
+  }, [])
+
   if (ready === null) return null
   if (ready === true) return null   // configured — banner hides
 
@@ -127,7 +141,11 @@ export function ProviderConnectBanner(props: Props) {
         })
         setResultOk(true)
         setResultMsg(testData.message || 'Connected and saved.')
-        setTimeout(() => { setFormOpen(false); onConnected?.() }, 1200)
+        autoCloseRef.current = setTimeout(() => {
+          if (!mountedRef.current) return
+          setFormOpen(false)
+          onConnected?.()
+        }, 1200)
         setTesting(false); return
       }
 
@@ -135,7 +153,11 @@ export function ProviderConnectBanner(props: Props) {
       if (data.ok) {
         setResultOk(true)
         setResultMsg((data.message || 'Connected.') + (data.plan ? ` (plan: ${data.plan})` : ''))
-        setTimeout(() => { setFormOpen(false); onConnected?.() }, 1200)
+        autoCloseRef.current = setTimeout(() => {
+          if (!mountedRef.current) return
+          setFormOpen(false)
+          onConnected?.()
+        }, 1200)
       } else {
         setResultOk(false)
         setResultMsg(data.message || data.error || 'Connection failed')
