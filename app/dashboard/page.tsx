@@ -1551,6 +1551,22 @@ export default function DashboardPage() {
         setStreamingMsgId(null)
         // Show the console rail if it was closed — first run for a new user
         if (!consoleOpen) setConsoleOpen(true)
+
+        // Sprint 20J: AUTO-ORCHESTRATE. Previously the user had to click
+        // "Deploy team →" on every CMO reply to actually fire the sub-agent.
+        // The user reported "agents are idle and the log looks hardcoded
+        // — make CMO guide the agents so a human doesn't have to be
+        // involved every time." Auto-fire approveTeam for the firstAction
+        // immediately after the proposal lands. The user keeps the Deploy
+        // button (and the team chip) visible in the bubble for the rare
+        // case they want to override before it runs.
+        if (proposal && !executing) {
+          // Slight delay so the proposal UI paints before the execute
+          // stream starts emitting events.
+          setTimeout(() => {
+            void approveTeam(proposal.firstAction, pending.msgId)
+          }, 600)
+        }
       }
       setLoading(false)
       // Refresh stats + runs after any completion

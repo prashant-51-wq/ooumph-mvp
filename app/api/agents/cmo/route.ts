@@ -523,17 +523,36 @@ async function runCmoChatStreaming(
 ): Promise<void> {
   const startedAt = Date.now()
   try {
+    // Sprint 20J: each log line now reports actual progress with real
+    // values instead of canned strings. "Loading brand context" was
+    // accurate the first time you saw it; by the tenth time, it looks
+    // like a hardcoded script. Now the log shows which workspace was
+    // read, which brand fields were found, the model+prompt size, and
+    // how long each phase took.
     await handle.send({
       t: 'agent_start',
       agent: 'cmo',
-      label: 'Analyzing your goal and assembling a team…',
+      label: `Reading "${message.slice(0, 60)}${message.length > 60 ? '…' : ''}"`,
     })
 
-    await handle.send({ t: 'agent_log', agent: 'cmo', level: 'info', msg: 'Loading brand context' })
-    const { brandContext } = await loadWorkspaceContext(workspaceId)
+    const ctxStart = Date.now()
+    await handle.send({ t: 'agent_log', agent: 'cmo', level: 'info', msg: `Pulling workspace + brand profile from DB` })
+    const { workspace, brand, brandContext } = await loadWorkspaceContext(workspaceId)
+    const wsName = (workspace?.name as string) || 'unknown'
+    const brandFields = brand ? Object.entries(brand).filter(([, v]) => v != null && v !== '').length : 0
+    await handle.send({
+      t: 'agent_log', agent: 'cmo', level: 'info',
+      msg: `Workspace "${wsName}" · ${brandFields} brand fields populated · ${Date.now() - ctxStart}ms`,
+    })
 
-    await handle.send({ t: 'agent_log', agent: 'cmo', level: 'info', msg: 'Drafting reply + proposal' })
+    const modelName = process.env.OOUMPH_AI_MODEL || 'claude-sonnet-4-5-20250929'
+    const promptChars = brandContext.length + message.length
+    await handle.send({
+      t: 'agent_log', agent: 'cmo', level: 'info',
+      msg: `Calling ${modelName} with ${promptChars} chars of context`,
+    })
 
+    const claudeStart = Date.now()
     // Stream Claude's response. Reply tokens go on the wire as they arrive
     // (live typing in the chat bubble); the JSON tail is parsed at the end.
     const proposal = await streamProposalWithTokens(brandContext, message, (delta) => {
@@ -541,6 +560,13 @@ async function runCmoChatStreaming(
       // by the stream's controller. We don't await each delta here because
       // we want token emission to be as low-latency as possible.
       void handle.send({ t: 'token', text: delta, agent: 'cmo' })
+    })
+    const claudeMs = Date.now() - claudeStart
+
+    const teamNames = (proposal.team || []).map(t => t.agent).join(' → ')
+    await handle.send({
+      t: 'agent_log', agent: 'cmo', level: 'info',
+      msg: `Proposal ready · team: [${teamNames}] · first action: ${proposal.firstAction} · ${claudeMs}ms · ~${proposal.reply.length} reply chars`,
     })
 
     await handle.send({
@@ -591,17 +617,20 @@ async function runCmoExecuteStreaming(
 ): Promise<void> {
   const overallStartedAt = Date.now()
   try {
+    // Sprint 20J: real per-step progress instead of canned headline.
+    const projName = projectContext?.name || 'unnamed project'
+    const teamSize = projectContext?.team?.length || 1
     await handle.send({
       t: 'agent_start',
       agent: 'cmo',
-      label: 'Orchestrating your project…',
+      label: `Orchestrating "${projName}" · ${teamSize} agent${teamSize === 1 ? '' : 's'} queued`,
     })
 
     await handle.send({
       t: 'agent_log',
       agent: 'cmo',
       level: 'info',
-      msg: `Routing to ${agentSlug} agent`,
+      msg: `→ Dispatching to ${agentSlug} (${AGENT_ROUTE_MAP[agentSlug] || '/api/agents/strategy'})`,
     })
 
     // ─── Run the sub-agent ───────────────────────────────────────────────
