@@ -1412,24 +1412,46 @@ export default function DashboardPage() {
   }, [workspaceId])
 
   // ── Auto-scroll ───────────────────────────────────────────────────────────────
-  // Sprint 19W: write `scrollTop` directly on the messages container — do
-  // NOT call `bottomRef.scrollIntoView`. scrollIntoView walks UP the DOM
-  // looking for ANY scrollable ancestor, and if the messages container
-  // fully contains the bottom anchor (true when the conversation is
-  // short), it falls through to scroll the layout's <main> element. That
-  // produced the "page scrolls down by itself" symptom: the user would
-  // scroll up, a stream token arrived, scrollIntoView fired, and instead
-  // of moving inside the messages list it scrolled the outer dashboard
-  // chrome, snapping the whole page to its bottom.
+  // Sprint 19X: belt-and-braces. Three guards stack:
+  //   1. Only target the messages container directly (no scrollIntoView
+  //      that could walk up to scroll <main>).
+  //   2. Bail if the user isn't already parked at the bottom.
+  //   3. Bail if the user has interacted with anything in the last 1.5s
+  //      (wheel, touch, key, mouseup) — gives the user a hard right of
+  //      way against any state-tick that would otherwise pull them back.
   //
-  // Only fires when the user is already parked at the bottom — tracked
-  // via `isNearBottomRef`, updated by the onScroll handler below.
+  // Without #3, the user's first wheel-up could be racing against a
+  // streaming-token re-render: React commits the new messages array
+  // before the browser's scroll event has bubbled, so isNearBottomRef
+  // is still true, so the effect snaps back to bottom — then onScroll
+  // finally fires and flips the ref, but the user is already yanked.
+  const lastUserInteractionRef = useRef<number>(0)
   useEffect(() => {
+    if (typeof window === 'undefined') return
+    const mark = () => { lastUserInteractionRef.current = Date.now() }
+    // capture so we get it even if a child stops propagation
+    window.addEventListener('wheel', mark, { passive: true, capture: true })
+    window.addEventListener('touchstart', mark, { passive: true, capture: true })
+    window.addEventListener('keydown', mark, { capture: true })
+    window.addEventListener('mousedown', mark, { capture: true })
+    return () => {
+      window.removeEventListener('wheel', mark, { capture: true })
+      window.removeEventListener('touchstart', mark, { capture: true })
+      window.removeEventListener('keydown', mark, { capture: true })
+      window.removeEventListener('mousedown', mark, { capture: true })
+    }
+  }, [])
+
+  useEffect(() => {
+    // Hard guard: if user interacted very recently, do nothing.
+    if (Date.now() - lastUserInteractionRef.current < 1500) return
     if (!isNearBottomRef.current) return
     const el = messagesContainerRef.current
     if (!el) return
-    // `behavior: 'auto'` (instant) avoids fighting an in-flight user
-    // scroll. Smooth scroll on every token tick is also visually noisy.
+    // Only scroll if there's actually content past the viewport — avoids
+    // the redundant write that some browsers treat as a programmatic
+    // scroll event and bubble awkwardly.
+    if (el.scrollHeight <= el.clientHeight) return
     el.scrollTop = el.scrollHeight
   }, [messages, loading])
 
