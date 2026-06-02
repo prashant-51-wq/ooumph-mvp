@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -226,27 +226,72 @@ export default function VideoGenPage() {
   // lets the user merge other generated clips (Runway / Pika / Luma / etc.)
   // into the base video via Cloudinary's fl_splice transform.
   interface EditTurn { instruction: string; resultUrl: string; spec: Record<string, unknown>; ok: boolean; error?: string }
-  // Sprint 19B: Cloudinary configured-ness — gates the editor UI behind a
-  // 'Get Cloudinary free' CTA when keys are missing. We sniff via a HEAD
-  // request to a known-broken URL; if Cloudinary returns 404 (vs network
-  // error) the cloudName resolves which means at least the name is right.
-  // More robust: just check the workspace's model_settings via /api/auth/me
-  // or a dedicated endpoint. For now we check model_settings client-side.
+  // Sprint 19B / 19C: Cloudinary configured-ness — gates the editor UI behind
+  // a 'Get Cloudinary free' CTA when keys are missing. Sprint 19C added the
+  // inline paste-and-test form right in the banner so the user never leaves
+  // /dashboard/video-gen to connect Cloudinary.
   const [cloudinaryReady, setCloudinaryReady] = useState<boolean | null>(null)
-  useEffect(() => {
+  const [cloudinaryFormOpen, setCloudinaryFormOpen] = useState(false)
+  const [cloudinaryCloud, setCloudinaryCloud] = useState('')
+  const [cloudinaryKey, setCloudinaryKey] = useState('')
+  const [cloudinarySecret, setCloudinarySecret] = useState('')
+  const [cloudinaryTesting, setCloudinaryTesting] = useState(false)
+  const [cloudinaryTestMsg, setCloudinaryTestMsg] = useState<string | null>(null)
+  const [cloudinaryTestOk, setCloudinaryTestOk] = useState<boolean | null>(null)
+
+  const refreshCloudinaryStatus = useCallback(async () => {
     if (!workspaceId) return
-    let cancelled = false
-    fetch(`/api/workspaces?id=${workspaceId}`, { credentials: 'include' })
-      .then(r => r.ok ? r.json() : null)
-      .then(data => {
-        if (cancelled) return
-        const ms = (data?.model_settings || {}) as Record<string, string>
-        const ready = Boolean(ms.cloudinaryCloudName && ms.cloudinaryApiKey && ms.cloudinaryApiSecret)
-        setCloudinaryReady(ready)
-      })
-      .catch(() => { if (!cancelled) setCloudinaryReady(false) })
-    return () => { cancelled = true }
+    try {
+      const r = await fetch(`/api/workspaces?id=${workspaceId}`, { credentials: 'include' })
+      if (!r.ok) { setCloudinaryReady(false); return }
+      const data = await r.json() as { model_settings?: Record<string, string> }
+      const ms = data.model_settings || {}
+      setCloudinaryReady(Boolean(ms.cloudinaryCloudName && ms.cloudinaryApiKey && ms.cloudinaryApiSecret))
+    } catch {
+      setCloudinaryReady(false)
+    }
   }, [workspaceId])
+
+  useEffect(() => { void refreshCloudinaryStatus() }, [refreshCloudinaryStatus])
+
+  async function testCloudinaryInline() {
+    if (!workspaceId) return
+    const cloudName = cloudinaryCloud.trim()
+    const apiKey = cloudinaryKey.trim()
+    const apiSecret = cloudinarySecret.trim()
+    if (!cloudName || !apiKey || !apiSecret) {
+      setCloudinaryTestOk(false)
+      setCloudinaryTestMsg('All three fields are required.')
+      return
+    }
+    setCloudinaryTesting(true); setCloudinaryTestMsg(null); setCloudinaryTestOk(null)
+    try {
+      const res = await fetch('/api/integrations/cloudinary/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ workspaceId, cloudName, apiKey, apiSecret }),
+      })
+      const data = await res.json() as { ok: boolean; message?: string; plan?: string }
+      if (data.ok) {
+        setCloudinaryTestOk(true)
+        setCloudinaryTestMsg(data.message || 'Connected.')
+        await refreshCloudinaryStatus()
+        setTimeout(() => {
+          // Auto-close the form after a beat so the editor flashes in.
+          setCloudinaryFormOpen(false)
+        }, 1200)
+      } else {
+        setCloudinaryTestOk(false)
+        setCloudinaryTestMsg(data.message || 'Connection failed.')
+      }
+    } catch (err) {
+      setCloudinaryTestOk(false)
+      setCloudinaryTestMsg(err instanceof Error ? err.message : 'Network error')
+    } finally {
+      setCloudinaryTesting(false)
+    }
+  }
 
   const [editorInstruction, setEditorInstruction] = useState('')
   const [editorBusy, setEditorBusy] = useState(false)
@@ -767,11 +812,11 @@ export default function VideoGenPage() {
                   </span>
                 </div>
 
-                {/* Sprint 19B: in-product Cloudinary signup CTA when keys aren't set.
-                    We can't programmatically create a Cloudinary account on the
-                    user's behalf — they don't expose that API — but we can put
-                    a one-click "Sign up free" button right where the user needs
-                    it and route them back to Settings to paste keys + Test. */}
+                {/* Sprint 19B / 19C: in-product Cloudinary signup CTA + inline
+                    paste-and-test form. Users never leave this page to connect
+                    Cloudinary. Click 'Sign up free' to register in a new tab,
+                    then come back, expand the form, paste the 3 keys, hit Test
+                    & Connect, and the editor unlocks immediately. */}
                 {cloudinaryReady === false && (
                   <div className="mb-3 bg-amber-950/30 border border-amber-900/50 rounded-xl p-4">
                     <div className="flex items-start gap-3">
@@ -783,24 +828,86 @@ export default function VideoGenPage() {
                           transformation API. <span className="text-emerald-300 font-medium">Free tier covers
                           25 GB delivery + 25 transformation credits per month</span> — no card required.
                         </p>
-                        <div className="mt-3 flex flex-wrap items-center gap-2">
-                          <a
-                            href="https://cloudinary.com/users/register/free"
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="px-3 py-1.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium inline-flex items-center gap-1.5">
-                            <span>Sign up free at Cloudinary</span>
-                            <span aria-hidden>↗</span>
-                          </a>
-                          <a
-                            href="/dashboard/settings#storage"
-                            className="px-3 py-1.5 rounded bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium">
-                            Paste keys + Test →
-                          </a>
-                          <span className="text-gray-500 text-[10px]">
-                            After signup → paste keys in Settings → click Test Connection. Editor unlocks automatically.
-                          </span>
-                        </div>
+
+                        {/* Step 1: signup link + form toggle */}
+                        {!cloudinaryFormOpen && (
+                          <div className="mt-3 flex flex-wrap items-center gap-2">
+                            <a
+                              href="https://cloudinary.com/users/register/free"
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="px-3 py-1.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium inline-flex items-center gap-1.5">
+                              <span>Sign up free at Cloudinary</span>
+                              <span aria-hidden>↗</span>
+                            </a>
+                            <button
+                              onClick={() => setCloudinaryFormOpen(true)}
+                              className="px-3 py-1.5 rounded bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium">
+                              Already have keys? Paste here →
+                            </button>
+                          </div>
+                        )}
+
+                        {/* Step 2: inline paste form */}
+                        {cloudinaryFormOpen && (
+                          <div className="mt-3 bg-gray-950 border border-gray-800 rounded-lg p-3 space-y-2">
+                            <div className="flex items-center justify-between mb-1">
+                              <span className="text-gray-300 text-[11px] font-medium">Paste your Cloudinary keys</span>
+                              <a
+                                href="https://console.cloudinary.com/settings/api-keys"
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-indigo-400 hover:text-indigo-300 text-[10px]">
+                                Where do I find these? ↗
+                              </a>
+                            </div>
+                            <input
+                              type="text"
+                              value={cloudinaryCloud}
+                              onChange={e => setCloudinaryCloud(e.target.value)}
+                              placeholder="Cloud Name (e.g. mycloud)"
+                              autoComplete="off"
+                              className="w-full px-3 py-2 rounded bg-gray-900 border border-gray-800 text-white text-xs placeholder-gray-600 focus:outline-none focus:border-indigo-500"
+                            />
+                            <input
+                              type="text"
+                              value={cloudinaryKey}
+                              onChange={e => setCloudinaryKey(e.target.value)}
+                              placeholder="API Key"
+                              autoComplete="off"
+                              className="w-full px-3 py-2 rounded bg-gray-900 border border-gray-800 text-white text-xs placeholder-gray-600 focus:outline-none focus:border-indigo-500"
+                            />
+                            <input
+                              type="password"
+                              value={cloudinarySecret}
+                              onChange={e => setCloudinarySecret(e.target.value)}
+                              placeholder="API Secret"
+                              autoComplete="new-password"
+                              className="w-full px-3 py-2 rounded bg-gray-900 border border-gray-800 text-white text-xs placeholder-gray-600 focus:outline-none focus:border-indigo-500"
+                            />
+                            <div className="flex items-center gap-2 pt-1">
+                              <button
+                                onClick={() => void testCloudinaryInline()}
+                                disabled={cloudinaryTesting}
+                                className="px-3 py-1.5 rounded bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-medium">
+                                {cloudinaryTesting ? 'Testing…' : 'Test & Connect'}
+                              </button>
+                              <button
+                                onClick={() => { setCloudinaryFormOpen(false); setCloudinaryTestMsg(null); setCloudinaryTestOk(null) }}
+                                className="px-3 py-1.5 rounded bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs">
+                                Cancel
+                              </button>
+                              {cloudinaryTestMsg && (
+                                <span className={`text-[11px] ${cloudinaryTestOk ? 'text-emerald-300' : 'text-rose-300'}`}>
+                                  {cloudinaryTestOk ? '✓ ' : '✕ '}{cloudinaryTestMsg}
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-gray-500 text-[10px] pt-1">
+                              On a successful test we save the keys to your workspace settings (encrypted at rest in production).
+                            </p>
+                          </div>
+                        )}
                       </div>
                     </div>
                   </div>
