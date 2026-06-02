@@ -168,12 +168,18 @@ export default function ApprovalsPage() {
   const [bulkProgress, setBulkProgress] = useState<{ done: number; total: number } | null>(null)
 
   // ── Auto-approve settings ────────────────────────────────────────────────────
-  const [autoApproveDelay, setAutoApproveDelay] = useState<AutoApproveDelay>(() => {
-    if (typeof window === 'undefined') return 'off'
+  // Sprint 20D: was using a lazy useState initializer that read localStorage,
+  // causing the same hydration-mismatch / error #418 that blew up the entire
+  // dashboard when this page rendered. Now starts 'off' and hydrates in a
+  // useEffect after mount.
+  const [autoApproveDelay, setAutoApproveDelay] = useState<AutoApproveDelay>('off')
+  useEffect(() => {
+    if (typeof window === 'undefined') return
     const stored = localStorage.getItem('approvals_auto_approve_delay')
-    if (stored === '24h' || stored === '48h' || stored === '72h' || stored === 'off') return stored
-    return 'off'
-  })
+    if (stored === '24h' || stored === '48h' || stored === '72h' || stored === 'off') {
+      setAutoApproveDelay(stored)
+    }
+  }, [])
   const [autoSettingsOpen, setAutoSettingsOpen] = useState(false)
   const autoSettingsRef = useRef<HTMLDivElement>(null)
 

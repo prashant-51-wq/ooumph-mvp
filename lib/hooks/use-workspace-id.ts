@@ -81,22 +81,31 @@ const CACHE_TTL_MS = 60_000  // 1 minute — short enough to catch a workspace s
  * request on the same page load.
  */
 export function useWorkspaceId(): UseWorkspaceIdResult {
-  const [state, setState] = useState<UseWorkspaceIdResult>(() => {
-    // Hydrate optimistically from localStorage so the first render
-    // isn't blank for users who already had a session. The fetch
-    // will reconcile within ~50ms.
-    if (typeof window !== 'undefined') {
-      const ls = window.localStorage.getItem('workspaceId')
-      if (ls) {
-        return { workspaceId: ls, loading: true, error: null, resolved: false }
-      }
-    }
-    return { workspaceId: null, loading: true, error: null, resolved: false }
+  // Sprint 20D: was using a lazy useState initializer that read
+  // localStorage. That caused a hydration mismatch — server rendered
+  // with workspaceId=null, client rendered with the actual ID — which
+  // threw React error #418 and tripped the dashboard error boundary
+  // (no sidebar visible → user couldn't navigate). Now the initial
+  // state is identical on server and client; the localStorage hydrate
+  // happens in a layout effect AFTER hydration completes.
+  const [state, setState] = useState<UseWorkspaceIdResult>({
+    workspaceId: null,
+    loading: true,
+    error: null,
+    resolved: false,
   })
 
   useEffect(() => {
     if (typeof window === 'undefined') return
     let cancelled = false
+
+    // Optimistic hydrate from localStorage AFTER mount so it doesn't
+    // affect the first render's HTML. The fetch below reconciles
+    // within ~50ms either way.
+    const ls = window.localStorage.getItem('workspaceId')
+    if (ls) {
+      setState(prev => prev.workspaceId === ls ? prev : { ...prev, workspaceId: ls })
+    }
 
     const now = Date.now()
     if (_cachedMe && now - _cacheFetchedAt < CACHE_TTL_MS) {
