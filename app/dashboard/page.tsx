@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAgentStream } from '@/lib/use-agent-stream'
 import { usePersistedState } from '@/lib/hooks/use-persisted-state'
+import type { AgentEvent } from '@/lib/agent-stream'
 import AgentConsole from '@/components/AgentConsole'
 import ReviewRequiredModal from '@/components/ReviewRequiredModal'
 import LinkClickROIWidget from '@/components/LinkClickROIWidget'
@@ -1121,6 +1122,19 @@ export default function DashboardPage() {
   const [executing, setExecuting] = useState(false)
   const [executingMsgId, setExecutingMsgId] = useState<string | null>(null)
 
+  // Sprint 20L: persisted Agent Console log. The right-rail feed was
+  // in-memory only (`stream.events` from useAgentStream) and reset to
+  // empty on every full-page navigation. User wants it to persist so
+  // they can see what every agent did across the session — including
+  // errors like missing API keys. We keep the last 200 non-token events,
+  // mirrored to localStorage, AND fed by the live stream as new events
+  // arrive. Tokens are filtered out (high volume, transient).
+  const [persistedEvents, setPersistedEvents] = usePersistedState<AgentEvent[]>('cmo:console:log', [])
+  // Hash the last live-event we appended so we don't append duplicates
+  // when React replays the effect. Stored as a ref because changes
+  // shouldn't trigger re-renders.
+  const lastAppendedEventIdxRef = useRef(0)
+
   // Right panel state
   const [runs, setRuns] = useState<AgentRun[]>([])
   const [runsLoading, setRunsLoading] = useState(true)
@@ -1611,6 +1625,33 @@ export default function DashboardPage() {
       setReviewModal({ approvalId, artifactId, publishDestination })
     },
   })
+
+  // ── Sprint 20L: mirror live stream events → persisted activity log ──────
+  // Each time stream.events grows, we copy the new tail into persistedEvents
+  // (capped at 200, tokens stripped) so the right-rail Agent Console still
+  // shows everything after a page reload. The ref tracks how far we've
+  // already copied so we don't append duplicates if the effect re-fires.
+  useEffect(() => {
+    const live = stream.events
+    if (!Array.isArray(live) || live.length === 0) return
+    if (live.length <= lastAppendedEventIdxRef.current) {
+      // Stream was reset (new run) — restart cursor.
+      lastAppendedEventIdxRef.current = 0
+    }
+    const newOnes = live.slice(lastAppendedEventIdxRef.current).filter(e => e && e.t !== 'token')
+    if (newOnes.length === 0) {
+      lastAppendedEventIdxRef.current = live.length
+      return
+    }
+    const stamped = newOnes.map(e => ({ ...e, ts: e.ts ?? Date.now() }))
+    setPersistedEvents(prev => {
+      const arr = Array.isArray(prev) ? prev : []
+      const merged = [...arr, ...stamped]
+      // Cap at 200 — older events drop off the front.
+      return merged.length > 200 ? merged.slice(merged.length - 200) : merged
+    })
+    lastAppendedEventIdxRef.current = live.length
+  }, [stream.events, setPersistedEvents])
 
   // ── Send message (streaming) ──────────────────────────────────────────────────
   //
@@ -2284,7 +2325,16 @@ export default function DashboardPage() {
             <AgentConsole
               mode="rail"
               open={consoleOpen}
-              events={stream.events}
+              // Sprint 20L: merge persisted log (survives reload) with the
+              // currently-streaming live events (which include the in-flight
+              // token deltas the persisted feed strips). Persisted comes
+              // first chronologically; live tail is appended at the end.
+              events={[
+                ...(Array.isArray(persistedEvents) ? persistedEvents : []),
+                ...(Array.isArray(stream.events)
+                  ? stream.events.slice(lastAppendedEventIdxRef.current)
+                  : []),
+              ]}
               status={stream.status}
               totalCost={stream.cost}
               errorMessage={stream.error}
