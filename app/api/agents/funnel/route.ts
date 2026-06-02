@@ -17,10 +17,10 @@ import type { BrandProfile } from '@/types'
 // sub-agents after generating the high-level funnel blueprint, so each
 // sub-agent's specialized prompt, schema, and artifact wiring is reused.
 
-const INTERNAL_BASE_URL =
-  process.env.NEXT_PUBLIC_BASE_URL ||
-  process.env.NEXT_PUBLIC_APP_URL ||
-  `http://localhost:${process.env.PORT || 3000}`
+// Sprint 19Y: use shared helper that adds VERCEL_URL fallback so prod self-
+// fetches stop landing on localhost:3000 when NEXT_PUBLIC_BASE_URL is empty.
+import { getBaseUrl } from '@/lib/base-url'
+const INTERNAL_BASE_URL = getBaseUrl()
 
 async function callSubAgent<T = unknown>(
   path: string,

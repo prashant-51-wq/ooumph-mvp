@@ -51,6 +51,7 @@ import { sql } from '@/lib/db'
 import { runAgent, streamAgent } from '@/lib/claude'
 import { assertWorkspaceOwnership } from '@/lib/guards'
 import { assertAgentRunQuota } from '@/lib/quota'
+import { getBaseUrl } from '@/lib/base-url'
 import {
   createAgentEventStream,
   recordSubAgentRun,
@@ -619,10 +620,11 @@ async function runCmoExecuteStreaming(
     const beforeISO = new Date(Date.now() - 1000).toISOString()
 
     const routePath = AGENT_ROUTE_MAP[agentSlug] || '/api/agents/strategy'
-    const baseUrl =
-      process.env.NEXT_PUBLIC_BASE_URL ||
-      process.env.NEXT_PUBLIC_APP_URL ||
-      `http://localhost:${process.env.PORT || 3000}`
+    // Sprint 19Y: NEXT_PUBLIC_BASE_URL was empty in prod → fell through to
+    // localhost:3000 → every sub-agent fetch failed silently with ECONNREFUSED
+    // on the Vercel function host. The new getBaseUrl helper adds VERCEL_URL
+    // as a fallback so this self-heals.
+    const baseUrl = getBaseUrl()
 
     let subAgentSucceeded = false
     let subAgentResult: Record<string, unknown> = {}
@@ -754,10 +756,8 @@ async function executeFirstAgent(
   agentSlug: string,
 ): Promise<{ projectId?: string; error?: string }> {
   const routePath = AGENT_ROUTE_MAP[agentSlug] || '/api/agents/strategy'
-  const baseUrl =
-    process.env.NEXT_PUBLIC_BASE_URL ||
-    process.env.NEXT_PUBLIC_APP_URL ||
-    `http://localhost:${process.env.PORT || 3000}`
+  // Sprint 19Y: see streaming path comment.
+  const baseUrl = getBaseUrl()
 
   try {
     const res = await fetch(`${baseUrl}${routePath}`, {
