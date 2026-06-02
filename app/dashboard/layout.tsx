@@ -414,6 +414,19 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     setMobileMenuOpen(false)
   }, [pathname])
 
+  // Sprint 20C: visible navigation feedback. The user kept reporting
+  // "the sidebar keys don't work" — actually the click DOES fire and
+  // routing DOES happen, but with no top progress bar and identical
+  // surrounding chrome, the change can be invisible on similar-looking
+  // pages. Flash a 600ms blue bar across the top whenever pathname
+  // changes so there's an unambiguous "yes I navigated" signal.
+  const [navFlash, setNavFlash] = useState(false)
+  useEffect(() => {
+    setNavFlash(true)
+    const t = setTimeout(() => setNavFlash(false), 600)
+    return () => clearTimeout(t)
+  }, [pathname])
+
   useEffect(() => {
     setBusinessName(localStorage.getItem('businessName') || '')
     setUserName(localStorage.getItem('userName') || '')
@@ -520,6 +533,17 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     // the whole page. `h-screen` locks the root to exactly the viewport so
     // the inner nav can scroll independently of main content.
     <div className="h-screen bg-gray-950 flex flex-col">
+      {/* Sprint 20C: route-change progress bar. Slides across the top
+          for ~600ms each time pathname changes so clicking a sidebar
+          item produces an obvious "yes, I navigated" signal. Sits at
+          z-[200] so dropdowns + modals don't cover it. */}
+      <div className="fixed top-0 left-0 right-0 h-0.5 z-[200] pointer-events-none">
+        <div
+          className={`h-full bg-indigo-500 transition-all duration-500 ease-out ${
+            navFlash ? 'w-full opacity-100' : 'w-0 opacity-0'
+          }`}
+        />
+      </div>
       {/* Mobile top bar */}
       <div className="lg:hidden flex items-center justify-between px-4 py-3 border-b border-gray-800 bg-gray-950 flex-shrink-0">
         <Link href="/" className="flex items-center gap-2">
