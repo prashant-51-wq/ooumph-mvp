@@ -6,6 +6,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { runAgent } from '@/lib/claude'
 import { braveSearch, formatSearchResults } from '@/lib/tools/brave-search'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 import type { BrandProfile } from '@/types'
 
 const SYSTEM = `You are the Brand Monitor Agent for Ooumph AI Marketing OS.
@@ -51,6 +52,8 @@ export async function POST(req: NextRequest) {
     }
 
     if (!workspaceId) return NextResponse.json({ error: 'Missing workspaceId' }, { status: 400 })
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     const bpResult = await sql`SELECT bp.* FROM brand_profiles bp JOIN workspaces w ON bp.workspace_id = w.id WHERE w.id = ${workspaceId} LIMIT 1`
     const bp = bpResult.rows[0] as unknown as BrandProfile

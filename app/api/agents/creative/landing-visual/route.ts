@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { runAgent } from '@/lib/claude'
 import { sendApprovalRequestEmail } from '@/lib/email'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 import type { BrandProfile } from '@/types'
 
 const SYSTEM = `You are a conversion rate optimisation (CRO) expert and landing page copywriter.
@@ -39,6 +40,8 @@ export async function POST(req: NextRequest) {
   try {
     const { workspaceId, pageType = 'lead_capture' } = await req.json()
     if (!workspaceId) return NextResponse.json({ error: 'Missing workspaceId' }, { status: 400 })
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     // Pull from Strategy + Funnel supervisors in parallel
     const [brandResult, strategyResult, funnelResult, leadGenResult] = await Promise.all([

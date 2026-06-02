@@ -12,6 +12,7 @@
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 
 interface AdaptBody {
   workspaceId: string
@@ -49,6 +50,8 @@ export async function POST(req: NextRequest) {
     if (!workspaceId || !content || !platforms?.length) {
       return NextResponse.json({ error: 'workspaceId, content, and platforms required' }, { status: 400 })
     }
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     // Load brand context
     const [brandResult, wsResult] = await Promise.all([

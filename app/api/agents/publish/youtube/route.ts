@@ -6,6 +6,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
 import { getChannelInfo, searchVideos, getUploadInstructions, isYouTubeAvailable } from '@/lib/tools/youtube'
 import { withCredentials } from '@/lib/credential-context'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 import Anthropic from '@anthropic-ai/sdk'
 
 interface YouTubeRequest {
@@ -41,6 +42,8 @@ export async function POST(req: NextRequest) {
     const { workspaceId, action, query, videoTitle, description, tags, accessToken } = body
 
     if (!workspaceId) return NextResponse.json({ error: 'Missing workspaceId' }, { status: 400 })
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
     if (!action) return NextResponse.json({ error: 'Missing action' }, { status: 400 })
 
     const settings = await getSettings(workspaceId)

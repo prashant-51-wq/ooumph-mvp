@@ -2,12 +2,16 @@ import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { generateAssets } from '@/lib/agents/assets'
 import { sendApprovalRequestEmail } from '@/lib/email'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 import type { BrandProfile } from '@/types'
 
 export async function POST(req: NextRequest) {
   let runId: string | null = null
   try {
     const { workspaceId } = await req.json()
+    if (!workspaceId) return NextResponse.json({ error: 'workspaceId required' }, { status: 400 })
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
     const [brandResult, strategyResult, notesResult] = await Promise.all([
       sql`SELECT * FROM brand_profiles WHERE workspace_id = ${workspaceId} LIMIT 1`,
       sql`SELECT content_json FROM artifacts WHERE workspace_id = ${workspaceId} AND type = 'strategy' ORDER BY created_at DESC LIMIT 1`,
@@ -61,6 +65,9 @@ export async function POST(req: NextRequest) {
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
   const workspaceId = searchParams.get('workspaceId')
+  if (!workspaceId) return NextResponse.json([], { status: 400 })
+  const denied = assertWorkspaceOwnership(req, workspaceId)
+  if (denied) return denied
   const result = await sql`
     SELECT a.id, a.type, a.content_json, ap.status as approval_status, ap.id as approval_id, ap.notes as approval_notes
     FROM artifacts a LEFT JOIN approvals ap ON ap.artifact_id = a.id

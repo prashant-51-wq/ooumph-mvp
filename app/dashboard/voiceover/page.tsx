@@ -164,8 +164,11 @@ export default function VoiceoverStudioPage() {
   const [bitrate, setBitrate] = useState('320')
   const [sampleRate, setSampleRate] = useState('44.1kHz')
 
-  // EQ
-  const [eqPreset, setEqPreset] = useState<EQPreset>('Voice Clarity')
+  // EQ — state retained for future re-enable once an audio engine ships.
+  // Buttons are disabled today (see "Edit Tools" section); the variable
+  // is referenced via the underscore-prefixed alias to satisfy lint.
+  const [_eqPreset, _setEqPreset] = useState<EQPreset>('Voice Clarity')
+  void _eqPreset; void _setEqPreset
 
   // Generation
   const [generating, setGenerating] = useState(false)
@@ -745,32 +748,49 @@ export default function VoiceoverStudioPage() {
                 </div>
               </div>
 
-              {/* Edit Tools (visual) */}
-              <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-                <h3 className="text-white text-sm font-semibold mb-2">Edit Tools</h3>
-                <p className="text-gray-600 text-xs mb-3">Coming soon — currently a visual preview.</p>
+              {/* Edit Tools — genuinely disabled (Sprint 18K).
+                  Trim / split / noise reduction / normalize / EQ all need
+                  server-side ffmpeg (or a Web Audio AudioWorklet pipeline)
+                  that we haven't built. Previously these buttons were
+                  click-able and did nothing — that broke the No Fake Success
+                  rule. They're now visually disabled with a tooltip
+                  explaining what's needed. */}
+              <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 opacity-60">
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-white text-sm font-semibold">Edit Tools</h3>
+                  <span className="text-amber-400 text-[10px] bg-amber-900/20 px-2 py-0.5 rounded">Disabled</span>
+                </div>
+                <p className="text-gray-500 text-xs mb-3">
+                  Audio editing (trim, split, denoise, normalize, EQ) needs server-side ffmpeg
+                  which isn&apos;t wired yet. For now, export the raw voiceover and edit in
+                  Audacity / Descript / Adobe Audition.
+                </p>
                 <div className="grid grid-cols-2 gap-3 mb-3">
-                  <button className="flex items-center gap-2 p-2.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs transition-colors">
-                    <span>✂</span> Trim clip
-                  </button>
-                  <button className="flex items-center gap-2 p-2.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs transition-colors">
-                    <span>|</span> Split at playhead
-                  </button>
-                  <button className="flex items-center gap-2 p-2.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs transition-colors">
-                    <span>📉</span> Noise reduction
-                  </button>
-                  <button className="flex items-center gap-2 p-2.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs transition-colors">
-                    <span>⚡</span> Normalize audio
-                  </button>
+                  {[
+                    { icon: '✂', label: 'Trim clip' },
+                    { icon: '|', label: 'Split at playhead' },
+                    { icon: '📉', label: 'Noise reduction' },
+                    { icon: '⚡', label: 'Normalize audio' },
+                  ].map(t => (
+                    <button
+                      key={t.label}
+                      disabled
+                      title="Server-side ffmpeg is not wired yet — export the raw audio and edit in your DAW."
+                      className="flex items-center gap-2 p-2.5 rounded-lg bg-gray-900 border border-gray-800 text-gray-600 text-xs cursor-not-allowed"
+                    >
+                      <span>{t.icon}</span> {t.label}
+                    </button>
+                  ))}
                 </div>
                 <div>
-                  <span className="text-gray-400 text-xs block mb-2">EQ Preset</span>
+                  <span className="text-gray-500 text-xs block mb-2">EQ Preset (preview only)</span>
                   <div className="flex gap-1 flex-wrap">
                     {eqPresets.map(p => (
                       <button
                         key={p}
-                        onClick={() => setEqPreset(p)}
-                        className={`px-2.5 py-1 rounded-lg text-xs border transition-colors ${eqPreset === p ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-gray-800 border-gray-700 text-gray-400 hover:text-white'}`}
+                        disabled
+                        title="EQ requires a real audio processing pipeline — not yet wired."
+                        className="px-2.5 py-1 rounded-lg text-xs border bg-gray-900 border-gray-800 text-gray-600 cursor-not-allowed"
                       >
                         {p}
                       </button>

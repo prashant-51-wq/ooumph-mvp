@@ -8,6 +8,7 @@ import { sql, newId } from '@/lib/db'
 import { runAgent } from '@/lib/claude'
 import { sendApprovalRequestEmail } from '@/lib/email'
 import { Resend } from 'resend'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 import type { BrandProfile } from '@/types'
 
 const SYSTEM = `You are the Email Sequence Agent for Ooumph AI Marketing OS.
@@ -52,6 +53,8 @@ export async function POST(req: NextRequest) {
       sendEmails?: boolean   // if true, send via Resend (requires approved leads list)
     }
     if (!workspaceId) return NextResponse.json({ error: 'Missing workspaceId' }, { status: 400 })
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     const [brandResult, strategyResult, funnelResult, leadsResult] = await Promise.all([
       sql`SELECT * FROM brand_profiles WHERE workspace_id = ${workspaceId} LIMIT 1`,
@@ -201,6 +204,8 @@ export async function PUT(req: NextRequest) {
     }
 
     if (!workspaceId || !artifactId) return NextResponse.json({ error: 'Missing workspaceId or artifactId' }, { status: 400 })
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
     if (!recipients?.length) return NextResponse.json({ error: 'No recipients provided' }, { status: 400 })
 
     // Load the artifact and verify approval

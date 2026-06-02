@@ -9,6 +9,7 @@ import { sql, newId } from '@/lib/db'
 import { runAgent } from '@/lib/claude'
 import { sendApprovalRequestEmail } from '@/lib/email'
 import { readAccessToken } from '@/lib/integrations'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 import type { BrandProfile } from '@/types'
 
 const SYSTEM = `You are the WhatsApp Broadcast Agent for Ooumph AI Marketing OS.
@@ -64,6 +65,8 @@ export async function POST(req: NextRequest) {
       templateType?: 'promotional' | 'reengagement' | 'transactional' | 'event' | 'support'
     }
     if (!workspaceId) return NextResponse.json({ error: 'Missing workspaceId' }, { status: 400 })
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     const [brandResult, strategyResult, funnelResult] = await Promise.all([
       sql`SELECT * FROM brand_profiles WHERE workspace_id = ${workspaceId} LIMIT 1`,
@@ -238,6 +241,8 @@ export async function PUT(req: NextRequest) {
     if (!workspaceId || !broadcastArtifactId || !recipientPhones?.length) {
       return NextResponse.json({ error: 'Missing workspaceId, broadcastArtifactId, or recipientPhones' }, { status: 400 })
     }
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     // Verify broadcast is approved
     const approvalResult = await sql`

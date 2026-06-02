@@ -5,6 +5,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { runAgent } from '@/lib/claude'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 import type { BrandProfile } from '@/types'
 
 const SYSTEM = `You are the A/B Test Generator Agent for Ooumph AI Marketing OS.
@@ -43,6 +44,8 @@ export async function POST(req: NextRequest) {
     }
 
     if (!workspaceId) return NextResponse.json({ error: 'Missing workspaceId' }, { status: 400 })
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
     if (!content) return NextResponse.json({ error: 'Missing content to test' }, { status: 400 })
     if (!contentType) return NextResponse.json({ error: 'Missing contentType' }, { status: 400 })
 

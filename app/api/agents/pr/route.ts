@@ -6,6 +6,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { runAgent } from '@/lib/claude'
 import { braveSearch, formatSearchResults } from '@/lib/tools/brave-search'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 
 const SYSTEM = `You are an experienced PR strategist and journalist who has worked at top PR agencies.
 You write press releases in strict AP style with punchy, newsworthy angles.
@@ -62,6 +63,8 @@ export async function POST(req: NextRequest) {
     }
 
     if (!workspaceId) return NextResponse.json({ error: 'Missing workspaceId' }, { status: 400 })
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
     if (!angle?.trim()) return NextResponse.json({ error: 'Missing story angle' }, { status: 400 })
     if (!keyFacts?.trim()) return NextResponse.json({ error: 'Missing key facts' }, { status: 400 })
 

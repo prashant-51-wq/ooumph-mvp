@@ -631,15 +631,21 @@ export default function VideoGenPage() {
                 )}
               </div>
 
-              {/* Visual timeline (preview only) */}
+              {/* Visual timeline (preview only) — honestly disabled.
+                  Sprint 18K: cleaned up the misleading "coming soon" badge.
+                  Multi-clip editing, captions, and BGM mixing require
+                  server-side ffmpeg or Remotion-style rendering — neither
+                  is wired. Single-clip generation works end-to-end. */}
               <div className="mx-4 mb-4 mt-3">
                 <div className="flex items-center justify-between mb-2">
-                  <span className="text-gray-500 text-xs font-medium">Timeline (visual preview only)</span>
-                  <span className="text-amber-400 text-[10px] bg-amber-900/20 px-2 py-0.5 rounded">Editing coming soon</span>
+                  <span className="text-gray-500 text-xs font-medium">Timeline</span>
+                  <span className="text-amber-400 text-[10px] bg-amber-900/20 px-2 py-0.5 rounded">Editing disabled</span>
                 </div>
                 <div className="bg-gray-900 rounded-xl border border-gray-800 overflow-hidden p-4 text-center">
                   <p className="text-gray-600 text-xs">
-                    Video generation is single-clip only today. Multi-clip editing, captions, and BGM mixing are not yet wired to a real engine.
+                    Single-clip generation only today. Multi-clip editing, burned-in captions,
+                    and BGM mixing need server-side ffmpeg — not yet wired. Export the generated
+                    clip and assemble in CapCut / Premiere / DaVinci Resolve.
                   </p>
                 </div>
               </div>

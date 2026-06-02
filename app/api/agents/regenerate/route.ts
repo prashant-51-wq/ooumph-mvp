@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { runAgent } from '@/lib/claude'
 import { sendApprovalRequestEmail } from '@/lib/email'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 import type { BrandProfile, Strategy } from '@/types'
 
 const SYSTEM = `You are the Content Copy Agent for Ooumph, an AI Marketing Agency OS. Write high-converting, brand-aligned marketing copy. Respond ONLY with valid JSON.`
@@ -40,6 +41,8 @@ export async function POST(req: NextRequest) {
     if (!workspaceId || !artifactType) {
       return NextResponse.json({ error: 'Missing workspaceId or artifactType' }, { status: 400 })
     }
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
     if (!ASSET_TITLES[artifactType]) {
       return NextResponse.json({ error: 'Unsupported artifact type for regeneration' }, { status: 400 })
     }

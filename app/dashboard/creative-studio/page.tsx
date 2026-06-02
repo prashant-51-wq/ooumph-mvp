@@ -120,13 +120,24 @@ const PROVIDERS: ProviderConfig[] = [
   },
   {
     id: 'stability',
-    label: 'Stability (Image · coming soon)',
+    label: 'Stability (Image)',
     outputType: 'image',
     Icon: ImageIcon,
     baseCost: 0.020,
     costNote: 'per image',
     envKey: 'STABILITY_API_KEY',
-    options: [],
+    options: [
+      { id: 'aspectRatio', label: 'Aspect', values: [
+        { id: '1:1',  label: '1:1 square' },
+        { id: '16:9', label: '16:9 landscape' },
+        { id: '9:16', label: '9:16 vertical' },
+      ]},
+      { id: 'outputFormat', label: 'Format', values: [
+        { id: 'png',  label: 'PNG (lossless)' },
+        { id: 'jpeg', label: 'JPEG' },
+        { id: 'webp', label: 'WebP' },
+      ]},
+    ],
   },
 ]
 

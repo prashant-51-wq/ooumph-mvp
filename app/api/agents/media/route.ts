@@ -6,6 +6,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
 import { withCredentials } from '@/lib/credential-context'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 import {
   uploadImageUrl,
   listCloudinaryImages,
@@ -44,6 +45,8 @@ export async function GET(req: NextRequest) {
     const limit = parseInt(searchParams.get('limit') || '30', 10)
 
     if (!workspaceId) return NextResponse.json({ error: 'Missing workspaceId' }, { status: 400 })
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     const settings = await getSettings(workspaceId)
     if (!settings) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 })
@@ -80,6 +83,8 @@ export async function POST(req: NextRequest) {
     const { workspaceId, action, imageUrl, folder, publicId, key, source } = body
 
     if (!workspaceId) return NextResponse.json({ error: 'Missing workspaceId' }, { status: 400 })
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
     if (!action) return NextResponse.json({ error: 'Missing action' }, { status: 400 })
 
     const settings = await getSettings(workspaceId)

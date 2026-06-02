@@ -5,6 +5,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
 import { syncLeadToHubSpot } from '@/lib/tools/hubspot'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 
 interface Lead {
   id: string
@@ -21,6 +22,8 @@ export async function POST(req: NextRequest) {
   try {
     const { workspaceId, leadIds, syncAll } = await req.json()
     if (!workspaceId) return NextResponse.json({ error: 'workspaceId required' }, { status: 400 })
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     // Load workspace model_settings for HubSpot token
     const wsResult = await sql`SELECT model_settings FROM workspaces WHERE id = ${workspaceId} LIMIT 1`
@@ -107,6 +110,8 @@ export async function GET(req: NextRequest) {
     const { searchParams } = new URL(req.url)
     const workspaceId = searchParams.get('workspaceId')
     if (!workspaceId) return NextResponse.json({ error: 'workspaceId required' }, { status: 400 })
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     const result = await sql`
       SELECT

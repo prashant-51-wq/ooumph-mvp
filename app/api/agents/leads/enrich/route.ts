@@ -7,6 +7,7 @@ import { sql } from '@/lib/db'
 import { enrichPerson, enrichCompany, searchPeople, isApolloAvailable } from '@/lib/tools/apollo'
 import { findEmail, verifyEmail, domainSearch, isHunterAvailable } from '@/lib/tools/hunter'
 import { withCredentials } from '@/lib/credential-context'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 
 interface LeadInput {
   email?: string
@@ -48,6 +49,8 @@ export async function POST(req: NextRequest) {
     const { workspaceId, action, email, domain, firstName, lastName, leads } = body
 
     if (!workspaceId) return NextResponse.json({ error: 'Missing workspaceId' }, { status: 400 })
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
     if (!action) return NextResponse.json({ error: 'Missing action' }, { status: 400 })
 
     const settings = await getSettings(workspaceId)

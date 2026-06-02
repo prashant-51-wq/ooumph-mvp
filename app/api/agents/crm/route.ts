@@ -12,6 +12,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { runAgent } from '@/lib/claude'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 
 const SYSTEM = `You are the CRM Intelligence Agent for Ooumph AI Marketing OS.
 You analyse lead data, activity timelines, and behavioral signals to recommend precise actions.
@@ -29,6 +30,8 @@ export async function POST(req: NextRequest) {
     }
     const { workspaceId, mode, leadId, listId, context } = body
     if (!workspaceId) return NextResponse.json({ error: 'workspaceId required' }, { status: 400 })
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     const brandResult = await sql`SELECT * FROM brand_profiles WHERE workspace_id = ${workspaceId} LIMIT 1`
     const brand = brandResult.rows[0] || {}

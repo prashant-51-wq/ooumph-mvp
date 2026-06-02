@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { runAgent } from '@/lib/claude'
 import { sendApprovalRequestEmail } from '@/lib/email'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 import type { BrandProfile } from '@/types'
 
 const SYSTEM = `You are a video director and content strategist. You create detailed, scene-by-scene
@@ -47,6 +48,8 @@ export async function POST(req: NextRequest) {
   try {
     const { workspaceId, format = 'reel', topic } = await req.json()
     if (!workspaceId) return NextResponse.json({ error: 'Missing workspaceId' }, { status: 400 })
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     // Pull from multiple supervisors in parallel
     const [brandResult, strategyResult, reelScriptResult, contentCalResult, learningResult] = await Promise.all([

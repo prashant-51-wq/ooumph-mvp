@@ -545,21 +545,32 @@ export default function IntegrationsPage() {
         })}
       </div>
 
-      {/* Coming soon */}
+      {/* Roadmap — honest TBD list. WhatsApp Business already shipped above
+          (it was duplicated here by mistake). The remaining entries each
+          need a dedicated OAuth client registration with the vendor and
+          a server-side ads-API wrapper before they can connect — none of
+          that infrastructure exists yet. Listing them keeps the roadmap
+          transparent without pretending the buttons are wired. */}
       <div className="mt-8">
-        <h2 className="text-gray-500 text-xs font-semibold uppercase tracking-wider mb-4">Coming Soon</h2>
+        <h2 className="text-gray-500 text-xs font-semibold uppercase tracking-wider mb-1">Roadmap</h2>
+        <p className="text-gray-600 text-xs mb-4">
+          Each platform below needs a dedicated OAuth app + ads/marketing API wrapper.
+          We&apos;ll surface a Connect button as each one ships. No keys are accepted today.
+        </p>
         <div className="grid grid-cols-3 gap-3">
           {[
-            { icon: '📧', name: 'Klaviyo' },
-            { icon: '📱', name: 'WhatsApp Business' },
-            { icon: '📊', name: 'TikTok Ads' },
-            { icon: '📺', name: 'YouTube Ads (direct)' },
-            { icon: '🛒', name: 'Amazon DSP' },
-            { icon: '🏷️', name: 'Snapchat Ads' },
+            { icon: '📧', name: 'Klaviyo', note: 'Email/SMS marketing — needs Klaviyo API key flow' },
+            { icon: '📊', name: 'TikTok Ads', note: 'Marketing API — needs TikTok for Business OAuth app' },
+            { icon: '📺', name: 'YouTube Ads (direct)', note: 'Routes via Google Ads today; direct YT integration planned' },
+            { icon: '🛒', name: 'Amazon DSP', note: 'Amazon Advertising API — approval-gated by Amazon' },
+            { icon: '🏷️', name: 'Snapchat Ads', note: 'Marketing API — needs Snap Kit app registration' },
           ].map(p => (
-            <div key={p.name} className="border border-gray-800 rounded-xl p-4 opacity-40 flex items-center gap-3">
+            <div key={p.name} className="border border-gray-800 rounded-xl p-4 opacity-50 flex items-start gap-3" title={p.note}>
               <span className="text-xl">{p.icon}</span>
-              <span className="text-gray-400 text-sm">{p.name}</span>
+              <div>
+                <p className="text-gray-300 text-sm">{p.name}</p>
+                <p className="text-gray-600 text-[10px] mt-0.5 leading-snug">{p.note}</p>
+              </div>
             </div>
           ))}
         </div>

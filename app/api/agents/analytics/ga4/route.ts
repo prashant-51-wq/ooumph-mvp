@@ -7,6 +7,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { runAgent } from '@/lib/claude'
 import { getGA4Report, formatGA4Report } from '@/lib/tools'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 
 const SYSTEM = `You are an expert digital marketing analyst. You analyze website analytics data and provide actionable insights, identify patterns, and make specific recommendations to improve marketing performance. Always respond with valid JSON.`
 
@@ -39,6 +40,8 @@ export async function POST(req: NextRequest) {
   try {
     const { workspaceId, days } = await req.json() as { workspaceId: string; days?: number }
     if (!workspaceId) return NextResponse.json({ error: 'Missing workspaceId' }, { status: 400 })
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     // 1. Load workspace with model_settings
     const wsResult = await sql`SELECT w.*, w.model_settings FROM workspaces w WHERE w.id = ${workspaceId} LIMIT 1`

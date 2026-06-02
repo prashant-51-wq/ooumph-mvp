@@ -6,6 +6,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { claude, getModel } from '@/lib/claude'
 import { withCredentials } from '@/lib/credential-context'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 import {
   getLists as getMCLists,
   addSubscriber,
@@ -80,6 +81,8 @@ export async function POST(req: NextRequest) {
     const { workspaceId, action } = body
 
     if (!workspaceId) return NextResponse.json({ error: 'workspaceId is required' }, { status: 400 })
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
     if (!action) return NextResponse.json({ error: 'action is required' }, { status: 400 })
 
     // Load workspace + settings

@@ -3,12 +3,14 @@ import { sql, newId } from '@/lib/db'
 import { runAgent } from '@/lib/claude'
 import { Resend } from 'resend'
 import type { BrandProfile } from '@/types'
-import { assertArtifactApproved } from '@/lib/guards'
+import { assertArtifactApproved, assertWorkspaceOwnership } from '@/lib/guards'
 
 export async function POST(req: NextRequest) {
   try {
     const { workspaceId, action, campaignName, goal, audience, campaignId, recipients } = await req.json()
     if (!workspaceId) return NextResponse.json({ error: 'workspaceId required' }, { status: 400 })
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     const brandResult = await sql`SELECT * FROM brand_profiles WHERE workspace_id = ${workspaceId} LIMIT 1`
     const brand = brandResult.rows[0] as unknown as BrandProfile

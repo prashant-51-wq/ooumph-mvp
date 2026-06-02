@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
 import { withCredentials } from '@/lib/credential-context'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 import {
   getVapiAssistants,
   createVapiAssistant,
@@ -47,6 +48,8 @@ export async function POST(req: NextRequest) {
     if (!workspaceId || !action) {
       return NextResponse.json({ error: 'workspaceId and action are required' }, { status: 400 })
     }
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     // 1. Fetch workspace settings and run handler with request-scoped credentials.
     const ws = await sql`SELECT model_settings FROM workspaces WHERE id = ${workspaceId}`

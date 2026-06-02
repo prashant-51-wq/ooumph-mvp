@@ -12,6 +12,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { runAgent } from '@/lib/claude'
 import { readAccessToken, prepareAccessTokenWrite } from '@/lib/integrations'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 
 const SYSTEM = `You are the Unified Inbox Agent for Ooumph AI Marketing OS.
 You manage all inbound and outbound communication across email and SMS.
@@ -229,6 +230,8 @@ export async function POST(req: NextRequest) {
     const { workspaceId, mode, conversationId, instruction } = body
 
     if (!workspaceId) return NextResponse.json({ error: 'workspaceId required' }, { status: 400 })
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     // ── Mode: sync_gmail ────────────────────────────────────────────────────
     if (mode === 'sync_gmail') {

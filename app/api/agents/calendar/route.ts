@@ -13,6 +13,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { runAgent } from '@/lib/claude'
 import { Resend } from 'resend'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 
 const SYSTEM = `You are the Calendar Agent for Ooumph AI Marketing OS.
 You manage appointment scheduling, reminders, no-show recovery, and post-meeting follow-ups.
@@ -31,6 +32,8 @@ export async function POST(req: NextRequest) {
     const { workspaceId, mode, bookingId, contactEmail, context } = body
 
     if (!workspaceId) return NextResponse.json({ error: 'workspaceId required' }, { status: 400 })
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     const brandResult = await sql`SELECT * FROM brand_profiles WHERE workspace_id = ${workspaceId} LIMIT 1`
     const wsResult = await sql`SELECT name, owner_email FROM workspaces WHERE id = ${workspaceId} LIMIT 1`

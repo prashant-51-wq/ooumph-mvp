@@ -35,6 +35,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
+import { useWorkspaceId } from '@/lib/hooks/use-workspace-id'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -137,6 +138,7 @@ function escapeAttr(s: string): string {
 
 export default function BlogDraftsPage() {
   const router = useRouter()
+  const { workspaceId } = useWorkspaceId()
   const [tab, setTab] = useState<BlogTab>('drafts')
 
   // Draft state
@@ -145,6 +147,15 @@ export default function BlogDraftsPage() {
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
   const [statusMsg, setStatusMsg] = useState<{ kind: 'success' | 'error' | 'info'; text: string } | null>(null)
+
+  // Sprint 18K — Publish-to-CMS state. Drafts remain localStorage-only;
+  // publishing is a separate, explicit "push this draft to my CMS" action
+  // that hits /api/blog/publish. WordPress + Ghost only (matches the env
+  // vars and lib/tools/{wordpress,ghost}.ts wrappers already shipped).
+  const [showPublish, setShowPublish] = useState(false)
+  const [publishPlatform, setPublishPlatform] = useState<'wordpress' | 'ghost'>('wordpress')
+  const [publishStatus, setPublishStatus] = useState<'draft' | 'publish'>('draft')
+  const [publishing, setPublishing] = useState(false)
 
   // Hydrate drafts from localStorage on mount.
   useEffect(() => {
@@ -258,6 +269,47 @@ export default function BlogDraftsPage() {
     copyToClipboard(plain, 'Plain text')
   }
 
+  async function publishToCms() {
+    if (!workspaceId) {
+      setStatusMsg({ kind: 'error', text: 'Sign in / finish onboarding first — no workspace selected.' })
+      return
+    }
+    if (!title.trim() || !body.trim()) {
+      setStatusMsg({ kind: 'error', text: 'Title and body are required to publish.' })
+      return
+    }
+    setPublishing(true)
+    setStatusMsg(null)
+    try {
+      const res = await fetch('/api/blog/publish', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          workspaceId,
+          platform: publishPlatform,
+          title: title.trim(),
+          body,
+          status: publishStatus,
+        }),
+      })
+      const data = await res.json() as { ok?: boolean; error?: string; postUrl?: string; message?: string }
+      if (!res.ok || !data.ok) {
+        setStatusMsg({ kind: 'error', text: data.error || `Publish failed (${res.status})` })
+      } else {
+        const link = data.postUrl
+          ? ` View: ${data.postUrl}`
+          : ''
+        setStatusMsg({ kind: 'success', text: `${data.message || 'Published.'}${link}` })
+        setShowPublish(false)
+      }
+    } catch (err) {
+      setStatusMsg({ kind: 'error', text: err instanceof Error ? err.message : String(err) })
+    } finally {
+      setPublishing(false)
+    }
+  }
+
   const totalWords = useMemo(() => countWords(body), [body])
   const readTimeMin = Math.max(1, Math.round(totalWords / 220)) // ~220 wpm
 
@@ -275,7 +327,7 @@ export default function BlogDraftsPage() {
             </div>
             <div>
               <h1 className="text-white font-bold text-lg">Blog Drafts</h1>
-              <p className="text-gray-600 text-xs">Draft &amp; export. Direct publishing coming soon.</p>
+              <p className="text-gray-600 text-xs">Draft, export, and publish to WordPress / Ghost.</p>
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -295,8 +347,9 @@ export default function BlogDraftsPage() {
             <span className="flex-1">
               Drafts are saved <strong>locally in this browser</strong>, not in your workspace.
               They will not appear on other devices and may be cleared if you reset browser storage.
-              Cloud-synced drafts and direct publishing to WordPress / Ghost / Medium will arrive in a future release —
-              follow <button onClick={() => router.push('/dashboard/integrations')} className="underline">Integrations</button> for status.
+              Direct publishing to WordPress and Ghost is now wired — configure credentials in
+              <button onClick={() => router.push('/dashboard/settings#api-keys')} className="underline ml-1">Settings → API Keys</button>.
+              Cloud-synced drafts are still planned for a future release.
             </span>
           </div>
         </div>
@@ -439,18 +492,79 @@ export default function BlogDraftsPage() {
                 Copy Plain Text
               </button>
 
-              {/* Disabled-but-visible publish button so users see the feature is
-                  intentionally on the roadmap, not missing. Tooltip explains. */}
+              {/* Sprint 18K: Publish to CMS — real WordPress + Ghost via REST API */}
               <span className="ml-auto">
                 <button
-                  disabled
-                  title="Direct publishing to WordPress / Ghost / Medium / LinkedIn is on the roadmap. For now, copy HTML or export Markdown and paste into your CMS."
-                  className="px-4 py-2 rounded-lg bg-gray-900 text-gray-600 font-medium text-sm cursor-not-allowed border border-gray-800"
+                  onClick={() => setShowPublish(s => !s)}
+                  disabled={!title.trim() || !body.trim()}
+                  className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold text-sm transition-colors"
                 >
-                  Publish to CMS — Coming soon
+                  {showPublish ? 'Cancel publish' : 'Publish to CMS →'}
                 </button>
               </span>
             </div>
+
+            {/* Publish drawer */}
+            {showPublish && (
+              <div className="bg-gray-900 border border-emerald-800/60 rounded-xl p-4 space-y-3">
+                <h3 className="text-white text-sm font-semibold">Publish to CMS</h3>
+                <p className="text-gray-500 text-xs">
+                  Posts go to the WordPress / Ghost site configured in
+                  <button onClick={() => router.push('/dashboard/settings#api-keys')} className="text-indigo-400 hover:text-indigo-300 underline ml-1">Settings → API Keys</button>.
+                  Markdown is converted to HTML server-side.
+                </p>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-gray-400 text-xs block mb-1.5">Platform</label>
+                    <div className="flex gap-2">
+                      {(['wordpress', 'ghost'] as const).map(p => (
+                        <button
+                          key={p}
+                          onClick={() => setPublishPlatform(p)}
+                          className={`flex-1 px-3 py-2 rounded-lg text-sm border transition-colors capitalize ${publishPlatform === p ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-gray-800 border-gray-700 text-gray-400 hover:text-white'}`}
+                        >
+                          {p}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-gray-400 text-xs block mb-1.5">Status</label>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => setPublishStatus('draft')}
+                        className={`flex-1 px-3 py-2 rounded-lg text-sm border transition-colors ${publishStatus === 'draft' ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-gray-800 border-gray-700 text-gray-400 hover:text-white'}`}
+                      >
+                        Save as draft
+                      </button>
+                      <button
+                        onClick={() => setPublishStatus('publish')}
+                        className={`flex-1 px-3 py-2 rounded-lg text-sm border transition-colors ${publishStatus === 'publish' ? 'bg-emerald-600 border-emerald-500 text-white' : 'bg-gray-800 border-gray-700 text-gray-400 hover:text-white'}`}
+                      >
+                        Publish live
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-end gap-2 pt-1">
+                  <button
+                    onClick={() => setShowPublish(false)}
+                    className="px-3 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={publishToCms}
+                    disabled={publishing}
+                    className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold text-sm"
+                  >
+                    {publishing ? 'Publishing…' : `Send to ${publishPlatform}`}
+                  </button>
+                </div>
+              </div>
+            )}
 
             {editingId && (
               <p className="text-gray-600 text-xs">

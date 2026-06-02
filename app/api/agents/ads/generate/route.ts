@@ -5,6 +5,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import Anthropic from '@anthropic-ai/sdk'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 
 interface AdGenerateRequest {
   workspaceId: string
@@ -45,6 +46,8 @@ export async function POST(req: NextRequest) {
     } = body
 
     if (!workspaceId) return NextResponse.json({ error: 'Missing workspaceId' }, { status: 400 })
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
     if (!product) return NextResponse.json({ error: 'Missing product' }, { status: 400 })
     if (!audience) return NextResponse.json({ error: 'Missing audience' }, { status: 400 })
     if (!goal) return NextResponse.json({ error: 'Missing goal' }, { status: 400 })
