@@ -33,11 +33,13 @@ export async function generateImage(
       Authorization: `Bearer ${key}`,
       'Content-Type': 'application/json',
     },
+    // Sprint 19J: OpenAI deprecated `response_format` for dall-e-3 — the
+    // endpoint now returns a URL by default. Removing the param fixes
+    // "Unknown parameter: 'response_format'" 400 from OpenAI.
     body: JSON.stringify({
       model: 'dall-e-3',
       prompt,
       n: 1,
-      response_format: 'url',
       size: options?.size ?? '1024x1024',
       quality: options?.quality ?? 'standard',
       style: options?.style ?? 'vivid',
