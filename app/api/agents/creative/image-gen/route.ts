@@ -110,29 +110,51 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // 4. Save artifact
+    // 4. Save artifact + create an approval row so it shows up in
+    // /dashboard/approvals. Sprint 19M: previously the artifact was
+    // typed 'generated_image' (not in PUBLISHABLE map) and auto-marked
+    // 'approved' (so no approval queue entry was created). User couldn't
+    // publish the generated image to Meta/etc. because no Publish-to-
+    // Platform buttons appeared anywhere. Now matches the static-post /
+    // ad-creative / carousel pattern.
     const artifactId = newId()
+    const title = `Generated image — ${prompt.slice(0, 100)}`
+    // visual_post is in PUBLISHABLE for instagram / linkedin / facebook /
+    // twitter — exactly what the user expects to publish to.
+    const persistentUrlForArtifact = cloudinaryUrl || result.url
     const content = JSON.stringify({
       prompt,
       revisedPrompt: result.revisedPrompt,
       imageUrl: result.url,
       cloudinaryUrl,
+      // Top-level mediaUrls so the approval-page preview + publish flow
+      // can find the image without parsing nested fields.
+      mediaUrls: [persistentUrlForArtifact],
+      body: prompt,                                // caption fallback
+      caption: result.revisedPrompt || prompt,     // DALL-E often improves it
       size,
       quality,
       style,
     })
 
     await sql`
-      INSERT INTO artifacts (id, workspace_id, type, title, content_json, status, created_at)
+      INSERT INTO artifacts (id, workspace_id, type, title, content_json)
       VALUES (
         ${artifactId},
         ${workspaceId},
-        ${'generated_image'},
-        ${prompt.slice(0, 200)},
-        ${content},
-        ${'approved'},
-        NOW()
+        ${'visual_post'},
+        ${title.slice(0, 200)},
+        ${content}
       )
+    `
+
+    // Insert a pending approval row. Default status='pending' per the
+    // approvals table schema — once the user approves on /dashboard/
+    // approvals the Publish-to-Platform buttons render.
+    const approvalId = newId()
+    await sql`
+      INSERT INTO approvals (id, workspace_id, artifact_id)
+      VALUES (${approvalId}, ${workspaceId}, ${artifactId})
     `
 
     // Sprint 15D (P0 #4): dual-write into media_assets so the image shows
