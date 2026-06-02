@@ -1,6 +1,8 @@
 'use client'
 
-import Link from 'next/link'
+// Sprint 20I: dropped next/link in favor of plain <a> tags throughout
+// the dashboard layout to bypass synthetic-event tampering from wallet
+// extensions (SES/LavaMoat). See NavItem for the full rationale.
 import { usePathname, useRouter } from 'next/navigation'
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { useWorkspaceId } from '@/lib/hooks/use-workspace-id'
@@ -202,12 +204,22 @@ function agentLabel(name: string) {
 }
 
 function NavItem({ href, label, icon, isActive }: { href: string; label: string; icon: string; isActive: boolean }) {
+  // Sprint 20I: use a plain <a> instead of Next's <Link>. The user
+  // reported "hover shows the URL in the status bar but clicking does
+  // nothing" — that means the anchor IS rendered (status-bar preview
+  // proves it) but the React synthetic click handler isn't firing.
+  // SES/LavaMoat content scripts in some wallet extensions freeze
+  // primitives that React relies on for its event system, breaking
+  // Link's interceptor. A plain <a> uses the browser's native
+  // navigation which can't be broken by event-system tampering.
+  // Cost: full page reload between routes instead of SPA navigation
+  // (~300ms instead of instant). Worth the bulletproof reliability.
   return (
-    <Link href={href}
+    <a href={href}
       className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors ${isActive ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-white hover:bg-gray-800'}`}>
       <span className="text-base flex-shrink-0">{icon}</span>
       <span className="truncate">{label}</span>
-    </Link>
+    </a>
   )
 }
 
@@ -230,13 +242,13 @@ function SidebarContent({
     <>
       {/* Logo */}
       <div className="p-4 border-b border-gray-800 flex-shrink-0">
-        <Link href="/" className="flex items-center gap-2">
+        <a href="/" className="flex items-center gap-2">
           <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white font-bold text-sm flex-shrink-0">O</div>
           <div className="min-w-0">
             <span className="font-semibold text-white text-sm">Ooumph</span>
             <p className="text-xs text-gray-600 leading-none">AI Marketing OS</p>
           </div>
-        </Link>
+        </a>
       </div>
 
       {/* Nav */}
@@ -588,10 +600,10 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       </div>
       {/* Mobile top bar */}
       <div className="lg:hidden flex items-center justify-between px-4 py-3 border-b border-gray-800 bg-gray-950 flex-shrink-0">
-        <Link href="/" className="flex items-center gap-2">
+        <a href="/" className="flex items-center gap-2">
           <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white font-bold text-xs">O</div>
           <span className="font-semibold text-white text-sm">Ooumph</span>
-        </Link>
+        </a>
         <div className="flex items-center gap-2">
           <button onClick={() => setCmdPaletteOpen(true)}
             className="p-2 rounded-lg text-gray-400 hover:text-white hover:bg-gray-800 transition-colors">
@@ -674,12 +686,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                         ))}
                       </div>
                       <div className="border-t border-gray-800 py-1">
-                        <Link
+                        <a
                           href="/dashboard/onboarding"
                           onClick={() => setWorkspaceMenuOpen(false)}
                           className="block px-3 py-2 text-xs text-gray-300 hover:text-white hover:bg-gray-800">
                           + Create new workspace
-                        </Link>
+                        </a>
                         {/* "Manage all clients" link removed Sprint 1E — agency page was 100% mock data.
                             Restore when /dashboard/agency is rewired to real client/team data. */}
                       </div>
@@ -785,13 +797,13 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                           </>
                         )
                         return n.link ? (
-                          <Link
+                          <a
                             key={n.id}
                             href={n.link}
                             onClick={() => setNotifTooltip(false)}
                             className={`block px-4 py-3 hover:bg-gray-800 border-l-2 ${sevColors[n.severity] || sevColors.info}`}>
                             {Content}
-                          </Link>
+                          </a>
                         ) : (
                           <div
                             key={n.id}
@@ -802,12 +814,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                       })}
                     </div>
                     {notifications.length > 0 && (
-                      <Link
+                      <a
                         href="/dashboard/activity"
                         onClick={() => setNotifTooltip(false)}
                         className="block px-4 py-2 border-t border-gray-800 text-xs text-indigo-400 hover:text-indigo-300 text-center">
                         View all activity →
-                      </Link>
+                      </a>
                     )}
                   </div>
                 )}
