@@ -58,15 +58,33 @@ export async function POST(req: NextRequest) {
     // so concurrent workspaces never see each other's API keys.
     const { generateImage, isOpenAIAvailable } = await import('@/lib/tools/openai')
 
-    const result = await withCredentials(
-      { OPENAI_API_KEY: openaiKey },
-      async () => {
-        if (!isOpenAIAvailable()) return null
-        return generateImage(prompt, { size, quality, style })
-      }
-    )
+    // Sprint 19I: surface the real OpenAI error (billing/invalid key/model
+    // not enabled/etc) instead of returning generic 'failed'.
+    let result: Awaited<ReturnType<typeof generateImage>> = null
+    try {
+      result = await withCredentials(
+        { OPENAI_API_KEY: openaiKey },
+        async () => {
+          if (!isOpenAIAvailable()) return null
+          return generateImage(prompt, { size, quality, style })
+        }
+      )
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      return NextResponse.json({
+        ok: false,
+        error: msg,
+        hint: msg.toLowerCase().includes('billing')
+          ? 'Add prepaid balance at platform.openai.com/account/billing'
+          : msg.toLowerCase().includes('invalid_api_key') || msg.toLowerCase().includes('incorrect api key')
+          ? 'The OpenAI key was rejected — regenerate at platform.openai.com/api-keys and re-paste in Settings'
+          : msg.toLowerCase().includes('content_policy')
+          ? 'Prompt rejected by OpenAI safety filter — try less explicit wording'
+          : undefined,
+      }, { status: 500 })
+    }
     if (!result) {
-      return NextResponse.json({ ok: false, error: 'Image generation failed. Check your OpenAI API key and try again.' }, { status: 500 })
+      return NextResponse.json({ ok: false, error: 'Image generation failed (no result). Check your OpenAI API key.' }, { status: 500 })
     }
 
     // 3. Optionally upload to Cloudinary. Cloudinary creds live in the same

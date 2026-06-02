@@ -64,9 +64,17 @@ export async function POST(req: NextRequest) {
       })
     }
 
-    // Call DALL-E 3 via lib/tools/openai (raw fetch, no SDK dependency)
+    // Call DALL-E 3 via lib/tools/openai (raw fetch, no SDK dependency).
+    // Sprint 19I: generateImage now throws the real OpenAI error message.
     const { generateImage } = await import('@/lib/tools/openai')
-    const generated = await generateImage(finalPrompt, { size: '1024x1024', quality: 'hd', style: 'natural' })
+    let generated: Awaited<ReturnType<typeof generateImage>> = null
+    try {
+      generated = await generateImage(finalPrompt, { size: '1024x1024', quality: 'hd', style: 'natural' })
+    } catch (err) {
+      return NextResponse.json({
+        error: err instanceof Error ? err.message : 'DALL-E call failed',
+      }, { status: 500 })
+    }
 
     const imageUrl = generated?.url
     if (!imageUrl) {

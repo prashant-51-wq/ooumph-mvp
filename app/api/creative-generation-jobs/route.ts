@@ -334,10 +334,16 @@ async function dispatchProvider(
       landscape: '1792x1024',
       portrait: '1024x1792',
     }
-    const result = await openaiGenerateImage(prompt, {
-      size: sizeMap[opts.size as string] || '1024x1024',
-      quality: 'standard',
-    })
+    // Sprint 19I: openaiGenerateImage now throws OpenAI's real error message.
+    let result: Awaited<ReturnType<typeof openaiGenerateImage>> = null
+    try {
+      result = await openaiGenerateImage(prompt, {
+        size: sizeMap[opts.size as string] || '1024x1024',
+        quality: 'standard',
+      })
+    } catch (err) {
+      return { ok: false, assetType: 'image', costEstimate: 0, error: err instanceof Error ? err.message : 'OpenAI call failed' }
+    }
     if (!result?.url) return { ok: false, assetType: 'image', costEstimate: 0, error: 'OpenAI returned no URL' }
     const dims = (sizeMap[opts.size as string] || '1024x1024')
     return {
