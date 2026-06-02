@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { ProviderConnectBanner } from '@/components/dashboard/ProviderConnectBanner'
+import { usePersistedState } from '@/lib/hooks/use-persisted-state'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -182,17 +183,17 @@ export default function ImageGenPage() {
   }
 
   // Left panel state
-  const [prompt, setPrompt] = useState('')
-  const [negativePrompt, setNegativePrompt] = useState('')
+  const [prompt, setPrompt] = usePersistedState<string>('image-gen:prompt', '')
+  const [negativePrompt, setNegativePrompt] = usePersistedState<string>('image-gen:negativePrompt', '')
   const [showNegative, setShowNegative] = useState(false)
-  const [selectedModel, setSelectedModel] = useState('dalle3')
-  const [selectedStyle, setSelectedStyle] = useState('Photorealistic')
-  const [selectedSize, setSelectedSize] = useState('1024×1024')
-  const [quality, setQuality] = useState('HD')
+  const [selectedModel, setSelectedModel] = usePersistedState<string>('image-gen:model', 'dalle3')
+  const [selectedStyle, setSelectedStyle] = usePersistedState<string>('image-gen:style', 'Photorealistic')
+  const [selectedSize, setSelectedSize] = usePersistedState<string>('image-gen:size', '1024×1024')
+  const [quality, setQuality] = usePersistedState<string>('image-gen:quality', 'HD')
   const [styleStrength, setStyleStrength] = useState(75)
-  const [imageCount, setImageCount] = useState('1')
-  const [seed, setSeed] = useState('')
-  const [lighting, setLighting] = useState('Studio')
+  const [imageCount, setImageCount] = usePersistedState<string>('image-gen:count', '1')
+  const [seed, setSeed] = usePersistedState<string>('image-gen:seed', '')
+  const [lighting, setLighting] = usePersistedState<string>('image-gen:lighting', 'Studio')
   const [applyBrandColors, setApplyBrandColors] = useState(false)
   const [logoPlacement, setLogoPlacement] = useState('None')
   const [safeMode, setSafeMode] = useState(true)
@@ -201,7 +202,7 @@ export default function ImageGenPage() {
   const [generationError, setGenerationError] = useState<string | null>(null)
 
   // Studio tab state
-  const [generatedImages, setGeneratedImages] = useState<GeneratedImage[]>([])
+  const [generatedImages, setGeneratedImages] = usePersistedState<GeneratedImage[]>('image-gen:results', [])
   const [hoveredImage, setHoveredImage] = useState<number | null>(null)
   const [mediaLibStatus, setMediaLibStatus] = useState<Record<number, 'idle' | 'saving' | 'saved' | 'error'>>({})
 

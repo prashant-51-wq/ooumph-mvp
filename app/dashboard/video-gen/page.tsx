@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { ProviderConnectBanner } from '@/components/dashboard/ProviderConnectBanner'
+import { usePersistedState } from '@/lib/hooks/use-persisted-state'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -181,11 +182,11 @@ export default function VideoGenPage() {
   const [stats, setStats] = useState({ videos: 0, durationSec: 0, cost: 0 })
 
   // Generate tab state
-  const [prompt, setPrompt] = useState('')
-  const [selectedModel, setSelectedModel] = useState('runway')
-  const [selectedStyle, setSelectedStyle] = useState('Cinematic')
-  const [duration, setDuration] = useState<5 | 10>(5)
-  const [aspectRatio, setAspectRatio] = useState('16:9')
+  const [prompt, setPrompt] = usePersistedState<string>('video-gen:prompt', '')
+  const [selectedModel, setSelectedModel] = usePersistedState<string>('video-gen:model', 'runway')
+  const [selectedStyle, setSelectedStyle] = usePersistedState<string>('video-gen:style', 'Cinematic')
+  const [duration, setDuration] = usePersistedState<5 | 10>('video-gen:duration', 5)
+  const [aspectRatio, setAspectRatio] = usePersistedState<string>('video-gen:aspectRatio', '16:9')
   const [resolution, setResolution] = useState('1080p')
   const [fps, setFps] = useState('24')
   const [scriptMode, setScriptMode] = useState(false)
@@ -248,12 +249,12 @@ export default function VideoGenPage() {
 
   const [editorInstruction, setEditorInstruction] = useState('')
   const [editorBusy, setEditorBusy] = useState(false)
-  const [editorTurns, setEditorTurns] = useState<EditTurn[]>([])
+  const [editorTurns, setEditorTurns] = usePersistedState<EditTurn[]>('video-gen:editHistory', [])
   const [editorSpec, setEditorSpec] = useState<Record<string, unknown> | undefined>(undefined)
-  const [extraClipUrls, setExtraClipUrls] = useState<string[]>([])
+  const [extraClipUrls, setExtraClipUrls] = usePersistedState<string[]>('video-gen:extraClips', [])
   const [extraClipInput, setExtraClipInput] = useState('')
   const [assembleBusy, setAssembleBusy] = useState(false)
-  const [assembledUrl, setAssembledUrl] = useState<string | null>(null)
+  const [assembledUrl, setAssembledUrl] = usePersistedState<string | null>('video-gen:assembledUrl', null)
   const [assembleError, setAssembleError] = useState<string | null>(null)
 
   const editorBaseUrl: string | null = assembledUrl || latestVideoUrl

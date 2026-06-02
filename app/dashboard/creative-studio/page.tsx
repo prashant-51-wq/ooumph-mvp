@@ -17,6 +17,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { usePersistedState } from '@/lib/hooks/use-persisted-state'
 import {
   Sparkles, Image as ImageIcon, Film, Music, AlertCircle, RefreshCw,
   Loader2, CheckCircle2, XCircle, Clock, DollarSign, Zap, X,
@@ -201,8 +202,8 @@ export default function CreativeStudioPage() {
   const [error, setError] = useState<string | null>(null)
 
   // Composer state
-  const [provider, setProvider] = useState<ProviderId>('openai_dalle')
-  const [prompt, setPrompt] = useState('')
+  const [provider, setProvider] = usePersistedState<ProviderId>('creative-studio:model', 'openai_dalle')
+  const [prompt, setPrompt] = usePersistedState<string>('creative-studio:prompt', '')
   const [negativePrompt, setNegativePrompt] = useState('')
   const [options, setOptions] = useState<Record<string, string>>({})
   const [submitting, setSubmitting] = useState(false)

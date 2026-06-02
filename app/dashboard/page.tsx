@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAgentStream } from '@/lib/use-agent-stream'
+import { usePersistedState } from '@/lib/hooks/use-persisted-state'
 import AgentConsole from '@/components/AgentConsole'
 import ReviewRequiredModal from '@/components/ReviewRequiredModal'
 import LinkClickROIWidget from '@/components/LinkClickROIWidget'
@@ -1077,8 +1078,8 @@ export default function DashboardPage() {
   const [businessName, setBusinessName] = useState('')
 
   // Chat state
-  const [messages, setMessages] = useState<Message[]>([GREETING])
-  const [input, setInput] = useState('')
+  const [messages, setMessages] = usePersistedState<Message[]>('cmo:messages', [GREETING])
+  const [input, setInput] = usePersistedState<string>('cmo:input', '')
   const [loading, setLoading] = useState(false)
   const [executing, setExecuting] = useState(false)
   const [executingMsgId, setExecutingMsgId] = useState<string | null>(null)

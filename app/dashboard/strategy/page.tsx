@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import { useAgentStream } from '@/lib/use-agent-stream'
 import AgentConsole from '@/components/AgentConsole'
 import ReviewRequiredModal from '@/components/ReviewRequiredModal'
+import { usePersistedState } from '@/lib/hooks/use-persisted-state'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -330,7 +331,7 @@ function ProjectCard({ project, onClick }: { project: StrategyProject; onClick: 
 // ─── Modal ────────────────────────────────────────────────────────────────────
 
 function NewProjectModal({ onClose, onCreate }: { onClose: () => void; onCreate: (p: Partial<StrategyProject>) => void }) {
-  const [form, setForm] = useState({ name: '', description: '', timeframe: 'weekly' as Timeframe, goals: '' })
+  const [form, setForm] = usePersistedState('strategy:draft', { name: '', description: '', timeframe: 'weekly' as Timeframe, goals: '' })
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault()

@@ -3,6 +3,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { useWorkspaceId } from '@/lib/hooks/use-workspace-id'
+import { usePersistedState } from '@/lib/hooks/use-persisted-state'
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 type Stage = 'Lead' | 'Prospect' | 'Qualified' | 'Proposal' | 'Customer' | 'Churned'
@@ -1454,12 +1455,12 @@ export default function LeadsCRMPage() {
 
   const [mainTab, setMainTab] = useState<MainTab>('contacts')
   const [viewMode, setViewMode] = useState<ViewMode>('table')
-  const [search, setSearch] = useState('')
+  const [search, setSearch] = usePersistedState<string>('crm:search', '')
   const [selectedContacts, setSelectedContacts] = useState<Set<string>>(new Set())
   const [selectedContact, setSelectedContact] = useState<Contact | null>(null)
   const [selectedContactActivities, setSelectedContactActivities] = useState<Activity[]>([])
   const [kanbanDragId, setKanbanDragId] = useState<string | null>(null)
-  const [activityFilter, setActivityFilter] = useState<string>('all')
+  const [activityFilter, setActivityFilter] = usePersistedState<string>('crm:filterStatus', 'all')
 
   const [showImport, setShowImport] = useState(false)
   const [showSegmentModal, setShowSegmentModal] = useState(false)

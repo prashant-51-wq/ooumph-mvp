@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
+import { usePersistedState } from '@/lib/hooks/use-persisted-state'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -87,8 +88,8 @@ export default function RepurposePage() {
   const [workspaceId, setWorkspaceId] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState<RepurposeTab>('repurpose')
   const [sourceType, setSourceType] = useState<SourceType>('text')
-  const [sourceInput, setSourceInput] = useState('')
-  const [selectedFormats, setSelectedFormats] = useState<string[]>(['twitter_thread', 'linkedin_post', 'instagram_caption', 'email_newsletter'])
+  const [sourceInput, setSourceInput] = usePersistedState<string>('repurpose:source', '')
+  const [selectedFormats, setSelectedFormats] = usePersistedState<string[]>('repurpose:targets', ['twitter_thread', 'linkedin_post', 'instagram_caption', 'email_newsletter'])
   const [generating, setGenerating] = useState(false)
   const [generationError, setGenerationError] = useState<string | null>(null)
   // Sprint 18K: real document upload (PDF / docx / txt → text extraction)

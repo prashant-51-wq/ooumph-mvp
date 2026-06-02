@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react'
 import { ProviderConnectBanner } from '@/components/dashboard/ProviderConnectBanner'
+import { usePersistedState } from '@/lib/hooks/use-persisted-state'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -140,9 +141,9 @@ export default function VoiceoverStudioPage() {
   }
   const [voiceTab, setVoiceTab] = useState<VoiceTab>('ai')
   const [rightTab, setRightTab] = useState<RightTab>('editor')
-  const [script, setScript] = useState('')
+  const [script, setScript] = usePersistedState<string>('voiceover:script', '')
   const [autoSplit, setAutoSplit] = useState(false)
-  const [selectedVoiceId, setSelectedVoiceId] = useState(AI_VOICES[0].id)
+  const [selectedVoiceId, setSelectedVoiceId] = usePersistedState<string>('voiceover:voice', AI_VOICES[0].id)
   const [voiceSearch, setVoiceSearch] = useState('')
   const [previewingId, setPreviewingId] = useState<string | null>(null)
   const previewAudioRef = useRef<HTMLAudioElement | null>(null)
