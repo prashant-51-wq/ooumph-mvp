@@ -239,15 +239,26 @@ export async function GET(req: NextRequest) {
         delete (modelSettings as Record<string, unknown>).anthropicApiKey
         delete (modelSettings as Record<string, unknown>).openaiApiKey
       }
-      const [anthropicKey, openaiKey] = await Promise.all([
-        getWorkspaceSecret(workspaceId, 'anthropic'),
-        getWorkspaceSecret(workspaceId, 'openai'),
-      ])
+      // Sprint 19D: expose presence flags for every workspace_secrets-backed
+      // provider so the in-product ProviderConnectBanner can render uniformly
+      // regardless of which key is missing.
+      const SECRET_PROVIDERS = [
+        'anthropic', 'openai', 'elevenlabs', 'stability', 'replicate',
+        'gemini', 'kling', 'runway', 'resend', 'klaviyo', 'mailchimp',
+      ] as const
+      const secretChecks = await Promise.all(
+        SECRET_PROVIDERS.map(p => getWorkspaceSecret(workspaceId, p)),
+      )
+      const secrets: Record<string, boolean> = {}
+      SECRET_PROVIDERS.forEach((p, i) => { secrets[p] = Boolean(secretChecks[i]) })
       return NextResponse.json({
         ...row,
         model_settings: modelSettings ?? {},
-        hasAnthropicKey: Boolean(anthropicKey),
-        hasOpenaiKey: Boolean(openaiKey),
+        secrets,
+        // Legacy aliases — kept for back-compat with consumers (eg /dashboard/
+        // settings) that still read these two specific flags.
+        hasAnthropicKey: secrets.anthropic,
+        hasOpenaiKey: secrets.openai,
       })
     }
 

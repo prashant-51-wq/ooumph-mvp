@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
+import { ProviderConnectBanner } from '@/components/dashboard/ProviderConnectBanner'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -165,6 +166,21 @@ export default function ImageGenPage() {
   const [apiPanelOpen, setApiPanelOpen] = useState(false)
   const [workspaceId, setWorkspaceId] = useState<string | null>(null)
 
+  // Sprint 19D: ProviderConnectBanner readiness — image-gen needs OpenAI
+  // (DALL-E 3) or Stability AI. We surface a banner for whichever the user
+  // currently has selected. Default model is dalle3 so we check openai
+  // first; if user switches to stability we re-check.
+  const [providerReady, setProviderReady] = useState<boolean | null>(null)
+  const refreshProvider = async (provider: 'openai' | 'stability') => {
+    if (!workspaceId) return
+    try {
+      const r = await fetch(`/api/workspaces?id=${workspaceId}`, { credentials: 'include' })
+      if (!r.ok) { setProviderReady(false); return }
+      const data = await r.json() as { secrets?: Record<string, boolean> }
+      setProviderReady(Boolean(data.secrets?.[provider]))
+    } catch { setProviderReady(false) }
+  }
+
   // Left panel state
   const [prompt, setPrompt] = useState('')
   const [negativePrompt, setNegativePrompt] = useState('')
@@ -210,6 +226,14 @@ export default function ImageGenPage() {
       setWorkspaceId(localStorage.getItem('workspaceId'))
     }
   }, [])
+
+  // Sprint 19D: refresh provider readiness when workspace or model changes
+  useEffect(() => {
+    if (!workspaceId) return
+    const p: 'openai' | 'stability' = selectedModel === 'stability' ? 'stability' : 'openai'
+    void refreshProvider(p)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspaceId, selectedModel])
 
   // Fetch gallery whenever the gallery tab opens or workspace changes
   useEffect(() => {
@@ -699,6 +723,38 @@ export default function ImageGenPage() {
         {/* ─── STUDIO TAB ─── */}
         {studioTab === 'studio' && (
           <div className="flex-1 overflow-y-auto p-5">
+            {/* Sprint 19D: in-product provider connect banner */}
+            {selectedModel === 'stability' ? (
+              <ProviderConnectBanner
+                ready={providerReady}
+                workspaceId={workspaceId}
+                providerId="stability"
+                providerName="Stability AI"
+                icon="🎨"
+                description="Stable Diffusion XL generates the images on this page."
+                signupUrl="https://platform.stability.ai/"
+                keysHelpUrl="https://platform.stability.ai/account/keys"
+                freeTierNote="25 free credits on signup (~25 images). Pay-as-you-go after."
+                fields={[{ label: 'API Key', placeholder: 'sk-…', payloadKey: 'key', password: true }]}
+                testMode="workspace-secrets"
+                onConnected={() => void refreshProvider('stability')}
+              />
+            ) : (
+              <ProviderConnectBanner
+                ready={providerReady}
+                workspaceId={workspaceId}
+                providerId="openai"
+                providerName="OpenAI"
+                icon="🖼️"
+                description="DALL-E 3 generates the images on this page."
+                signupUrl="https://platform.openai.com/signup"
+                keysHelpUrl="https://platform.openai.com/api-keys"
+                freeTierNote="Pay-as-you-go. Pre-paid balance starts at $5."
+                fields={[{ label: 'API Key', placeholder: 'sk-proj-…', payloadKey: 'key', password: true }]}
+                testMode="workspace-secrets"
+                onConnected={() => void refreshProvider('openai')}
+              />
+            )}
             {generatedImages.length === 0 ? (
               <div className="flex flex-col items-center justify-center h-full text-center py-20">
                 <div className="w-20 h-20 rounded-2xl bg-gray-900 border border-gray-800 flex items-center justify-center mb-4">

@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useRef } from 'react'
+import { ProviderConnectBanner } from '@/components/dashboard/ProviderConnectBanner'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -126,6 +127,17 @@ function safeParse<T = unknown>(s: string): T | undefined {
 
 export default function VoiceoverStudioPage() {
   const [workspaceId, setWorkspaceId] = useState<string | null>(null)
+  // Sprint 19D: ElevenLabs readiness for the in-product connect banner.
+  const [elevenReady, setElevenReady] = useState<boolean | null>(null)
+  const refreshElevenReady = async () => {
+    if (!workspaceId) return
+    try {
+      const r = await fetch(`/api/workspaces?id=${workspaceId}`, { credentials: 'include' })
+      if (!r.ok) { setElevenReady(false); return }
+      const data = await r.json() as { secrets?: Record<string, boolean> }
+      setElevenReady(Boolean(data.secrets?.elevenlabs))
+    } catch { setElevenReady(false) }
+  }
   const [voiceTab, setVoiceTab] = useState<VoiceTab>('ai')
   const [rightTab, setRightTab] = useState<RightTab>('editor')
   const [script, setScript] = useState('')
@@ -221,6 +233,7 @@ export default function VoiceoverStudioPage() {
   }, [])
 
   useEffect(() => {
+    if (workspaceId) void refreshElevenReady()
     if (workspaceId && rightTab === 'history') {
       void fetchHistory()
     }
@@ -395,6 +408,28 @@ export default function VoiceoverStudioPage() {
           </button>
         </div>
       </div>
+
+      {/* Sprint 19D: ElevenLabs connect banner — only renders when the
+          workspace doesn't have a key. Click-through opens elevenlabs.io
+          signup in a new tab; paste form lives right here. */}
+      {elevenReady === false && (
+        <div className="px-6 pt-4">
+          <ProviderConnectBanner
+            ready={elevenReady}
+            workspaceId={workspaceId}
+            providerId="elevenlabs"
+            providerName="ElevenLabs"
+            icon="🎙️"
+            description="Generates the high-quality voices used on this page. Without a key the studio falls back to error states."
+            signupUrl="https://elevenlabs.io/sign-up"
+            keysHelpUrl="https://elevenlabs.io/app/settings/api-keys"
+            freeTierNote="Free tier — 10,000 characters/month. No card required."
+            fields={[{ label: 'API Key', placeholder: 'sk_…', payloadKey: 'key', password: true }]}
+            testMode="workspace-secrets"
+            onConnected={() => void refreshElevenReady()}
+          />
+        </div>
+      )}
 
       {/* ── Body: Left + Right panels ────────────────────────────────────────── */}
       <div className="flex flex-1 min-h-0 overflow-hidden">

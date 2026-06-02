@@ -14,6 +14,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useWorkspaceId } from '@/lib/hooks/use-workspace-id'
+import { ProviderConnectBanner } from '@/components/dashboard/ProviderConnectBanner'
 import {
   Mail, Users, BarChart3, Plus, Search, Trash2, Pencil,
   CheckCircle2, ShieldCheck, Clock, AlertCircle, RefreshCw, X,
@@ -132,9 +133,39 @@ export default function EmailMarketingPage() {
     }
   }, [sessionWorkspaceId, sessionResolved, sessionLoading])
 
+  // Sprint 19D: Resend readiness for the in-product connect banner.
+  const [resendReady, setResendReady] = useState<boolean | null>(null)
+  const refreshResendReady = useCallback(async () => {
+    if (!workspaceId) return
+    try {
+      const r = await fetch(`/api/workspaces?id=${workspaceId}`, { credentials: 'include' })
+      if (!r.ok) { setResendReady(false); return }
+      const data = await r.json() as { secrets?: Record<string, boolean> }
+      setResendReady(Boolean(data.secrets?.resend))
+    } catch { setResendReady(false) }
+  }, [workspaceId])
+  useEffect(() => { void refreshResendReady() }, [refreshResendReady])
+
   return (
     <div className="min-h-screen bg-gray-950 text-gray-100">
       <div className="max-w-7xl mx-auto px-6 py-8">
+        {/* Sprint 19D: Resend connect banner — required for actually
+            sending the campaigns that this page manages. */}
+        <ProviderConnectBanner
+          ready={resendReady}
+          workspaceId={workspaceId}
+          providerId="resend"
+          providerName="Resend"
+          icon="📧"
+          description="Sends the email campaigns this page manages. Domains, deliverability, and tracking all flow through Resend."
+          signupUrl="https://resend.com/signup"
+          keysHelpUrl="https://resend.com/api-keys"
+          freeTierNote="Free tier — 100 emails/day, 3,000 emails/month. Card not required."
+          fields={[{ label: 'API Key', placeholder: 're_…', payloadKey: 'key', password: true }]}
+          testMode="workspace-secrets"
+          onConnected={() => void refreshResendReady()}
+        />
+
         <div className="flex items-start justify-between mb-8">
           <div>
             <h1 className="text-2xl font-bold text-white flex items-center gap-2">
