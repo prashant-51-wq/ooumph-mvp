@@ -402,10 +402,24 @@ function tierFor(agent: string): number {
 }
 
 function statusFor(team: TeamMember, runs: AgentRun[]): 'pending' | 'running' | 'completed' | 'failed' {
-  // Match runs by agent_name (loose — slug variations). Most recent wins.
+  // Sprint 20K: guard every access. The user reported "e.slice is not a
+  // function" crashing the dashboard error boundary after the auto-
+  // orchestrate flow. Multiple paths into this could feed a malformed
+  // team member (missing .agent), a non-array runs (from a fetch shape
+  // drift), or a Date-typed created_at (postgres). Treat every input
+  // as suspect; never throw from this render-path helper.
+  if (!Array.isArray(runs)) return 'pending'
+  const teamAgent = typeof team?.agent === 'string' ? team.agent : ''
+  if (!teamAgent) return 'pending'
+  const needle = teamAgent.toLowerCase().slice(0, 8)
+  if (!needle) return 'pending'
   const matched = runs
-    .filter(r => r.agent_name && r.agent_name.toLowerCase().includes(team.agent.toLowerCase().slice(0, 8)))
-    .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''))[0]
+    .filter(r => typeof r?.agent_name === 'string' && r.agent_name.toLowerCase().includes(needle))
+    .sort((a, b) => {
+      const ac = typeof a?.created_at === 'string' ? a.created_at : ''
+      const bc = typeof b?.created_at === 'string' ? b.created_at : ''
+      return bc.localeCompare(ac)
+    })[0]
   return matched?.status ?? 'pending'
 }
 
@@ -1949,20 +1963,29 @@ export default function DashboardPage() {
               ref={messagesContainerRef}
               onScroll={handleMessagesScroll}
               className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-5 py-5 space-y-4">
-              {messages.map((msg) => (
-                <MessageBubble
-                  key={msg.id}
-                  msg={msg}
-                  userLetter={userLetter}
-                  onApprove={approveTeam}
-                  onRephrase={handleRephrase}
-                  executing={executing}
-                  executingMsgId={executingMsgId}
-                  streamingText={stream.streamingText}
-                  isLive={msg.id === streamingMsgId && msg.isStreaming === true}
-                  runs={runs}
-                />
-              ))}
+              {/* Sprint 20K: filter out any malformed persisted message
+                  rather than letting it crash the whole page. localStorage
+                  can hold stale or partially-saved entries from older
+                  builds; one bad message used to trip the dashboard error
+                  boundary. */}
+              {messages
+                .filter((m): m is Message =>
+                  !!m && typeof m === 'object' && typeof m.id === 'string' && (m.role === 'cmo' || m.role === 'user')
+                )
+                .map((msg) => (
+                  <MessageBubble
+                    key={msg.id}
+                    msg={msg}
+                    userLetter={userLetter}
+                    onApprove={approveTeam}
+                    onRephrase={handleRephrase}
+                    executing={executing}
+                    executingMsgId={executingMsgId}
+                    streamingText={stream.streamingText}
+                    isLive={msg.id === streamingMsgId && msg.isStreaming === true}
+                    runs={Array.isArray(runs) ? runs : []}
+                  />
+                ))}
               {/* Show typing indicator only when waiting BEFORE the first token */}
               {loading && stream.streamingText.length === 0 && stream.status !== 'streaming' && <TypingIndicator />}
               <div ref={bottomRef} />
