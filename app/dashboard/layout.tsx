@@ -559,8 +559,20 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             meaning they refuse to shrink below their content's intrinsic
             min-content. Without min-w-0, a wide page (e.g. /dashboard with
             its 3-column rail layout) can force <main> to grow horizontally,
-            pushing the fixed-width sidebar off the viewport's left edge. */}
-        <main className="flex-1 min-w-0 overflow-auto">
+            pushing the fixed-width sidebar off the viewport's left edge.
+
+            Sprint 20A: switched from `overflow-auto` to `overflow-hidden
+            flex flex-col`. Previously <main> contained BOTH a sticky h-12
+            header AND the page's children. If a page used `h-full`
+            (like /dashboard), it tried to be 100% of main's height — but
+            then the header ALSO took 48px inside main, pushing total
+            content past main → main scrolled. Any state-tick that
+            re-rendered the chat reset main.scrollTop to 0, producing
+            the "page auto-scrolls UP when I try to scroll down" symptom.
+            Now main is hard-bounded and the children area below the
+            header gets its own scroll container so longer content
+            pages (settings, agents, leads-crm) still scroll naturally. */}
+        <main className="flex-1 min-w-0 overflow-hidden flex flex-col">
           {/* Command palette */}
           <CommandPalette open={cmdPaletteOpen} onClose={() => setCmdPaletteOpen(false)} />
 
@@ -767,7 +779,14 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               </div>
             </div>
           </header>
-          {children}
+          {/* Sprint 20A: children wrapped in a flex-1 min-h-0 overflow-auto
+              container. This gives long pages (settings, leads, agents
+              registry) their own scroll surface while preventing <main>
+              from scrolling. Pages that want to fill exactly (CMO chat
+              with h-full) just resolve their height against this wrapper. */}
+          <div className="flex-1 min-h-0 overflow-auto">
+            {children}
+          </div>
         </main>
       </div>
 
