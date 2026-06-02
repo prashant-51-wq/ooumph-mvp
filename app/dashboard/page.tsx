@@ -1412,17 +1412,29 @@ export default function DashboardPage() {
   }, [workspaceId])
 
   // ── Auto-scroll ───────────────────────────────────────────────────────────────
-  // Sprint 19V: only auto-scroll if the user is already parked near the
-  // bottom. If they've scrolled up to read history, leave them alone —
-  // otherwise every streaming token / state tick yanks the viewport.
+  // Sprint 19W: write `scrollTop` directly on the messages container — do
+  // NOT call `bottomRef.scrollIntoView`. scrollIntoView walks UP the DOM
+  // looking for ANY scrollable ancestor, and if the messages container
+  // fully contains the bottom anchor (true when the conversation is
+  // short), it falls through to scroll the layout's <main> element. That
+  // produced the "page scrolls down by itself" symptom: the user would
+  // scroll up, a stream token arrived, scrollIntoView fired, and instead
+  // of moving inside the messages list it scrolled the outer dashboard
+  // chrome, snapping the whole page to its bottom.
+  //
+  // Only fires when the user is already parked at the bottom — tracked
+  // via `isNearBottomRef`, updated by the onScroll handler below.
   useEffect(() => {
     if (!isNearBottomRef.current) return
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    const el = messagesContainerRef.current
+    if (!el) return
+    // `behavior: 'auto'` (instant) avoids fighting an in-flight user
+    // scroll. Smooth scroll on every token tick is also visually noisy.
+    el.scrollTop = el.scrollHeight
   }, [messages, loading])
 
   // Track whether the user is parked near the bottom of the message list.
-  // We attach this via onScroll on the container below; the ref pattern
-  // avoids re-rendering on every scroll pixel.
+  // The ref pattern avoids re-rendering on every scroll pixel.
   const handleMessagesScroll = useCallback(() => {
     const el = messagesContainerRef.current
     if (!el) return
