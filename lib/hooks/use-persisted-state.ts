@@ -46,16 +46,29 @@ export function usePersistedState<T>(
   const [value, setValue] = useState<T>(defaultValue)
 
   // Hydrate from localStorage on mount.
+  // Sprint 19P: skip hydration when the stored payload is huge. Parsing a
+  // multi-MB JSON blob on the main thread blocks for seconds and crashes
+  // the tab with "This page couldn't load." If a previous session bloated
+  // the entry (Sprint 19O fixes future writes but legacy entries already
+  // out there can still cripple a fresh page load), we discard them and
+  // start from the default — the user loses old draft state but gets a
+  // working dashboard back. Threshold matches the write-side 1 MB cap.
   useEffect(() => {
     if (typeof window === 'undefined') return
     try {
       const raw = window.localStorage.getItem(storageKey)
       if (raw !== null) {
-        const parsed = JSON.parse(raw) as T
-        setValue(parsed)
+        if (raw.length > 1_000_000) {
+          console.warn(`[usePersistedState] discarding bloated ${storageKey} (${(raw.length / 1024).toFixed(0)} KB) — using default`)
+          try { window.localStorage.removeItem(storageKey) } catch { /* */ }
+        } else {
+          const parsed = JSON.parse(raw) as T
+          setValue(parsed)
+        }
       }
     } catch {
       // Corrupt JSON or storage disabled — fall through to default.
+      try { window.localStorage.removeItem(storageKey) } catch { /* */ }
     }
     hydrated.current = true
   }, [storageKey])
