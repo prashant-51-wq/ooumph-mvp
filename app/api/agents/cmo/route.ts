@@ -407,6 +407,15 @@ export async function POST(req: NextRequest) {
 
   const wantsStream = (req.headers.get('accept') || '').includes('text/event-stream')
 
+  // Sprint 19Z: capture the user's session cookie at the entry point so
+  // we can forward it to sub-agent self-fetches. The proxy.ts middleware
+  // requires either a valid session cookie OR a non-empty x-internal-secret
+  // header matching ADMIN_SECRET/CRON_SECRET. Both secrets were set to
+  // empty strings in prod env, so internal-secret bypass was never
+  // working — every sub-agent fetch hit the 401 wall. Forwarding the
+  // user's cookie self-heals this for user-initiated flows.
+  const userCookieHeader = req.headers.get('cookie') || ''
+
   // ───────────────────────────────────────────────────────────────────────
   // STREAMING PATH — returns SSE event stream
   // ───────────────────────────────────────────────────────────────────────
@@ -427,7 +436,7 @@ export async function POST(req: NextRequest) {
     //     after the client disconnects
     const workPromise = (action === 'chat'
       ? runCmoChatStreaming(handle, workspaceId, message)
-      : runCmoExecuteStreaming(handle, workspaceId, firstAction || 'strategy', projectContext)
+      : runCmoExecuteStreaming(handle, workspaceId, firstAction || 'strategy', projectContext, userCookieHeader)
     ).catch(async (err) => {
       // Last-resort error reporting — the inner helpers should normally
       // emit their own error events before throwing, but if they don't,
@@ -476,7 +485,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (action === 'execute') {
-      const result = await executeFirstAgent(workspaceId, firstAction || 'strategy')
+      const result = await executeFirstAgent(workspaceId, firstAction || 'strategy', userCookieHeader)
       if (result.error) {
         return NextResponse.json(
           { ok: false, error: `Failed to start ${firstAction} agent: ${result.error}` },
@@ -578,6 +587,7 @@ async function runCmoExecuteStreaming(
   workspaceId: string,
   agentSlug: string,
   projectContext?: CMORequest['projectContext'],
+  userCookieHeader?: string,
 ): Promise<void> {
   const overallStartedAt = Date.now()
   try {
@@ -631,14 +641,24 @@ async function runCmoExecuteStreaming(
     let subAgentErrorMsg: string | undefined
 
     try {
+      // Sprint 19Z: forward the user's session cookie when present so the
+      // proxy.ts middleware accepts the call as authenticated. Fall back
+      // to x-internal-secret when set (cron / programmatic callers). With
+      // empty ADMIN_SECRET in prod env, the cookie path is what actually
+      // makes user-initiated CMO orchestration work.
+      const subAgentHeaders: Record<string, string> = {
+        'Content-Type': 'application/json',
+      }
+      const trimmedAdminSecret = (process.env.ADMIN_SECRET || '').trim()
+      if (trimmedAdminSecret) {
+        subAgentHeaders['x-internal-secret'] = trimmedAdminSecret
+      }
+      if (userCookieHeader) {
+        subAgentHeaders['cookie'] = userCookieHeader
+      }
       const res = await fetch(`${baseUrl}${routePath}`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          // Forward admin secret so the sub-agent passes workspace ownership
-          // when invoked from server-to-server.
-          ...(process.env.ADMIN_SECRET ? { 'x-internal-secret': process.env.ADMIN_SECRET } : {}),
-        },
+        headers: subAgentHeaders,
         body: JSON.stringify({
           workspaceId,
           // Pass project context so the sub-agent can tailor its output
@@ -754,18 +774,21 @@ async function runCmoExecuteStreaming(
 async function executeFirstAgent(
   workspaceId: string,
   agentSlug: string,
+  userCookieHeader?: string,
 ): Promise<{ projectId?: string; error?: string }> {
   const routePath = AGENT_ROUTE_MAP[agentSlug] || '/api/agents/strategy'
   // Sprint 19Y: see streaming path comment.
   const baseUrl = getBaseUrl()
 
   try {
+    // Sprint 19Z: same cookie-forward / internal-secret strategy as streaming.
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+    const trimmedAdminSecret = (process.env.ADMIN_SECRET || '').trim()
+    if (trimmedAdminSecret) headers['x-internal-secret'] = trimmedAdminSecret
+    if (userCookieHeader) headers['cookie'] = userCookieHeader
     const res = await fetch(`${baseUrl}${routePath}`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(process.env.ADMIN_SECRET ? { 'x-internal-secret': process.env.ADMIN_SECRET } : {}),
-      },
+      headers,
       body: JSON.stringify({ workspaceId }),
     })
     if (!res.ok) {
