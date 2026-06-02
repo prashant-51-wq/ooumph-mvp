@@ -382,6 +382,19 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       router.replace('/dashboard/onboarding')
     }
   }, [meResolved, sessionWorkspaceId, onboardingCompletedAt, pathname, router])
+  // Sprint 20G: nuclear hydration fix. After three rounds of whack-a-mole
+  // on individual hydration-mismatch sources (lazy useState localStorage
+  // reads, module-level new Date(), locale-dependent toLocaleTimeString),
+  // React #418 was still firing in prod and tripping the dashboard error
+  // boundary → no sidebar → "nothing works." Approach: skip the server
+  // render entirely for the dashboard layout. Server emits an empty
+  // skeleton; the real UI renders only AFTER the client mounts. Since
+  // there's no SSR HTML to compare against, mismatch is impossible.
+  // The cost is ~50ms of blank screen on first paint; that's acceptable
+  // versus the page being permanently broken.
+  const [mounted, setMounted] = useState(false)
+  useEffect(() => { setMounted(true) }, [])
+
   const [businessName, setBusinessName] = useState('')
   const [userName, setUserName] = useState('')
   const [agentRuns, setAgentRuns] = useState<AgentRun[]>([])
@@ -524,6 +537,22 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   }
 
   const sidebarProps = { pathname, businessName, userName, advancedOpen, setAdvancedOpen, logout }
+
+  // Sprint 20G: render an empty skeleton until mounted. Server emits the
+  // skeleton, client first paint also emits the skeleton — identical
+  // HTML on both sides → no hydration check fails. After mount, the
+  // real UI swaps in. This eliminates ANY possible source of mismatch
+  // (dates, locales, localStorage, env-dependent values).
+  if (!mounted) {
+    return (
+      <div className="h-screen bg-gray-950 flex items-center justify-center">
+        <div className="flex items-center gap-2 text-gray-600 text-xs">
+          <div className="w-3 h-3 border-2 border-gray-700 border-t-indigo-500 rounded-full animate-spin" />
+          <span>Loading dashboard…</span>
+        </div>
+      </div>
+    )
+  }
 
   return (
     // Sprint 5 fix: was `min-h-screen` — root grew to fit content, so the
