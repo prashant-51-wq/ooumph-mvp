@@ -4,7 +4,15 @@ import { useState, useEffect } from 'react'
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-type AgentStatus = 'active' | 'idle' | 'error' | 'paused'
+// Sprint 19Q (user-reported): made the status semantics honest.
+// - 'ready'   = registered + enabled, not currently doing work. The common
+//   resting state. Green dot but NO pulse — important so users don't read
+//   it as "currently working" (the old 'active' label did that).
+// - 'running' = an agent_run with status='running' exists right now. Pulsing
+//   indigo. This is the only state where the agent is actually doing work.
+// - 'paused'  = manually disabled.
+// - 'error'   = recent failure (last completed run had status='failed').
+type AgentStatus = 'ready' | 'running' | 'error' | 'paused'
 type ViewMode = 'grid' | 'list' | 'hierarchy'
 type ToneOption = 'Professional' | 'Casual' | 'Formal' | 'Friendly'
 type PriorityOption = 'Low' | 'Normal' | 'High' | 'Critical'
@@ -118,16 +126,15 @@ function buildAgentFromRegistry(row: RegistryRow): Agent {
     role: 'Custom Agent',
     category: 'worker' as const,
   }
-  // Map registry lifecycle status → UI status. 'disabled' is treated as
-  // 'paused' for display since the slide-over doesn't model a fourth state.
-  // Registry 'active' is authoritative — keep it as 'active'. The
-  // runs-hydration effect may override to 'active' anyway when a run is
-  // currently running, but we should not downgrade 'active' to 'idle' here.
+  // Sprint 19Q: map registry status to honest UI status. Registry 'active'
+  // means "enabled" not "currently working" — default to 'ready'. The
+  // runs-hydration effect promotes to 'running' iff a currently-running
+  // run exists for this agent.
   const status: AgentStatus =
     row.status === 'paused'   ? 'paused' :
     row.status === 'error'    ? 'error'  :
     row.status === 'disabled' ? 'paused' :
-    'active'
+    'ready'
   return {
     id: row.name,
     name: AGENT_META[row.name] ? friendlyName(row.name) : titleCaseFromSlug(row.name),
@@ -271,8 +278,8 @@ const AVAILABLE_MODELS = [
 
 function StatusBadge({ status }: { status: AgentStatus }) {
   const map = {
-    active: { dot: 'bg-green-400 animate-pulse', text: 'text-green-400', label: 'Active' },
-    idle: { dot: 'bg-yellow-400', text: 'text-yellow-400', label: 'Idle' },
+    ready: { dot: 'bg-green-400', text: 'text-green-400', label: 'Ready' },
+    running: { dot: 'bg-indigo-400 animate-pulse', text: 'text-indigo-400', label: 'Running' },
     error: { dot: 'bg-red-400 animate-pulse', text: 'text-red-400', label: 'Error' },
     paused: { dot: 'bg-gray-500', text: 'text-gray-400', label: 'Paused' },
   }
@@ -703,7 +710,7 @@ function HierarchyView({ agents, onConfigure }: { agents: Agent[]; onConfigure: 
                             <span className="text-sm">{w.icon}</span>
                             <div>
                               <p className="text-white text-xs font-medium whitespace-nowrap">{w.name}</p>
-                              <span className={`w-1.5 h-1.5 rounded-full inline-block mr-1 ${w.status === 'active' ? 'bg-green-400' : 'bg-yellow-400'}`} />
+                              <span className={`w-1.5 h-1.5 rounded-full inline-block mr-1 ${w.status === 'running' ? 'bg-indigo-400 animate-pulse' : w.status === 'ready' ? 'bg-green-400' : w.status === 'error' ? 'bg-red-400' : 'bg-gray-500'}`} />
                               <span className="text-gray-500 text-xs">{w.tasksToday}t</span>
                             </div>
                           </button>
@@ -860,13 +867,13 @@ export default function AgentsPage() {
             if (agg) break
           }
           if (!agg) return a
-          // Preserve registry-authoritative paused/error; promote to 'active'
-          // if a run is currently running; otherwise keep the existing status
-          // (which was set from the registry — usually 'active').
+          // Sprint 19Q: preserve registry-authoritative paused/error;
+          // promote to 'running' iff a currently-running run exists;
+          // otherwise stay 'ready'.
           const newStatus: AgentStatus =
             a.status === 'paused' || a.status === 'error' ? a.status :
-            agg.running > 0 ? 'active' :
-            a.status
+            agg.running > 0 ? 'running' :
+            'ready'
 
           // avgResponseTime — average (completed_at − created_at) across the
           // last 20 completed runs. If none have completed, fall back to '—'.
@@ -1030,7 +1037,7 @@ export default function AgentsPage() {
             let status = a.status
             if (reg.status === 'paused') status = 'paused'
             else if (reg.status === 'error') status = 'error'
-            else if (a.status === 'paused') status = 'active' // resumed
+            else if (a.status === 'paused') status = 'ready' // resumed
             next.push({ ...a, status })
           }
           // Any new rows in the registry that the page hasn't seen yet
@@ -1074,10 +1081,10 @@ export default function AgentsPage() {
         if (!reg) return a
         if (reg.status === 'paused') return { ...a, status: 'paused' }
         if (reg.status === 'error') return { ...a, status: 'error' }
-        // Resume → reflect the registry's 'active' immediately. The
-        // runs-hydration effect will keep it 'active' on its next tick.
+        // Resume → reflect ready immediately. The runs-hydration effect
+        // will promote to 'running' if a run is actually in flight.
         if (a.status === 'paused' && reg.status === 'active') {
-          return { ...a, status: 'active' }
+          return { ...a, status: 'ready' }
         }
         return a
       }))
@@ -1230,9 +1237,14 @@ export default function AgentsPage() {
     return matchSearch && matchCat
   })
 
-  const activeCount = agents.filter(a => a.status === 'active').length
-  const idleCount = agents.filter(a => a.status === 'idle').length
+  // Sprint 19Q: counts now reflect honest states.
+  // 'running' = currently doing work; 'ready' = enabled, no in-flight run.
+  const runningCount = agents.filter(a => a.status === 'running').length
+  const readyCount = agents.filter(a => a.status === 'ready').length
   const errorCount = agents.filter(a => a.status === 'error').length
+  // Kept old variable names as aliases so the stat-card JSX below doesn't break.
+  const activeCount = runningCount
+  const idleCount = readyCount
   const totalTasks = agents.reduce((s, a) => s + a.tasksToday, 0)
   const totalCost = agents.reduce((s, a) => s + a.costToday, 0)
   const avgResp = '9.2s'
@@ -1247,14 +1259,22 @@ export default function AgentsPage() {
           <p className="text-gray-400 text-sm mt-1">Your autonomous marketing workforce</p>
           <div className="flex items-center gap-3 mt-2 flex-wrap">
             <span className="flex items-center gap-1.5 text-sm">
-              <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
-              <span className="text-green-400 font-medium">{activeCount} agents active</span>
+              <span className={`w-2 h-2 rounded-full ${runningCount > 0 ? 'bg-indigo-400 animate-pulse' : 'bg-gray-500'}`} />
+              <span className={`${runningCount > 0 ? 'text-indigo-400' : 'text-gray-500'} font-medium`}>{runningCount} running</span>
             </span>
             <span className="text-gray-600">·</span>
-            <span className="text-yellow-400 text-sm">{idleCount} idle</span>
+            <span className="text-green-400 text-sm">{readyCount} ready</span>
             <span className="text-gray-600">·</span>
             <span className={`text-sm ${errorCount > 0 ? 'text-red-400' : 'text-gray-500'}`}>{errorCount} errors</span>
           </div>
+          {/* Sprint 19Q: explainer banner so users know agents only work
+              when the CMO dispatches them via chat or approval. */}
+          <p className="text-gray-500 text-xs mt-2 max-w-2xl leading-relaxed">
+            <span className="text-gray-400 font-medium">Ready</span> = enabled, waiting for orders.
+            Agents only run when the <a href="/dashboard" className="text-indigo-400 hover:text-indigo-300">CMO console</a> dispatches them
+            (chat with the CMO, approve a strategy, or trigger a workflow). Approved strategies auto-decompose
+            into per-agent tasks on the approval action.
+          </p>
         </div>
         <div className="flex items-center gap-3 flex-wrap">
           <span className="px-3 py-1.5 rounded-lg bg-gray-900 border border-gray-700 text-gray-300 text-sm font-medium">
@@ -1288,7 +1308,7 @@ export default function AgentsPage() {
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
         {[
           { label: 'Total Agents', value: agents.length.toString(), color: 'text-white' },
-          { label: 'Active Now', value: activeCount.toString(), color: 'text-green-400' },
+          { label: 'Running Now', value: runningCount.toString(), color: 'text-indigo-400' },
           { label: 'Tasks Today', value: totalTasks.toString(), color: 'text-indigo-400' },
           { label: 'Avg Response', value: avgResp, color: 'text-blue-400' },
           { label: 'AI Cost Today', value: `$${totalCost.toFixed(2)}`, color: 'text-purple-400' },
