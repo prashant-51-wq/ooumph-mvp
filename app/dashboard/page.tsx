@@ -33,7 +33,11 @@ interface Message {
     team: TeamMember[]
     firstAction: string
   }
-  timestamp: Date
+  /** Sprint 19S: was `Date`, but JSON.stringify (used by usePersistedState)
+   *  serialises Date → ISO string. After rehydrate the field is a string,
+   *  and calling `.toLocaleTimeString()` on it crashed the page. Accept
+   *  both shapes and coerce at the render site. */
+  timestamp: Date | string
   tokens?: number
   cost?: number
   /** When true, the bubble's text is sourced from useAgentStream.streamingText
@@ -667,7 +671,7 @@ function MessageBubble({
         {/* Footer: timestamp + feedback (CMO) + token info */}
         <div className={`flex items-center gap-2 mt-1 px-1 ${isCmo ? '' : 'justify-end'}`}>
           <p className="text-gray-700 text-xs">
-            {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+            {(msg.timestamp instanceof Date ? msg.timestamp : new Date(msg.timestamp)).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
           </p>
           {isCmo && msg.tokens && (
             <p className="text-gray-700 text-xs">
