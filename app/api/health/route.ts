@@ -182,9 +182,16 @@ export async function GET(req: NextRequest) {
   if (workspaceId) {
     checks.push(await check('Your workspace exists', 'data', async () => {
       const r = await sql`SELECT id, name, created_at FROM workspaces WHERE id = ${workspaceId} LIMIT 1`
-      const row = r.rows[0] as { id?: string; name?: string; created_at?: string } | undefined
+      // Sprint 20H bug #2: created_at comes back as a Date object from
+      // node-postgres on the timestamp column, not a string. Calling
+      // .slice() on it threw "created_at?.slice is not a function".
+      // Coerce to a string first.
+      const row = r.rows[0] as { id?: string; name?: string; created_at?: string | Date } | undefined
       if (!row?.id) return { status: 'fail', message: 'Workspace not found' }
-      return { status: 'ok', message: `${row.name} (created ${row.created_at?.slice(0, 10)})` }
+      const createdAtStr = row.created_at instanceof Date
+        ? row.created_at.toISOString()
+        : (row.created_at ? String(row.created_at) : '')
+      return { status: 'ok', message: `${row.name} (created ${createdAtStr.slice(0, 10)})` }
     }))
 
     checks.push(await check('Brand profile saved', 'data', async () => {

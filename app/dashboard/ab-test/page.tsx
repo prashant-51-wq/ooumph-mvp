@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
+import { useWorkspaceId } from '@/lib/hooks/use-workspace-id'
 
 type ContentType = 'headline' | 'cta' | 'email_subject' | 'ad_copy' | 'social_post' | 'landing_page_copy'
 type TestStatus = 'Running' | 'Completed' | 'Paused'
@@ -65,6 +66,9 @@ const CONTENT_TYPES: { key: ContentType; label: string }[] = [
 const GOAL_METRICS: GoalMetric[] = ['Conversion Rate', 'Click Rate', 'Open Rate']
 
 export default function ABTestLabPage() {
+  // Sprint 20H bug #3: /api/ab-test 400s without workspaceId. Source it
+  // from the session hook and append to every fetch.
+  const { workspaceId: sessionWorkspaceId } = useWorkspaceId()
   const [tests, setTests] = useState<ABTest[]>([])
   const [insights, setInsights] = useState<AIInsight[]>([])
   const [stats, setStats] = useState<Stats>({ active: 0, completed: 0, total: 0, avgLift: 0, bestConversionRate: 0 })
@@ -103,15 +107,17 @@ export default function ABTestLabPage() {
   }
 
   const loadData = async () => {
+    if (!sessionWorkspaceId) return  // wait until hook resolves
     setLoadError(null)
     try {
-      const res = await fetch('/api/ab-test')
+      const qs = `workspaceId=${encodeURIComponent(sessionWorkspaceId)}`
+      const res = await fetch(`/api/ab-test?${qs}`)
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
       setTests(data.tests || [])
       setStats(data.stats || stats)
 
-      const insRes = await fetch('/api/ab-test?type=insights')
+      const insRes = await fetch(`/api/ab-test?type=insights&${qs}`)
       const insData = await insRes.json()
       setInsights(Array.isArray(insData) ? insData : [])
     } catch (err) {
@@ -132,7 +138,9 @@ export default function ABTestLabPage() {
     }
   }
 
-  useEffect(() => { loadData() }, [])
+  // Re-load when sessionWorkspaceId resolves
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { loadData() }, [sessionWorkspaceId])
 
   const createTest = async () => {
     if (!newTest.name.trim() || !newTest.variantA.trim() || !newTest.variantB.trim()) return

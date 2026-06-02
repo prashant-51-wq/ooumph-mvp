@@ -1163,6 +1163,15 @@ export default function AgentsPage() {
     const newPaused = !allPaused
     const targetStatus: ApiAgentStatus = newPaused ? 'paused' : 'active'
 
+    // Sprint 20H warning #5: require confirmation for mass pause. A single
+    // accidental click moved 18 agents from ready → paused with no toast,
+    // no confirm dialog, and no undo. Now block on an explicit confirm.
+    if (typeof window !== 'undefined') {
+      const verb = newPaused ? 'pause' : 'resume'
+      const ok = window.confirm(`Are you sure you want to ${verb} ALL ${agents.length} agents at once? You can undo from this same button.`)
+      if (!ok) return
+    }
+
     setBusyAgentId('__all__')
     setStatusMsg(null)
     let succeeded = 0

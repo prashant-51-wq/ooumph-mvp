@@ -463,6 +463,19 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
   useEffect(() => { loadWorkspaces() }, [loadWorkspaces])
 
+  // Sprint 20H bug #8: Escape closes notification panel, workspace menu,
+  // user menu. None of these listened for Escape before.
+  useEffect(() => {
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      setNotifTooltip(false)
+      setWorkspaceMenuOpen(false)
+      setUserMenuOpen(false)
+    }
+    window.addEventListener('keydown', onEsc)
+    return () => window.removeEventListener('keydown', onEsc)
+  }, [])
+
   // Switch active workspace
   const switchWorkspace = (id: string, name: string) => {
     localStorage.setItem('workspaceId', id)

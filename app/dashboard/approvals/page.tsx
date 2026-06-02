@@ -232,7 +232,14 @@ export default function ApprovalsPage() {
 
   const load = useCallback(async () => {
     const workspaceId = sessionWorkspaceId
-    if (!workspaceId) { router.push('/dashboard/onboarding'); return }
+    // Sprint 20H bug #1: was unconditionally redirecting to /dashboard/
+    // onboarding whenever workspaceId was falsy. But sessionWorkspaceId
+    // is null on the very first render — before useWorkspaceId resolves
+    // via /api/auth/me. The redirect kept firing INSTANTLY on page mount
+    // before the hook ever caught up, so every visit to /dashboard/
+    // approvals went straight to onboarding. Just return without
+    // redirecting; the load will fire again when the hook resolves.
+    if (!workspaceId) return
     try {
       const res = await fetch(`/api/approvals?workspaceId=${workspaceId}`)
       // Sprint 19T: array-safe — endpoint returns array OR {rows} OR {error}

@@ -1340,6 +1340,14 @@ function AddContactModal({ onClose, workspaceId, onAdded }: { onClose: () => voi
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
 
+  // Sprint 20H bug #6: Escape closes modal. Previously had no key handler
+  // so users could get stuck if header/footer were clipped off-screen.
+  useEffect(() => {
+    const onEsc = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onEsc)
+    return () => window.removeEventListener('keydown', onEsc)
+  }, [onClose])
+
   async function submit() {
     if (!form.name || !form.email) return
     if (!workspaceId) { setSubmitError('No workspace selected'); return }
@@ -1380,13 +1388,17 @@ function AddContactModal({ onClose, workspaceId, onAdded }: { onClose: () => voi
   }
 
   return (
+    // Sprint 20H bug #6: modal was getting taller than the viewport on
+    // short screens, clipping the header (close button) AND the footer
+    // (Cancel/Save) — users were stranded. Now the modal is capped to
+    // max-h with a scrollable body so header + footer stay pinned.
     <div className="fixed inset-0 bg-gray-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-md" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800">
+      <div className="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-md max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800 flex-shrink-0">
           <h2 className="text-white font-semibold">Add Contact</h2>
-          <button onClick={onClose} className="text-gray-500 hover:text-white">✕</button>
+          <button onClick={onClose} className="text-gray-500 hover:text-white text-lg leading-none px-2" aria-label="Close">✕</button>
         </div>
-        <div className="p-6 space-y-3">
+        <div className="p-6 space-y-3 overflow-y-auto flex-1">
           {[
             { label:'Full Name *', key:'name', placeholder:'Jane Smith' },
             { label:'Email *', key:'email', placeholder:'jane@company.com' },

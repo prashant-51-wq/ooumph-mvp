@@ -84,10 +84,23 @@ export default function DashboardError({
             Try again (re-render without reload)
           </button>
           <button
-            onClick={() => window.location.reload()}
+            type="button"
+            onClick={() => {
+              // Sprint 20H bug #4: some environments (SES lockdown / Chrome
+              // sandbox / Brave shields) silently block window.location.reload().
+              // Use href assignment to the same URL as a more robust fallback —
+              // it forces a fresh navigation that browsers won't intercept.
+              try { window.location.reload() } catch { /* fall through */ }
+              try { window.location.href = window.location.href } catch { /* */ }
+            }}
             className="w-full px-4 py-2.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-200 text-sm">
             Full page reload
           </button>
+          <a
+            href="/dashboard"
+            className="block text-center w-full px-4 py-2.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-200 text-sm">
+            Go to CMO Dashboard
+          </a>
           <button
             onClick={signOut}
             className="w-full px-4 py-2.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-400 text-xs">

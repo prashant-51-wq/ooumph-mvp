@@ -672,10 +672,15 @@ function EditTileModal({
   const [when, setWhen] = useState(initialAt)
   const [channel, setChannel] = useState<string>(item ? (getChannel(item) || 'linkedin') : 'linkedin')
   const [submitting, setSubmitting] = useState(false)
+  // Sprint 20H bug #5: surface validation. Previously the Save button
+  // was silently disabled when content was empty — users clicked it,
+  // nothing happened, no error shown. Now we render a visible message.
+  const [validationError, setValidationError] = useState<string | null>(null)
 
   const submit = async () => {
-    if (!content.trim()) return
-    if (!when) return
+    if (!content.trim()) { setValidationError('Content is required'); return }
+    if (!when) { setValidationError('Schedule time is required'); return }
+    setValidationError(null)
     setSubmitting(true)
     try {
       const scheduledAt = new Date(when).toISOString()
@@ -729,11 +734,16 @@ function EditTileModal({
             />
           </div>
         </div>
+        {validationError && (
+          <div className="px-5 pb-2">
+            <p className="text-rose-400 text-xs">⚠ {validationError}</p>
+          </div>
+        )}
         <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-gray-800">
           <button onClick={onClose} className="px-3 py-1.5 text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg">Cancel</button>
           <button
             onClick={submit}
-            disabled={submitting || !content.trim() || !when}
+            disabled={submitting}
             className="px-3 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white rounded-lg"
           >
             {submitting ? 'Saving…' : 'Save'}
@@ -841,7 +851,10 @@ function AgendaCard({
           )}
           {item.retry_count > 0 && (
             <span className="text-[10px] text-amber-400">
-              retry {item.retry_count}/3
+              {/* Sprint 20H bug #9: cap display at max — backend sometimes
+                  increments past the cap on race conditions, so "4/3"
+                  bled through. Cap visually so the counter reads sanely. */}
+              retry {Math.min(item.retry_count, 3)}/3
             </span>
           )}
         </div>
