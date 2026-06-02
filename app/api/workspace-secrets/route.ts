@@ -126,21 +126,21 @@ async function testProviderKey(
       return { ok: false, message: `OpenAI rejected key: ${res.status} ${err.slice(0, 200)}` }
     }
     if (provider === 'anthropic') {
-      const res = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
+      // Sprint 19G: auth-only check via GET /v1/models. Previously we
+      // POSTed a real messages call with a hardcoded model name, which
+      // returned 404 for accounts that didn't have that model enabled —
+      // even though the key itself was valid. /v1/models just returns
+      // the list of models available to the key, no message generation.
+      const res = await fetch('https://api.anthropic.com/v1/models', {
         headers: {
           'x-api-key': key,
           'anthropic-version': '2023-06-01',
-          'content-type': 'application/json',
         },
-        body: JSON.stringify({
-          model: 'claude-3-5-haiku-20241022',
-          max_tokens: 1,
-          messages: [{ role: 'user', content: 'hi' }],
-        }),
       })
       if (res.status === 200) return { ok: true, message: 'Connected · Anthropic API' }
-      if (res.status === 401) return { ok: false, message: 'Invalid Anthropic API key' }
+      if (res.status === 401 || res.status === 403) {
+        return { ok: false, message: 'Invalid Anthropic API key' }
+      }
       const err = await res.text().catch(() => '')
       return { ok: false, message: `Anthropic test: ${res.status} ${err.slice(0, 200)}` }
     }
