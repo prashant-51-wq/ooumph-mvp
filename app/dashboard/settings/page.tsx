@@ -949,8 +949,24 @@ function UsageBar({ label, used, total, unit }: { label: string; used: number; t
 // the field is paste-only (status badge is just "has value" in the latter
 // case, never the false "✅ Verified" we used to lie about).
 
+// Maps ModelSettings field names → workspace_secrets provider slugs.
+// Used to show "Key saved" when key exists encrypted but isn't echoed back.
+const FIELD_TO_PROVIDER: Partial<Record<keyof ModelSettings, string>> = {
+  anthropicApiKey: 'anthropic',
+  openaiApiKey: 'openai',
+  elevenLabsApiKey: 'elevenlabs',
+  stabilityApiKey: 'stability',
+  replicateApiToken: 'replicate',
+  geminiApiKey: 'gemini',
+  klingAccessKey: 'kling',
+  runwayApiKey: 'runway',
+  resendApiKey: 'resend',
+  mailchimpApiKey: 'mailchimp',
+  bufferAccessToken: 'buffer',
+}
+
 function ProviderCard({
-  provider, ms, update, onTest, testResult, onNotifyTest, notifyResult,
+  provider, ms, update, onTest, testResult, onNotifyTest, notifyResult, savedKeys,
 }: {
   provider: UseCaseProvider
   ms: ModelSettings
@@ -961,12 +977,15 @@ function ProviderCard({
    *  loop, not just credential validation). */
   onNotifyTest?: (service: 'slack' | 'telegram') => void
   notifyResult?: string
+  savedKeys?: Record<string, boolean>
 }) {
-  // A provider is "filled in" if its FIRST field has a value. Subsequent
-  // fields (model, voice id, etc.) are configuration not authentication —
-  // missing them doesn't mean the connection is broken.
+  // A provider is "filled in" if its FIRST field has a value in local state,
+  // OR if the API reports the key exists encrypted in workspace_secrets.
   const primaryField = provider.fields[0]
-  const filled = !!(ms as unknown as Record<string, string>)[primaryField.field as string]?.trim()
+  const localValue = (ms as unknown as Record<string, string>)[primaryField.field as string]?.trim()
+  const providerSlug = FIELD_TO_PROVIDER[primaryField.field as keyof ModelSettings]
+  const isSavedRemotely = !!(providerSlug && savedKeys?.[providerSlug])
+  const filled = !!localValue || isSavedRemotely
 
   return (
     <div className={`rounded-xl border p-5 space-y-4 ${provider.optional ? 'bg-gray-900/40 border-gray-800' : 'bg-gray-900 border-gray-800'}`}>
@@ -1016,8 +1035,18 @@ function ProviderCard({
       {provider.fields.map(f => {
         const value = (ms as unknown as Record<string, string>)[f.field as string] || ''
         const useMask = (f.type ?? (/Key|Token|Secret|Password/i.test(f.label) ? 'password' : 'text')) === 'password'
+        const fieldProviderSlug = FIELD_TO_PROVIDER[f.field as keyof ModelSettings]
+        const fieldIsSaved = !!(fieldProviderSlug && savedKeys?.[fieldProviderSlug])
+        const effectivePlaceholder = (!value && fieldIsSaved)
+          ? '••••••••  Key saved — enter new key to replace'
+          : f.placeholder
         return (
           <Field key={f.field as string} label={f.label} hint={f.hint}>
+            {fieldIsSaved && !value && (
+              <p className="text-emerald-400 text-[11px] mb-1.5 flex items-center gap-1">
+                <span>✅</span> Key saved and encrypted — leave blank to keep it, or paste a new key to replace it
+              </p>
+            )}
             {f.options
               ? (
                 <select className={inp} value={value} onChange={e => update(f.field, e.target.value)}>
@@ -1025,8 +1054,8 @@ function ProviderCard({
                 </select>
               )
               : useMask
-                ? <MaskedInput value={value} onChange={v => update(f.field, v)} placeholder={f.placeholder} />
-                : <input className={inp} value={value} onChange={e => update(f.field, e.target.value)} placeholder={f.placeholder} />
+                ? <MaskedInput value={value} onChange={v => update(f.field, v)} placeholder={effectivePlaceholder} />
+                : <input className={inp} value={value} onChange={e => update(f.field, e.target.value)} placeholder={effectivePlaceholder} />
             }
           </Field>
         )
@@ -1170,6 +1199,9 @@ export default function SettingsPage() {
     razorpayKeyId: '', razorpayKeySecret: '',
   }
   const [modelSettings, setModelSettings] = useState<ModelSettings>(defaultModelSettings)
+  // savedKeys: provider slug → true when key exists in workspace_secrets.
+  // Used purely for display — shows "Key saved" badge on inputs after reload.
+  const [savedKeys, setSavedKeys] = useState<Record<string, boolean>>({})
   const [testResults, setTestResults] = useState<Record<string, string>>({})
   const [sharedKeyFallback, setSharedKeyFallback] = useState(true)
   const [keyRotationReminder, setKeyRotationReminder] = useState(true)
@@ -1227,6 +1259,12 @@ export default function SettingsPage() {
               const ms = typeof d.model_settings === 'string' ? JSON.parse(d.model_settings) : d.model_settings
               if (ms && typeof ms === 'object') setModelSettings(prev => ({ ...prev, ...ms }))
             } catch { /* ignore */ }
+          }
+          // Populate saved-key display flags from workspace_secrets presence check.
+          // The API strips actual key values before returning them (security),
+          // so we use these boolean flags to show "Key saved" in the UI.
+          if (d.secrets && typeof d.secrets === 'object') {
+            setSavedKeys(d.secrets as Record<string, boolean>)
           }
         }
       })
@@ -1653,7 +1691,11 @@ export default function SettingsPage() {
                   timeMin: 1,
                 },
               ]
-              const filledCount = ess.filter(e => !!(modelSettings as unknown as Record<string, string>)[e.key]?.trim()).length
+              const filledCount = ess.filter(e => {
+                const localVal = (modelSettings as unknown as Record<string, string>)[e.key]?.trim()
+                const slug = FIELD_TO_PROVIDER[e.key as keyof ModelSettings]
+                return !!localVal || !!(slug && savedKeys[slug])
+              }).length
               const allDone = filledCount === ess.length
               return (
                 <div className={`rounded-2xl border p-6 ${allDone ? 'border-green-700 bg-gradient-to-br from-green-950/40 to-emerald-950/30' : 'border-indigo-800 bg-gradient-to-br from-indigo-950/40 to-purple-950/30'}`}>
@@ -1817,6 +1859,7 @@ export default function SettingsPage() {
                         testResult={p.testProvider ? testResults[p.testProvider] : undefined}
                         onNotifyTest={testNotification}
                         notifyResult={p.notifyTest ? notifyTestResult[p.notifyTest] : undefined}
+                        savedKeys={savedKeys}
                       />
                     ))}
                   </div>
