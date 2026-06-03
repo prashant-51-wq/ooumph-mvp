@@ -281,7 +281,7 @@ function EventRow({
             <span className="text-xs font-medium text-indigo-300">artifact</span>
             <span className="text-gray-500 text-xs mx-1">created</span>
             <span className="text-gray-300 text-xs">{event.title || event.type}</span>
-            <span className="text-gray-600 text-[10px] ml-1 group-hover:text-indigo-400">#{event.artifactId.slice(0, 6)}</span>
+            <span className="text-gray-600 text-[10px] ml-1 group-hover:text-indigo-400">#{(event.artifactId || '').slice(0, 6)}</span>
           </div>
         </button>
       )

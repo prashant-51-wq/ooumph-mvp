@@ -2205,7 +2205,9 @@ export default function DashboardPage() {
             {/* Link Click ROI — total clicks + 7-day sparkline */}
             <div className="p-4 border-b border-gray-800">
               <p className="text-xs text-gray-500 uppercase tracking-wider font-medium mb-3">Click ROI</p>
-              <LinkClickROIWidget workspaceId={workspaceId} compact />
+              <WidgetErrorBoundary widgetName="Click ROI">
+                <LinkClickROIWidget workspaceId={workspaceId} compact />
+              </WidgetErrorBoundary>
             </div>
 
             {/* Agent Status — Sprint 3A: real lifecycle from /api/agents/registry.
