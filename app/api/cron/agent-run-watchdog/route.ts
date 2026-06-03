@@ -25,6 +25,7 @@ import { sql } from '@/lib/db'
 import { notifyAgentRunFailed } from '@/lib/notifications'
 
 export const runtime = 'nodejs'
+export const maxDuration = 300
 
 function isCronAuthorized(req: NextRequest): boolean {
   // Sprint 18Z (audit pass #8 P0): UA-only auth was spoofable — any

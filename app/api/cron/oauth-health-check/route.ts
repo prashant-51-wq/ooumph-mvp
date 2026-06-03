@@ -23,6 +23,7 @@ import { sql } from '@/lib/db'
 import { notifyOAuthExpiring } from '@/lib/notifications'
 
 export const runtime = 'nodejs'
+export const maxDuration = 300
 
 function isCronAuthorized(req: NextRequest): boolean {
   // Sprint 18Z: UA-only auth removed — User-Agent is client-spoofable.

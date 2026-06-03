@@ -7,6 +7,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { createWPPost, testWPConnection, createGhostPost, testGhostConnection } from '@/lib/tools'
 import { assertWorkspaceOwnership, assertArtifactApproved } from '@/lib/guards'
+import { getWorkspaceSecret } from '@/lib/secrets'
 
 type PublishAction = 'publish_blog' | 'schedule_social' | 'publish_newsletter' | 'get_status'
 
@@ -295,9 +296,13 @@ export async function GET(req: NextRequest) {
 
   const connections = await checkConnections(modelSettings)
 
+  // Check buffer token in workspace_secrets first (encrypted), fall back to legacy plaintext
+  const bufferSecret = await getWorkspaceSecret(workspaceId, 'buffer').catch(() => null)
+  const bufferConfigured = !!bufferSecret || !!modelSettings.bufferAccessToken
+
   return NextResponse.json({
     history: result.rows,
     connections,
-    bufferConfigured: !!modelSettings.bufferAccessToken,
+    bufferConfigured,
   })
 }

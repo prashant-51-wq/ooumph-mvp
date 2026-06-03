@@ -19,9 +19,10 @@ async function extractAndStoreModelKeys(
   if (!modelSettings) return modelSettings
   const sanitized: Record<string, unknown> = { ...modelSettings }
 
-  const keyFields: Array<[string, 'anthropic' | 'openai']> = [
+  const keyFields: Array<[string, string]> = [
     ['anthropicApiKey', 'anthropic'],
     ['openaiApiKey', 'openai'],
+    ['bufferAccessToken', 'buffer'],
   ]
 
   for (const [field, provider] of keyFields) {

@@ -73,9 +73,16 @@ interface CronResult {
 }
 
 function authCron(req: NextRequest): boolean {
-  const secret = process.env.CRON_SECRET || ''
-  if (!secret) return true
-  return req.headers.get('authorization') === `Bearer ${secret}`
+  const cronSecret = process.env.CRON_SECRET || ''
+  const adminSecret = process.env.ADMIN_SECRET || ''
+  const isDev = process.env.NODE_ENV !== 'production'
+  const authHeader = req.headers.get('authorization') || ''
+  const internalSecret = req.headers.get('x-internal-secret') || ''
+  const authorized =
+    (cronSecret && authHeader === `Bearer ${cronSecret}`) ||
+    (adminSecret && internalSecret === adminSecret)
+  if (!authorized && (!isDev || cronSecret || adminSecret)) return false
+  return true
 }
 
 /** Extract plain-text body from an artifact's content_json (which may be
