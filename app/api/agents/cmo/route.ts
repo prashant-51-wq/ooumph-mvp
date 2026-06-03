@@ -51,6 +51,7 @@ import { sql } from '@/lib/db'
 import { streamAgent } from '@/lib/claude'
 import { runAgentWithTools } from '@/lib/agents/tool-calling'
 import { assertWorkspaceOwnership } from '@/lib/guards'
+import { checkApiRateLimit } from '@/lib/rate-limiter'
 import { assertAgentRunQuota } from '@/lib/quota'
 import { getBaseUrl } from '@/lib/base-url'
 import { buildMemoryMatrix, logMemoryInjection } from '@/lib/agents/memory-retrieval'
@@ -380,6 +381,9 @@ async function findLatestArtifactAndApproval(
 // ═════════════════════════════════════════════════════════════════════════
 
 export async function POST(req: NextRequest) {
+  const limited = checkApiRateLimit(req, 'agents/cmo')
+  if (limited) return limited
+
   let body: CMORequest
   try {
     body = (await req.json()) as CMORequest

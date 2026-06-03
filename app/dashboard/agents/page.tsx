@@ -2,6 +2,8 @@
 
 import { useState, useEffect } from 'react'
 import { readJsonArray } from '@/lib/hooks/fetch-array'
+import { WidgetErrorBoundary } from '@/components/WidgetErrorBoundary'
+import { SkeletonCard } from '@/components/Skeleton'
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -1379,10 +1381,11 @@ export default function AgentsPage() {
         <div className="flex-1 min-w-0">
           {/* Loading state — first registry fetch hasn't returned yet */}
           {loading && (
-            <div className="bg-gray-900 border border-gray-800 rounded-xl p-12 flex flex-col items-center justify-center gap-3">
-              <div className="w-8 h-8 rounded-full border-2 border-gray-700 border-t-indigo-400 animate-spin" />
-              <p className="text-gray-400 text-sm">Loading agents…</p>
-            </div>
+            <WidgetErrorBoundary widgetName="Agent Registry">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                {Array.from({ length: 6 }).map((_, i) => <SkeletonCard key={i} />)}
+              </div>
+            </WidgetErrorBoundary>
           )}
 
           {/* Load error state */}

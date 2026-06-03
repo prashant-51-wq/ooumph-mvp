@@ -67,9 +67,11 @@ const PROVIDER_COLORS: Record<string, string> = {
   Murf: 'bg-orange-900/60 text-orange-300 border-orange-800/60',
 }
 
-// Public sample MP3 used for "Preview" buttons when ElevenLabs preview is unavailable.
-// We use a short public-domain WAV from W3C; falling back means the preview button always plays *something*.
+// Fallback audio played when ElevenLabs key is absent.
+// This is a generic public-domain sound — NOT a real voice preview.
+// The UI must label it clearly so users don't mistake it for real TTS output.
 const PREVIEW_SAMPLE_URL = 'https://www.w3.org/2010/05/sound/sound_90.mp3'
+const PREVIEW_IS_DEMO = true
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
@@ -309,7 +311,11 @@ export default function VoiceoverStudioPage() {
           return
         }
       }
-      // Fallback
+      // Fallback — no ElevenLabs key configured. Play a generic demo sound
+      // and show a visible notice so the user is never misled about what they heard.
+      if (PREVIEW_IS_DEMO) {
+        setGenerationError('Demo audio — this is NOT a real voice preview. Add your ElevenLabs API key in Settings to hear actual TTS output.')
+      }
       const audio = new Audio(PREVIEW_SAMPLE_URL)
       previewAudioRef.current = audio
       audio.onended = () => setPreviewingId(null)

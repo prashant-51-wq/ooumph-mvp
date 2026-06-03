@@ -4,6 +4,7 @@ import { useState, useRef, useCallback, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { useWorkspaceId } from '@/lib/hooks/use-workspace-id'
 import { usePersistedState } from '@/lib/hooks/use-persisted-state'
+import { SkeletonTableBody } from '@/components/Skeleton'
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 type Stage = 'Lead' | 'Prospect' | 'Qualified' | 'Proposal' | 'Customer' | 'Churned'
@@ -2039,9 +2040,10 @@ export default function LeadsCRMPage() {
 
         {/* Loading state */}
         {loading && (
-          <div className="p-12 text-center text-gray-500">
-            <div className="inline-block w-8 h-8 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin mb-3" />
-            <p>Loading contacts…</p>
+          <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden mx-6 my-4">
+            <div className="overflow-x-auto">
+              <table className="w-full"><tbody><SkeletonTableBody rows={6} cols={8} /></tbody></table>
+            </div>
           </div>
         )}
 
@@ -2082,7 +2084,8 @@ export default function LeadsCRMPage() {
             {/* ── TABLE VIEW ── */}
             {viewMode === 'table' && (
               <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
-                <table className="w-full">
+                <div className="overflow-x-auto">
+                <table className="w-full min-w-[900px]">
                   <thead>
                     <tr className="border-b border-gray-800 bg-gray-900/80">
                       <th className="px-4 py-3 text-left">
@@ -2147,6 +2150,7 @@ export default function LeadsCRMPage() {
                     ))}
                   </tbody>
                 </table>
+                </div>{/* /overflow-x-auto */}
               </div>
             )}
 

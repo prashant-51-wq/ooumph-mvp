@@ -31,9 +31,19 @@ interface LeadRow extends Record<string, unknown> {
   email?: string
 }
 
+export const runtime = 'nodejs'
+export const maxDuration = 300
+
 export async function GET(req: NextRequest) {
-  const authHeader = req.headers.get('authorization')
-  if (process.env.CRON_SECRET && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+  const secret = process.env.CRON_SECRET || ''
+  const adminSecret = process.env.ADMIN_SECRET || ''
+  const authHeader = req.headers.get('authorization') || ''
+  const internalSecret = req.headers.get('x-internal-secret') || ''
+  const isDev = process.env.NODE_ENV !== 'production'
+  const authorized =
+    (secret && authHeader === `Bearer ${secret}`) ||
+    (adminSecret && internalSecret === adminSecret)
+  if (!authorized && (!isDev || secret || adminSecret)) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 

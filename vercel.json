@@ -12,6 +12,7 @@
     { "path": "/api/cron/follower-sync", "schedule": "0 0,6,12,18 * * *" },
     { "path": "/api/cron/agent-run-watchdog", "schedule": "*/15 * * * *" },
     { "path": "/api/cron/oauth-health-check", "schedule": "0 */6 * * *" },
-    { "path": "/api/cron/experiment-significance", "schedule": "0 */2 * * *" }
+    { "path": "/api/cron/experiment-significance", "schedule": "0 */2 * * *" },
+    { "path": "/api/cron/inject-winners", "schedule": "0 */6 * * *" }
   ]
 }

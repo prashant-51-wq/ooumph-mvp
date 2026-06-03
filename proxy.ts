@@ -20,7 +20,11 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 
-const SECRET = process.env.AUTH_SECRET || 'ooumph-dev-secret-change-in-production'
+const _rawSecret = process.env.AUTH_SECRET
+if (!_rawSecret && process.env.NODE_ENV === 'production') {
+  throw new Error('AUTH_SECRET env var is required in production. Set it in your Vercel environment variables.')
+}
+const SECRET = _rawSecret || 'ooumph-dev-secret-change-in-production'
 const COOKIE_NAME = 'ooumph_session'
 
 // ── Paths that are always public ──────────────────────────────────────────────

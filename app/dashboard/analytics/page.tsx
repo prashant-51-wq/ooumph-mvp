@@ -2,6 +2,8 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import { useWorkspaceId } from '@/lib/hooks/use-workspace-id'
+import { WidgetErrorBoundary } from '@/components/WidgetErrorBoundary'
+import { Skeleton, SkeletonStatRow } from '@/components/Skeleton'
 
 /**
  * Analytics dashboard — Sprint 1B rewrite (honest empty states).
@@ -252,7 +254,11 @@ function FollowerTrendChart({ workspaceId, days }: { workspaceId: string | null;
       </div>
 
       {loading && !payload && (
-        <div className="h-40 flex items-center justify-center text-gray-600 text-sm">Loading…</div>
+        <div className="h-40 px-4 py-6 space-y-3">
+          <Skeleton widthClass="w-3/4" />
+          <Skeleton widthClass="w-1/2" />
+          <Skeleton widthClass="w-5/6" />
+        </div>
       )}
       {!loading && error && (
         <div className="h-40 flex items-center justify-center text-red-400 text-sm">
@@ -1052,9 +1058,12 @@ export default function AnalyticsPage() {
 
       {/* ── Loading & error states ── */}
       {loading && (
-        <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 text-center text-gray-500">
-          <div className="inline-block w-6 h-6 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin mb-2" />
-          <p>Loading analytics…</p>
+        <div className="space-y-4">
+          <SkeletonStatRow count={6} />
+          <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 space-y-3">
+            <Skeleton widthClass="w-1/4" />
+            <Skeleton widthClass="w-full" className="h-40" />
+          </div>
         </div>
       )}
       {!loading && error && (

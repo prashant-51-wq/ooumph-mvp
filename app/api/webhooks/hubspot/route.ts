@@ -30,7 +30,8 @@ function verifyHubspotSignature(
   signature: string,
 ): boolean {
   const clientSecret = process.env.HUBSPOT_CLIENT_SECRET
-  if (!clientSecret) return true // dev mode: skip
+  // Fail-closed: no secret configured → reject everything except in local dev.
+  if (!clientSecret) return process.env.NODE_ENV !== 'production'
 
   const payload = clientSecret + requestUri + rawBody + timestamp
   const expected = crypto.createHmac('sha256', clientSecret).update(payload, 'utf8').digest('hex')

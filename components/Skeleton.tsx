@@ -81,3 +81,52 @@ export function SkeletonStatRow({ count = 4, className = '' }: { count?: number;
     </div>
   )
 }
+
+/**
+ * Table-body skeleton — renders `rows` pulsing rows each with `cols`
+ * cells. Drop this inside a <tbody> to hold layout while data loads.
+ * Also exported as a standalone div (non-table) via `standalone` prop
+ * for use in list views that aren't actual <table> elements.
+ */
+export function SkeletonTableBody({
+  rows = 5,
+  cols = 4,
+  standalone = false,
+  className = '',
+}: {
+  rows?: number
+  cols?: number
+  standalone?: boolean
+  className?: string
+}): React.ReactElement {
+  const widths = ['w-full', 'w-3/4', 'w-5/6', 'w-2/3', 'w-4/5']
+  if (standalone) {
+    return (
+      <div className={`space-y-2 px-4 py-3 ${className}`}>
+        {Array.from({ length: rows }).map((_, i) => (
+          <div key={i} className="flex items-center gap-3 py-2 border-b border-gray-800/50 last:border-0">
+            {Array.from({ length: cols }).map((__, j) => (
+              <div
+                key={j}
+                className={`h-3 ${widths[(i + j) % widths.length]} bg-gray-800 rounded animate-pulse flex-1`}
+              />
+            ))}
+          </div>
+        ))}
+      </div>
+    )
+  }
+  return (
+    <>
+      {Array.from({ length: rows }).map((_, i) => (
+        <tr key={i} className="border-b border-gray-800/50 last:border-0">
+          {Array.from({ length: cols }).map((__, j) => (
+            <td key={j} className="px-4 py-3">
+              <div className={`h-3 ${widths[(i + j) % widths.length]} bg-gray-800 rounded animate-pulse`} />
+            </td>
+          ))}
+        </tr>
+      ))}
+    </>
+  )
+}

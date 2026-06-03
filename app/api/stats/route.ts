@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
 import { assertWorkspaceOwnership } from '@/lib/guards'
+import { checkApiRateLimit } from '@/lib/rate-limiter'
 
 function rangeToDays(range: string | null): number {
   switch (range) {
@@ -13,6 +14,9 @@ function rangeToDays(range: string | null): number {
 }
 
 export async function GET(req: NextRequest) {
+  const limited = checkApiRateLimit(req, 'stats')
+  if (limited) return limited
+
   const { searchParams } = new URL(req.url)
   const workspaceId = searchParams.get('workspaceId')
   const view = searchParams.get('view')        // 'analytics' | null (default)

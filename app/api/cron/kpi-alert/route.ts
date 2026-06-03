@@ -8,6 +8,7 @@ import { aggregateAnalyticsData, trackKPIs, getKPITargets } from '@/lib/agents/a
 import { Resend } from 'resend'
 
 export const runtime = 'nodejs'
+export const maxDuration = 300
 
 function getResend() {
   const key = (process.env.RESEND_API_KEY || '').replace(/^﻿/, '').trim()
@@ -15,8 +16,15 @@ function getResend() {
 }
 
 export async function GET(req: NextRequest) {
-  const authHeader = req.headers.get('authorization')
-  if (process.env.CRON_SECRET && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+  const secret = process.env.CRON_SECRET || ''
+  const adminSecret = process.env.ADMIN_SECRET || ''
+  const authHeader = req.headers.get('authorization') || ''
+  const internalSecret = req.headers.get('x-internal-secret') || ''
+  const isDev = process.env.NODE_ENV !== 'production'
+  const authorized =
+    (secret && authHeader === `Bearer ${secret}`) ||
+    (adminSecret && internalSecret === adminSecret)
+  if (!authorized && (!isDev || secret || adminSecret)) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 

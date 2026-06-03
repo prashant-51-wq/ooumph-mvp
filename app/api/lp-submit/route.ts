@@ -16,11 +16,15 @@ import { sql, newId } from '@/lib/db'
 import { notifyLeadCaptured } from '@/lib/notifications'
 import { fireSegmentTriggersForNewLead } from '@/lib/segment-trigger'
 import { getBaseUrl } from '@/lib/base-url'
+import { checkApiRateLimit } from '@/lib/rate-limiter'
 
 export const runtime = 'nodejs'
 export const maxDuration = 120
 
 export async function POST(req: NextRequest) {
+  const limited = checkApiRateLimit(req, 'lp-submit')
+  if (limited) return limited
+
   try {
     const { searchParams } = new URL(req.url)
     const artifactId = searchParams.get('lid') || ''

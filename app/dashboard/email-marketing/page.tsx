@@ -15,6 +15,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useWorkspaceId } from '@/lib/hooks/use-workspace-id'
 import { ProviderConnectBanner } from '@/components/dashboard/ProviderConnectBanner'
+import { SkeletonTableBody, SkeletonStatRow } from '@/components/Skeleton'
 import {
   Mail, Users, BarChart3, Plus, Search, Trash2, Pencil,
   CheckCircle2, ShieldCheck, Clock, AlertCircle, RefreshCw, X,
@@ -262,7 +263,9 @@ function ListsTab({ workspaceId }: { workspaceId: string }) {
       </div>
 
       {loading ? (
-        <div className="text-center py-16 text-gray-500 text-sm">Loading lists…</div>
+        <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+          <table className="w-full text-sm"><tbody><SkeletonTableBody rows={4} cols={6} /></tbody></table>
+        </div>
       ) : lists.length === 0 ? (
         <div className="text-center py-16 border border-dashed border-gray-800 rounded-xl">
           <Mail className="w-10 h-10 mx-auto mb-3 text-gray-700" />
@@ -534,7 +537,7 @@ function ListMembersModal({
         </div>
         <div className="flex-1 overflow-auto p-2">
           {loading ? (
-            <div className="text-center py-10 text-gray-500 text-sm">Loading members…</div>
+            <div className="py-2"><SkeletonTableBody rows={4} cols={4} standalone /></div>
           ) : members.length === 0 ? (
             <div className="text-center py-10 text-gray-500 text-sm">No members yet.</div>
           ) : (
@@ -627,7 +630,11 @@ function SubscribersTab({ workspaceId }: { workspaceId: string }) {
       </div>
 
       {loading ? (
-        <div className="text-center py-16 text-gray-500 text-sm">Loading subscribers…</div>
+        <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm"><tbody><SkeletonTableBody rows={6} cols={6} /></tbody></table>
+          </div>
+        </div>
       ) : filtered.length === 0 ? (
         <div className="text-center py-16 border border-dashed border-gray-800 rounded-xl">
           <Mail className="w-10 h-10 mx-auto mb-3 text-gray-700" />
@@ -763,7 +770,14 @@ function PerformanceTab({ workspaceId }: { workspaceId: string }) {
   return (
     <div>
       {loading ? (
-        <div className="text-center py-16 text-gray-500 text-sm">Loading campaigns…</div>
+        <div className="space-y-4">
+          <SkeletonStatRow count={4} />
+          <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm"><tbody><SkeletonTableBody rows={5} cols={6} /></tbody></table>
+            </div>
+          </div>
+        </div>
       ) : (
         <>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
@@ -781,7 +795,8 @@ function PerformanceTab({ workspaceId }: { workspaceId: string }) {
             </div>
           ) : (
             <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
-              <table className="w-full text-sm">
+              <div className="overflow-x-auto">
+              <table className="w-full text-sm min-w-[700px]">
                 <thead className="bg-gray-950 border-b border-gray-800">
                   <tr className="text-left text-xs uppercase text-gray-500">
                     <th className="px-4 py-3 font-medium">Campaign</th>
@@ -830,6 +845,7 @@ function PerformanceTab({ workspaceId }: { workspaceId: string }) {
                   ))}
                 </tbody>
               </table>
+              </div>{/* /overflow-x-auto */}
               {sendError && (
                 <div className="px-4 py-2 border-t border-rose-900 bg-rose-950/40 text-rose-300 text-xs flex items-center justify-between">
                   <span>Send failed: {sendError}</span>

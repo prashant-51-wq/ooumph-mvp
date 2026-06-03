@@ -356,6 +356,13 @@ export async function GET(req: NextRequest) {
         continue
       }
 
+      // Enforce token expiry before attempting publish.
+      if (tok.expires_at && new Date(tok.expires_at) < new Date()) {
+        await markFailed(itemId, retryCount, `${channel} token expired — reconnect in Settings > Integrations`, workspaceId, channel)
+        results.push({ id: itemId, status: 'failed', error: 'token_expired' })
+        continue
+      }
+
       const accessToken = decryptSecret(tok.encrypted_access_token)
       if (!accessToken) {
         await markFailed(itemId, retryCount, 'Token decrypt failed', workspaceId, channel)
