@@ -514,10 +514,17 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     } catch { /* ignore */ }
   }, [sessionWorkspaceId])
 
+  // Sprint 20M: poll only when the tab is visible AND throttle to 90s
+  // (was 30s). User's Neon DB hit the data-transfer quota — every poll
+  // was a fresh round-trip. Page Visibility API guard prevents wasted
+  // queries when the user has the tab in the background.
   useEffect(() => {
     loadNotifications()
-    const interval = setInterval(loadNotifications, 30000)
-    return () => clearInterval(interval)
+    const tick = () => { if (typeof document === 'undefined' || !document.hidden) void loadNotifications() }
+    const interval = setInterval(tick, 90000)
+    const onVis = () => { if (!document.hidden) void loadNotifications() }
+    document.addEventListener('visibilitychange', onVis)
+    return () => { clearInterval(interval); document.removeEventListener('visibilitychange', onVis) }
   }, [loadNotifications])
 
   const markAllNotifsRead = async () => {
@@ -549,10 +556,17 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     } catch { /* ignore */ }
   }, [sessionWorkspaceId])
 
+  // Sprint 20M: 8s → 60s + Page Visibility guard. The bottom activity
+  // bar refreshes the layout's per-page agent-runs snapshot. 8-second
+  // polling on every dashboard tab was a big driver of the Neon
+  // data-transfer overage.
   useEffect(() => {
     loadRuns()
-    const interval = setInterval(loadRuns, 8000)
-    return () => clearInterval(interval)
+    const tick = () => { if (typeof document === 'undefined' || !document.hidden) void loadRuns() }
+    const interval = setInterval(tick, 60000)
+    const onVis = () => { if (!document.hidden) void loadRuns() }
+    document.addEventListener('visibilitychange', onVis)
+    return () => { clearInterval(interval); document.removeEventListener('visibilitychange', onVis) }
   }, [loadRuns])
 
   const logout = async () => {

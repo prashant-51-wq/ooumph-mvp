@@ -1290,11 +1290,20 @@ export default function DashboardPage() {
     }
   }, [workspaceId])
 
+  // Sprint 20M: 5s → 30s + Page Visibility guard. The CMO console
+  // refreshes its in-flight agent_runs list to detect new sub-agent
+  // activity. 5-second polling on every CMO visit hammered the Neon
+  // free tier; bumped to 30s. The stream itself still pushes events
+  // live, so this poll is just for runs created OUTSIDE the open stream
+  // (e.g. by cron) — 30s is plenty.
   useEffect(() => {
     if (!workspaceId) return
     loadRuns()
-    const interval = setInterval(loadRuns, 5000)
-    return () => clearInterval(interval)
+    const tick = () => { if (typeof document === 'undefined' || !document.hidden) void loadRuns() }
+    const interval = setInterval(tick, 30000)
+    const onVis = () => { if (!document.hidden) void loadRuns() }
+    document.addEventListener('visibilitychange', onVis)
+    return () => { clearInterval(interval); document.removeEventListener('visibilitychange', onVis) }
   }, [workspaceId, loadRuns])
 
   // ── Notifications polling ─────────────────────────────────────────────────────
@@ -1312,11 +1321,17 @@ export default function DashboardPage() {
     }
   }, [workspaceId])
 
+  // Sprint 20M: 30s → 120s + Page Visibility guard. Notifications are
+  // not time-critical for a demo; bell badge updating once every 2 min
+  // is fine and saves 75% of these queries.
   useEffect(() => {
     if (!workspaceId) return
     loadNotifications()
-    const interval = setInterval(loadNotifications, 30000)
-    return () => clearInterval(interval)
+    const tick = () => { if (typeof document === 'undefined' || !document.hidden) void loadNotifications() }
+    const interval = setInterval(tick, 120000)
+    const onVis = () => { if (!document.hidden) void loadNotifications() }
+    document.addEventListener('visibilitychange', onVis)
+    return () => { clearInterval(interval); document.removeEventListener('visibilitychange', onVis) }
   }, [workspaceId, loadNotifications])
 
   async function markAllNotificationsRead() {
@@ -1367,11 +1382,17 @@ export default function DashboardPage() {
     } catch { /* ignore */ }
   }, [workspaceId])
 
+  // Sprint 20M: 15s → 60s + Page Visibility guard. Pending-approvals
+  // badge updates 4x slower but the badge still surfaces new items
+  // promptly enough for a demo, and saves ~75% of the queries.
   useEffect(() => {
     if (!workspaceId) return
     loadPendingApprovals()
-    const interval = setInterval(loadPendingApprovals, 15000)
-    return () => clearInterval(interval)
+    const tick = () => { if (typeof document === 'undefined' || !document.hidden) void loadPendingApprovals() }
+    const interval = setInterval(tick, 60000)
+    const onVis = () => { if (!document.hidden) void loadPendingApprovals() }
+    document.addEventListener('visibilitychange', onVis)
+    return () => { clearInterval(interval); document.removeEventListener('visibilitychange', onVis) }
   }, [workspaceId, loadPendingApprovals])
 
   async function handleInlineApprove(approvalId: string) {
