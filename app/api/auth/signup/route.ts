@@ -1,8 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { hashPassword, createToken, COOKIE_NAME } from '@/lib/auth'
+import { checkRateLimit } from '@/lib/rate-limiter'
 
 export async function POST(req: NextRequest) {
+  // Rate-limit signup by IP — same window as login (5 per 15 min per IP).
+  const ip =
+    req.headers.get('x-forwarded-for')?.split(',')[0].trim() ||
+    (req as NextRequest & { ip?: string }).ip ||
+    'unknown'
+  const rateLimit = checkRateLimit(ip)
+  if (rateLimit.blocked) {
+    return NextResponse.json(
+      { error: `Too many signup attempts. Try again in ${rateLimit.retryAfterSeconds} seconds.`, retryAfterSeconds: rateLimit.retryAfterSeconds },
+      { status: 429 },
+    )
+  }
+
   try {
     const { email, password, name } = await req.json()
     if (!email || !password || !name) {
@@ -30,6 +44,6 @@ export async function POST(req: NextRequest) {
     return res
   } catch (error) {
     console.error('Signup error:', error)
-    return NextResponse.json({ error: String(error) }, { status: 500 })
+    return NextResponse.json({ error: 'Account creation failed. Please try again.' }, { status: 500 })
   }
 }

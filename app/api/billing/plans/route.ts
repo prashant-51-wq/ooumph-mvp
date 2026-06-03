@@ -74,13 +74,19 @@ export async function GET() {
   return NextResponse.json(result.rows)
 }
 
+function checkAdminSecret(provided: unknown): boolean {
+  const expected = process.env.ADMIN_SECRET || ''
+  if (!expected) return false  // fail-closed: never pass when secret unset
+  return typeof provided === 'string' && provided === expected
+}
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json() as { action?: string; adminSecret?: string }
 
     // Seed default plans — requires admin secret
     if (body.action === 'seed') {
-      if (body.adminSecret !== process.env.ADMIN_SECRET) {
+      if (!checkAdminSecret(body.adminSecret)) {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
       }
       for (const plan of DEFAULT_PLANS) {
@@ -104,7 +110,7 @@ export async function POST(req: NextRequest) {
 export async function PATCH(req: NextRequest) {
   try {
     const body = await req.json() as { id: string; stripe_price_id?: string; stripe_price_id_yearly?: string; is_active?: number; commission_rate?: number; adminSecret?: string }
-    if (body.adminSecret !== process.env.ADMIN_SECRET) {
+    if (!checkAdminSecret(body.adminSecret)) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
     const { id, stripe_price_id, stripe_price_id_yearly, is_active, commission_rate } = body
