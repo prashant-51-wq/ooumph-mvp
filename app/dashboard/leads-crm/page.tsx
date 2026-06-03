@@ -2134,8 +2134,12 @@ export default function LeadsCRMPage() {
                         <td className="px-3 py-3" onClick={e => e.stopPropagation()}>
                           <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                             <button onClick={() => setSelectedContact(c)} className="p-1.5 bg-gray-800 hover:bg-indigo-900/40 rounded text-xs" title="View">👁</button>
-                            <button className="p-1.5 bg-gray-800 hover:bg-blue-900/40 rounded text-xs" title="Email">📧</button>
-                            <button className="p-1.5 bg-gray-800 hover:bg-green-900/40 rounded text-xs" title="Call">📞</button>
+                            {/* Sprint 0: Email/Call buttons disabled — no
+                                handler. Re-enable after inbox composer
+                                wiring (Email) and Twilio click-to-call
+                                (Call). */}
+                            <button disabled title="Email — coming soon" className="p-1.5 bg-gray-800 rounded text-xs opacity-40 cursor-not-allowed">📧</button>
+                            <button disabled title="Call — coming soon" className="p-1.5 bg-gray-800 rounded text-xs opacity-40 cursor-not-allowed">📞</button>
                             <button className="p-1.5 bg-gray-800 hover:bg-red-900/40 rounded text-xs text-gray-600 hover:text-red-400" onClick={() => deleteContact(c.id)} title="Delete">✕</button>
                           </div>
                         </td>
@@ -2273,10 +2277,14 @@ export default function LeadsCRMPage() {
                       ))}
                     </div>
                   </div>
+                  {/* Sprint 0: segment-action buttons (Deploy to Email /
+                      Ads / Export) had no handlers. Disabled with a
+                      "Coming soon" tooltip until the backend wiring lands
+                      in Sprint 3 (campaign loops). */}
                   <div className="flex gap-2">
-                    <button className="flex-1 py-1.5 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg text-xs transition-colors">Deploy to Email</button>
-                    <button className="flex-1 py-1.5 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg text-xs transition-colors">Deploy to Ads</button>
-                    <button className="flex-1 py-1.5 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg text-xs transition-colors">Export</button>
+                    <button disabled title="Coming soon" className="flex-1 py-1.5 bg-gray-800 text-gray-500 cursor-not-allowed rounded-lg text-xs opacity-50">Deploy to Email</button>
+                    <button disabled title="Coming soon" className="flex-1 py-1.5 bg-gray-800 text-gray-500 cursor-not-allowed rounded-lg text-xs opacity-50">Deploy to Ads</button>
+                    <button disabled title="Coming soon" className="flex-1 py-1.5 bg-gray-800 text-gray-500 cursor-not-allowed rounded-lg text-xs opacity-50">Export</button>
                   </div>
                 </div>
               ))}
@@ -2370,8 +2378,12 @@ export default function LeadsCRMPage() {
           <div className="p-6">
             <div className="flex items-center justify-between mb-5">
               <h2 className="text-white font-semibold">RFM Analysis</h2>
-              <button className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-medium transition-colors">
-                Run RFM Analysis
+              {/* Sprint 0: "Run RFM Analysis" had no handler. RFM tiers
+                  are already computed client-side from contacts.length
+                  below — no recompute trigger needed. Disabled to stop
+                  the dead-button confusion. */}
+              <button disabled title="RFM auto-refreshes from your contact list" className="px-4 py-2 bg-gray-800 text-gray-500 rounded-lg text-sm opacity-50 cursor-not-allowed">
+                Auto-refreshes
               </button>
             </div>
 
@@ -2394,25 +2406,22 @@ export default function LeadsCRMPage() {
                 )}
               </div>
 
-              {/* AI Insights */}
+              {/* AI Insights — Sprint 0: removed 4 hardcoded fake insights
+                  ("47 contacts moved to At Risk", "Champions grew 12%",
+                  etc.). Those numbers were fabricated. Real AI-driven
+                  segment insights ship in Sprint 4 (analytics + learning
+                  loop). For now, honest empty state. */}
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
                 <h3 className="text-white font-semibold mb-4">🤖 AI Insights</h3>
-                <div className="space-y-3">
-                  {[
-                    { icon:'⚠️', color:'text-orange-300', text:'47 contacts moved from Loyal to At Risk this week — consider a win-back campaign' },
-                    { icon:'📈', color:'text-emerald-300', text:'Champions segment grew by 12% this month — amplify what\'s working' },
-                    { icon:'💡', color:'text-indigo-300', text:'31 New Customers are ready for an upsell offer based on purchase frequency' },
-                    { icon:'🎯', color:'text-blue-300', text:'LATAM segment shows 2x higher LTV — consider dedicated nurture sequence' },
-                  ].map((insight, i) => (
-                    <div key={i} className="flex gap-3 p-3 bg-gray-800/50 rounded-lg">
-                      <span className="text-lg flex-shrink-0">{insight.icon}</span>
-                      <p className={`text-sm ${insight.color}`}>{insight.text}</p>
-                    </div>
-                  ))}
+                <div className="text-center py-8">
+                  <div className="text-3xl mb-2">🌱</div>
+                  <p className="text-gray-400 text-sm font-medium">No insights yet</p>
+                  <p className="text-gray-600 text-xs mt-1 max-w-xs mx-auto">
+                    AI segment insights appear here once you have at least
+                    20 contacts with engagement data. Ships in the next
+                    analytics release.
+                  </p>
                 </div>
-                <button className="w-full mt-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-medium transition-colors">
-                  Generate Win-back Campaign
-                </button>
               </div>
             </div>
 

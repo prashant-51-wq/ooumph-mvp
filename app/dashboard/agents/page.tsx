@@ -108,7 +108,7 @@ const AGENT_META: Record<string, AgentMeta> = {
   'lead-scorer':      { icon: '⚡', role: 'Lead Qualification',    category: 'worker', supervisorId: 'growth-sup',       supervisorName: 'Growth Supervisor'  },
   'outreach-agent':   { icon: '📬', role: 'Sales Outreach',        category: 'worker', supervisorId: 'growth-sup',       supervisorName: 'Growth Supervisor'  },
   'crm-agent':        { icon: '🗄️', role: 'CRM Management',       category: 'worker', supervisorId: 'growth-sup',       supervisorName: 'Growth Supervisor'  },
-  'brand-monitor':    { icon: '👁️', role: 'Brand Monitoring',     category: 'worker', supervisorId: 'brand-sup',        supervisorName: 'Brand Supervisor'   },
+  'brand-monitor':    { icon: '📸', role: 'Brand Snapshot',        category: 'worker', supervisorId: 'brand-sup',        supervisorName: 'Brand Supervisor'   },
   reputation:         { icon: '⭐', role: 'Review Management',     category: 'worker', supervisorId: 'brand-sup',        supervisorName: 'Brand Supervisor'   },
   analytics:          { icon: '📊', role: 'Performance Analytics', category: 'worker', supervisorId: 'intelligence-sup', supervisorName: 'Intelligence Supervisor' },
   'growth-optimizer': { icon: '📈', role: 'Growth Experiments',    category: 'worker', supervisorId: 'growth-sup',       supervisorName: 'Growth Supervisor'  },
@@ -171,7 +171,7 @@ const AGENT_DISPLAY_NAME: Record<string, string> = {
   'lead-scorer':      'Lead Scorer Agent',
   'outreach-agent':   'Outreach Agent',
   'crm-agent':        'CRM Agent',
-  'brand-monitor':    'Brand Monitor Agent',
+  'brand-monitor':    'Brand Snapshot Agent',
   reputation:         'Reputation Agent',
   analytics:          'Analytics Agent',
   'growth-optimizer': 'Growth Optimizer Agent',
@@ -606,9 +606,9 @@ function LogModal({ agent, onClose }: { agent: Agent; onClose: () => void }) {
                 </button>
               ))}
             </div>
-            <button className="px-3 py-1.5 rounded-lg bg-gray-800 text-gray-400 hover:text-white text-xs border border-gray-700 transition-colors">
-              Export Logs
-            </button>
+            {/* Sprint 0: removed "Export Logs" button — no handler, no
+                /api/agents/logs/export route. Re-add when CSV export
+                lands as a real feature. */}
             <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-gray-800 text-gray-400 hover:text-white transition-colors">✕</button>
           </div>
         </div>

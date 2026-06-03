@@ -2217,7 +2217,9 @@ export default function SettingsPage() {
                 <p className="text-indigo-300 text-xs font-medium uppercase tracking-wider">Current Plan</p>
                 <p className="text-white text-lg font-bold mt-0.5">Growth</p>
               </div>
-              <button className={btn}>Upgrade Plan</button>
+              {/* Sprint 0: was a dead button. Now navigates to the
+                  billing dashboard where the real upgrade flow lives. */}
+              <a href="/dashboard/billing" className={btn + ' inline-block text-center no-underline'}>Upgrade Plan</a>
             </div>
             <Card title="Resource Usage — May 2026">
               <UsageBar label="AI Requests" used={4230} total={10000} unit="req" />

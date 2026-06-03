@@ -39,7 +39,7 @@ const ARTIFACT_LABELS: Record<string, string> = {
   whatsapp_broadcast: 'WhatsApp Broadcast',
   analytics_report: 'Analytics & Performance Report',
   ab_test: 'A/B Test Variations',
-  brand_monitor: 'Brand Monitor Report',
+  brand_monitor: 'Brand Snapshot Report',
 }
 
 type NotifyType = 'approval_needed' | 'approved' | 'rejected'

@@ -949,7 +949,9 @@ export default function AnalyticsPage() {
                 {r.label}
               </button>
             ))}
-            <button className={`px-3 py-1.5 rounded text-xs font-medium transition-colors text-gray-400 hover:text-white`}>Custom</button>
+            {/* Sprint 0: was a "Custom" range button with no date-picker
+                wired. Disabled until the picker lands in Sprint 6 polish. */}
+            <button disabled title="Custom range picker coming soon" className="px-3 py-1.5 rounded text-xs font-medium text-gray-600 opacity-50 cursor-not-allowed">Custom</button>
           </div>
 
           {/* Compare toggle */}
@@ -1391,7 +1393,8 @@ export default function AnalyticsPage() {
           <div className="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden">
             <div className="px-5 py-4 border-b border-gray-800 flex items-center justify-between">
               <h2 className="text-white font-semibold">Top 10 Posts</h2>
-              <button className="text-gray-400 hover:text-white text-xs border border-gray-700 px-3 py-1 rounded-lg transition-colors">Export CSV</button>
+              {/* Sprint 0: Export CSV had no handler — disabled. */}
+              <button disabled title="Coming soon" className="text-gray-600 text-xs border border-gray-800 px-3 py-1 rounded-lg opacity-50 cursor-not-allowed">Export CSV</button>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full">

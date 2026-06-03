@@ -244,7 +244,7 @@ interface AgentDisplaySlot {
 const AGENT_STATUS_DISPLAY: AgentDisplaySlot[] = [
   { slug: 'cmo',              label: 'Strategy' },
   { slug: 'content-sup',      label: 'Content' },
-  { slug: 'brand-monitor',    label: 'Brand Monitor' },
+  { slug: 'brand-monitor',    label: 'Brand Snapshot' },
   { slug: 'intelligence-sup', label: 'Research' },
   { slug: 'lead-scorer',      label: 'Lead Gen' },
   { slug: 'social-agent',     label: 'Publishing' },

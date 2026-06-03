@@ -874,7 +874,8 @@ export default function ImageGenPage() {
               <div className="flex items-center gap-2 mb-4 p-3 rounded-xl bg-indigo-900/30 border border-indigo-800/50">
                 <span className="text-indigo-300 text-xs font-medium">{selectedGalleryIds.size} selected</span>
                 <div className="flex gap-2 ml-auto">
-                  <button className="px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs transition-colors">Batch Download</button>
+                  {/* Sprint 0: Batch Download had no handler. */}
+                  <button disabled title="Coming soon" className="px-3 py-1.5 rounded-lg bg-gray-800 text-gray-500 text-xs opacity-50 cursor-not-allowed">Batch Download</button>
                 </div>
               </div>
             )}

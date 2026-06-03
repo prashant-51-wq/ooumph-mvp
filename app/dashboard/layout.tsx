@@ -38,7 +38,7 @@ const ADVANCED_NAV = [
     items: [
       { href: '/dashboard/strategy', label: 'Strategy', icon: '🧠' },
       { href: '/dashboard/research', label: 'Market Research', icon: '🔍' },
-      { href: '/dashboard/brand-monitor', label: 'Brand Monitor', icon: '👁️' },
+      { href: '/dashboard/brand-monitor', label: 'Brand Snapshot', icon: '📸' },
       { href: '/dashboard/memory', label: 'Brand Memory', icon: '📚' },
       { href: '/dashboard/learning', label: 'AI Learning', icon: '🧬' },
     ],
@@ -178,7 +178,7 @@ function getPageTitle(pathname: string): string {
     '/dashboard/workspace': 'Workspace Hub',
     '/dashboard/memory': 'Brand Memory',
     '/dashboard/learning': 'AI Learning',
-    '/dashboard/brand-monitor': 'Brand Monitor',
+    '/dashboard/brand-monitor': 'Brand Snapshot',
     '/dashboard/ab-test': 'A/B Testing',
     '/dashboard/assets': 'Assets',
     '/dashboard/onboarding': 'Workspace Setup',

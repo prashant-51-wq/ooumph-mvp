@@ -299,8 +299,8 @@ export default function BrandMonitorPage() {
       {/* Header */}
       <div className="mb-8 flex items-start justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-white">👁️ Brand Monitor</h1>
-          <p className="text-gray-400 text-sm mt-1">Real-time brand & competitor intelligence powered by live web signals.</p>
+          <h1 className="text-2xl font-bold text-white">📸 Brand Snapshot</h1>
+          <p className="text-gray-400 text-sm mt-1">One-shot AI-generated digest of your brand & competitor positioning. Continuous social-listening ingestion ships post-beta.</p>
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -348,7 +348,7 @@ export default function BrandMonitorPage() {
               Generate Crisis Response
             </button>
             <button
-              onClick={() => feedToCMO(`Brand crisis flagged — severity ${crisisSeverity}. Open Brand Monitor for context.`)}
+              onClick={() => feedToCMO(`Brand crisis flagged — severity ${crisisSeverity}. Open Brand Snapshot for context.`)}
               className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm rounded-lg transition-colors"
             >
               📤 Deploy to CMO

@@ -160,7 +160,7 @@ export default function LearningHubPage() {
   const [settings, setSettings] = useState<LearningSettings>({
     autoLearn: true,
     confidenceThreshold: 70,
-    agents: { CMO: true, Strategy: true, 'Brand Monitor': true, Content: true, Email: false, Social: false },
+    agents: { CMO: true, Strategy: true, 'Brand Snapshot': true, Content: true, Email: false, Social: false },
   })
   const [settingsSaved, setSettingsSaved] = useState(false)
 
@@ -771,7 +771,7 @@ export default function LearningHubPage() {
 function FeedToAgentDropdown({ nodeId }: { nodeId: string }) {
   const [open, setOpen] = useState(false)
   const [fed, setFed] = useState<string | null>(null)
-  const agents = ['CMO Agent', 'Strategy Agent', 'Brand Monitor', 'Content Agent', 'Email Agent']
+  const agents = ['CMO Agent', 'Strategy Agent', 'Brand Snapshot', 'Content Agent', 'Email Agent']
 
   return (
     <div className="relative">
