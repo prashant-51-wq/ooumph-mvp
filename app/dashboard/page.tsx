@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation'
 import { useAgentStream } from '@/lib/use-agent-stream'
 import { usePersistedState } from '@/lib/hooks/use-persisted-state'
 import type { AgentEvent } from '@/lib/agent-stream'
+import { WidgetErrorBoundary } from '@/components/WidgetErrorBoundary'
 import AgentConsole from '@/components/AgentConsole'
 import ReviewRequiredModal from '@/components/ReviewRequiredModal'
 import LinkClickROIWidget from '@/components/LinkClickROIWidget'
@@ -1136,9 +1137,17 @@ export default function DashboardPage() {
   const lastAppendedEventIdxRef = useRef(0)
 
   // Right panel state
-  const [runs, setRuns] = useState<AgentRun[]>([])
+  // Sprint 20P: persist runs as well — same rationale as stats. The
+  // CMO console + dependency graph render straight off this array;
+  // showing last-known runs instantly beats a 200-300ms flash of empty.
+  const [runs, setRuns] = usePersistedState<AgentRun[]>('cmo:runs', [])
   const [runsLoading, setRunsLoading] = useState(true)
-  const [stats, setStats] = useState<Stats>({ artifacts: 0, pendingApprovals: 0, learningNotes: 0, completedTypes: [] })
+  // Sprint 20P: persist stats so the first paint after navigation shows
+  // last-known counters INSTANTLY (cached in localStorage via usePersisted-
+  // State) instead of flashing "0" placeholders while the /api/stats fetch
+  // resolves. The existing polling/refresh effects keep this up-to-date —
+  // they call setStats() which still propagates through this hook.
+  const [stats, setStats] = usePersistedState<Stats>('cmo:stats', { artifacts: 0, pendingApprovals: 0, learningNotes: 0, completedTypes: [] })
   // Sprint 3A: real agent lifecycle map (slug -> 'active'|'paused'|'error'|'disabled').
   // Hydrated from /api/agents/registry (the endpoint added in Sprint 2 Commit 3).
   // The sidebar's "Agent Status" widget reads this; previously it was a fully
@@ -2029,24 +2038,28 @@ export default function DashboardPage() {
                   rather than letting it crash the whole page. localStorage
                   can hold stale or partially-saved entries from older
                   builds; one bad message used to trip the dashboard error
-                  boundary. */}
+                  boundary.
+                  Sprint 20P: each bubble also gets its own local boundary
+                  so one broken proposal payload can't crash the whole
+                  conversation list. */}
               {messages
                 .filter((m): m is Message =>
                   !!m && typeof m === 'object' && typeof m.id === 'string' && (m.role === 'cmo' || m.role === 'user')
                 )
                 .map((msg) => (
-                  <MessageBubble
-                    key={msg.id}
-                    msg={msg}
-                    userLetter={userLetter}
-                    onApprove={approveTeam}
-                    onRephrase={handleRephrase}
-                    executing={executing}
-                    executingMsgId={executingMsgId}
-                    streamingText={stream.streamingText}
-                    isLive={msg.id === streamingMsgId && msg.isStreaming === true}
-                    runs={Array.isArray(runs) ? runs : []}
-                  />
+                  <WidgetErrorBoundary key={msg.id} widgetName="Chat bubble">
+                    <MessageBubble
+                      msg={msg}
+                      userLetter={userLetter}
+                      onApprove={approveTeam}
+                      onRephrase={handleRephrase}
+                      executing={executing}
+                      executingMsgId={executingMsgId}
+                      streamingText={stream.streamingText}
+                      isLive={msg.id === streamingMsgId && msg.isStreaming === true}
+                      runs={Array.isArray(runs) ? runs : []}
+                    />
+                  </WidgetErrorBoundary>
                 ))}
               {/* Show typing indicator only when waiting BEFORE the first token */}
               {loading && stream.streamingText.length === 0 && stream.status !== 'streaming' && <TypingIndicator />}
@@ -2342,7 +2355,15 @@ export default function DashboardPage() {
                 Hidden on mobile/tablet (<lg) to keep the chat readable —
                 will get a dedicated bottom-sheet treatment in Step 25
                 (mobile responsiveness pass). */}
+          {/* Sprint 20P: isolate the Agent Console behind a local error
+              boundary. If a malformed event ever sneaks through (e.g. a
+              third-party stream injection or a future schema change), the
+              rail collapses to a small "unavailable" card and the chat
+              column keeps working. Sprint 20K's segment-level error
+              boundary nuked the whole layout; this is the per-widget
+              version. */}
           <div className="hidden lg:flex flex-shrink-0">
+            <WidgetErrorBoundary widgetName="Agent Console">
             <AgentConsole
               mode="rail"
               open={consoleOpen}
@@ -2369,6 +2390,7 @@ export default function DashboardPage() {
               }}
               title="Agent Console"
             />
+            </WidgetErrorBoundary>
           </div>
 
         </div>

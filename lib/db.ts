@@ -224,6 +224,21 @@ async function postgresQuery(strings: TemplateStringsArray, ...values: unknown[]
     await pgSql`CREATE INDEX IF NOT EXISTS idx_project_tasks_initiative ON project_tasks(initiative_run_id, task_index ASC)`
     await pgSql`CREATE INDEX IF NOT EXISTS idx_project_tasks_workspace ON project_tasks(workspace_id, created_at DESC)`
     await pgSql`CREATE INDEX IF NOT EXISTS idx_project_tasks_status ON project_tasks(status, created_at ASC)`
+
+    // ─── Sprint 20P: dashboard hot-path indexes ──────────────────────────
+    // /api/stats runs 4 COUNT/DISTINCT queries on artifacts +
+    // learning_notes filtered by workspace_id. /api/agent-runs orders
+    // by created_at DESC scoped to workspace_id. Without these, every
+    // dashboard mount was a full seq-scan on growing tables. Composite
+    // (workspace_id, created_at DESC) supports both the COUNT and the
+    // recent-rows view in one btree.
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_artifacts_workspace_created ON artifacts(workspace_id, created_at DESC)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_artifacts_workspace_type ON artifacts(workspace_id, type)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_learning_notes_workspace ON learning_notes(workspace_id, created_at DESC)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_agent_runs_workspace_created ON agent_runs(workspace_id, created_at DESC)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_agent_runs_workspace_status ON agent_runs(workspace_id, status, created_at DESC)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_leads_captured_workspace ON leads_captured(workspace_id, created_at DESC)`
+
     // Sprint 20O — allow CMO to persist tasks at proposal time, BEFORE a
     // strategy artifact exists. parent_artifact_id and initiative_run_id
     // are populated only after the user approves the strategy bubble and
