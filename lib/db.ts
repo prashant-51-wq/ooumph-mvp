@@ -224,6 +224,22 @@ async function postgresQuery(strings: TemplateStringsArray, ...values: unknown[]
     await pgSql`CREATE INDEX IF NOT EXISTS idx_project_tasks_initiative ON project_tasks(initiative_run_id, task_index ASC)`
     await pgSql`CREATE INDEX IF NOT EXISTS idx_project_tasks_workspace ON project_tasks(workspace_id, created_at DESC)`
     await pgSql`CREATE INDEX IF NOT EXISTS idx_project_tasks_status ON project_tasks(status, created_at ASC)`
+    // Sprint 20O — allow CMO to persist tasks at proposal time, BEFORE a
+    // strategy artifact exists. parent_artifact_id and initiative_run_id
+    // are populated only after the user approves the strategy bubble and
+    // decompose-strategy runs. Until then they're null; a CHECK keeps the
+    // invariant honest: those fields can ONLY be null while status='proposed'.
+    await pgSql`ALTER TABLE project_tasks ALTER COLUMN parent_artifact_id DROP NOT NULL`
+    await pgSql`ALTER TABLE project_tasks ALTER COLUMN initiative_run_id DROP NOT NULL`
+    await pgSql`ALTER TABLE project_tasks ADD COLUMN IF NOT EXISTS proposal_payload TEXT`
+    await pgSql`ALTER TABLE project_tasks ADD COLUMN IF NOT EXISTS cmo_run_id TEXT`
+    try {
+      await pgSql`
+        ALTER TABLE project_tasks ADD CONSTRAINT chk_task_proposal_state
+          CHECK (status = 'proposed' OR (parent_artifact_id IS NOT NULL AND initiative_run_id IS NOT NULL))
+      `
+    } catch { /* constraint may already exist; idempotent ALTER ADD CONSTRAINT isn't supported pre-PG14 */ }
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_project_tasks_cmo_run ON project_tasks(cmo_run_id) WHERE cmo_run_id IS NOT NULL`
     // === Sprint 2 Commit 1: Agent Lifecycle + Workspace Projects (Postgres inline init) ===
     //
     //   agents — per-workspace agent registry. One row per (workspace_id, name).

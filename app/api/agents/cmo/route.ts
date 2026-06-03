@@ -569,6 +569,61 @@ async function runCmoChatStreaming(
       msg: `Proposal ready · team: [${teamNames}] · first action: ${proposal.firstAction} · ${claudeMs}ms · ~${proposal.reply.length} reply chars`,
     })
 
+    // ─── Sprint 20O: persist proposed tasks ─────────────────────────────────
+    // Audit P1 #5 — the audit found the CMO's "team assignment" was a
+    // pure UI mockup: the JSON in the chat bubble vanished if the user
+    // never clicked "Deploy team", and sub-agents had no way to discover
+    // what work was queued for the workspace. Now every team member from
+    // the proposal lands in project_tasks with status='proposed'. The
+    // approval/auto-execute path flips them to 'pending' and backfills
+    // parent_artifact_id once the strategy artifact is created (see
+    // /api/agents/cmo execute path and /api/approvals route below).
+    //
+    // The schema migration in lib/db.ts dropped NOT NULL from
+    // parent_artifact_id + initiative_run_id and added a CHECK to keep
+    // the invariant: those fields can ONLY be null while status='proposed'.
+    const proposedTaskIds: string[] = []
+    if (Array.isArray(proposal.team) && proposal.team.length > 0) {
+      try {
+        const proposalPayload = JSON.stringify({
+          project: proposal.project,
+          team: proposal.team,
+          firstAction: proposal.firstAction,
+          reply: proposal.reply,
+          userMessage: message.slice(0, 500),
+        })
+        for (let i = 0; i < proposal.team.length; i++) {
+          const member = proposal.team[i]
+          const taskId = `task_${Date.now()}_${i}_${Math.random().toString(36).slice(2, 8)}`
+          await sql`
+            INSERT INTO project_tasks (
+              id, workspace_id, initiative_run_id, parent_artifact_id,
+              task_index, agent, task_type, task_brief,
+              status, cmo_run_id, proposal_payload, created_at
+            ) VALUES (
+              ${taskId}, ${workspaceId}, ${null}, ${null},
+              ${i}, ${member.agent}, ${'proposal'},
+              ${`${member.role}: ${member.description}`.slice(0, 1000)},
+              ${'proposed'}, ${handle.runId}, ${proposalPayload}, NOW()
+            )
+          `
+          proposedTaskIds.push(taskId)
+        }
+        await handle.send({
+          t: 'agent_log', agent: 'cmo', level: 'info',
+          msg: `Persisted ${proposedTaskIds.length} proposed task${proposedTaskIds.length === 1 ? '' : 's'} to project_tasks`,
+        })
+      } catch (err) {
+        // Persistence failure is non-fatal — the chat still returns the
+        // proposal so the user can interact. Surface as a warn-level log
+        // event so we can debug post-hoc.
+        await handle.send({
+          t: 'agent_log', agent: 'cmo', level: 'warn',
+          msg: `Task persistence skipped: ${err instanceof Error ? err.message : String(err)}`,
+        })
+      }
+    }
+
     await handle.send({
       t: 'agent_done',
       agent: 'cmo',
@@ -591,6 +646,11 @@ async function runCmoChatStreaming(
         project: proposal.project,
         team: proposal.team,
         firstAction: proposal.firstAction,
+        // Sprint 20O: surface the task IDs so the client (or the
+        // approve/execute flow) can flip them from 'proposed' to
+        // 'pending' once the user signs off.
+        proposedTaskIds,
+        cmoRunId: handle.runId,
       },
       cost: Math.max(0.001, proposal.reply.length * 0.0000015),
     })
@@ -632,6 +692,34 @@ async function runCmoExecuteStreaming(
       level: 'info',
       msg: `→ Dispatching to ${agentSlug} (${AGENT_ROUTE_MAP[agentSlug] || '/api/agents/strategy'})`,
     })
+
+    // ─── Sprint 20O: flip proposed tasks for THIS workspace to 'pending' ─
+    // The chat path persisted proposed_task rows tied to a previous CMO
+    // run. The user just clicked Deploy team (or the auto-orchestrate
+    // from Sprint 20J fired automatically), so any tasks still sitting
+    // in 'proposed' for this workspace are now actively executing. Flip
+    // their state to 'pending' so the workspace task board reflects the
+    // truth. parent_artifact_id stays NULL — it'll be backfilled by the
+    // approvals handler once the strategy artifact is created.
+    try {
+      const flipped = await sql`
+        UPDATE project_tasks
+        SET status = 'pending', started_at = NOW()
+        WHERE workspace_id = ${workspaceId}
+          AND status = 'proposed'
+        RETURNING id
+      `
+      if (flipped.rows.length > 0) {
+        await handle.send({
+          t: 'agent_log',
+          agent: 'cmo',
+          level: 'info',
+          msg: `Promoted ${flipped.rows.length} proposed task${flipped.rows.length === 1 ? '' : 's'} → pending`,
+        })
+      }
+    } catch (err) {
+      console.warn('[cmo execute] task promotion failed (non-fatal):', err)
+    }
 
     // ─── Run the sub-agent ───────────────────────────────────────────────
     // Future-proofing: when the sub-agent route itself supports streaming
@@ -766,6 +854,29 @@ async function runCmoExecuteStreaming(
           artifactId: produced.artifactId,
           publishDestination: produced.publishDestination,
         })
+      }
+
+      // ─── Sprint 20O: backfill parent_artifact_id on the dispatched task ─
+      // The proposed→pending flip above left parent_artifact_id NULL
+      // (artifact didn't exist yet). Now that it does, link the task row
+      // for THIS agent to the artifact it produced. Restricts to the
+      // matching agent slug + this workspace + still-NULL parent — leaves
+      // older tasks alone.
+      try {
+        await sql`
+          UPDATE project_tasks
+          SET parent_artifact_id = ${produced.artifactId},
+              produced_artifact_id = ${produced.artifactId},
+              agent_run_id = ${subAgent.runId},
+              status = 'completed',
+              completed_at = NOW()
+          WHERE workspace_id = ${workspaceId}
+            AND agent = ${agentSlug}
+            AND status = 'pending'
+            AND parent_artifact_id IS NULL
+        `
+      } catch (err) {
+        console.warn('[cmo execute] task backfill failed (non-fatal):', err)
       }
     }
 
