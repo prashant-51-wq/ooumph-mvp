@@ -27,6 +27,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { assertWorkspaceOwnership } from '@/lib/guards'
+import { isSupportedPublishChannel, unsupportedChannelError } from '@/lib/publish-platforms'
 
 export const runtime = 'nodejs'
 
@@ -134,6 +135,17 @@ export async function POST(req: NextRequest) {
     const denied = assertWorkspaceOwnership(req, workspaceId)
     if (denied) return denied
 
+    // Sprint 20N: gate at schedule time. The publish-scheduled cron only
+    // implements dispatchers for LinkedIn, X/Twitter, and WordPress.
+    // Pre-20N, scheduling to Instagram/Facebook/Telegram/TikTok/YouTube
+    // would silently park the row in 'pending' forever — no delivery, no
+    // error notification. Reject upfront so the UI can route the user
+    // to a supported channel (or to Connect for OAuth) instead of
+    // pretending it worked.
+    if (!isSupportedPublishChannel(channel)) {
+      return NextResponse.json(unsupportedChannelError(channel), { status: 400 })
+    }
+
     if (artifactId) {
       const check = await sql`SELECT id FROM artifacts WHERE id = ${artifactId} AND workspace_id = ${workspaceId} LIMIT 1`
       if (!check.rows[0]) {
@@ -220,6 +232,13 @@ export async function PATCH(req: NextRequest) {
         { error: `Status '${status}' not allowed from this endpoint.` },
         { status: 422 },
       )
+    }
+
+    // Sprint 20N: same gating as POST. A PATCH that switches the channel
+    // from a supported one (linkedin) to an unsupported one (instagram)
+    // would otherwise silently push the row into the dead zone.
+    if (body.channel !== undefined && !isSupportedPublishChannel(body.channel)) {
+      return NextResponse.json(unsupportedChannelError(body.channel), { status: 400 })
     }
 
     // Detect content-affecting changes → reset retry counter + clear error.

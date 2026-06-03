@@ -30,6 +30,7 @@ import { decryptSecret } from '@/lib/secrets'
 import { shortenAndTrackUrls } from '@/lib/link-tracker'
 import { buildAgentActiveCache } from '@/lib/agents'
 import { notifyPublishSuccess } from '@/lib/notifications'
+import { isSupportedPublishChannel } from '@/lib/publish-platforms'
 
 export const runtime = 'nodejs'
 export const maxDuration = 300
@@ -253,6 +254,40 @@ export async function GET(req: NextRequest) {
       // resume. No retry counter bump — pausing is not a failure.
       if (!(await socialAgentActive(workspaceId))) {
         results.push({ id: itemId, status: 'skipped_agent_paused' })
+        continue
+      }
+
+      // ── 0.75. Sprint 20N: defense-in-depth dispatch-gate. The schedule
+      // endpoints (/api/publishing POST/PATCH, /api/schedule/bulk POST)
+      // now reject unsupported channels upfront, but a legacy row could
+      // still exist from before the gating shipped — or from a direct
+      // INSERT we don't control. Don't let those sit pending forever.
+      // Mark them failed immediately with a clear message so the user
+      // sees them in the activity feed and can re-schedule on a
+      // supported channel.
+      if (!isSupportedPublishChannel(channel)) {
+        const now = new Date().toISOString()
+        await sql`
+          UPDATE scheduled_content
+          SET status = 'failed',
+              error_message = ${`Publishing to "${channel}" is not yet supported. Re-schedule to LinkedIn, X/Twitter, or WordPress.`},
+              updated_at = ${now}
+          WHERE id = ${itemId}
+        `
+        try {
+          await sql`
+            INSERT INTO notifications (id, workspace_id, type, title, body, link, severity, created_at)
+            VALUES (
+              ${newId()}, ${workspaceId}, 'publish_failed',
+              ${`Publish blocked — "${channel}" not supported`},
+              ${'Re-schedule this post to LinkedIn, X/Twitter, or WordPress.'},
+              '/dashboard/calendar',
+              'warning',
+              ${now}
+            )
+          `
+        } catch { /* non-fatal */ }
+        results.push({ id: itemId, status: 'failed', error: 'unsupported_channel' })
         continue
       }
 

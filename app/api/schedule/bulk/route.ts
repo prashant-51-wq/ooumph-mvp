@@ -10,6 +10,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { assertWorkspaceOwnership } from '@/lib/guards'
+import { isSupportedPublishChannel, unsupportedChannelError } from '@/lib/publish-platforms'
 
 interface ScheduledPost {
   platform: string
@@ -37,6 +38,23 @@ export async function POST(req: NextRequest) {
 
     if (posts.length > 100) {
       return NextResponse.json({ error: 'Maximum 100 posts per bulk request' }, { status: 400 })
+    }
+
+    // Sprint 20N: gate each post's platform up front. Reject the entire
+    // batch if any single row targets an unsupported channel — atomicity
+    // is more honest than silently dropping half.
+    for (let i = 0; i < posts.length; i++) {
+      const p = posts[i]
+      if (!p.platform || !isSupportedPublishChannel(p.platform)) {
+        return NextResponse.json(
+          {
+            ...unsupportedChannelError(p.platform || ''),
+            failedIndex: i,
+            hint: `Post #${i} targets "${p.platform}". Switch to a supported channel or split the batch.`,
+          },
+          { status: 400 },
+        )
+      }
     }
 
     const now = Date.now()
