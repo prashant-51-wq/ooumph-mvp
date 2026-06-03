@@ -4,8 +4,10 @@ import { sql, newId } from '@/lib/db'
 import { sendApprovalConfirmationEmail } from '@/lib/email'
 import { assertWorkspaceOwnership } from '@/lib/guards'
 import { notifyPublishFailed } from '@/lib/notifications'
+import { activateProposedTasks, createAgentRunsForTasks } from '@/lib/agents/task-registry'
+import { getBaseUrl } from '@/lib/base-url'
 
-const BASE_URL = process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000'
+const BASE_URL = getBaseUrl()
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
@@ -227,6 +229,46 @@ export async function PATCH(req: NextRequest) {
           }
         } catch (err) {
           console.error('[approvals after()] strategy decomposition failed:', err)
+        }
+      })
+    }
+
+    // ── Sprint 3 Loop 3: flip proposed → pending + write agent_run traces ────
+    //
+    // CMO creates project_tasks with status='proposed' at proposal time.
+    // Approving a strategy artifact is the human signal to open the execution
+    // runway: atomically flip all proposed tasks to pending and write an
+    // agent_runs trace row for each so the Agent Console shows the pipeline
+    // as declared before sub-agents actually boot.
+    //
+    // This is workspace-scoped (not artifact-scoped) because a workspace can
+    // only be in one active CMO proposal cycle at a time, and the CMO run
+    // that proposed the team predates the strategy artifact's existence.
+    if (action === 'approve' && artifact?.type === 'strategy') {
+      after(async () => {
+        try {
+          const flipped = await activateProposedTasks(workspaceId)
+          if (flipped.length > 0) {
+            await createAgentRunsForTasks(workspaceId, flipped)
+            console.log(
+              `[approvals] strategy ${artifact.id}: flipped ${flipped.length} tasks proposed→pending,` +
+              ` agents: [${[...new Set(flipped.map(t => t.agent))].join(', ')}]`
+            )
+            // Notify the workspace so the user can see the pipeline opened
+            await sql`
+              INSERT INTO notifications (id, workspace_id, type, title, body, link, severity, created_at)
+              VALUES (
+                ${newId()}, ${workspaceId}, 'execution_started',
+                ${'Execution runway open — ' + flipped.length + ' agent task' + (flipped.length === 1 ? '' : 's') + ' queued'},
+                ${'Agents: ' + [...new Set(flipped.map(t => t.agent))].join(', ')},
+                '/dashboard/agents',
+                'info',
+                ${new Date().toISOString()}
+              )
+            `.catch(() => { /* non-fatal */ })
+          }
+        } catch (err) {
+          console.error('[approvals after()] task activation failed (non-fatal):', err)
         }
       })
     }

@@ -40,6 +40,7 @@ import { after } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { notifyLeadCaptured } from '@/lib/notifications'
 import { fireSegmentTriggersForNewLead } from '@/lib/segment-trigger'
+import { getBaseUrl } from '@/lib/base-url'
 
 export const runtime = 'nodejs'
 
@@ -207,10 +208,10 @@ export async function POST(req: NextRequest) {
       if (!leadId) {
         leadId = newId()
         await sql`
-          INSERT INTO leads_captured (id, workspace_id, name, email, phone, source, campaign, status, score, notes)
+          INSERT INTO leads_captured (id, workspace_id, name, email, phone, source, campaign, status, score, notes, enrichment_status)
           VALUES (
             ${leadId}, ${funnel.workspace_id}, ${inferredName}, ${email}, ${inferredPhone},
-            'funnel_form', ${funnel.slug || funnel.id}, 'new', 0, ${null}
+            'funnel_form', ${funnel.slug || funnel.id}, 'new', 0, ${null}, 'pending'
           )
         `
         // Fire the notification AFTER the lead is in place so the bell
@@ -294,15 +295,92 @@ export async function POST(req: NextRequest) {
         WHERE workspace_id = ${funnel.workspace_id} AND email = ${email}
         LIMIT 1
       `
-      const leadId = (lr.rows[0] as { id?: string } | undefined)?.id
-      if (leadId) {
+      const resolvedLeadId = (lr.rows[0] as { id?: string } | undefined)?.id
+      if (resolvedLeadId) {
         await fireSegmentTriggersForNewLead({
           workspaceId: funnel.workspace_id,
-          leadId,
+          leadId: resolvedLeadId,
           contactEmail: email,
         })
       }
     } catch { /* non-fatal */ }
+
+    // ── Sprint 3 Loop 2: enrichment → email drip chain ────────────────────
+    // Re-resolve the lead so we have a stable leadId even if the CRM block
+    // above ran on an existing lead (different local scope).
+    try {
+      const lr2 = await sql`
+        SELECT id FROM leads_captured
+        WHERE workspace_id = ${funnel.workspace_id} AND email = ${email}
+        LIMIT 1
+      `
+      const nurturLeadId = (lr2.rows[0] as { id?: string } | undefined)?.id
+      if (!nurturLeadId) return
+
+      const baseUrl = getBaseUrl()
+      const secret = process.env.ADMIN_SECRET || process.env.CRON_SECRET || ''
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        ...(secret ? { 'x-internal-secret': secret } : {}),
+      }
+
+      // 1. Trigger parallel firmographic enrichment
+      let enrichOk = false
+      try {
+        const enrichRes = await fetch(`${baseUrl}/api/agents/enrich-lead`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ workspaceId: funnel.workspace_id, leadId: nurturLeadId }),
+        })
+        enrichOk = enrichRes.ok
+        if (!enrichOk) console.warn(`[f/submit after] enrich-lead ${enrichRes.status}`)
+      } catch (e) {
+        console.warn('[f/submit after] enrich-lead error (non-fatal):', e)
+      }
+
+      // 2. Inject into drip queue once firmographic data is appended
+      if (enrichOk) {
+        try {
+          await fetch(`${baseUrl}/api/agents/funnel/email-sequence`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+              workspaceId: funnel.workspace_id,
+              sequenceType: 'nurture',
+              leadContext: { leadId: nurturLeadId, email },
+            }),
+          }).catch(() => undefined)
+        } catch { /* non-fatal */ }
+      }
+
+      // 3. Track this lead's personalised nurture journey in workflow_runs
+      try {
+        const wfRes = await sql`
+          SELECT id FROM workflows
+          WHERE workspace_id = ${funnel.workspace_id}
+            AND trigger_type = 'lead_captured'
+            AND status = 'active'
+          LIMIT 1
+        `
+        const wfId = (wfRes.rows[0] as { id?: string } | undefined)?.id
+        if (wfId) {
+          await sql`
+            INSERT INTO workflow_runs (
+              id, workflow_id, workspace_id, lead_id, contact_email,
+              trigger_data, status, current_node, nodes_completed, started_at
+            ) VALUES (
+              ${newId()}, ${wfId}, ${funnel.workspace_id}, ${nurturLeadId}, ${email},
+              ${JSON.stringify({ source: 'funnel_form', funnelStepId: funnel.id, enriched: enrichOk })},
+              'running', 0, '[]', NOW()
+            )
+          `
+        }
+      } catch (e) {
+        console.warn('[f/submit after] workflow_runs insert failed (non-fatal):', e)
+      }
+    } catch (e) {
+      console.error('[f/submit after] Sprint 3 nurture chain failed (non-fatal):', e)
+    }
   })
 
   // ── 6. Get the updated count for the response (approximate, pre-bump) ─
