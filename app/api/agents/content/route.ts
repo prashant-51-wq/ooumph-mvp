@@ -5,6 +5,7 @@ import { sendApprovalRequestEmail } from '@/lib/email'
 import { generateStaticPost, generateStoryCover, generateVideoBrief } from '@/lib/creative-workers'
 import { assertWorkspaceOwnership } from '@/lib/guards'
 import { assertAgentRunQuota } from '@/lib/quota'
+import { buildMemoryMatrix, logMemoryInjection } from '@/lib/agents/memory-retrieval'
 import type { BrandProfile } from '@/types'
 
 export async function POST(req: NextRequest) {
@@ -27,9 +28,16 @@ export async function POST(req: NextRequest) {
     runId = newId()
     await sql`INSERT INTO agent_runs (id, workspace_id, agent_name, status) VALUES (${runId}, ${workspaceId}, 'content_calendar', 'running')`
 
+    // Sprint 1: build Postgres memory matrix + log injection event so we
+    // can audit (via SELECT FROM agent_run_events WHERE event_type='memory_injected')
+    // that the content calendar agent read past performance signals
+    // before generating.
+    const memoryMatrix = await buildMemoryMatrix(workspaceId)
+    await logMemoryInjection({ workspaceId, agentRunId: runId, agent: 'content_calendar', matrix: memoryMatrix })
+
     let calendar
     try {
-      calendar = await generateContentCalendar(brand, strategy)
+      calendar = await generateContentCalendar(brand, strategy, memoryMatrix.matrix)
     } catch (agentError) {
       await sql`UPDATE agent_runs SET status = 'failed', completed_at = CURRENT_TIMESTAMP WHERE id = ${runId}`
       throw agentError

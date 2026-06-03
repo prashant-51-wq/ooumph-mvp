@@ -26,6 +26,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { after } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { runAgent } from '@/lib/claude'
+import { buildMemoryMatrix, logMemoryInjection } from '@/lib/agents/memory-retrieval'
 import { sendApprovalRequestEmail } from '@/lib/email'
 import { assertWorkspaceOwnership } from '@/lib/guards'
 import { assertAgentRunQuota } from '@/lib/quota'
@@ -75,6 +76,7 @@ async function generateStrategyStreaming(
   brand: BrandProfile,
   timeframe: string,
   sink: ProgressSink,
+  agentRunId?: string,
 ): Promise<Strategy> {
   // Sprint 15E: use brand.workspace_id for memory lookup. BrandProfile
   // already carries it (see types/index.ts) so no new parameter is needed.
@@ -167,8 +169,22 @@ Return JSON with this exact shape:
 
 Make every recommendation concrete and actionable. KPIs must have measurable targets.`
 
+  // ─── Sprint 1: deterministic Postgres memory injection ─────────────
+  // Pulls 30-day winners, brand voice rules, and live campaign state
+  // BEFORE the Claude call. Appended to the userPrompt as an explicit
+  // '### SYSTEM MEMORY & PAST WORKSPACE LEARNINGS' block. We log a
+  // memory_injected event so we can audit which exact memory hit the
+  // LLM. Runs in parallel with the rest of the prompt assembly above —
+  // adds ~30-80ms wall time for cold workspaces.
+  const memoryMatrix = await buildMemoryMatrix(workspaceId)
+  await sink.log(`Memory matrix · ${memoryMatrix.sources.length} sources · ${memoryMatrix.sizeBytes}B · hash=${memoryMatrix.hash.slice(0, 8)}`)
+  if (agentRunId) {
+    await logMemoryInjection({ workspaceId, agentRunId, agent: 'strategy', matrix: memoryMatrix })
+  }
+  const userPromptWithMemory = `${userPrompt}\n\n### SYSTEM MEMORY & PAST WORKSPACE LEARNINGS\n${memoryMatrix.matrix}`
+
   await sink.log('Drafting strategy with Claude (this is the slow step — usually 8–15s)')
-  const strategy = await runAgent<Strategy>(STRATEGY_SYSTEM_PROMPT, userPrompt)
+  const strategy = await runAgent<Strategy>(STRATEGY_SYSTEM_PROMPT, userPromptWithMemory)
   await sink.log('Strategy draft complete')
 
   return strategy
@@ -236,7 +252,7 @@ export async function POST(req: NextRequest) {
           },
         }
 
-        const strategy = await generateStrategyStreaming(brand, timeframe || 'monthly', sink)
+        const strategy = await generateStrategyStreaming(brand, timeframe || 'monthly', sink, handle.runId)
 
         // ─── Persist artifact + approval (the safety gate) ──────────
         await handle.send({ t: 'agent_log', agent: 'strategy', level: 'info', msg: 'Saving strategy artifact + opening approval' })
@@ -346,7 +362,7 @@ export async function POST(req: NextRequest) {
 
     let strategy: Strategy
     try {
-      strategy = await generateStrategyStreaming(brand, timeframe || 'monthly', sink)
+      strategy = await generateStrategyStreaming(brand, timeframe || 'monthly', sink, runId)
     } catch (agentErr) {
       await sql`UPDATE agent_runs SET status = 'failed', completed_at = CURRENT_TIMESTAMP WHERE id = ${runId}`
       throw agentErr

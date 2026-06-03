@@ -4,6 +4,7 @@ import { runAgent } from '@/lib/claude'
 import { Resend } from 'resend'
 import type { BrandProfile } from '@/types'
 import { assertArtifactApproved, assertWorkspaceOwnership } from '@/lib/guards'
+import { buildMemoryMatrix, logMemoryInjection } from '@/lib/agents/memory-retrieval'
 
 export async function POST(req: NextRequest) {
   try {
@@ -21,12 +22,24 @@ export async function POST(req: NextRequest) {
       const runId = newId()
       await sql`INSERT INTO agent_runs (id, workspace_id, agent_name, status) VALUES (${runId}, ${workspaceId}, 'email_marketing_agent', 'running')`
 
+      // ─── Sprint 1: Postgres memory matrix ────────────────────────────
+      // Top historic email CTRs + brand voice rules + live campaign
+      // state get injected as an explicit '### SYSTEM MEMORY' block
+      // ABOVE the campaign-specific brief, so the copywriter LLM treats
+      // past winners as authoritative style reference. logMemoryInjection
+      // writes the agent_run_events row that proves it.
+      const memoryMatrix = await buildMemoryMatrix(workspaceId)
+      await logMemoryInjection({ workspaceId, agentRunId: runId, agent: 'email_marketing_agent', matrix: memoryMatrix })
+
       const content = await runAgent<{
         subject: string; previewText: string; headline: string; body: string;
         cta: string; ctaUrl: string; ps: string; suggestedSendTime: string;
       }>(
         'You are an expert email marketing copywriter. Write high-converting email campaigns that get opens, clicks, and replies. Always respond with valid JSON.',
-        `Business: ${brand.business_name}
+        `### SYSTEM MEMORY & PAST WORKSPACE LEARNINGS
+${memoryMatrix.matrix}
+
+Business: ${brand.business_name}
 Offer: ${brand.offer}
 Audience: ${brand.target_audience}
 Tone: ${brand.tone}

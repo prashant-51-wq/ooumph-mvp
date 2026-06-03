@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { runAgent } from '@/lib/claude'
+import { buildMemoryMatrix, logMemoryInjection } from '@/lib/agents/memory-retrieval'
 import { assertWorkspaceOwnership } from '@/lib/guards'
 
 interface BlogPost {
@@ -100,6 +101,14 @@ export async function POST(req: NextRequest) {
     // user's uploaded brand docs (positioning, tone examples).
     const { getMemoryPromptBlock } = await import('@/lib/tools/memory')
     const memoryBlock = await getMemoryPromptBlock(workspaceId, { query: topic, maxNotes: 6, maxVoiceExamples: 2 })
+
+    // Sprint 1: Postgres memory matrix on top of the existing memory tool.
+    // The two blocks are complementary — getMemoryPromptBlock is keyword-
+    // search-tuned (topic-relevant notes), buildMemoryMatrix is
+    // deterministic top-N (winners, voice rules, live campaigns).
+    const memoryMatrix = await buildMemoryMatrix(workspaceId)
+    await logMemoryInjection({ workspaceId, agentRunId: runId, agent: 'blog_writer', matrix: memoryMatrix })
+
     const systemPrompt = `You are an expert SEO content writer and digital marketer. You write comprehensive, engaging blog posts that rank on Google. You follow E-E-A-T principles, use natural keyword integration, and always write in the brand's voice. You structure content for both readers and search engines.`
 
     const userPrompt = `Write a complete, publication-ready blog post for ${brand.business_name || 'the brand'}.
@@ -111,6 +120,9 @@ BRAND DETAILS:
 - Industry: ${brand.industry || ''}
 - Brand values: ${brand.brand_values || brand.values || ''}
 ${memoryBlock ? `\n${memoryBlock}\n` : ''}
+### SYSTEM MEMORY & PAST WORKSPACE LEARNINGS
+${memoryMatrix.matrix}
+
 CONTENT BRIEF:
 - Topic: ${topic}
 - Target keywords: ${keywords || 'derive from topic'}

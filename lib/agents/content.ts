@@ -9,7 +9,13 @@ Always respond with valid JSON.`
 
 export async function generateContentCalendar(
   brand: BrandProfile,
-  strategy: Strategy
+  strategy: Strategy,
+  // Sprint 1: optional Postgres memory matrix from buildMemoryMatrix().
+  // Caller is responsible for building + logging the injection event.
+  // When provided, this block is appended to the userPrompt under an
+  // explicit '### SYSTEM MEMORY & PAST WORKSPACE LEARNINGS' header so
+  // the LLM treats it as authoritative reference data, not chitchat.
+  memoryMatrixBlock?: string,
 ): Promise<ContentCalendarItem[]> {
   // Sprint 15E (P0 #6): inject brand memory (learning_notes + brand_memory)
   // so the calendar reflects the user's uploaded brand docs + approved
@@ -25,7 +31,7 @@ Content Pillars: ${strategy.contentPillars.map((p) => p.name).join(', ')}
 Tone: ${brand.tone}
 Target Audience: ${brand.target_audience}
 Offer: ${brand.offer}
-${memoryBlock ? `\n${memoryBlock}\n` : ''}
+${memoryBlock ? `\n${memoryBlock}\n` : ''}${memoryMatrixBlock ? `\n### SYSTEM MEMORY & PAST WORKSPACE LEARNINGS\n${memoryMatrixBlock}\n` : ''}
 Rules:
 - Distribute content across all selected channels
 - Vary post types: educational, storytelling, promotional, engagement, behind-scenes

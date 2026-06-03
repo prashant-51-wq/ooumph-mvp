@@ -52,6 +52,7 @@ import { runAgent, streamAgent } from '@/lib/claude'
 import { assertWorkspaceOwnership } from '@/lib/guards'
 import { assertAgentRunQuota } from '@/lib/quota'
 import { getBaseUrl } from '@/lib/base-url'
+import { buildMemoryMatrix, logMemoryInjection } from '@/lib/agents/memory-retrieval'
 import {
   createAgentEventStream,
   recordSubAgentRun,
@@ -545,17 +546,32 @@ async function runCmoChatStreaming(
       msg: `Workspace "${wsName}" · ${brandFields} brand fields populated · ${Date.now() - ctxStart}ms`,
     })
 
-    const modelName = process.env.OOUMPH_AI_MODEL || 'claude-sonnet-4-5-20250929'
-    const promptChars = brandContext.length + message.length
+    // ─── Sprint 1: Postgres-based memory injection ──────────────────────
+    // Pull 30-day winners, brand voice rules, and live campaign state
+    // BEFORE the LLM call. Inject as an explicit '### SYSTEM MEMORY' block
+    // inside the brandContext so streamProposalWithTokens picks it up
+    // unmodified. Log the injection to agent_run_events with the SHA-256
+    // hash so we can later prove which exact memory reached the model.
+    const memoryStart = Date.now()
+    const memoryMatrix = await buildMemoryMatrix(workspaceId)
     await handle.send({
       t: 'agent_log', agent: 'cmo', level: 'info',
-      msg: `Calling ${modelName} with ${promptChars} chars of context`,
+      msg: `Memory matrix built · ${memoryMatrix.sources.length} sources · ${memoryMatrix.sizeBytes}B · hash=${memoryMatrix.hash.slice(0, 8)} · ${Date.now() - memoryStart}ms`,
+    })
+    await logMemoryInjection({ workspaceId, agentRunId: handle.runId, agent: 'cmo', matrix: memoryMatrix })
+    const augmentedContext = `${brandContext}\n\n${memoryMatrix.matrix}`
+
+    const modelName = process.env.OOUMPH_AI_MODEL || 'claude-sonnet-4-5-20250929'
+    const promptChars = augmentedContext.length + message.length
+    await handle.send({
+      t: 'agent_log', agent: 'cmo', level: 'info',
+      msg: `Calling ${modelName} with ${promptChars} chars of context (${memoryMatrix.sizeBytes}B memory matrix)`,
     })
 
     const claudeStart = Date.now()
     // Stream Claude's response. Reply tokens go on the wire as they arrive
     // (live typing in the chat bubble); the JSON tail is parsed at the end.
-    const proposal = await streamProposalWithTokens(brandContext, message, (delta) => {
+    const proposal = await streamProposalWithTokens(augmentedContext, message, (delta) => {
       // Fire-and-forget — the handle.send() Promise is awaited internally
       // by the stream's controller. We don't await each delta here because
       // we want token emission to be as low-latency as possible.
