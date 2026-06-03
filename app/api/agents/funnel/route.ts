@@ -75,7 +75,7 @@ export async function POST(req: NextRequest) {
 
     let funnel
     try {
-      funnel = await generateFunnelPlan(brand, strategy)
+      funnel = await generateFunnelPlan(brand, strategy, workspaceId)
     } catch (agentError) {
       await sql`UPDATE agent_runs SET status = 'failed', completed_at = CURRENT_TIMESTAMP WHERE id = ${runId}`
       throw agentError

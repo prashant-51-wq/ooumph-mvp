@@ -305,6 +305,7 @@ ${conversationContext}
 ${instruction ? `Additional instruction: ${instruction}` : 'Write a helpful, concise reply that moves this conversation forward toward a meeting or sale.'}
 
 Respond with JSON: { "subject": "reply subject", "body": "email body (plain text, no HTML)", "tone": "professional|casual|urgent", "reasoning": "why this approach" }`,
+        workspaceId,
       )
 
       return NextResponse.json({ ok: true, reply: result })
@@ -346,6 +347,7 @@ Respond with JSON:
   "shouldUpdateCRM": true,
   "crmUpdate": { "status": "contacted", "notes": "optional notes to add to CRM lead" }
 }`,
+        workspaceId,
       )
 
       // Apply tags to conversation

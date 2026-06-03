@@ -139,7 +139,7 @@ Return JSON:
   "htmlTemplate": "COMPLETE HTML — must be valid, mobile-first, Tailwind CDN"
 }`
 
-    const page = await runAgent<LandingPage>(SYSTEM, prompt)
+    const page = await runAgent<LandingPage>(SYSTEM, prompt, workspaceId)
 
     await sql`UPDATE agent_runs SET status = 'completed', output_json = ${JSON.stringify(page)}, completed_at = CURRENT_TIMESTAMP WHERE id = ${runId}`
 

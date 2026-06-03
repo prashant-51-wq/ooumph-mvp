@@ -135,7 +135,7 @@ ${reelScript ? `- sourceReelScriptId: "${reelScript.id}"` : ''}
 
 Return JSON only — no markdown.`
 
-    const brief = await runAgent<VideoBrief>(SYSTEM, prompt)
+    const brief = await runAgent<VideoBrief>(SYSTEM, prompt, workspaceId)
 
     const contentJson = {
       ...brief,

@@ -109,7 +109,8 @@ Create a complete video editing plan. Return JSON:
     "check hook grabs attention in first 2 seconds",
     "verify captions are readable on mobile"
   ]
-}`
+}`,
+      workspaceId,
     )
 
     await sql`UPDATE agent_runs SET status = 'completed', completed_at = CURRENT_TIMESTAMP WHERE id = ${runId}`

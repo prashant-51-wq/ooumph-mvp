@@ -179,6 +179,7 @@ async function run(req: NextRequest) {
         const parsed = await runAgent<unknown>(
           'You are a marketing analyst. Respond only with a valid JSON array of insight strings.',
           fullPrompt,
+          doc.workspace_id as string,
         )
         if (Array.isArray(parsed)) {
           notes = (parsed as unknown[])

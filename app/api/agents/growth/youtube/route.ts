@@ -118,7 +118,7 @@ Return JSON:
   "monetisationPath": "How to monetise: AdSense, sponsorships, products, courses"
 }`
 
-    const channelStrategy = await runAgent<YouTubeChannelStrategy>(SYSTEM, prompt)
+    const channelStrategy = await runAgent<YouTubeChannelStrategy>(SYSTEM, prompt, workspaceId)
 
     await sql`UPDATE agent_runs SET status = 'completed', output_json = ${JSON.stringify(channelStrategy)}, completed_at = CURRENT_TIMESTAMP WHERE id = ${runId}`
 

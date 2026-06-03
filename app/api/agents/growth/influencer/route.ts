@@ -154,7 +154,7 @@ Return JSON:
   "budgetAllocation": "How to split influencer budget across tiers"
 }`
 
-    const report = await runAgent<InfluencerMapReport>(SYSTEM, prompt)
+    const report = await runAgent<InfluencerMapReport>(SYSTEM, prompt, workspaceId)
 
     await sql`UPDATE agent_runs SET status = 'completed', output_json = ${JSON.stringify(report)}, completed_at = CURRENT_TIMESTAMP WHERE id = ${runId}`
 

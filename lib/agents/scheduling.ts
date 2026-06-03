@@ -124,6 +124,7 @@ export async function analyzeOptimalTimes(
   brand: BrandProfile,
   targetPlatforms: string[],
   audienceLocation?: string,
+  workspaceId: string = '',
 ): Promise<OptimalTimeSlot[]> {
   const platforms = targetPlatforms.length > 0
     ? targetPlatforms
@@ -163,7 +164,7 @@ Respond with a JSON array of OptimalTimeSlot objects:
 
 Return 3-5 slots per platform, sorted by engagementScore descending within each platform.`
 
-  return runAgent<OptimalTimeSlot[]>(SCHEDULING_SYSTEM, prompt)
+  return runAgent<OptimalTimeSlot[]>(SCHEDULING_SYSTEM, prompt, workspaceId)
 }
 
 /**
@@ -176,6 +177,7 @@ export async function auditPublishingCalendar(
   scheduledPosts: Array<Record<string, unknown>>,
   publishedPosts: Array<Record<string, unknown>>,
   dateRange?: { from: string; to: string },
+  workspaceId: string = '',
 ): Promise<ScheduleAudit> {
   const range = dateRange ?? {
     from: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
@@ -239,7 +241,7 @@ A gap day is any weekday in the date range with zero scheduled or published cont
 An overloaded day has more than 3 posts scheduled across all platforms.
 Score the health 0-100 where 100 = perfectly consistent, balanced, conflict-free calendar.`
 
-  return runAgent<ScheduleAudit>(SCHEDULING_SYSTEM, prompt)
+  return runAgent<ScheduleAudit>(SCHEDULING_SYSTEM, prompt, workspaceId)
 }
 
 /**
@@ -251,6 +253,7 @@ export async function buildRecurringSchedule(
   platforms: string[],
   postsPerWeek: number,
   contentMix?: Record<string, number>,
+  workspaceId: string = '',
 ): Promise<RecurringSchedule> {
   const resolvedPlatforms = platforms.length > 0
     ? platforms
@@ -290,7 +293,7 @@ Return a RecurringSchedule JSON object:
   "totalPostsPerMonth": number
 }`
 
-  return runAgent<RecurringSchedule>(SCHEDULING_SYSTEM, prompt)
+  return runAgent<RecurringSchedule>(SCHEDULING_SYSTEM, prompt, workspaceId)
 }
 
 /**
@@ -303,6 +306,7 @@ export async function autoScheduleBatch(
   contentItems: Array<{ platform: string; content: string; type?: string }>,
   startDate: string,
   platforms: string[],
+  workspaceId: string = '',
 ): Promise<ScheduledBatch> {
   const resolvedPlatforms = platforms.length > 0
     ? platforms
@@ -354,7 +358,7 @@ Return a ScheduledBatch JSON object:
 
 IMPORTANT: The content field in each post must be the FULL original content from the input, not a preview.`
 
-  const result = await runAgent<ScheduledBatch>(SCHEDULING_SYSTEM, prompt)
+  const result = await runAgent<ScheduledBatch>(SCHEDULING_SYSTEM, prompt, workspaceId)
 
   // Hydrate full content back from original items if AI truncated it
   const hydrated = result.posts.map((post, idx) => {
@@ -377,6 +381,7 @@ IMPORTANT: The content field in each post must be the FULL original content from
 export async function optimizeForTimezones(
   brand: BrandProfile,
   targetMarkets: string[],
+  workspaceId: string = '',
 ): Promise<TimezoneOptimization> {
   const channels = Array.isArray(brand.channels) ? brand.channels : ['instagram', 'linkedin']
 
@@ -412,7 +417,7 @@ Return a TimezoneOptimization JSON object:
   ]
 }`
 
-  return runAgent<TimezoneOptimization>(SCHEDULING_SYSTEM, prompt)
+  return runAgent<TimezoneOptimization>(SCHEDULING_SYSTEM, prompt, workspaceId)
 }
 
 /**
@@ -422,6 +427,7 @@ Return a TimezoneOptimization JSON object:
  */
 export async function detectSchedulingConflicts(
   scheduledPosts: Array<Record<string, unknown>>,
+  workspaceId: string = '',
 ): Promise<Array<{ conflictType: string; posts: string[]; suggestion: string }>> {
   if (scheduledPosts.length === 0) return []
 
@@ -506,6 +512,7 @@ Return a JSON array of conflicts (empty array if none):
     "suggestion": "what to change"
   }
 ]`,
+        workspaceId,
       ).catch(() => [] as Array<{ conflictType: string; posts: string[]; suggestion: string }>)
 
       conflicts.push(...aiConflicts)

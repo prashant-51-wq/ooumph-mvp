@@ -197,7 +197,7 @@ function computePipelineMetrics(deals: SalesDeal[]) {
 
 // ── Core Functions ─────────────────────────────────────────────────────────────
 
-export async function generateSalesPipeline(brand: BrandProfile, deals: SalesDeal[]): Promise<SalesPipeline> {
+export async function generateSalesPipeline(brand: BrandProfile, deals: SalesDeal[], workspaceId: string = ''): Promise<SalesPipeline> {
   const metrics = computePipelineMetrics(deals)
   const year = new Date().getFullYear()
 
@@ -238,7 +238,7 @@ Return JSON with these exact fields:
   "recommendations": ["5 specific, actionable recommendations to improve pipeline health and close rate for this business"]
 }`
 
-  return runAgent<SalesPipeline>(PIPELINE_SYSTEM, userPrompt)
+  return runAgent<SalesPipeline>(PIPELINE_SYSTEM, userPrompt, workspaceId)
 }
 
 export async function generateSalesProposal(
@@ -247,6 +247,7 @@ export async function generateSalesProposal(
   prospectCompany: string,
   need: string,
   budget: string,
+  workspaceId: string = '',
 ): Promise<SalesProposal> {
   const validUntil = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toLocaleDateString('en-US', {
     month: 'long', day: 'numeric', year: 'numeric',
@@ -314,7 +315,7 @@ Respond with valid JSON:
   "html": "<full HTML document as a single string with escaped quotes>"
 }`
 
-  return runAgent<SalesProposal>(PROPOSAL_SYSTEM, userPrompt)
+  return runAgent<SalesProposal>(PROPOSAL_SYSTEM, userPrompt, workspaceId)
 }
 
 export async function generateOutreachSequence(
@@ -322,6 +323,7 @@ export async function generateOutreachSequence(
   prospect: string,
   context: string,
   sequenceType: 'cold' | 'warm' | 'enterprise' | 'win_back',
+  workspaceId: string = '',
 ): Promise<OutreachSequence> {
   const sequenceConfig = {
     cold: { touches: 7, duration: '21 days', channels: 'email + linkedin' },
@@ -378,13 +380,14 @@ Return JSON:
   "abVariants": { "a": "subject line variant A", "b": "subject line variant B" }
 }`
 
-  return runAgent<OutreachSequence>(OUTREACH_SYSTEM, userPrompt)
+  return runAgent<OutreachSequence>(OUTREACH_SYSTEM, userPrompt, workspaceId)
 }
 
 export async function analyzeDeal(
   brand: BrandProfile,
   deal: SalesDeal,
   activities: Array<{ type: string; title: string; created_at: string }>,
+  workspaceId: string = '',
 ): Promise<DealAnalysis> {
   const activityLog = activities
     .map(a => `[${new Date(a.created_at).toLocaleDateString()}] ${a.type}: ${a.title}`)
@@ -439,13 +442,14 @@ Return JSON:
   "reasoning": "2-3 sentence executive summary of deal status"
 }`
 
-  return runAgent<DealAnalysis>(DEAL_ANALYSIS_SYSTEM, userPrompt)
+  return runAgent<DealAnalysis>(DEAL_ANALYSIS_SYSTEM, userPrompt, workspaceId)
 }
 
 export async function generateSalesForecast(
   brand: BrandProfile,
   deals: SalesDeal[],
   period: string,
+  workspaceId: string = '',
 ): Promise<SalesForecast> {
   const openDeals = deals.filter(d => !['closed_won', 'closed_lost'].includes(d.stage))
   const wonDeals = deals.filter(d => d.stage === 'closed_won')
@@ -515,7 +519,7 @@ Return JSON:
   ]
 }`
 
-  return runAgent<SalesForecast>(FORECAST_SYSTEM, userPrompt)
+  return runAgent<SalesForecast>(FORECAST_SYSTEM, userPrompt, workspaceId)
 }
 
 export async function generateDemoScript(
@@ -523,6 +527,7 @@ export async function generateDemoScript(
   prospectName: string,
   prospectContext: string,
   focusFeatures: string[],
+  workspaceId: string = '',
 ): Promise<DemoScript> {
   const userPrompt = `Create a personalized product demo script for this engagement:
 
@@ -571,12 +576,13 @@ Return JSON:
   "talkingTime": "25 minutes"
 }`
 
-  return runAgent<DemoScript>(DEMO_SYSTEM, userPrompt)
+  return runAgent<DemoScript>(DEMO_SYSTEM, userPrompt, workspaceId)
 }
 
 export async function generateObjectionPlaybook(
   brand: BrandProfile,
   objections: string[],
+  workspaceId: string = '',
 ): Promise<Array<{ objection: string; response: string; tactic: string }>> {
   const hasObjections = objections.length > 0
 
@@ -607,13 +613,14 @@ Return JSON array:
   }
 ]`
 
-  return runAgent<Array<{ objection: string; response: string; tactic: string }>>(OBJECTION_SYSTEM, userPrompt)
+  return runAgent<Array<{ objection: string; response: string; tactic: string }>>(OBJECTION_SYSTEM, userPrompt, workspaceId)
 }
 
 export async function generateWinLossAnalysis(
   brand: BrandProfile,
   wonDeals: SalesDeal[],
   lostDeals: SalesDeal[],
+  workspaceId: string = '',
 ): Promise<{
   winRate: number
   avgWonDealSize: number
@@ -685,5 +692,5 @@ Return JSON:
   "forecastAccuracy": "brief comment on whether pipeline probabilities appear calibrated"
 }`
 
-  return runAgent(WIN_LOSS_SYSTEM, userPrompt)
+  return runAgent(WIN_LOSS_SYSTEM, userPrompt, workspaceId)
 }

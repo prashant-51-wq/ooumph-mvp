@@ -84,7 +84,7 @@ Create a viral growth plan with:
 
 Return JSON only.`
 
-    const plan = await runAgent<GrowthPlan>(SYSTEM, prompt)
+    const plan = await runAgent<GrowthPlan>(SYSTEM, prompt, workspaceId)
 
     await sql`UPDATE agent_runs SET status = 'completed', output_json = ${JSON.stringify(plan)}, completed_at = CURRENT_TIMESTAMP WHERE id = ${runId}`
 

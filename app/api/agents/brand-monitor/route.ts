@@ -144,7 +144,7 @@ Produce a comprehensive brand intelligence report. Return JSON:
   ]
 }`
 
-    const report = await runAgent<BrandReport>(SYSTEM, prompt)
+    const report = await runAgent<BrandReport>(SYSTEM, prompt, workspaceId)
 
     await sql`UPDATE agent_runs SET status = 'completed', output_json = ${JSON.stringify(report)}, completed_at = CURRENT_TIMESTAMP WHERE id = ${runId}`
 

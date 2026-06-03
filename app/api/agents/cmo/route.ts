@@ -48,7 +48,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { after } from 'next/server'
 import { sql } from '@/lib/db'
-import { runAgent, streamAgent } from '@/lib/claude'
+import { streamAgent } from '@/lib/claude'
+import { runAgentWithTools } from '@/lib/agents/tool-calling'
 import { assertWorkspaceOwnership } from '@/lib/guards'
 import { assertAgentRunQuota } from '@/lib/quota'
 import { getBaseUrl } from '@/lib/base-url'
@@ -214,10 +215,11 @@ async function loadWorkspaceContext(workspaceId: string): Promise<{
   return { workspace, brand, brandContext }
 }
 
-/** Run the proposal-generation Claude call. Used by the legacy JSON path. */
-async function generateProposal(brandContext: string, message: string): Promise<CMOChatResponse> {
-  const userPrompt = `Brand context:\n${brandContext}\n\nUser request: "${message}"\n\nRespond with a JSON object like this:\n{\n  "reply": "string",\n  "project": { "name": "string", "goal": "string", "estimatedMinutes": number, "estimatedCostUsd": number },\n  "team": [{ "role": "string", "agent": "string", "description": "string" }],\n  "firstAction": "string"\n}`
-  return runAgent<CMOChatResponse>(CMO_SYSTEM_PROMPT, userPrompt)
+/** Run the proposal-generation Claude call. Uses native tools so the CMO
+ *  can query brand memory or search the web before forming its proposal. */
+async function generateProposal(brandContext: string, message: string, workspaceId: string): Promise<CMOChatResponse> {
+  const userPrompt = `Brand context:\n${brandContext}\n\nUser request: "${message}"\n\nCall query_brand_memory to understand the brand's existing positioning before responding. Then respond with a JSON object like this:\n{\n  "reply": "string",\n  "project": { "name": "string", "goal": "string", "estimatedMinutes": number, "estimatedCostUsd": number },\n  "team": [{ "role": "string", "agent": "string", "description": "string" }],\n  "firstAction": "string"\n}`
+  return runAgentWithTools<CMOChatResponse>(CMO_SYSTEM_PROMPT, userPrompt, workspaceId)
 }
 
 // ─── Two-phase streaming prompt ──────────────────────────────────────────
@@ -261,6 +263,7 @@ const STREAM_SEPARATOR = '<<<DATA>>>'
 async function streamProposalWithTokens(
   brandContext: string,
   message: string,
+  workspaceId: string,
   emitToken: (delta: string) => void,
 ): Promise<CMOChatResponse> {
   const userPrompt = `Brand context:\n${brandContext}\n\nUser request: "${message}"`
@@ -270,7 +273,7 @@ async function streamProposalWithTokens(
   let emittedLen = 0
   let separatorFound = false
 
-  await streamAgent(CMO_CHAT_STREAMING_PROMPT, userPrompt, (delta) => {
+  await streamAgent(CMO_CHAT_STREAMING_PROMPT, userPrompt, workspaceId, (delta: string) => {
     fullText += delta
 
     // After separator: stop emitting tokens (we're now accumulating JSON).
@@ -475,7 +478,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: false, error: 'message is required for chat' }, { status: 400 })
       }
       const { brandContext } = await loadWorkspaceContext(workspaceId)
-      const proposal = await generateProposal(brandContext, message)
+      const proposal = await generateProposal(brandContext, message, workspaceId)
       return NextResponse.json({
         ok: true,
         response: proposal.reply,
@@ -571,7 +574,7 @@ async function runCmoChatStreaming(
     const claudeStart = Date.now()
     // Stream Claude's response. Reply tokens go on the wire as they arrive
     // (live typing in the chat bubble); the JSON tail is parsed at the end.
-    const proposal = await streamProposalWithTokens(augmentedContext, message, (delta) => {
+    const proposal = await streamProposalWithTokens(augmentedContext, message, workspaceId, (delta) => {
       // Fire-and-forget — the handle.send() Promise is awaited internally
       // by the stream's controller. We don't await each delta here because
       // we want token emission to be as low-latency as possible.

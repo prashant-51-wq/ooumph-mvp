@@ -117,7 +117,7 @@ Return JSON:
   "ugcStrategy": "How to encourage, collect, and reshare user-generated content"
 }`
 
-    const playbook = await runAgent<EngagementPlaybook>(SYSTEM, prompt)
+    const playbook = await runAgent<EngagementPlaybook>(SYSTEM, prompt, workspaceId)
 
     await sql`UPDATE agent_runs SET status = 'completed', output_json = ${JSON.stringify(playbook)}, completed_at = CURRENT_TIMESTAMP WHERE id = ${runId}`
 

@@ -121,7 +121,7 @@ Provide 3 short bullet reasons (each under 60 chars).`
 
     let result: ScoreResponse
     try {
-      result = await runAgent<ScoreResponse>(systemPrompt, userPrompt, SCHEMA, {
+      result = await runAgent<ScoreResponse>(systemPrompt, userPrompt, workspaceId, SCHEMA, {
         model: getModel(null),
       })
     } catch (err) {

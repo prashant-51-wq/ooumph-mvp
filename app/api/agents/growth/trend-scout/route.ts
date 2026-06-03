@@ -135,7 +135,7 @@ Return JSON:
   "weeklyContentIdea": "The single best content idea to execute this week"
 }`
 
-    const report = await runAgent<TrendReport>(SYSTEM, prompt)
+    const report = await runAgent<TrendReport>(SYSTEM, prompt, workspaceId)
 
     await sql`UPDATE agent_runs SET status = 'completed', output_json = ${JSON.stringify(report)}, completed_at = CURRENT_TIMESTAMP WHERE id = ${runId}`
 

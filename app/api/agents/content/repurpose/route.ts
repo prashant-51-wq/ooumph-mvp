@@ -132,7 +132,7 @@ Return ONLY valid JSON:
 Include one object per requested format. The "format" field must match the format key exactly.
 For "characterCount" provide the total character count of the content field.`
 
-    const result = await runAgent<RepurposeResult>(SYSTEM, prompt)
+    const result = await runAgent<RepurposeResult>(SYSTEM, prompt, workspaceId)
 
     // Ensure characterCount is accurate
     const repurposed = (result.repurposed || []).map(item => ({

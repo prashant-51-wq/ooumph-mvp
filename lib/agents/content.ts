@@ -1,25 +1,25 @@
-﻿import { runAgent } from '@/lib/claude'
 import { getMemoryPromptBlock } from '@/lib/tools/memory'
+import { runAgentWithTools } from '@/lib/agents/tool-calling'
 import type { BrandProfile, Strategy, ContentCalendarItem } from '@/types'
 
 const SYSTEM_PROMPT = `You are the Content Calendar Agent for Ooumph, an AI Marketing Agency OS.
 Create a 30-day content calendar that is strategic, varied, and platform-optimized.
 Hooks must be attention-grabbing and specific to the business.
-Always respond with valid JSON.`
+
+You have tools available:
+- query_brand_memory: fetch approved brand voice examples and content notes before generating
+- search: research trending topics, platform best practices, or competitor content if needed
+- persist_artifact: save the finished calendar as a workspace artifact
+
+Always call query_brand_memory first to ensure brand consistency. Then return a JSON array.`
 
 export async function generateContentCalendar(
   brand: BrandProfile,
   strategy: Strategy,
-  // Sprint 1: optional Postgres memory matrix from buildMemoryMatrix().
-  // Caller is responsible for building + logging the injection event.
-  // When provided, this block is appended to the userPrompt under an
-  // explicit '### SYSTEM MEMORY & PAST WORKSPACE LEARNINGS' header so
-  // the LLM treats it as authoritative reference data, not chitchat.
   memoryMatrixBlock?: string,
 ): Promise<ContentCalendarItem[]> {
-  // Sprint 15E (P0 #6): inject brand memory (learning_notes + brand_memory)
-  // so the calendar reflects the user's uploaded brand docs + approved
-  // examples instead of generic-feeling LinkedIn-101 output.
+  // Pre-fetch memory notes — still injected as static context so the
+  // agent has them immediately without spending a tool-use turn.
   const memoryBlock = await getMemoryPromptBlock(brand.workspace_id, {
     maxNotes: 8, maxVoiceExamples: 3,
   })
@@ -54,7 +54,5 @@ Return a JSON array of exactly 30 items:
   }
 ]`
 
-  return runAgent<ContentCalendarItem[]>(SYSTEM_PROMPT, userPrompt)
+  return runAgentWithTools<ContentCalendarItem[]>(SYSTEM_PROMPT, userPrompt, brand.workspace_id)
 }
-
-

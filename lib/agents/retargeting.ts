@@ -135,7 +135,8 @@ export async function segmentAudiences(
     byScoreTier: { hot: number; warm: number; cold: number; new: number }
     avgScore: number
   },
-  websiteData?: { pageViews?: number; avgSessionDuration?: string; bounceRate?: string }
+  websiteData?: { pageViews?: number; avgSessionDuration?: string; bounceRate?: string },
+  workspaceId: string = '',
 ): Promise<AudienceSegment[]> {
   const SYSTEM = `${BASE_SYSTEM}
 
@@ -185,7 +186,7 @@ Return a JSON array of AudienceSegment objects:
   "pixelEvents": ["ViewContent", "AddToCart"]
 }]`
 
-  return runAgent<AudienceSegment[]>(SYSTEM, prompt)
+  return runAgent<AudienceSegment[]>(SYSTEM, prompt, workspaceId)
 }
 
 // ─── buildRetargetingCampaign ──────────────────────────────────────────────────
@@ -194,7 +195,8 @@ export async function buildRetargetingCampaign(
   brand: BrandProfile,
   segments: AudienceSegment[],
   budget: number,
-  platforms: Array<'meta' | 'google' | 'linkedin' | 'tiktok'>
+  platforms: Array<'meta' | 'google' | 'linkedin' | 'tiktok'>,
+  workspaceId: string = '',
 ): Promise<RetargetingCampaign> {
   const SYSTEM = `${BASE_SYSTEM}
 
@@ -264,7 +266,7 @@ Return a single RetargetingCampaign JSON object:
   "timeline": "2-week setup, 4-week optimization cycle"
 }`
 
-  return runAgent<RetargetingCampaign>(SYSTEM, prompt)
+  return runAgent<RetargetingCampaign>(SYSTEM, prompt, workspaceId)
 }
 
 // ─── buildLookalikeAudience ────────────────────────────────────────────────────
@@ -272,7 +274,8 @@ Return a single RetargetingCampaign JSON object:
 export async function buildLookalikeAudience(
   brand: BrandProfile,
   sourceType: 'customers' | 'top_leads' | 'converters' | 'video_viewers',
-  sourceSize: number
+  sourceSize: number,
+  workspaceId: string = '',
 ): Promise<LookalikeAudience> {
   const SYSTEM = `${BASE_SYSTEM}
 
@@ -330,14 +333,15 @@ Return a LookalikeAudience JSON object:
   }
 }`
 
-  return runAgent<LookalikeAudience>(SYSTEM, prompt)
+  return runAgent<LookalikeAudience>(SYSTEM, prompt, workspaceId)
 }
 
 // ─── analyzeAbandonedJourney ───────────────────────────────────────────────────
 
 export async function analyzeAbandonedJourney(
   brand: BrandProfile,
-  funnelData?: Array<{ name: string; dropoffRate: number; usersLost: number }>
+  funnelData?: Array<{ name: string; dropoffRate: number; usersLost: number }>,
+  workspaceId: string = '',
 ): Promise<AbandonedJourneyMap> {
   const SYSTEM = `${BASE_SYSTEM}
 
@@ -396,7 +400,7 @@ Return an AbandonedJourneyMap JSON:
   "quickWins": ["quick win 1 — implementable in 24 hours", "quick win 2"]
 }`
 
-  return runAgent<AbandonedJourneyMap>(SYSTEM, prompt)
+  return runAgent<AbandonedJourneyMap>(SYSTEM, prompt, workspaceId)
 }
 
 // ─── writeRetargetingCopy ──────────────────────────────────────────────────────
@@ -405,7 +409,8 @@ export async function writeRetargetingCopy(
   brand: BrandProfile,
   segment: string,
   platform: string,
-  previousMessaging?: string
+  previousMessaging?: string,
+  workspaceId: string = '',
 ): Promise<RetargetingAdCopy> {
   const platformSpecs: Record<string, string> = {
     meta: 'Primary text: 125 chars (preview), up to 500 chars. Headline: 40 chars. Description: 30 chars. Multiple variations for A/B testing.',
@@ -476,7 +481,7 @@ Return a RetargetingAdCopy JSON:
   "doNotUse": ["phrase or approach to avoid 1", "phrase 2"]
 }`
 
-  return runAgent<RetargetingAdCopy>(SYSTEM, prompt)
+  return runAgent<RetargetingAdCopy>(SYSTEM, prompt, workspaceId)
 }
 
 // ─── designPixelStrategy ──────────────────────────────────────────────────────
@@ -484,7 +489,8 @@ Return a RetargetingAdCopy JSON:
 export async function designPixelStrategy(
   brand: BrandProfile,
   platforms: string[],
-  pages?: string[]
+  pages?: string[],
+  workspaceId: string = '',
 ): Promise<PixelStrategy> {
   const SYSTEM = `${BASE_SYSTEM}
 
@@ -559,7 +565,7 @@ Return a PixelStrategy JSON:
   ]
 }`
 
-  return runAgent<PixelStrategy>(SYSTEM, prompt)
+  return runAgent<PixelStrategy>(SYSTEM, prompt, workspaceId)
 }
 
 // ─── optimizeAdFrequency ────────────────────────────────────────────────────────
@@ -575,7 +581,8 @@ export async function optimizeAdFrequency(
     spend: number
     ctr: number
     cpa: number
-  }[]
+  }[],
+  workspaceId: string = '',
 ): Promise<{
   recommendations: string[]
   optimalFrequency: Record<string, string>
@@ -626,6 +633,7 @@ Return JSON:
 
   return runAgent<{ recommendations: string[]; optimalFrequency: Record<string, string>; burnoutWarnings: string[] }>(
     SYSTEM,
-    prompt
+    prompt,
+    workspaceId,
   )
 }

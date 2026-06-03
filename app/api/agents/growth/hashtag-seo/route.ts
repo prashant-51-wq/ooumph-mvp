@@ -149,7 +149,7 @@ Return JSON:
   "contentCalendarIntegration": "How to apply these hashtags/keywords in the content calendar"
 }`
 
-    const report = await runAgent<HashtagSEOReport>(SYSTEM, prompt)
+    const report = await runAgent<HashtagSEOReport>(SYSTEM, prompt, workspaceId)
 
     await sql`UPDATE agent_runs SET status = 'completed', output_json = ${JSON.stringify(report)}, completed_at = CURRENT_TIMESTAMP WHERE id = ${runId}`
 

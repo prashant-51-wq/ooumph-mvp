@@ -204,7 +204,7 @@ export async function decomposeStrategyArtifact(
   const userPrompt = `${brandContext ? `Brand context:\n${brandContext}\n\n` : ''}Approved strategy:\n${strategyDigest}\n\nDecompose the above into 5–10 execution tasks now. Return ONLY the JSON object specified.`
 
   // ─── Call Claude ───────────────────────────────────────────────────
-  const result = await runAgent<DecompositionResult>(DECOMPOSE_SYSTEM_PROMPT, userPrompt)
+  const result = await runAgent<DecompositionResult>(DECOMPOSE_SYSTEM_PROMPT, userPrompt, workspaceId)
   const rawTasks = Array.isArray(result.tasks) ? result.tasks : []
 
   if (rawTasks.length === 0) {

@@ -155,7 +155,7 @@ Return JSON:
   }
 }`
 
-      const model = await runAgent<LeadScoringModel>(SYSTEM, prompt)
+      const model = await runAgent<LeadScoringModel>(SYSTEM, prompt, workspaceId)
 
       await sql`UPDATE agent_runs SET status = 'completed', output_json = ${JSON.stringify(model)}, completed_at = CURRENT_TIMESTAMP WHERE id = ${runId}`
 
@@ -212,7 +212,7 @@ Return JSON:
   "estimatedCloseTime": "e.g. 7-14 days"
 }`
 
-      const score = await runAgent<LeadScore>(SYSTEM, scorePrompt)
+      const score = await runAgent<LeadScore>(SYSTEM, scorePrompt, workspaceId)
 
       await sql`UPDATE agent_runs SET status = 'completed', output_json = ${JSON.stringify(score)}, completed_at = CURRENT_TIMESTAMP WHERE id = ${runId}`
 

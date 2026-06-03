@@ -67,7 +67,8 @@ export async function generateStaticPost(
     `Create a ${platform} static post for:
 Topic: ${topic}
 Business: ${brand.business_name} | Audience: ${brand.target_audience} | Tone: ${brand.tone}
-Return JSON: { "hook": "≤8 words", "body": "15-25 words", "cta": "3-6 words", "hashtags": ["5-8 words without #"] }`
+Return JSON: { "hook": "≤8 words", "body": "15-25 words", "cta": "3-6 words", "hashtags": ["5-8 words without #"] }`,
+    workspaceId,
   )
 
   const contentJson = { topic, businessName: brand.business_name, tone: brand.tone, platform, ...copy }
@@ -94,7 +95,8 @@ export async function generateStoryCover(
     `Create Story/Reel cover for:
 Topic: ${topic}
 Business: ${brand.business_name} | Tone: ${brand.tone}
-Return JSON: { "hook": "≤6 bold words", "subtext": "8-15 supporting words", "cta": "3-6 words", "label": "1-2 word badge (NEW/TIPS/WATCH)" }`
+Return JSON: { "hook": "≤6 bold words", "subtext": "8-15 supporting words", "cta": "3-6 words", "label": "1-2 word badge (NEW/TIPS/WATCH)" }`,
+    workspaceId,
   )
 
   const contentJson = { topic, businessName: brand.business_name, tone: brand.tone, platform, ...copy }
@@ -121,7 +123,8 @@ export async function generateAdCreative(
     `Create a ${platform} ad for:
 Offer/Topic: ${topic}
 Business: ${brand.business_name} | Audience: ${brand.target_audience} | Tone: ${brand.tone}
-Return JSON: { "headline": "≤7 words", "subtext": "10-18 words", "cta": "2-5 words", "offer": "3-8 word badge" }`
+Return JSON: { "headline": "≤7 words", "subtext": "10-18 words", "cta": "2-5 words", "offer": "3-8 word badge" }`,
+    workspaceId,
   )
 
   const contentJson = { topic, businessName: brand.business_name, tone: brand.tone, platform, sizes, ...copy }
@@ -160,7 +163,8 @@ export async function generateVideoBrief(
 Topic: ${topic}
 Business: ${brand.business_name} | Audience: ${brand.target_audience} | Tone: ${brand.tone}
 ${reelScript ? `Existing reel script to adapt: ${JSON.stringify(reelScript)}` : ''}
-Return JSON with: title, hook, totalDuration, musicStyle, colorGrading, scenes[${sceneCount}], postCaption, hashtags`
+Return JSON with: title, hook, totalDuration, musicStyle, colorGrading, scenes[${sceneCount}], postCaption, hashtags`,
+    workspaceId,
   )
 
   const contentJson = {
@@ -211,7 +215,8 @@ UVP: ${brand.unique_value_prop || ''}
 ${strategy ? `Strategy: ${JSON.stringify((strategy as Record<string, unknown>).keyMessages || '')}` : ''}
 ${funnel ? `Funnel offer: ${JSON.stringify((funnel as Record<string, unknown>).topOfFunnelOffer || '')}` : ''}
 ${leadGen ? `Lead magnet: ${JSON.stringify((leadGen as Record<string, unknown>).leadMagnet || '')}` : ''}
-Return JSON: pageName, hero{tag,headline,sub,cta}, features{tag,headline,items[3]}, stats{items[3-4]}, cta{tag,headline,sub,cta}, seoTitle, seoDescription, ogHeadline`
+Return JSON: pageName, hero{tag,headline,sub,cta}, features{tag,headline,items[3]}, stats{items[3-4]}, cta{tag,headline,sub,cta}, seoTitle, seoDescription, ogHeadline`,
+    workspaceId,
   )
 
   const contentJson = {

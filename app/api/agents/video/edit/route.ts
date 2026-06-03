@@ -164,8 +164,8 @@ export async function POST(req: NextRequest) {
         const parsed = await runAgent<Partial<VideoEditSpec> & { unsupported?: string }>(
           EDITOR_SYSTEM,
           `User instruction: ${instruction.trim()}\n\nCurrent edit spec (apply changes ON TOP of this — keep prior fields unless the user explicitly changes them):\n${JSON.stringify(currentSpec || {}, null, 2)}`,
+          workspaceId,
           undefined,
-          { workspaceId },
         )
 
         if (parsed.unsupported) {

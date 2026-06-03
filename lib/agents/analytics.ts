@@ -397,7 +397,7 @@ Return JSON:
     forecastedImpact: string
   }
 
-  const aiReport = await runAgent<AIReport>(SYSTEM, prompt)
+  const aiReport = await runAgent<AIReport>(SYSTEM, prompt, workspaceId)
 
   const reportId = newId()
   const report: AnalyticsReport = {

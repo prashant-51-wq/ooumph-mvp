@@ -169,7 +169,7 @@ Return JSON:
   "setupInstructions": "Step-by-step guide to launch via WhatsApp Business API / 360dialog / Twilio"
 }`
 
-    const broadcast = await runAgent<WhatsAppBroadcast>(SYSTEM, prompt)
+    const broadcast = await runAgent<WhatsAppBroadcast>(SYSTEM, prompt, workspaceId)
 
     await sql`UPDATE agent_runs SET status = 'completed', output_json = ${JSON.stringify(broadcast)}, completed_at = CURRENT_TIMESTAMP WHERE id = ${runId}`
 

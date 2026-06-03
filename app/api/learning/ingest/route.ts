@@ -61,7 +61,7 @@ Rules:
 Content:
 ${content.slice(0, 8000)}`
 
-    const result = await runAgent<ExtractionResult>(systemPrompt, userPrompt)
+    const result = await runAgent<ExtractionResult>(systemPrompt, userPrompt, workspaceId)
 
     const nodes = Array.isArray(result.nodes) ? result.nodes : []
     const summary = result.summary || ''

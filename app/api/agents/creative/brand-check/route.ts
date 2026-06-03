@@ -74,7 +74,7 @@ Return JSON only:
   "summary": "2-3 sentence overall assessment"
 }`
 
-    const result = await runAgent<BrandCheckResult>(SYSTEM, prompt)
+    const result = await runAgent<BrandCheckResult>(SYSTEM, prompt, workspaceId)
 
     // Store the check result in the artifact's approval notes if it failed
     if (!result.passed) {

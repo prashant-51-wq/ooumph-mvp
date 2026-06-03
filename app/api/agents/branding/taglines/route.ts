@@ -70,6 +70,7 @@ Return JSON:
   "seoVersion": "longer SEO-optimised version",
   "shortForm": "1-3 words only"
 }`,
+          workspaceId,
         )
       } else {
         taglines = await generateTaglines(brand, count)

@@ -127,6 +127,7 @@ Growth Target: ${body.growthTarget || 'Not specified'}
 Since there are no deals yet, create a hypothetical but realistic pipeline with projected metrics and actionable steps to build pipeline from scratch.
 
 Return JSON with these fields: totalValue, weightedValue, dealsByStage (object), avgDealSize, avgCycleDays, winRate, forecastThisMonth, topDeals (empty array), recommendations (6 steps to build pipeline from zero)`,
+          workspaceId,
         )
       } else {
         plan = await generateSalesPipeline(brand, deals)

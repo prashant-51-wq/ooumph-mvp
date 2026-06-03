@@ -112,7 +112,7 @@ Return JSON with exactly this structure:
   "monthlyActions": ["Week 1: Action 1", "Week 2: Action 2", "Week 3: Action 3", "Week 4: Action 4"]
 }`
 
-    const intelligence = await runAgent<SEOIntelligence>(SYSTEM, userPrompt)
+    const intelligence = await runAgent<SEOIntelligence>(SYSTEM, userPrompt, workspaceId)
 
     // Attach raw data
     intelligence.rawData = report

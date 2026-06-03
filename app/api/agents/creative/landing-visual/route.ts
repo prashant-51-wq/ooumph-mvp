@@ -130,7 +130,7 @@ Rules:
 
 Return JSON only — no markdown.`
 
-    const pack = await runAgent<LandingPageVisualPack>(SYSTEM, prompt)
+    const pack = await runAgent<LandingPageVisualPack>(SYSTEM, prompt, workspaceId)
 
     const contentJson = {
       ...pack,

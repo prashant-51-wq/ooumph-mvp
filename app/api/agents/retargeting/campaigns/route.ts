@@ -155,7 +155,8 @@ Return a Meta campaign structure JSON:
   "campaignBudget": "$X/month",
   "bidStrategy": "recommended bid strategy with reasoning",
   "pixelEvents": ["Purchase", "Lead", "InitiateCheckout"]
-}`
+}`,
+          workspaceId,
         )
         platformSpecs.meta = metaSpec
       }
@@ -218,7 +219,8 @@ Return a Google Ads retargeting structure:
   ],
   "bidStrategy": "Target CPA|Target ROAS|Maximize Conversions",
   "dailyBudget": "$X/day"
-}`
+}`,
+          workspaceId,
         )
         platformSpecs.google = googleSpec
       }
@@ -281,7 +283,8 @@ Return a LinkedIn Ads retargeting structure:
   ],
   "targetJobTitles": ["relevant job titles"],
   "targetIndustries": ["relevant industries"]
-}`
+}`,
+          workspaceId,
         )
         platformSpecs.linkedin = linkedinSpec
       }
@@ -337,7 +340,8 @@ Return a TikTok Ads retargeting structure:
   "creatorBriefs": [
     "Brief for UGC creator — what to show, say, and how"
   ]
-}`
+}`,
+          workspaceId,
         )
         platformSpecs.tiktok = tiktokSpec
       }

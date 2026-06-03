@@ -107,6 +107,7 @@ Respond with JSON:
   "explanation": "step-by-step explanation of what this does",
   "expectedOutcome": "what result this workflow achieves"
 }`,
+        workspaceId,
       )
 
       return NextResponse.json({ ok: true, workflow: result })
@@ -149,6 +150,7 @@ Respond with JSON:
     }
   ]
 }`,
+        workspaceId,
       )
 
       return NextResponse.json({ ok: true, ...result })
@@ -189,6 +191,7 @@ Respond with JSON:
   "issues": ["issue1", "issue2"],
   "improvements": ["specific improvement 1", "specific improvement 2"]
 }`,
+        workspaceId,
       )
 
       return NextResponse.json({ ok: true, analysis: result, stats: { ...runStats, pending: Number(pendingResult.rows[0]?.c || 0) } })

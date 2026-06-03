@@ -87,7 +87,8 @@ Return the most likely page paths for this type of business:
 {
   "pages": ["/", "/about", "/services", "/pricing", "/contact", "/book", "/thank-you"],
   "reasoning": "brief explanation of why these pages"
-}`
+}`,
+        workspaceId,
       )
       pages = pagesResult.pages || ['/', '/about', '/services', '/pricing', '/contact', '/book', '/thank-you']
     }
@@ -143,7 +144,8 @@ Return a GTM configuration:
     "Step 2: Visit each page and verify tags fire",
     "Step 3: Check Facebook Pixel Helper extension for Meta events"
   ]
-}`
+}`,
+      workspaceId,
     )
 
     // ── Verification checklist per platform ────────────────────────────────────

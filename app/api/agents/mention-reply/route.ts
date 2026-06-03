@@ -121,7 +121,7 @@ ${mention.content_text.slice(0, 4000)}
 Draft the reply per the OUTPUT CONTRACT.`
 
   try {
-    const draft = await runAgent<DraftResult>(SYSTEM_PROMPT, userPrompt)
+    const draft = await runAgent<DraftResult>(SYSTEM_PROMPT, userPrompt, workspaceId)
     // Hard-clip Twitter/X to 280 just in case the model overshoots.
     const finalReply = isHardLimit && draft.reply.length > limit
       ? draft.reply.slice(0, limit - 1) + '…'

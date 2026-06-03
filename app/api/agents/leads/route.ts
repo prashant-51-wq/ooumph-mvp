@@ -29,7 +29,7 @@ export async function POST(req: NextRequest) {
 
     let leadPlan
     try {
-      leadPlan = await generateLeadGenPlan(brand, strategy)
+      leadPlan = await generateLeadGenPlan(brand, strategy, workspaceId)
     } catch (agentError) {
       await sql`UPDATE agent_runs SET status = 'failed', completed_at = CURRENT_TIMESTAMP WHERE id = ${runId}`
       throw agentError

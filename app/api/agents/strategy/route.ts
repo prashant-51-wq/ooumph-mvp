@@ -184,7 +184,7 @@ Make every recommendation concrete and actionable. KPIs must have measurable tar
   const userPromptWithMemory = `${userPrompt}\n\n### SYSTEM MEMORY & PAST WORKSPACE LEARNINGS\n${memoryMatrix.matrix}`
 
   await sink.log('Drafting strategy with Claude (this is the slow step — usually 8–15s)')
-  const strategy = await runAgent<Strategy>(STRATEGY_SYSTEM_PROMPT, userPromptWithMemory)
+  const strategy = await runAgent<Strategy>(STRATEGY_SYSTEM_PROMPT, userPromptWithMemory, workspaceId)
   await sink.log('Strategy draft complete')
 
   return strategy

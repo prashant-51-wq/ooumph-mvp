@@ -60,6 +60,7 @@ Return JSON:
   "issues": ["specific issue 1 with quote", "specific issue 2 with quote"],
   "improvements": ["exact rewrite suggestion 1", "exact rewrite suggestion 2"]
 }`,
+        workspaceId,
       )
 
       return NextResponse.json({ ok: true, testResult })

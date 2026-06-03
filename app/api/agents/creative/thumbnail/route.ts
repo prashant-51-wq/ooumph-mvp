@@ -50,7 +50,7 @@ Return JSON only:
   "layout": "stat" | "hook"
 }`
 
-    const copy = await runAgent<ThumbnailCopy>(SYSTEM, prompt)
+    const copy = await runAgent<ThumbnailCopy>(SYSTEM, prompt, workspaceId)
 
     const contentJson = {
       topic,

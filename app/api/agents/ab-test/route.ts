@@ -106,7 +106,7 @@ Return JSON:
   "successMetric": "The single most important metric to measure for this content type"
 }`
 
-    const result = await runAgent<ABTestResult>(SYSTEM, prompt)
+    const result = await runAgent<ABTestResult>(SYSTEM, prompt, workspaceId)
 
     await sql`UPDATE agent_runs SET status = 'completed', output_json = ${JSON.stringify(result)}, completed_at = CURRENT_TIMESTAMP WHERE id = ${runId}`
 

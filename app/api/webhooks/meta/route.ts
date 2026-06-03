@@ -51,7 +51,7 @@ interface CommentEvent {
   timestamp: string
 }
 
-async function generateReply(comment: CommentEvent, brand: Record<string, unknown>, playbook: Record<string, unknown> | null) {
+async function generateReply(comment: CommentEvent, brand: Record<string, unknown>, playbook: Record<string, unknown> | null, workspaceId: string) {
   const templates = (playbook as { replyTemplates?: Array<{ scenario: string; platform: string; template: string }> } | null)?.replyTemplates || []
   const relevantTemplates = templates.filter(t =>
     t.platform.toLowerCase().includes(comment.platform) ||
@@ -80,7 +80,7 @@ Generate 2-3 reply options. Return JSON:
 }`
 
   interface ReplyResult { replies: Array<{ text: string; tone: string; recommended: boolean }>; sentiment: string; suggestedAction: string }
-  return runAgent<ReplyResult>(SYSTEM, prompt)
+  return runAgent<ReplyResult>(SYSTEM, prompt, workspaceId)
 }
 
 // ─── GET: Meta webhook verification ───────────────────────────────────────────
@@ -171,7 +171,7 @@ export async function POST(req: NextRequest) {
         }
 
         // Generate reply suggestions asynchronously (don't block webhook ack)
-        generateReply(comment, brand, playbook).then(async (result) => {
+        generateReply(comment, brand, playbook, workspaceId).then(async (result) => {
           const noteId = newId()
           await sql`INSERT INTO learning_notes (id, workspace_id, source_type, source_id, note, confidence)
                     VALUES (${noteId}, ${workspaceId}, 'webhook_comment', ${comment.commentId || noteId},
@@ -193,7 +193,7 @@ export async function POST(req: NextRequest) {
           timestamp: msgData.timestamp ? new Date(msgData.timestamp).toISOString() : new Date().toISOString(),
         }
 
-        generateReply(comment, brand, playbook).then(async (result) => {
+        generateReply(comment, brand, playbook, workspaceId).then(async (result) => {
           const noteId = newId()
           await sql`INSERT INTO learning_notes (id, workspace_id, source_type, source_id, note, confidence)
                     VALUES (${noteId}, ${workspaceId}, 'webhook_dm', ${comment.from},

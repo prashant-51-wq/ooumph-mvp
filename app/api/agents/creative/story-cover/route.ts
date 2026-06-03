@@ -53,7 +53,7 @@ Return JSON only:
   "platform": "${platform}"
 }`
 
-    const copy = await runAgent<StoryCopy>(SYSTEM, prompt)
+    const copy = await runAgent<StoryCopy>(SYSTEM, prompt, workspaceId)
 
     const contentJson = {
       topic,

@@ -5,7 +5,6 @@ import { getWorkspaceSecret } from './secrets'
 export { SUPPORTED_MODELS, DEFAULT_MODEL } from './models'
 
 // Strip BOM (U+FEFF) that can appear when env vars are copy-pasted from some editors.
-// Without this, the Anthropic SDK throws "Cannot convert argument to a ByteString".
 function sanitizeApiKey(key: string | undefined): string | undefined {
   return key?.replace(/^﻿/, '').trim() || undefined
 }
@@ -17,51 +16,65 @@ export function getModel(modelSettings?: Record<string, unknown> | null): string
   return process.env.OOUMPH_AI_MODEL || _DEFAULT_MODEL
 }
 
-// Backward compatible singleton bound to the env key. Existing callers that
-// import `claude` directly continue to work; new code should prefer
-// `getClaudeClient(workspaceId)` so BYOK is honoured.
-//
-// @deprecated Sprint 18L (audit pass #6 P2): direct imports of `claude`
-// silently bypass workspace BYOK keys. New call sites should call
-// `await getClaudeClient(workspaceId)` instead. Migration of the remaining
-// `from '@/lib/claude'` → `.messages.create` callers tracked separately.
+/**
+ * Thrown when a workspace has no Anthropic API key configured.
+ * Callers should catch this and return { requiresSetup: true } to the UI.
+ */
+export class AgentSetupError extends Error {
+  readonly requiresSetup = true
+  constructor(workspaceId: string) {
+    super(`ANTHROPIC_API_KEY not configured for workspace ${workspaceId}. Add your API key in Settings → Integrations.`)
+    this.name = 'AgentSetupError'
+  }
+}
+
+// @deprecated — direct imports of `claude` bypass workspace BYOK.
+// Only kept for legacy cron/script callers. Never use in agent routes.
 export const claude = new Anthropic({ apiKey: sanitizeApiKey(process.env.ANTHROPIC_API_KEY) })
 
 export const MODEL = _DEFAULT_MODEL
 
 /**
- * Sprint 18B (BYOK): Resolve the Anthropic client for a given workspace.
+ * Resolve the Anthropic client for a workspace.
+ * workspaceId is now REQUIRED. Throws AgentSetupError if no key is found
+ * — zero silent billing on the platform key from agent routes.
  *
- * If the workspace has a stored `anthropic` secret in `workspace_secrets`,
- * we build a fresh client bound to that decrypted key. Otherwise we fall
- * back to the env-bound singleton. `workspaceId` is optional so callers
- * that don't have one (cron jobs, ad-hoc scripts) keep the old behavior.
- *
- * Never logs the key.
+ * Pass `allowEnvFallback: true` only for internal cron/script callers that
+ * legitimately have no workspace context.
  */
-export async function getClaudeClient(workspaceId?: string): Promise<Anthropic> {
-  if (!workspaceId) return claude
+export async function getClaudeClient(
+  workspaceId: string,
+  opts?: { allowEnvFallback?: boolean }
+): Promise<Anthropic> {
   try {
     const byok = await getWorkspaceSecret(workspaceId, 'anthropic')
     const sanitized = sanitizeApiKey(byok ?? undefined)
-    if (sanitized) {
-      return new Anthropic({ apiKey: sanitized })
-    }
+    if (sanitized) return new Anthropic({ apiKey: sanitized })
   } catch {
-    // Fall through to env client on lookup/decrypt failure — better to
-    // serve the request on the platform key than to hard-fail.
+    // lookup/decrypt failure — fall through
   }
-  return claude
+
+  if (opts?.allowEnvFallback && process.env.ANTHROPIC_API_KEY) {
+    const envKey = sanitizeApiKey(process.env.ANTHROPIC_API_KEY)
+    if (envKey) return new Anthropic({ apiKey: envKey })
+  }
+
+  throw new AgentSetupError(workspaceId)
 }
 
+/**
+ * Run a single-turn agent call and parse the JSON response.
+ * workspaceId is REQUIRED — resolves BYOK key, never falls back to env.
+ */
 export async function runAgent<T>(
   systemPrompt: string,
   userPrompt: string,
+  workspaceId: string,
   schema?: string,
-  options?: { model?: string; workspaceId?: string }
+  options?: { model?: string }
 ): Promise<T> {
   const model = options?.model || process.env.OOUMPH_AI_MODEL || _DEFAULT_MODEL
-  const client = await getClaudeClient(options?.workspaceId)
+  const client = await getClaudeClient(workspaceId)
   const response = await client.messages.create({
     model,
     max_tokens: 8192,
@@ -80,14 +93,19 @@ export async function runAgent<T>(
   }
 }
 
+/**
+ * Run a streaming agent call, calling onChunk for each text delta.
+ * workspaceId is REQUIRED — resolves BYOK key, never falls back to env.
+ */
 export async function streamAgent(
   systemPrompt: string,
   userPrompt: string,
+  workspaceId: string,
   onChunk: (text: string) => void,
-  options?: { model?: string; workspaceId?: string }
+  options?: { model?: string }
 ): Promise<string> {
   const model = options?.model || process.env.OOUMPH_AI_MODEL || _DEFAULT_MODEL
-  const client = await getClaudeClient(options?.workspaceId)
+  const client = await getClaudeClient(workspaceId)
   const stream = await client.messages.stream({
     model,
     max_tokens: 8192,

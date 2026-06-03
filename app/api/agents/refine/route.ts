@@ -185,7 +185,8 @@ export async function POST(req: NextRequest) {
       await streamAgent(
         REFINE_SYSTEM_PROMPT,
         buildUserPrompt(originalText, feedback, artifact.type || 'content', brandContext),
-        (delta) => {
+        workspaceId,
+        (delta: string) => {
           revisedText += delta
           void handle.send({ t: 'token', text: delta, agent: 'refine' })
         },

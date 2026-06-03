@@ -8,7 +8,8 @@ Always respond with valid JSON.`
 
 export async function generateLeadGenPlan(
   brand: BrandProfile,
-  strategy: Strategy
+  strategy: Strategy,
+  workspaceId: string,
 ): Promise<LeadGenPlan> {
   const userPrompt = `Create a lead generation plan for:
 
@@ -51,5 +52,5 @@ Return JSON:
   "qualificationRules": ["string (qualifying question or criterion)"]
 }`
 
-  return runAgent<LeadGenPlan>(SYSTEM_PROMPT, userPrompt)
+  return runAgent<LeadGenPlan>(SYSTEM_PROMPT, userPrompt, workspaceId)
 }

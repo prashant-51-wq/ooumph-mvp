@@ -364,6 +364,7 @@ export async function POST(req: NextRequest) {
     const merged = await runAgent<MergeResult>(
       MERGE_SYSTEM_PROMPT,
       buildMergeUserPrompt(lead, outcomes),
+      workspaceId,
     )
 
     // ── 5. Persist merged fields + activity row ───────────────────────────

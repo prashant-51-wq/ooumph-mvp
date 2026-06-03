@@ -112,7 +112,7 @@ Return JSON with exactly this structure:
   "weeklyActions": ["Action to take this week 1", "action 2", "action 3"]
 }`
 
-    const intelligence = await runAgent<GA4Intelligence>(SYSTEM, userPrompt)
+    const intelligence = await runAgent<GA4Intelligence>(SYSTEM, userPrompt, workspaceId)
 
     // Attach raw data
     intelligence.rawData = report

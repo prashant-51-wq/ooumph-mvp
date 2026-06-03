@@ -102,6 +102,7 @@ Return JSON:
   },
   "correctedVersion": "Full rewritten version of the content that passes all checks — write it in brand voice"
 }`,
+      workspaceId,
     )
 
     return NextResponse.json({ ok: true, report: result, contentType })

@@ -86,7 +86,7 @@ Create a complete campaign brief with:
 
 Return JSON only.`
 
-    const brief = await runAgent<CampaignBrief>(SYSTEM, prompt)
+    const brief = await runAgent<CampaignBrief>(SYSTEM, prompt, workspaceId)
 
     await sql`UPDATE agent_runs SET status = 'completed', output_json = ${JSON.stringify(brief)}, completed_at = CURRENT_TIMESTAMP WHERE id = ${runId}`
 

@@ -134,7 +134,7 @@ Return JSON:
   "successMetrics": ["Target open rate: 35%+", "Target CTR: 5%+"]
 }`
 
-    const sequence = await runAgent<EmailSequence>(SYSTEM, prompt)
+    const sequence = await runAgent<EmailSequence>(SYSTEM, prompt, workspaceId)
 
     await sql`UPDATE agent_runs SET status = 'completed', output_json = ${JSON.stringify(sequence)}, completed_at = CURRENT_TIMESTAMP WHERE id = ${runId}`
 

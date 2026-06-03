@@ -143,7 +143,7 @@ Rules:
 
 Return JSON only.`
 
-  const report = await runAgent<OptimizationReport>(OPTIMIZER_SYSTEM, prompt)
+  const report = await runAgent<OptimizationReport>(OPTIMIZER_SYSTEM, prompt, workspaceId)
   report.campaignArtifactId = campaignArtifactId
   report.analysisDate = new Date().toISOString().slice(0, 10)
 

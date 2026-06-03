@@ -110,7 +110,7 @@ Return ONLY JSON. No markdown fences. No preamble.
   "reason":           string    // 1 sentence justification
 }`
 
-async function gradeSnippet(brandName: string, title: string, description: string): Promise<SentimentGrade> {
+async function gradeSnippet(brandName: string, title: string, description: string, workspaceId: string): Promise<SentimentGrade> {
   try {
     const out = await runAgent<SentimentGrade>(
       SCORE_SYSTEM_PROMPT,
@@ -119,6 +119,7 @@ TITLE: ${title}
 SNIPPET: ${description.slice(0, 1200)}
 
 Grade this mention per the OUTPUT CONTRACT.`,
+      workspaceId,
     )
     // Clamp the score to 0..1 in case the LLM returns out-of-range
     const score = Math.max(0, Math.min(1, Number(out?.sentiment_score) || 0.5))
@@ -213,7 +214,7 @@ export async function GET(req: NextRequest) {
       // ── 3. Grade each new hit + INSERT ───────────────────────────────────
       let triggerCrisis = false
       for (const hit of newHits) {
-        const grade = await gradeSnippet(businessName, hit.title, hit.description)
+        const grade = await gradeSnippet(businessName, hit.title, hit.description, workspaceId)
         if (grade.severity_level === 'critical' && grade.sentiment_score < CRISIS_TRIGGER_SENTIMENT_MAX) {
           triggerCrisis = true
           outcome.criticalCount++

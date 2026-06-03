@@ -148,7 +148,7 @@ OUTPUT SCHEMA:
 
 Provide 5-10 recommendations ordered by priority. Be specific.`
 
-    const output = await runAgent<OptimizerOutput>(SYSTEM_PROMPT, userPrompt)
+    const output = await runAgent<OptimizerOutput>(SYSTEM_PROMPT, userPrompt, workspaceId)
 
     // Persist the artifact + completion + learning note.
     const artifactId = newId()

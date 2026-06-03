@@ -143,7 +143,7 @@ Generate a complete JSON object with:
 
 Return valid JSON only.`
 
-    const result = await runAgent<PRResult>(SYSTEM, prompt)
+    const result = await runAgent<PRResult>(SYSTEM, prompt, workspaceId)
 
     // Save as artifact
     const artifactId = newId()

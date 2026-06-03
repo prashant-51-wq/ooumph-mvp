@@ -171,7 +171,8 @@ Return a weekly action plan:
     "week2": "cumulative",
     "week4": "cumulative 30-day total"
   }
-}`
+}`,
+      workspaceId,
     )
 
     const result = {

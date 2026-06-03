@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
-import { runAgent } from '@/lib/claude'
+import { runAgentWithTools } from '@/lib/agents/tool-calling'
 import { Resend } from 'resend'
 import type { BrandProfile } from '@/types'
 import { assertArtifactApproved, assertWorkspaceOwnership } from '@/lib/guards'
@@ -31,11 +31,18 @@ export async function POST(req: NextRequest) {
       const memoryMatrix = await buildMemoryMatrix(workspaceId)
       await logMemoryInjection({ workspaceId, agentRunId: runId, agent: 'email_marketing_agent', matrix: memoryMatrix })
 
-      const content = await runAgent<{
+      const content = await runAgentWithTools<{
         subject: string; previewText: string; headline: string; body: string;
         cta: string; ctaUrl: string; ps: string; suggestedSendTime: string;
       }>(
-        'You are an expert email marketing copywriter. Write high-converting email campaigns that get opens, clicks, and replies. Always respond with valid JSON.',
+        `You are an expert email marketing copywriter. Write high-converting email campaigns that get opens, clicks, and replies.
+
+You have tools available:
+- query_brand_memory: fetch approved brand voice examples (call this first)
+- search: research email marketing trends, subject line best practices, or competitor campaigns
+- persist_artifact: save the finished email draft as a workspace artifact
+
+Always call query_brand_memory first. Then write the email and return JSON.`,
         `### SYSTEM MEMORY & PAST WORKSPACE LEARNINGS
 ${memoryMatrix.matrix}
 
@@ -57,7 +64,8 @@ Write a marketing email campaign. Return JSON:
   "ctaUrl": "example CTA URL placeholder",
   "ps": "P.S. line that adds urgency or extra value",
   "suggestedSendTime": "best time to send (e.g. Tuesday 10am)"
-}`
+}`,
+        workspaceId,
       )
 
       await sql`UPDATE agent_runs SET status = 'completed', completed_at = CURRENT_TIMESTAMP WHERE id = ${runId}`
