@@ -422,8 +422,8 @@ function ReportBuilderModal({
 }) {
   const [step, setStep] = useState<'build' | 'preview'>('build')
   const [range, setRange] = useState('Last 30 days')
-  const [client, setClient] = useState('Acme Corp')
-  const [agencyName, setAgencyName] = useState('My Agency')
+  const [client, setClient] = useState('')
+  const [agencyName, setAgencyName] = useState('')
   const [commentary, setCommentary] = useState('')
   const [sections, setSections] = useState<Record<string, boolean>>(
     Object.fromEntries(template.sections.map(s => [s, true]))
@@ -526,15 +526,13 @@ function ReportBuilderModal({
               </div>
               <div>
                 <label className="text-gray-400 text-xs mb-1.5 block">Client / Workspace</label>
-                <select
+                <input
+                  type="text"
                   value={client}
                   onChange={e => setClient(e.target.value)}
                   className="w-full bg-gray-800 border border-gray-700 text-white text-sm rounded-lg px-3 py-2"
-                >
-                  {['Acme Corp', 'TechStart Inc', 'GrowthCo', 'Studio Blue', 'All Clients'].map(c => (
-                    <option key={c}>{c}</option>
-                  ))}
-                </select>
+                  placeholder="Enter client or workspace name"
+                />
               </div>
             </div>
 

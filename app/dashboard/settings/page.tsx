@@ -2160,7 +2160,6 @@ export default function SettingsPage() {
 
             {/* Password */}
             <Card title="Password">
-              <p className="text-gray-400 text-sm">Last changed 30 days ago.</p>
               <button className={btnGhost} onClick={() => setModal('changePassword')}>Change Password</button>
             </Card>
           </div>
