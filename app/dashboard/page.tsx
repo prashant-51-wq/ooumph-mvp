@@ -267,7 +267,8 @@ function timeAgo(dateStr: string): string {
   return `${Math.floor(h / 24)}d ago`
 }
 
-function agentLabel(name: string): string {
+function agentLabel(name: unknown): string {
+  if (!name || typeof name !== 'string') return 'Agent'
   return name.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
 }
 
@@ -286,7 +287,8 @@ const STATUS_TEXT: Record<string, string> = {
 }
 
 // Render CMO message text with basic markdown-like formatting
-function renderCMOText(text: string) {
+function renderCMOText(text: unknown) {
+  if (!text || typeof text !== 'string') return null
   const lines = text.split('\n')
   const elements: React.ReactNode[] = []
 
@@ -322,11 +324,12 @@ function renderCMOText(text: string) {
   return <div className="space-y-0.5">{elements}</div>
 }
 
-function renderInline(text: string): React.ReactNode {
+function renderInline(text: unknown): React.ReactNode {
+  if (!text || typeof text !== 'string') return null
   // Bold: **text**
   const parts = text.split(/(\*\*[^*]+\*\*)/)
   return parts.map((part, i) => {
-    if (part.startsWith('**') && part.endsWith('**')) {
+    if (typeof part === 'string' && part.startsWith('**') && part.endsWith('**')) {
       return <strong key={i} className="text-white font-semibold">{part.slice(2, -2)}</strong>
     }
     return part
@@ -398,7 +401,8 @@ const TIER_LABELS = ['Foundation', 'Plan', 'Make', 'Publish', 'Measure']
 
 /** Conservative slug normaliser — strips "-agent" suffix, lowercases, returns
  *  tier 2 (Make) as the safe fallback so unknown agents still render. */
-function tierFor(agent: string): number {
+function tierFor(agent: unknown): number {
+  if (!agent || typeof agent !== 'string') return 2
   const slug = agent.toLowerCase().trim().replace(/-agent$/, '').replace(/_/g, '-')
   return AGENT_TIERS[slug] ?? 2
 }
@@ -626,8 +630,11 @@ function MessageBubble({
   const [feedback, setFeedback] = useState<'up' | 'down' | null>(null)
 
   // Choose the text source: live streamingText for the in-flight bubble,
-  // otherwise the finalized msg.text from state.
-  const displayText = isLive ? (streamingText ?? '') : msg.text
+  // otherwise the finalized msg.text from state. Coerce to string so
+  // any stale localStorage value (null / number / undefined) can't
+  // crash displayText.length or renderCMOText.
+  const rawText = isLive ? (streamingText ?? '') : msg.text
+  const displayText = typeof rawText === 'string' ? rawText : ''
 
   function handleCopy() {
     void navigator.clipboard.writeText(displayText)
@@ -2147,15 +2154,18 @@ export default function DashboardPage() {
             </div>
 
             {/* Workspace snapshot */}
-            <WorkspaceSnapshot
-              businessName={businessName}
-              stats={stats}
-              activeCampaigns={activeCampaigns}
-              onExpand={() => setShowContextModal(true)}
-            />
+            <WidgetErrorBoundary widgetName="Workspace Snapshot">
+              <WorkspaceSnapshot
+                businessName={businessName}
+                stats={stats}
+                activeCampaigns={activeCampaigns}
+                onExpand={() => setShowContextModal(true)}
+              />
+            </WidgetErrorBoundary>
           </div>
 
           {/* ── Right: Stats + Agents + Approvals + Market Pulse ─────────────── */}
+          <WidgetErrorBoundary widgetName="Right Panel">
           <div className="hidden lg:flex w-[280px] xl:w-[300px] flex-col flex-shrink-0 overflow-y-auto">
 
             {/* Quick Stats */}
@@ -2319,26 +2329,28 @@ export default function DashboardPage() {
             </div>
 
             {/* Activity feed */}
-            <div className="flex-1 p-4">
-              <div className="flex items-center justify-between mb-3">
-                <p className="text-xs text-gray-500 uppercase tracking-wider font-medium">Agent Activity</p>
-                {runs.some((r) => r.status === 'running') && (
-                  <span className="text-xs text-indigo-400 flex items-center gap-1">
-                    <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse" />
-                    Live
-                  </span>
+            <WidgetErrorBoundary widgetName="Activity Feed">
+              <div className="flex-1 p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <p className="text-xs text-gray-500 uppercase tracking-wider font-medium">Agent Activity</p>
+                  {runs.some((r) => r.status === 'running') && (
+                    <span className="text-xs text-indigo-400 flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse" />
+                      Live
+                    </span>
+                  )}
+                </div>
+                <ActivityFeed runs={runs} loading={runsLoading} />
+                {runs.length > 0 && (
+                  <Link
+                    href="/dashboard/activity"
+                    className="mt-4 flex items-center justify-center gap-1 text-xs text-gray-600 hover:text-gray-400 transition-colors"
+                  >
+                    Open Workspace →
+                  </Link>
                 )}
               </div>
-              <ActivityFeed runs={runs} loading={runsLoading} />
-              {runs.length > 0 && (
-                <Link
-                  href="/dashboard/activity"
-                  className="mt-4 flex items-center justify-center gap-1 text-xs text-gray-600 hover:text-gray-400 transition-colors"
-                >
-                  Open Workspace →
-                </Link>
-              )}
-            </div>
+            </WidgetErrorBoundary>
 
             {/* Governance notice */}
             <div className="p-4 border-t border-gray-800">
@@ -2348,6 +2360,7 @@ export default function DashboardPage() {
               </div>
             </div>
           </div>
+          </WidgetErrorBoundary>
 
           {/* ── Rightmost: Agent Console rail ─────────────────────────────────
                 Persistent right-side rail. 320px when open, 40px strip

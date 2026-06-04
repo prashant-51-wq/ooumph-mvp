@@ -199,7 +199,8 @@ const STATUS_COLOR: Record<string, string> = {
   pending: 'text-gray-500',
 }
 
-function agentLabel(name: string) {
+function agentLabel(name: unknown): string {
+  if (!name || typeof name !== 'string') return 'Agent'
   return name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
 }
 
