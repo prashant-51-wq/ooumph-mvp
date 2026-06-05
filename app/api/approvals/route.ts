@@ -167,11 +167,66 @@ export async function PATCH(req: NextRequest) {
 
     await sql`UPDATE artifacts SET status = ${status} WHERE id = ${artifact?.id}`
 
+    // Legacy learning_notes insert (backward compat) — kept so existing memory
+    // queries on learning_notes still work.
     if (action === 'reject' && notes && artifact?.id) {
       await sql`
         INSERT INTO learning_notes (id, workspace_id, source_type, source_id, note)
         VALUES (${newId()}, ${workspaceId}, 'approval_rejection', ${artifact.id}, ${notes})
-      `
+      `.catch(() => { /* non-fatal — table may not exist on all environments */ })
+    }
+
+    // TASK-003: Structured memory items per MEMORY_ARCHITECTURE.md
+    // On rejection: create 'failed_pattern' memory — what NOT to generate again
+    // On approval: create 'approved_template' memory — what to replicate
+    // Never stores raw text — stores typed, labeled, structured learning
+    if (artifact?.id) {
+      const artifactType = (artifact.type as string) || 'unknown'
+      const artifactTitle = (artifact.title as string) || 'Untitled'
+      try {
+        if (action === 'reject') {
+          const failureReason = notes
+            ? `Rejected by human reviewer. Notes: "${notes}"`
+            : `Rejected by human reviewer without notes.`
+          await sql`
+            INSERT INTO memory_items (
+              id, workspace_id, type, content, applies_to, confidence,
+              source_artifact_id, source_approval_id, status, created_at, updated_at
+            ) VALUES (
+              ${newId()}, ${workspaceId}, 'failed_pattern',
+              ${`Artifact type "${artifactType}" was rejected. ${failureReason} Artifact title: "${artifactTitle}". Prevention: review this feedback before generating similar content.`},
+              ${artifactType},
+              'medium',
+              ${artifact.id as string},
+              ${approvalId},
+              'active',
+              ${new Date().toISOString()},
+              ${new Date().toISOString()}
+            )
+          `
+        } else if (action === 'approve') {
+          await sql`
+            INSERT INTO memory_items (
+              id, workspace_id, type, content, applies_to, confidence,
+              source_artifact_id, source_approval_id, status, created_at, updated_at
+            ) VALUES (
+              ${newId()}, ${workspaceId}, 'approved_template',
+              ${`Artifact type "${artifactType}" was approved by human reviewer. Title: "${artifactTitle}". This represents an accepted output pattern for this workspace.`},
+              ${artifactType},
+              'medium',
+              ${artifact.id as string},
+              ${approvalId},
+              'active',
+              ${new Date().toISOString()},
+              ${new Date().toISOString()}
+            )
+          `
+        }
+      } catch (memErr) {
+        // Non-fatal — memory_items table may not exist on legacy installs
+        // (db migration will add it on next cold start). Log but don't block.
+        console.warn('[approvals] memory_items insert failed (non-fatal):', memErr instanceof Error ? memErr.message : memErr)
+      }
     }
 
     // Send confirmation email to the workspace approval address

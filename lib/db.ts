@@ -779,6 +779,54 @@ async function postgresQuery(strings: TemplateStringsArray, ...values: unknown[]
       )
     `
     await pgSql`CREATE INDEX IF NOT EXISTS lead_magnets_ws ON lead_magnets(workspace_id)`
+
+    // ── TASK-001: Compliance fields on leads_captured ─────────────────────────
+    // Required by COMPLIANCE_GUARDRAILS.md — every contact must have consent
+    // status, do-not-contact flag, and channel consent recorded. Without these,
+    // the Compliance Review Agent cannot make safe outreach decisions and we
+    // risk CAN-SPAM / GDPR / TCPA violations on any outbound action.
+    await pgSql`ALTER TABLE leads_captured ADD COLUMN IF NOT EXISTS consent_status TEXT NOT NULL DEFAULT 'not_set'`
+    await pgSql`ALTER TABLE leads_captured ADD COLUMN IF NOT EXISTS do_not_contact INTEGER NOT NULL DEFAULT 0`
+    await pgSql`ALTER TABLE leads_captured ADD COLUMN IF NOT EXISTS consent_channel TEXT`
+    await pgSql`ALTER TABLE leads_captured ADD COLUMN IF NOT EXISTS consent_date TIMESTAMPTZ`
+    await pgSql`ALTER TABLE leads_captured ADD COLUMN IF NOT EXISTS unsubscribed_at TIMESTAMPTZ`
+    await pgSql`ALTER TABLE leads_captured ADD COLUMN IF NOT EXISTS fit_score INTEGER DEFAULT 0`
+    await pgSql`ALTER TABLE leads_captured ADD COLUMN IF NOT EXISTS intent_score INTEGER DEFAULT 0`
+    // Index: the Compliance Review Agent and outreach agents filter by
+    // (workspace_id, do_not_contact, consent_status) on every outreach check.
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_leads_compliance ON leads_captured(workspace_id, do_not_contact, consent_status)`
+
+    // ── TASK-003: Structured memory items table ───────────────────────────────
+    // Required by MEMORY_ARCHITECTURE.md — stores typed, labeled, reviewed
+    // learning extracted from approved/rejected artifacts and campaign results.
+    // NEVER raw chat. ALWAYS structured with type, content, applies_to, evidence.
+    await pgSql`
+      CREATE TABLE IF NOT EXISTS memory_items (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        type TEXT NOT NULL CHECK (type IN (
+          'winning_hook', 'failed_pattern', 'brand_rule', 'sales_pattern',
+          'audience_insight', 'compliance_note', 'performance_benchmark',
+          'approved_template', 'objection_response', 'competitor_intel'
+        )),
+        content TEXT NOT NULL,
+        applies_to TEXT NOT NULL DEFAULT '',
+        confidence TEXT NOT NULL DEFAULT 'medium' CHECK (confidence IN ('low', 'medium', 'high')),
+        evidence TEXT DEFAULT '',
+        source_artifact_id TEXT REFERENCES artifacts(id) ON DELETE SET NULL,
+        source_approval_id TEXT,
+        status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'archived')),
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_memory_items_workspace_type ON memory_items(workspace_id, type, status)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_memory_items_workspace_recent ON memory_items(workspace_id, created_at DESC)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_memory_items_artifact ON memory_items(source_artifact_id) WHERE source_artifact_id IS NOT NULL`
+
+    // ── TASK-001+003: approvals table fields for actor tracking ──────────────
+    // updated_at column for approvals (used by memory extraction timing)
+    await pgSql`ALTER TABLE approvals ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()`
   }
 
   const rows = await pgSql(strings, ...values) as Record<string, unknown>[]
@@ -1691,9 +1739,37 @@ function initSQLiteSync(db: import('better-sqlite3').Database) {
     // scans on the GHL webhook hot path.
     'ALTER TABLE lead_activities ADD COLUMN ghl_contact_id TEXT',
     'CREATE INDEX IF NOT EXISTS idx_lead_activities_ghl_contact ON lead_activities(workspace_id, ghl_contact_id)',
+    // TASK-001: Compliance fields on leads_captured (CODING_STANDARDS.md + COMPLIANCE_GUARDRAILS.md)
+    'ALTER TABLE leads_captured ADD COLUMN consent_status TEXT NOT NULL DEFAULT \'not_set\'',
+    'ALTER TABLE leads_captured ADD COLUMN do_not_contact INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE leads_captured ADD COLUMN consent_channel TEXT',
+    'ALTER TABLE leads_captured ADD COLUMN consent_date TEXT',
+    'ALTER TABLE leads_captured ADD COLUMN unsubscribed_at TEXT',
+    'ALTER TABLE leads_captured ADD COLUMN fit_score INTEGER DEFAULT 0',
+    'ALTER TABLE leads_captured ADD COLUMN intent_score INTEGER DEFAULT 0',
+    'CREATE INDEX IF NOT EXISTS idx_leads_compliance ON leads_captured(workspace_id, do_not_contact, consent_status)',
+    // TASK-003: Structured memory items table (MEMORY_ARCHITECTURE.md)
+    // Never stores raw chat — always typed, labeled, reviewed experience
+    `CREATE TABLE IF NOT EXISTS memory_items (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      type TEXT NOT NULL,
+      content TEXT NOT NULL,
+      applies_to TEXT NOT NULL DEFAULT '',
+      confidence TEXT NOT NULL DEFAULT 'medium',
+      evidence TEXT DEFAULT '',
+      source_artifact_id TEXT,
+      source_approval_id TEXT,
+      status TEXT NOT NULL DEFAULT 'active',
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    )`,
+    'CREATE INDEX IF NOT EXISTS idx_memory_items_workspace_type ON memory_items(workspace_id, type, status)',
+    'CREATE INDEX IF NOT EXISTS idx_memory_items_workspace_recent ON memory_items(workspace_id, created_at DESC)',
+    'ALTER TABLE approvals ADD COLUMN updated_at TEXT DEFAULT (datetime(\'now\'))',
   ]
   for (const m of migrations) {
-    try { db.exec(m) } catch { /* column already exists */ }
+    try { db.exec(m) } catch { /* column already exists or index already exists */ }
   }
 }
 
@@ -2058,5 +2134,38 @@ export async function initializeDatabase() {
   await pgSql`ALTER TABLE brand_profiles ADD COLUMN IF NOT EXISTS logo_url TEXT`
   await pgSql`CREATE TABLE IF NOT EXISTS lead_magnets (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), title VARCHAR(255) NOT NULL, description TEXT, asset_url TEXT NOT NULL, funnel_id TEXT, download_count INTEGER NOT NULL DEFAULT 0, created_at TIMESTAMPTZ DEFAULT NOW())`
   await pgSql`CREATE INDEX IF NOT EXISTS lead_magnets_ws ON lead_magnets(workspace_id)`
+  // TASK-001: Compliance fields on leads_captured
+  await pgSql`ALTER TABLE leads_captured ADD COLUMN IF NOT EXISTS consent_status TEXT NOT NULL DEFAULT 'not_set'`
+  await pgSql`ALTER TABLE leads_captured ADD COLUMN IF NOT EXISTS do_not_contact INTEGER NOT NULL DEFAULT 0`
+  await pgSql`ALTER TABLE leads_captured ADD COLUMN IF NOT EXISTS consent_channel TEXT`
+  await pgSql`ALTER TABLE leads_captured ADD COLUMN IF NOT EXISTS consent_date TIMESTAMPTZ`
+  await pgSql`ALTER TABLE leads_captured ADD COLUMN IF NOT EXISTS unsubscribed_at TIMESTAMPTZ`
+  await pgSql`ALTER TABLE leads_captured ADD COLUMN IF NOT EXISTS fit_score INTEGER DEFAULT 0`
+  await pgSql`ALTER TABLE leads_captured ADD COLUMN IF NOT EXISTS intent_score INTEGER DEFAULT 0`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_leads_compliance ON leads_captured(workspace_id, do_not_contact, consent_status)`
+  // TASK-003: Structured memory items table
+  await pgSql`
+    CREATE TABLE IF NOT EXISTS memory_items (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      type TEXT NOT NULL CHECK (type IN (
+        'winning_hook', 'failed_pattern', 'brand_rule', 'sales_pattern',
+        'audience_insight', 'compliance_note', 'performance_benchmark',
+        'approved_template', 'objection_response', 'competitor_intel'
+      )),
+      content TEXT NOT NULL,
+      applies_to TEXT NOT NULL DEFAULT '',
+      confidence TEXT NOT NULL DEFAULT 'medium' CHECK (confidence IN ('low', 'medium', 'high')),
+      evidence TEXT DEFAULT '',
+      source_artifact_id TEXT REFERENCES artifacts(id) ON DELETE SET NULL,
+      source_approval_id TEXT,
+      status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'archived')),
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_memory_items_workspace_type ON memory_items(workspace_id, type, status)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_memory_items_workspace_recent ON memory_items(workspace_id, created_at DESC)`
+  await pgSql`ALTER TABLE approvals ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()`
   console.log('✅ Neon Postgres DB initialized')
 }
