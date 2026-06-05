@@ -48,8 +48,13 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { after } from 'next/server'
 import { sql } from '@/lib/db'
-import { runAgent, streamAgent } from '@/lib/claude'
+import { streamAgent } from '@/lib/claude'
+import { runAgentWithTools } from '@/lib/agents/tool-calling'
 import { assertWorkspaceOwnership } from '@/lib/guards'
+import { checkApiRateLimit } from '@/lib/rate-limiter'
+import { assertAgentRunQuota } from '@/lib/quota'
+import { getBaseUrl } from '@/lib/base-url'
+import { buildMemoryMatrix, logMemoryInjection } from '@/lib/agents/memory-retrieval'
 import {
   createAgentEventStream,
   recordSubAgentRun,
@@ -106,7 +111,8 @@ You have access to these agents:
 - strategy: Creates brand positioning, channel strategy, competitive analysis, and marketing roadmap
 - content: Builds content calendars, editorial plans, topic clusters across all channels
 - blog: Writes long-form blog posts, thought leadership articles, LinkedIn posts
-- email: Creates email sequences, newsletters, drip campaigns
+- email_campaign: Creates ONE-TIME broadcast emails (newsletters, announcements, promotional blasts). Use when the user says "send an email to my list", "newsletter", "announcement", "promo blast".
+- email_sequence: Creates MULTI-STEP nurture sequences delivered over days/weeks (welcome series, drip campaigns, re-engagement, abandoned-cart flows). Use when the user says "nurture", "drip", "5-day welcome", "follow-up sequence", "re-engagement".
 - leads: Designs lead generation funnels, lead magnets, qualifying systems
 - funnel: Builds conversion funnels, landing page copy, nurture flows
 - ads: Creates paid ad campaigns, ad copy variants, audience targeting plans
@@ -135,6 +141,16 @@ const AGENT_ROUTE_MAP: Record<string, string> = {
   strategy: '/api/agents/strategy',
   content: '/api/agents/content',
   blog: '/api/agents/content/blog',
+  // Sprint 16C (audit P0 #5): split the old `email` slug into two so the CMO
+  // can correctly route nurture-sequence requests to the funnel sequence
+  // generator instead of the campaign-broadcaster. Audit pass #2 found the
+  // CMO was emitting `email` for "create a 5-day nurture" requests and the
+  // wrong agent (email-marketing campaigns) was firing.
+  email_campaign: '/api/agents/email-marketing',
+  email_sequence: '/api/agents/funnel/email-sequence',
+  // Back-compat: `email` defaults to campaign (the old behaviour). The CMO
+  // prompt should prefer the explicit slugs; this fallback prevents legacy
+  // proposals from breaking.
   email: '/api/agents/email-marketing',
   leads: '/api/agents/leads',
   funnel: '/api/agents/funnel',
@@ -200,10 +216,11 @@ async function loadWorkspaceContext(workspaceId: string): Promise<{
   return { workspace, brand, brandContext }
 }
 
-/** Run the proposal-generation Claude call. Used by the legacy JSON path. */
-async function generateProposal(brandContext: string, message: string): Promise<CMOChatResponse> {
-  const userPrompt = `Brand context:\n${brandContext}\n\nUser request: "${message}"\n\nRespond with a JSON object like this:\n{\n  "reply": "string",\n  "project": { "name": "string", "goal": "string", "estimatedMinutes": number, "estimatedCostUsd": number },\n  "team": [{ "role": "string", "agent": "string", "description": "string" }],\n  "firstAction": "string"\n}`
-  return runAgent<CMOChatResponse>(CMO_SYSTEM_PROMPT, userPrompt)
+/** Run the proposal-generation Claude call. Uses native tools so the CMO
+ *  can query brand memory or search the web before forming its proposal. */
+async function generateProposal(brandContext: string, message: string, workspaceId: string): Promise<CMOChatResponse> {
+  const userPrompt = `Brand context:\n${brandContext}\n\nUser request: "${message}"\n\nCall query_brand_memory to understand the brand's existing positioning before responding. Then respond with a JSON object like this:\n{\n  "reply": "string",\n  "project": { "name": "string", "goal": "string", "estimatedMinutes": number, "estimatedCostUsd": number },\n  "team": [{ "role": "string", "agent": "string", "description": "string" }],\n  "firstAction": "string"\n}`
+  return runAgentWithTools<CMOChatResponse>(CMO_SYSTEM_PROMPT, userPrompt, workspaceId)
 }
 
 // ─── Two-phase streaming prompt ──────────────────────────────────────────
@@ -247,6 +264,7 @@ const STREAM_SEPARATOR = '<<<DATA>>>'
 async function streamProposalWithTokens(
   brandContext: string,
   message: string,
+  workspaceId: string,
   emitToken: (delta: string) => void,
 ): Promise<CMOChatResponse> {
   const userPrompt = `Brand context:\n${brandContext}\n\nUser request: "${message}"`
@@ -256,7 +274,7 @@ async function streamProposalWithTokens(
   let emittedLen = 0
   let separatorFound = false
 
-  await streamAgent(CMO_CHAT_STREAMING_PROMPT, userPrompt, (delta) => {
+  await streamAgent(CMO_CHAT_STREAMING_PROMPT, userPrompt, workspaceId, (delta: string) => {
     fullText += delta
 
     // After separator: stop emitting tokens (we're now accumulating JSON).
@@ -363,6 +381,9 @@ async function findLatestArtifactAndApproval(
 // ═════════════════════════════════════════════════════════════════════════
 
 export async function POST(req: NextRequest) {
+  const limited = checkApiRateLimit(req, 'agents/cmo')
+  if (limited) return limited
+
   let body: CMORequest
   try {
     body = (await req.json()) as CMORequest
@@ -378,6 +399,13 @@ export async function POST(req: NextRequest) {
   const denied = assertWorkspaceOwnership(req, workspaceId)
   if (denied) return denied
 
+  // Sprint 12C: plan-tier quota gate. CMO is the most expensive single
+  // entry point (streams sub-agent calls), so this is the highest-value
+  // place to enforce. Internal calls from cron / supervisor → worker
+  // bypass via x-internal-secret.
+  const overQuota = await assertAgentRunQuota(req, workspaceId)
+  if (overQuota) return overQuota
+
   if (action !== 'chat' && action !== 'execute') {
     return NextResponse.json(
       { ok: false, error: 'Invalid action. Use "chat" or "execute".' },
@@ -386,6 +414,15 @@ export async function POST(req: NextRequest) {
   }
 
   const wantsStream = (req.headers.get('accept') || '').includes('text/event-stream')
+
+  // Sprint 19Z: capture the user's session cookie at the entry point so
+  // we can forward it to sub-agent self-fetches. The proxy.ts middleware
+  // requires either a valid session cookie OR a non-empty x-internal-secret
+  // header matching ADMIN_SECRET/CRON_SECRET. Both secrets were set to
+  // empty strings in prod env, so internal-secret bypass was never
+  // working — every sub-agent fetch hit the 401 wall. Forwarding the
+  // user's cookie self-heals this for user-initiated flows.
+  const userCookieHeader = req.headers.get('cookie') || ''
 
   // ───────────────────────────────────────────────────────────────────────
   // STREAMING PATH — returns SSE event stream
@@ -407,7 +444,7 @@ export async function POST(req: NextRequest) {
     //     after the client disconnects
     const workPromise = (action === 'chat'
       ? runCmoChatStreaming(handle, workspaceId, message)
-      : runCmoExecuteStreaming(handle, workspaceId, firstAction || 'strategy', projectContext)
+      : runCmoExecuteStreaming(handle, workspaceId, firstAction || 'strategy', projectContext, userCookieHeader)
     ).catch(async (err) => {
       // Last-resort error reporting — the inner helpers should normally
       // emit their own error events before throwing, but if they don't,
@@ -445,7 +482,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: false, error: 'message is required for chat' }, { status: 400 })
       }
       const { brandContext } = await loadWorkspaceContext(workspaceId)
-      const proposal = await generateProposal(brandContext, message)
+      const proposal = await generateProposal(brandContext, message, workspaceId)
       return NextResponse.json({
         ok: true,
         response: proposal.reply,
@@ -456,7 +493,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (action === 'execute') {
-      const result = await executeFirstAgent(workspaceId, firstAction || 'strategy')
+      const result = await executeFirstAgent(workspaceId, firstAction || 'strategy', userCookieHeader)
       if (result.error) {
         return NextResponse.json(
           { ok: false, error: `Failed to start ${firstAction} agent: ${result.error}` },
@@ -494,25 +531,121 @@ async function runCmoChatStreaming(
 ): Promise<void> {
   const startedAt = Date.now()
   try {
+    // Sprint 20J: each log line now reports actual progress with real
+    // values instead of canned strings. "Loading brand context" was
+    // accurate the first time you saw it; by the tenth time, it looks
+    // like a hardcoded script. Now the log shows which workspace was
+    // read, which brand fields were found, the model+prompt size, and
+    // how long each phase took.
     await handle.send({
       t: 'agent_start',
       agent: 'cmo',
-      label: 'Analyzing your goal and assembling a team…',
+      label: `Reading "${message.slice(0, 60)}${message.length > 60 ? '…' : ''}"`,
     })
 
-    await handle.send({ t: 'agent_log', agent: 'cmo', level: 'info', msg: 'Loading brand context' })
-    const { brandContext } = await loadWorkspaceContext(workspaceId)
+    const ctxStart = Date.now()
+    await handle.send({ t: 'agent_log', agent: 'cmo', level: 'info', msg: `Pulling workspace + brand profile from DB` })
+    const { workspace, brand, brandContext } = await loadWorkspaceContext(workspaceId)
+    const wsName = (workspace?.name as string) || 'unknown'
+    const brandFields = brand ? Object.entries(brand).filter(([, v]) => v != null && v !== '').length : 0
+    await handle.send({
+      t: 'agent_log', agent: 'cmo', level: 'info',
+      msg: `Workspace "${wsName}" · ${brandFields} brand fields populated · ${Date.now() - ctxStart}ms`,
+    })
 
-    await handle.send({ t: 'agent_log', agent: 'cmo', level: 'info', msg: 'Drafting reply + proposal' })
+    // ─── Sprint 1: Postgres-based memory injection ──────────────────────
+    // Pull 30-day winners, brand voice rules, and live campaign state
+    // BEFORE the LLM call. Inject as an explicit '### SYSTEM MEMORY' block
+    // inside the brandContext so streamProposalWithTokens picks it up
+    // unmodified. Log the injection to agent_run_events with the SHA-256
+    // hash so we can later prove which exact memory reached the model.
+    const memoryStart = Date.now()
+    const memoryMatrix = await buildMemoryMatrix(workspaceId)
+    await handle.send({
+      t: 'agent_log', agent: 'cmo', level: 'info',
+      msg: `Memory matrix built · ${memoryMatrix.sources.length} sources · ${memoryMatrix.sizeBytes}B · hash=${memoryMatrix.hash.slice(0, 8)} · ${Date.now() - memoryStart}ms`,
+    })
+    await logMemoryInjection({ workspaceId, agentRunId: handle.runId, agent: 'cmo', matrix: memoryMatrix })
+    const augmentedContext = `${brandContext}\n\n${memoryMatrix.matrix}`
 
+    const modelName = process.env.OOUMPH_AI_MODEL || 'claude-sonnet-4-5-20250929'
+    const promptChars = augmentedContext.length + message.length
+    await handle.send({
+      t: 'agent_log', agent: 'cmo', level: 'info',
+      msg: `Calling ${modelName} with ${promptChars} chars of context (${memoryMatrix.sizeBytes}B memory matrix)`,
+    })
+
+    const claudeStart = Date.now()
     // Stream Claude's response. Reply tokens go on the wire as they arrive
     // (live typing in the chat bubble); the JSON tail is parsed at the end.
-    const proposal = await streamProposalWithTokens(brandContext, message, (delta) => {
+    const proposal = await streamProposalWithTokens(augmentedContext, message, workspaceId, (delta) => {
       // Fire-and-forget — the handle.send() Promise is awaited internally
       // by the stream's controller. We don't await each delta here because
       // we want token emission to be as low-latency as possible.
       void handle.send({ t: 'token', text: delta, agent: 'cmo' })
     })
+    const claudeMs = Date.now() - claudeStart
+
+    const teamNames = (proposal.team || []).map(t => t.agent).join(' → ')
+    await handle.send({
+      t: 'agent_log', agent: 'cmo', level: 'info',
+      msg: `Proposal ready · team: [${teamNames}] · first action: ${proposal.firstAction} · ${claudeMs}ms · ~${proposal.reply.length} reply chars`,
+    })
+
+    // ─── Sprint 20O: persist proposed tasks ─────────────────────────────────
+    // Audit P1 #5 — the audit found the CMO's "team assignment" was a
+    // pure UI mockup: the JSON in the chat bubble vanished if the user
+    // never clicked "Deploy team", and sub-agents had no way to discover
+    // what work was queued for the workspace. Now every team member from
+    // the proposal lands in project_tasks with status='proposed'. The
+    // approval/auto-execute path flips them to 'pending' and backfills
+    // parent_artifact_id once the strategy artifact is created (see
+    // /api/agents/cmo execute path and /api/approvals route below).
+    //
+    // The schema migration in lib/db.ts dropped NOT NULL from
+    // parent_artifact_id + initiative_run_id and added a CHECK to keep
+    // the invariant: those fields can ONLY be null while status='proposed'.
+    const proposedTaskIds: string[] = []
+    if (Array.isArray(proposal.team) && proposal.team.length > 0) {
+      try {
+        const proposalPayload = JSON.stringify({
+          project: proposal.project,
+          team: proposal.team,
+          firstAction: proposal.firstAction,
+          reply: proposal.reply,
+          userMessage: message.slice(0, 500),
+        })
+        for (let i = 0; i < proposal.team.length; i++) {
+          const member = proposal.team[i]
+          const taskId = `task_${Date.now()}_${i}_${Math.random().toString(36).slice(2, 8)}`
+          await sql`
+            INSERT INTO project_tasks (
+              id, workspace_id, initiative_run_id, parent_artifact_id,
+              task_index, agent, task_type, task_brief,
+              status, cmo_run_id, proposal_payload, created_at
+            ) VALUES (
+              ${taskId}, ${workspaceId}, ${null}, ${null},
+              ${i}, ${member.agent}, ${'proposal'},
+              ${`${member.role}: ${member.description}`.slice(0, 1000)},
+              ${'proposed'}, ${handle.runId}, ${proposalPayload}, NOW()
+            )
+          `
+          proposedTaskIds.push(taskId)
+        }
+        await handle.send({
+          t: 'agent_log', agent: 'cmo', level: 'info',
+          msg: `Persisted ${proposedTaskIds.length} proposed task${proposedTaskIds.length === 1 ? '' : 's'} to project_tasks`,
+        })
+      } catch (err) {
+        // Persistence failure is non-fatal — the chat still returns the
+        // proposal so the user can interact. Surface as a warn-level log
+        // event so we can debug post-hoc.
+        await handle.send({
+          t: 'agent_log', agent: 'cmo', level: 'warn',
+          msg: `Task persistence skipped: ${err instanceof Error ? err.message : String(err)}`,
+        })
+      }
+    }
 
     await handle.send({
       t: 'agent_done',
@@ -536,6 +669,11 @@ async function runCmoChatStreaming(
         project: proposal.project,
         team: proposal.team,
         firstAction: proposal.firstAction,
+        // Sprint 20O: surface the task IDs so the client (or the
+        // approve/execute flow) can flip them from 'proposed' to
+        // 'pending' once the user signs off.
+        proposedTaskIds,
+        cmoRunId: handle.runId,
       },
       cost: Math.max(0.001, proposal.reply.length * 0.0000015),
     })
@@ -558,21 +696,53 @@ async function runCmoExecuteStreaming(
   workspaceId: string,
   agentSlug: string,
   projectContext?: CMORequest['projectContext'],
+  userCookieHeader?: string,
 ): Promise<void> {
   const overallStartedAt = Date.now()
   try {
+    // Sprint 20J: real per-step progress instead of canned headline.
+    const projName = projectContext?.name || 'unnamed project'
+    const teamSize = projectContext?.team?.length || 1
     await handle.send({
       t: 'agent_start',
       agent: 'cmo',
-      label: 'Orchestrating your project…',
+      label: `Orchestrating "${projName}" · ${teamSize} agent${teamSize === 1 ? '' : 's'} queued`,
     })
 
     await handle.send({
       t: 'agent_log',
       agent: 'cmo',
       level: 'info',
-      msg: `Routing to ${agentSlug} agent`,
+      msg: `→ Dispatching to ${agentSlug} (${AGENT_ROUTE_MAP[agentSlug] || '/api/agents/strategy'})`,
     })
+
+    // ─── Sprint 20O: flip proposed tasks for THIS workspace to 'pending' ─
+    // The chat path persisted proposed_task rows tied to a previous CMO
+    // run. The user just clicked Deploy team (or the auto-orchestrate
+    // from Sprint 20J fired automatically), so any tasks still sitting
+    // in 'proposed' for this workspace are now actively executing. Flip
+    // their state to 'pending' so the workspace task board reflects the
+    // truth. parent_artifact_id stays NULL — it'll be backfilled by the
+    // approvals handler once the strategy artifact is created.
+    try {
+      const flipped = await sql`
+        UPDATE project_tasks
+        SET status = 'pending', started_at = NOW()
+        WHERE workspace_id = ${workspaceId}
+          AND status = 'proposed'
+        RETURNING id
+      `
+      if (flipped.rows.length > 0) {
+        await handle.send({
+          t: 'agent_log',
+          agent: 'cmo',
+          level: 'info',
+          msg: `Promoted ${flipped.rows.length} proposed task${flipped.rows.length === 1 ? '' : 's'} → pending`,
+        })
+      }
+    } catch (err) {
+      console.warn('[cmo execute] task promotion failed (non-fatal):', err)
+    }
 
     // ─── Run the sub-agent ───────────────────────────────────────────────
     // Future-proofing: when the sub-agent route itself supports streaming
@@ -600,24 +770,35 @@ async function runCmoExecuteStreaming(
     const beforeISO = new Date(Date.now() - 1000).toISOString()
 
     const routePath = AGENT_ROUTE_MAP[agentSlug] || '/api/agents/strategy'
-    const baseUrl =
-      process.env.NEXT_PUBLIC_BASE_URL ||
-      process.env.NEXT_PUBLIC_APP_URL ||
-      `http://localhost:${process.env.PORT || 3000}`
+    // Sprint 19Y: NEXT_PUBLIC_BASE_URL was empty in prod → fell through to
+    // localhost:3000 → every sub-agent fetch failed silently with ECONNREFUSED
+    // on the Vercel function host. The new getBaseUrl helper adds VERCEL_URL
+    // as a fallback so this self-heals.
+    const baseUrl = getBaseUrl()
 
     let subAgentSucceeded = false
     let subAgentResult: Record<string, unknown> = {}
     let subAgentErrorMsg: string | undefined
 
     try {
+      // Sprint 19Z: forward the user's session cookie when present so the
+      // proxy.ts middleware accepts the call as authenticated. Fall back
+      // to x-internal-secret when set (cron / programmatic callers). With
+      // empty ADMIN_SECRET in prod env, the cookie path is what actually
+      // makes user-initiated CMO orchestration work.
+      const subAgentHeaders: Record<string, string> = {
+        'Content-Type': 'application/json',
+      }
+      const trimmedAdminSecret = (process.env.ADMIN_SECRET || '').trim()
+      if (trimmedAdminSecret) {
+        subAgentHeaders['x-internal-secret'] = trimmedAdminSecret
+      }
+      if (userCookieHeader) {
+        subAgentHeaders['cookie'] = userCookieHeader
+      }
       const res = await fetch(`${baseUrl}${routePath}`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          // Forward admin secret so the sub-agent passes workspace ownership
-          // when invoked from server-to-server.
-          ...(process.env.ADMIN_SECRET ? { 'x-internal-secret': process.env.ADMIN_SECRET } : {}),
-        },
+        headers: subAgentHeaders,
         body: JSON.stringify({
           workspaceId,
           // Pass project context so the sub-agent can tailor its output
@@ -697,6 +878,29 @@ async function runCmoExecuteStreaming(
           publishDestination: produced.publishDestination,
         })
       }
+
+      // ─── Sprint 20O: backfill parent_artifact_id on the dispatched task ─
+      // The proposed→pending flip above left parent_artifact_id NULL
+      // (artifact didn't exist yet). Now that it does, link the task row
+      // for THIS agent to the artifact it produced. Restricts to the
+      // matching agent slug + this workspace + still-NULL parent — leaves
+      // older tasks alone.
+      try {
+        await sql`
+          UPDATE project_tasks
+          SET parent_artifact_id = ${produced.artifactId},
+              produced_artifact_id = ${produced.artifactId},
+              agent_run_id = ${subAgent.runId},
+              status = 'completed',
+              completed_at = NOW()
+          WHERE workspace_id = ${workspaceId}
+            AND agent = ${agentSlug}
+            AND status = 'pending'
+            AND parent_artifact_id IS NULL
+        `
+      } catch (err) {
+        console.warn('[cmo execute] task backfill failed (non-fatal):', err)
+      }
     }
 
     await handle.send({
@@ -733,20 +937,21 @@ async function runCmoExecuteStreaming(
 async function executeFirstAgent(
   workspaceId: string,
   agentSlug: string,
+  userCookieHeader?: string,
 ): Promise<{ projectId?: string; error?: string }> {
   const routePath = AGENT_ROUTE_MAP[agentSlug] || '/api/agents/strategy'
-  const baseUrl =
-    process.env.NEXT_PUBLIC_BASE_URL ||
-    process.env.NEXT_PUBLIC_APP_URL ||
-    `http://localhost:${process.env.PORT || 3000}`
+  // Sprint 19Y: see streaming path comment.
+  const baseUrl = getBaseUrl()
 
   try {
+    // Sprint 19Z: same cookie-forward / internal-secret strategy as streaming.
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+    const trimmedAdminSecret = (process.env.ADMIN_SECRET || '').trim()
+    if (trimmedAdminSecret) headers['x-internal-secret'] = trimmedAdminSecret
+    if (userCookieHeader) headers['cookie'] = userCookieHeader
     const res = await fetch(`${baseUrl}${routePath}`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(process.env.ADMIN_SECRET ? { 'x-internal-secret': process.env.ADMIN_SECRET } : {}),
-      },
+      headers,
       body: JSON.stringify({ workspaceId }),
     })
     if (!res.ok) {

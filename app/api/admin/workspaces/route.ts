@@ -4,14 +4,11 @@
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
-
-function requireAdmin(req: NextRequest): boolean {
-  const secret = req.headers.get('x-admin-secret') || new URL(req.url).searchParams.get('adminSecret')
-  return secret === process.env.ADMIN_SECRET
-}
+import { assertSuperAdmin } from '@/lib/guards'
 
 export async function GET(req: NextRequest) {
-  if (!requireAdmin(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  const denied = await assertSuperAdmin(req)
+  if (denied) return denied
 
   const { searchParams } = new URL(req.url)
   const search = searchParams.get('search') || ''
@@ -41,7 +38,8 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  if (!requireAdmin(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  const denied = await assertSuperAdmin(req)
+  if (denied) return denied
 
   try {
     const { workspaceId, action } = await req.json() as { workspaceId: string; action: 'impersonate' | 'delete' }

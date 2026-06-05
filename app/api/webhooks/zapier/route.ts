@@ -90,12 +90,31 @@ export async function POST(req: NextRequest) {
     )
   }
 
-  // Verify workspace exists
+  // Verify workspace exists AND the inbound Zapier token matches.
+  // Audit pass #6 P1: previously the endpoint accepted any payload bearing a
+  // valid workspaceId — letting anyone POST leads into anyone's CRM. We now
+  // require the x-zapier-token header to match workspaces.webhook_secret.
+  // (Column added via inline migration in workspaces' init block.)
   const wsResult = await sql`
-    SELECT id FROM workspaces WHERE id = ${workspaceId} AND status = 'active' LIMIT 1
+    SELECT id, webhook_secret FROM workspaces WHERE id = ${workspaceId} AND status = 'active' LIMIT 1
   `
-  if (!wsResult.rows[0]) {
+  const wsRow = wsResult.rows[0] as { id?: string; webhook_secret?: string | null } | undefined
+  if (!wsRow) {
     return NextResponse.json({ error: 'Workspace not found' }, { status: 404 })
+  }
+
+  const provided = req.headers.get('x-zapier-token') || ''
+  const expected = wsRow.webhook_secret || ''
+  if (!expected) {
+    // No token provisioned on this workspace yet — refuse inbound writes
+    // rather than silently accepting them.
+    return NextResponse.json(
+      { error: 'Zapier webhook token not provisioned for this workspace. Generate one in Integrations → Zapier.' },
+      { status: 401 },
+    )
+  }
+  if (!provided || provided !== expected) {
+    return NextResponse.json({ error: 'Invalid or missing x-zapier-token' }, { status: 401 })
   }
 
   const name = String(

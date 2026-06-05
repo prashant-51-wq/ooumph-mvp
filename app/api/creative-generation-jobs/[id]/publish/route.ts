@@ -20,7 +20,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server'
-import { sql } from '@/lib/db'
+import { sql, newId } from '@/lib/db'
 import {
   assertWorkspaceOwnership, assertArtifactApproved, assertCrisisClear,
 } from '@/lib/guards'
@@ -138,11 +138,96 @@ export async function POST(req: NextRequest, ctx: RouteCtx) {
     )
   }
 
+  // ── 7. Sprint 15B (P0 #5): enqueue a real publish into scheduled_content
+  //
+  // Previously this route just flipped the asset to 'published_ready' and
+  // returned — leaving the user with a status badge but no actual post. Now
+  // we look up the asset's URL + the linked artifact's caption and create
+  // a pending scheduled_content row per requested platform so the
+  // publish-scheduled cron drains it on its next 15-minute tick.
+  //
+  // Platform list: body.platforms[] if provided, else inferred from the
+  // artifact's `creative_requests.publish_platforms` row.
+  let queuedFor: string[] = []
+  try {
+    const assetRow = await sql`
+      SELECT asset_url, caption_text FROM media_assets WHERE id = ${job.result_asset_id} LIMIT 1
+    `
+    const asset = assetRow.rows[0] as { asset_url?: string; caption_text?: string } | undefined
+    const platformsFromBody = (body as { platforms?: string[] }).platforms
+    let platforms: string[] = Array.isArray(platformsFromBody) ? platformsFromBody : []
+    if (platforms.length === 0 && job.artifact_id) {
+      const crRes = await sql`
+        SELECT publish_platforms FROM creative_requests
+        WHERE artifact_id = ${job.artifact_id} AND publish_platforms IS NOT NULL
+        LIMIT 1
+      `
+      const cr = crRes.rows[0] as { publish_platforms?: string } | undefined
+      if (cr?.publish_platforms) {
+        try { platforms = JSON.parse(cr.publish_platforms) } catch { /* ignore */ }
+      }
+    }
+    if (platforms.length === 0) platforms = ['linkedin']  // sensible default
+
+    let caption = ''
+    if (job.artifact_id) {
+      const artRes = await sql`SELECT content_json FROM artifacts WHERE id = ${job.artifact_id} LIMIT 1`
+      const aj = artRes.rows[0] as { content_json?: string | Record<string, unknown> } | undefined
+      let cj: Record<string, unknown> = {}
+      if (typeof aj?.content_json === 'string') {
+        try { cj = JSON.parse(aj.content_json) } catch { /* ignore */ }
+      } else if (aj?.content_json && typeof aj.content_json === 'object') {
+        cj = aj.content_json as Record<string, unknown>
+      }
+      caption = (cj.body as string) || (cj.caption as string) || ''
+    }
+    if (!caption) caption = asset?.caption_text || ''
+    if (!caption) caption = '(no caption)'
+
+    const mediaUrls = asset?.asset_url ? [asset.asset_url] : []
+    const scheduledAt = new Date(Date.now() + 30 * 60_000).toISOString()
+    const now = new Date().toISOString()
+    for (const platform of platforms) {
+      // Dedupe by (artifact_id, channel) — re-clicks won't double-queue.
+      if (job.artifact_id) {
+        const existing = await sql`
+          SELECT id FROM scheduled_content
+          WHERE artifact_id = ${job.artifact_id} AND channel = ${platform}
+          LIMIT 1
+        `
+        if (existing.rows[0]) continue
+      }
+      await sql`
+        INSERT INTO scheduled_content (
+          id, workspace_id, artifact_id,
+          channel, platform,
+          content_body, content,
+          scheduled_at, scheduled_for,
+          media_urls, status, retry_count,
+          created_at, updated_at
+        ) VALUES (
+          ${newId()}, ${workspaceId}, ${job.artifact_id},
+          ${platform}, ${platform},
+          ${caption}, ${caption},
+          ${scheduledAt}, ${scheduledAt},
+          ${JSON.stringify(mediaUrls)}, 'pending', 0,
+          ${now}, ${now}
+        )
+      `
+      queuedFor.push(platform)
+    }
+  } catch (err) {
+    console.error('[creative-jobs/publish] auto-schedule failed (asset still marked publish-ready):', err)
+  }
+
   return NextResponse.json({
     ok: true,
     jobId,
     assetId: job.result_asset_id,
     status: 'approved_for_publish',
-    message: 'Asset is now eligible for external channel distribution.',
+    queuedFor,
+    message: queuedFor.length
+      ? `Asset queued to ${queuedFor.join(', ')} — opens in /calendar.`
+      : 'Asset is now eligible for external channel distribution.',
   })
 }

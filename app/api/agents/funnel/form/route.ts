@@ -6,6 +6,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
 import { runAgent } from '@/lib/claude'
 import { getTallyForms } from '@/lib/tools/tally'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 import type { BrandProfile } from '@/types'
 
 type FormType = 'lead_capture' | 'survey' | 'registration' | 'feedback' | 'quiz'
@@ -35,6 +36,8 @@ export async function POST(req: NextRequest) {
       context?: string
     }
     if (!workspaceId) return NextResponse.json({ error: 'workspaceId required' }, { status: 400 })
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     // Load workspace settings and brand profile
     const [wsResult, brandResult] = await Promise.all([

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
-import { assertWorkspaceOwnership, getSessionUserId } from '@/lib/guards'
+import { assertWorkspaceOwnership, getSessionUserId, requireRole } from '@/lib/guards'
 import { Resend } from 'resend'
 import crypto from 'crypto'
 
@@ -24,6 +24,11 @@ export async function POST(req: NextRequest) {
 
     const denied = assertWorkspaceOwnership(req, workspaceId)
     if (denied) return denied
+    // Sprint 17F (audit pass #3 P1 #9): require admin role to invite. The
+    // Sprint 16B requireRole helper had zero call sites — this is its
+    // first real use. Owners pass through (owner > admin in the rank).
+    const roleDenied = await requireRole(req, workspaceId, 'admin')
+    if (roleDenied) return roleDenied
 
     const invitedBy = getSessionUserId(req)
 
@@ -105,7 +110,21 @@ export async function POST(req: NextRequest) {
     })
     } // end if resendKey
 
-    return NextResponse.json({ ok: true, inviteId, email, inviteUrl: acceptUrl })
+    // Sprint 16D (audit P1 #20): surface "email not sent" so the user
+    // knows to copy the inviteUrl manually. Previously this silently
+    // succeeded — invitee never got the link, inviter thought they did.
+    const emailSent = !!resendKey
+    if (!emailSent) {
+      console.warn(`[team/invite] RESEND_API_KEY missing — invite for ${email} created but no email was dispatched. Use inviteUrl to share manually.`)
+    }
+    return NextResponse.json({
+      ok: true,
+      inviteId,
+      email,
+      inviteUrl: acceptUrl,
+      emailSent,
+      ...(emailSent ? {} : { warning: 'Email not sent — RESEND_API_KEY missing. Share the inviteUrl manually.' }),
+    })
   } catch (err) {
     console.error('[team/invite POST]', err)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })

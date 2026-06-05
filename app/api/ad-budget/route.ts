@@ -16,6 +16,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
 import { assertWorkspaceOwnership } from '@/lib/guards'
+import { notifyBudgetAlert } from '@/lib/notifications'
 
 export const runtime = 'nodejs'
 
@@ -61,6 +62,32 @@ export async function GET(req: NextRequest) {
   const remainingHeadroom = Math.max(0, hardCap - totalCommitted)
   const crossedAlert = totalCommitted >= alertThreshold
   const crossedHardCap = totalCommitted > hardCap
+
+  // Sprint 18H: fire a budget_alert notification at most once per
+  // workspace per UTC day when a threshold is crossed. Same-day dedup
+  // is a single SELECT against the notifications table — no separate
+  // state column, no race risk. Non-blocking: the dashboard caller
+  // doesn't wait on the insert.
+  if (crossedAlert || crossedHardCap) {
+    const todayMidnightIso = new Date(
+      Math.floor(Date.now() / 86_400_000) * 86_400_000,
+    ).toISOString()
+    sql`
+      SELECT id FROM notifications
+      WHERE workspace_id = ${workspaceId}
+        AND type = 'budget_alert'
+        AND created_at >= ${todayMidnightIso}
+      LIMIT 1
+    `.then(existing => {
+      if (existing.rows[0]) return
+      const pct = hardCap > 0 ? (totalCommitted / hardCap) * 100 : 0
+      const scope: 'daily' | 'monthly' = 'daily'
+      const campaignName = rows.length === 1
+        ? rows[0].name
+        : `${rows.length} active campaigns`
+      return notifyBudgetAlert(workspaceId, campaignName, pct, scope)
+    }).catch(err => console.error('[ad-budget] alert fire failed:', err))
+  }
 
   return NextResponse.json({
     workspaceId,

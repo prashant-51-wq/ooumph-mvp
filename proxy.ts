@@ -20,7 +20,11 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 
-const SECRET = process.env.AUTH_SECRET || 'ooumph-dev-secret-change-in-production'
+const _rawSecret = process.env.AUTH_SECRET
+if (!_rawSecret && process.env.NODE_ENV === 'production') {
+  throw new Error('AUTH_SECRET env var is required in production. Set it in your Vercel environment variables.')
+}
+const SECRET = _rawSecret || 'ooumph-dev-secret-change-in-production'
 const COOKIE_NAME = 'ooumph_session'
 
 // ── Paths that are always public ──────────────────────────────────────────────
@@ -92,8 +96,11 @@ export async function proxy(req: NextRequest) {
   const adminSecret = process.env.ADMIN_SECRET || ''
   const cronSecret = process.env.CRON_SECRET || ''
 
-  // ── 1. Dashboard protection — redirect to login ──────────────────────────────
-  if (pathname.startsWith('/dashboard')) {
+  // ── 1. Dashboard + Admin portal protection — redirect to login ──────────────
+  // Sprint 18T: /admin is its own top-level portal (not nested under /dashboard).
+  // Same session-cookie protection applies; the admin layout's own client-side
+  // gate + each API route's assertSuperAdmin enforce the super-admin check.
+  if (pathname.startsWith('/dashboard') || pathname.startsWith('/admin')) {
     const token = req.cookies.get(COOKIE_NAME)?.value
     if (!token || !(await verifyEdgeToken(token))) {
       const loginUrl = new URL('/login', req.url)
@@ -125,11 +132,19 @@ export async function proxy(req: NextRequest) {
     return NextResponse.next()
   }
 
-  // ── Admin routes: require x-admin-secret ────────────────────────────────────
+  // ── Admin routes: x-admin-secret OR signed session cookie ───────────────────
+  // Sprint 18S: the new dashboard admin panel calls /api/admin/* from the
+  // browser using a session cookie — browsers can't send x-admin-secret.
+  // Proxy verifies the cookie HMAC is valid here; the route handler's
+  // assertSuperAdmin then enforces users.is_admin = 1 / SUPER_ADMIN_EMAILS.
+  // Defense in depth: forged cookie → 401 at edge; non-admin user → 403 in handler.
   if (pathname.startsWith('/api/admin/')) {
     const adminHdr = req.headers.get('x-admin-secret') || ''
-    const adminQp = req.nextUrl.searchParams.get('adminSecret') || ''
-    if (adminSecret && (adminHdr === adminSecret || adminQp === adminSecret)) {
+    if (adminSecret && adminHdr === adminSecret) {
+      return NextResponse.next()
+    }
+    const adminToken = req.cookies.get(COOKIE_NAME)?.value
+    if (adminToken && (await verifyEdgeToken(adminToken))) {
       return NextResponse.next()
     }
     return NextResponse.json({ error: 'Admin access required' }, { status: 401 })
@@ -167,6 +182,7 @@ export default proxy
 export const config = {
   matcher: [
     '/dashboard/:path*',
+    '/admin/:path*',
     '/api/:path*',
   ],
 }

@@ -1,7 +1,11 @@
 import { ImageResponse } from 'next/og'
 import { NextRequest } from 'next/server'
+import { recordMediaAsset } from '@/lib/media-assets'
 
-export const runtime = 'edge'
+// Sprint 18E (P0): switched from edge → nodejs so we can dual-write the
+// generated image into media_assets via the better-sqlite3/neon-backed
+// sql helper. `ImageResponse` works under nodejs runtime as well.
+export const runtime = 'nodejs'
 
 const PALETTES: Record<string, { primary: string; accent: string; bg: string }> = {
   professional: { primary: '#4f46e5', accent: '#818cf8', bg: '#0f0f0f' },
@@ -30,9 +34,33 @@ export async function GET(req: NextRequest) {
   const body = (searchParams.get('body') || '').slice(0, 200)
   const cta = (searchParams.get('cta') || '').slice(0, 80)
   const platform = searchParams.get('platform') || 'instagram'
+  const workspaceId = searchParams.get('workspaceId') || ''
 
   const { primary, accent, bg } = getPalette(tone)
   const isLinkedIn = platform === 'linkedin'
+
+  // Sprint 18E (P0): dual-write to media_assets so the asset library can
+  // find the generated image. The image's canonical URL is the request URL
+  // itself (this route IS the image). Fire-and-forget; a failed insert
+  // must not block the image response. Only attempt when a workspaceId is
+  // supplied — older callers (preview, approval thumbnails) don't pass one
+  // and shouldn't bloat the library.
+  if (workspaceId) {
+    const url = req.url
+    const filename = `static-post-${platform}-${Date.now()}.png`
+    // Don't await — keep the image response path tight. Errors are
+    // swallowed inside recordMediaAsset already.
+    void recordMediaAsset({
+      workspaceId,
+      url,
+      filename,
+      assetType: 'image',
+      mimeType: 'image/png',
+      sourceProvider: 'creative/static-post',
+      metadata: { tone, business, hook, body, cta, platform },
+      status: 'ready',
+    })
+  }
 
   return new ImageResponse(
     <div style={{

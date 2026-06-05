@@ -13,6 +13,9 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useWorkspaceId } from '@/lib/hooks/use-workspace-id'
+import { ProviderConnectBanner } from '@/components/dashboard/ProviderConnectBanner'
+import { SkeletonTableBody, SkeletonStatRow } from '@/components/Skeleton'
 import {
   Mail, Users, BarChart3, Plus, Search, Trash2, Pencil,
   CheckCircle2, ShieldCheck, Clock, AlertCircle, RefreshCw, X,
@@ -122,26 +125,48 @@ export default function EmailMarketingPage() {
   const [tab, setTab] = useState<Tab>('lists')
   const [error, setError] = useState<string | null>(null)
 
+  // Sprint 10C: session-derived via useWorkspaceId().
+  const { workspaceId: sessionWorkspaceId, resolved: sessionResolved, loading: sessionLoading } = useWorkspaceId()
   useEffect(() => {
-    let cancelled = false
-    fetch('/api/auth/me')
-      .then(r => r.ok ? r.json() : null)
-      .then(data => {
-        if (cancelled) return
-        const id: string | null = data?.user?.workspaceId
-          || (typeof window !== 'undefined' ? localStorage.getItem('workspaceId') : null)
-        setWorkspaceId(id)
-        if (!id) setError('No workspace selected — finish onboarding first.')
-      })
-      .catch(() => {
-        if (!cancelled) setError('Failed to load session')
-      })
-    return () => { cancelled = true }
-  }, [])
+    setWorkspaceId(sessionWorkspaceId)
+    if (sessionResolved && !sessionLoading && !sessionWorkspaceId) {
+      setError('No workspace selected — finish onboarding first.')
+    }
+  }, [sessionWorkspaceId, sessionResolved, sessionLoading])
+
+  // Sprint 19D: Resend readiness for the in-product connect banner.
+  const [resendReady, setResendReady] = useState<boolean | null>(null)
+  const refreshResendReady = useCallback(async () => {
+    if (!workspaceId) return
+    try {
+      const r = await fetch(`/api/workspaces?id=${workspaceId}`, { credentials: 'include' })
+      if (!r.ok) { setResendReady(false); return }
+      const data = await r.json() as { secrets?: Record<string, boolean> }
+      setResendReady(Boolean(data.secrets?.resend))
+    } catch { setResendReady(false) }
+  }, [workspaceId])
+  useEffect(() => { void refreshResendReady() }, [refreshResendReady])
 
   return (
     <div className="min-h-screen bg-gray-950 text-gray-100">
       <div className="max-w-7xl mx-auto px-6 py-8">
+        {/* Sprint 19D: Resend connect banner — required for actually
+            sending the campaigns that this page manages. */}
+        <ProviderConnectBanner
+          ready={resendReady}
+          workspaceId={workspaceId}
+          providerId="resend"
+          providerName="Resend"
+          icon="📧"
+          description="Sends the email campaigns this page manages. Domains, deliverability, and tracking all flow through Resend."
+          signupUrl="https://resend.com/signup"
+          keysHelpUrl="https://resend.com/api-keys"
+          freeTierNote="Free tier — 100 emails/day, 3,000 emails/month. Card not required."
+          fields={[{ label: 'API Key', placeholder: 're_…', payloadKey: 'key', password: true }]}
+          testMode="workspace-secrets"
+          onConnected={() => void refreshResendReady()}
+        />
+
         <div className="flex items-start justify-between mb-8">
           <div>
             <h1 className="text-2xl font-bold text-white flex items-center gap-2">
@@ -238,7 +263,9 @@ function ListsTab({ workspaceId }: { workspaceId: string }) {
       </div>
 
       {loading ? (
-        <div className="text-center py-16 text-gray-500 text-sm">Loading lists…</div>
+        <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+          <table className="w-full text-sm"><tbody><SkeletonTableBody rows={4} cols={6} /></tbody></table>
+        </div>
       ) : lists.length === 0 ? (
         <div className="text-center py-16 border border-dashed border-gray-800 rounded-xl">
           <Mail className="w-10 h-10 mx-auto mb-3 text-gray-700" />
@@ -510,7 +537,7 @@ function ListMembersModal({
         </div>
         <div className="flex-1 overflow-auto p-2">
           {loading ? (
-            <div className="text-center py-10 text-gray-500 text-sm">Loading members…</div>
+            <div className="py-2"><SkeletonTableBody rows={4} cols={4} standalone /></div>
           ) : members.length === 0 ? (
             <div className="text-center py-10 text-gray-500 text-sm">No members yet.</div>
           ) : (
@@ -603,7 +630,11 @@ function SubscribersTab({ workspaceId }: { workspaceId: string }) {
       </div>
 
       {loading ? (
-        <div className="text-center py-16 text-gray-500 text-sm">Loading subscribers…</div>
+        <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm"><tbody><SkeletonTableBody rows={6} cols={6} /></tbody></table>
+          </div>
+        </div>
       ) : filtered.length === 0 ? (
         <div className="text-center py-16 border border-dashed border-gray-800 rounded-xl">
           <Mail className="w-10 h-10 mx-auto mb-3 text-gray-700" />
@@ -674,6 +705,11 @@ function SubscribersTab({ workspaceId }: { workspaceId: string }) {
 
 function PerformanceTab({ workspaceId }: { workspaceId: string }) {
   const [campaigns, setCampaigns] = useState<CampaignPerf[]>([])
+  // Sprint 15F (P0 #3): UI-side send queue so users can finally trigger
+  // the dispatcher from the dashboard. The dispatcher route already
+  // existed (/api/email-campaigns/[id]/send) but had no UI invocation.
+  const [sendingId, setSendingId] = useState<string | null>(null)
+  const [sendError, setSendError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
@@ -705,10 +741,43 @@ function PerformanceTab({ workspaceId }: { workspaceId: string }) {
     </div>
   )
 
+  const sendCampaign = async (id: string, name: string) => {
+    if (!confirm(`Send "${name}" to all recipients now? This is HITL-gated — sends only if the linked artifact is approved.`)) return
+    setSendingId(id); setSendError(null)
+    try {
+      const res = await fetch(`/api/email-campaigns/${id}/send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspaceId }),
+      })
+      const data = await res.json()
+      if (!res.ok || !data.ok) {
+        setSendError(data.error || `Send failed (HTTP ${res.status})`)
+      } else {
+        // Refresh row to reflect new status.
+        fetch(`/api/email-campaigns?workspaceId=${workspaceId}`)
+          .then(r => r.json())
+          .then((rows: CampaignPerf[]) => setCampaigns(Array.isArray(rows) ? rows : []))
+          .catch(() => undefined)
+      }
+    } catch (err) {
+      setSendError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSendingId(null)
+    }
+  }
+
   return (
     <div>
       {loading ? (
-        <div className="text-center py-16 text-gray-500 text-sm">Loading campaigns…</div>
+        <div className="space-y-4">
+          <SkeletonStatRow count={4} />
+          <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm"><tbody><SkeletonTableBody rows={5} cols={6} /></tbody></table>
+            </div>
+          </div>
+        </div>
       ) : (
         <>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
@@ -726,7 +795,8 @@ function PerformanceTab({ workspaceId }: { workspaceId: string }) {
             </div>
           ) : (
             <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
-              <table className="w-full text-sm">
+              <div className="overflow-x-auto">
+              <table className="w-full text-sm min-w-[700px]">
                 <thead className="bg-gray-950 border-b border-gray-800">
                   <tr className="text-left text-xs uppercase text-gray-500">
                     <th className="px-4 py-3 font-medium">Campaign</th>
@@ -737,6 +807,7 @@ function PerformanceTab({ workspaceId }: { workspaceId: string }) {
                     <th className="px-4 py-3 font-medium">Clicks</th>
                     <th className="px-4 py-3 font-medium">Bounces</th>
                     <th className="px-4 py-3 font-medium">Sent at</th>
+                    <th className="px-4 py-3 font-medium"></th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-800">
@@ -757,10 +828,30 @@ function PerformanceTab({ workspaceId }: { workspaceId: string }) {
                           : <span className="text-gray-600">0</span>}
                       </td>
                       <td className="px-4 py-3 text-xs text-gray-500">{formatDateTime(c.sent_at)}</td>
+                      <td className="px-4 py-3 text-right">
+                        {c.status === 'draft' || c.status === 'scheduled' ? (
+                          <button
+                            onClick={() => sendCampaign(c.id, c.name)}
+                            disabled={sendingId === c.id}
+                            className="px-2.5 py-1 rounded bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-medium"
+                          >
+                            {sendingId === c.id ? 'Sending…' : 'Send'}
+                          </button>
+                        ) : (
+                          <span className="text-[10px] text-gray-700">—</span>
+                        )}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
+              </div>{/* /overflow-x-auto */}
+              {sendError && (
+                <div className="px-4 py-2 border-t border-rose-900 bg-rose-950/40 text-rose-300 text-xs flex items-center justify-between">
+                  <span>Send failed: {sendError}</span>
+                  <button onClick={() => setSendError(null)} className="text-rose-400 hover:text-rose-200">Dismiss</button>
+                </div>
+              )}
             </div>
           )}
         </>

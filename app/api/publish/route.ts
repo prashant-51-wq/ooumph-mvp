@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { publishTweet } from '@/lib/twitter-oauth'
+import { assertWorkspaceOwnership, assertArtifactApproved } from '@/lib/guards'
+import { readAccessToken } from '@/lib/integrations'
 
 const BASE_URL = process.env.NEXT_PUBLIC_BASE_URL || 'https://ooumph-mvp.vercel.app'
 
@@ -301,9 +303,20 @@ export async function POST(req: NextRequest) {
     if (!workspaceId || !artifactId || !platform) {
       return NextResponse.json({ error: 'Missing workspaceId, artifactId, or platform' }, { status: 400 })
     }
+    // Sprint 8A: ownership before external publish (same protection
+    // /publish/direct got in Sprint 7E).
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
+    // Audit pass #6 P0: HITL approval gate — no external social post
+    // without an approved artifact (matches /publish/direct behavior).
+    const gate = await assertArtifactApproved(workspaceId, artifactId)
+    if (gate) return gate
+
+    // Sprint 9B: select both token columns; readAccessToken() prefers
+    // encrypted (decrypted) over legacy plaintext.
     const intResult = await sql`
-      SELECT access_token, account_id, platform, metadata FROM integrations
+      SELECT access_token, encrypted_access_token, account_id, platform, metadata FROM integrations
       WHERE workspace_id = ${workspaceId} AND platform = ${platform} AND status = 'active'
       LIMIT 1
     `
@@ -316,8 +329,14 @@ export async function POST(req: NextRequest) {
           : JSON.parse(String(_rawInteg.metadata)) as Record<string, unknown>
       } catch { /* ignore */ }
     }
-    const integration = { ..._rawInteg, metadata: _meta } as unknown as Integration
-    if (!integration) {
+    const _resolvedToken = readAccessToken({
+      access_token: _rawInteg?.access_token as string | null,
+      encrypted_access_token: _rawInteg?.encrypted_access_token as string | null,
+    })
+    const integration = _rawInteg
+      ? ({ ..._rawInteg, access_token: _resolvedToken ?? '', metadata: _meta } as unknown as Integration)
+      : null
+    if (!integration || !_resolvedToken) {
       return NextResponse.json({ error: `No active ${platform} integration. Connect it in Integrations.` }, { status: 400 })
     }
 
@@ -401,6 +420,9 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
   const workspaceId = searchParams.get('workspaceId')
   if (!workspaceId) return NextResponse.json([], { status: 200 })
+  // Sprint 8A: ownership check.
+  const denied = assertWorkspaceOwnership(req, workspaceId)
+  if (denied) return denied
 
   const result = await sql`
     SELECT pl.*, a.title as artifact_title, a.type as artifact_type

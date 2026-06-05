@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { runAgent } from '@/lib/claude'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 
 interface ScriptSection {
   timestamp: string
@@ -81,6 +82,8 @@ export async function POST(req: NextRequest) {
         { status: 400 }
       )
     }
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     // 1. Load brand profile
     const brandResult = await sql`

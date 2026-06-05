@@ -28,6 +28,9 @@ import { sql, newId } from '@/lib/db'
 import { assertArtifactApproved } from '@/lib/guards'
 import { decryptSecret } from '@/lib/secrets'
 import { shortenAndTrackUrls } from '@/lib/link-tracker'
+import { buildAgentActiveCache } from '@/lib/agents'
+import { notifyPublishSuccess } from '@/lib/notifications'
+import { isSupportedPublishChannel } from '@/lib/publish-platforms'
 
 export const runtime = 'nodejs'
 export const maxDuration = 300
@@ -213,6 +216,22 @@ export async function GET(req: NextRequest) {
     return clear
   }
 
+  // 🛑 Sprint 2 Commit 2 — Agent lifecycle gate. Reads agents.status for the
+  // 'social-agent' row (the publishing worker per the canonical slug list
+  // in lib/agents.ts → DEFAULT_AGENTS). When an operator pauses social-agent
+  // from /dashboard/agents, this cache returns false on the next tick and
+  // we skip every scheduled item for that workspace.
+  //
+  // Failure semantics: an unseeded registry row returns active (fail open),
+  // matching the seedDefaultAgents idempotency story. So a workspace that
+  // existed before Sprint 2 still publishes — only operators who've
+  // explicitly paused get the skip.
+  //
+  // Items skipped here stay in 'pending' (we don't flip to failed). They'll
+  // be re-evaluated on the next cron tick — so resuming the agent picks up
+  // backlog work automatically without manual requeue.
+  const socialAgentActive = buildAgentActiveCache('social-agent')
+
   for (const item of items) {
     const itemId = item.id
     const workspaceId = item.workspace_id
@@ -226,6 +245,49 @@ export async function GET(req: NextRequest) {
       // picked up on the next cron tick once the crisis clears.
       if (!(await isWorkspaceClear(workspaceId))) {
         results.push({ id: itemId, status: 'skipped_crisis' })
+        continue
+      }
+
+      // ── 0.5. Agent lifecycle gate — skip workspaces with social-agent paused ──
+      // Operator paused the publishing worker from /dashboard/agents. Leave
+      // the row in 'pending' so it'll publish automatically when they
+      // resume. No retry counter bump — pausing is not a failure.
+      if (!(await socialAgentActive(workspaceId))) {
+        results.push({ id: itemId, status: 'skipped_agent_paused' })
+        continue
+      }
+
+      // ── 0.75. Sprint 20N: defense-in-depth dispatch-gate. The schedule
+      // endpoints (/api/publishing POST/PATCH, /api/schedule/bulk POST)
+      // now reject unsupported channels upfront, but a legacy row could
+      // still exist from before the gating shipped — or from a direct
+      // INSERT we don't control. Don't let those sit pending forever.
+      // Mark them failed immediately with a clear message so the user
+      // sees them in the activity feed and can re-schedule on a
+      // supported channel.
+      if (!isSupportedPublishChannel(channel)) {
+        const now = new Date().toISOString()
+        await sql`
+          UPDATE scheduled_content
+          SET status = 'failed',
+              error_message = ${`Publishing to "${channel}" is not yet supported. Re-schedule to LinkedIn, X/Twitter, or WordPress.`},
+              updated_at = ${now}
+          WHERE id = ${itemId}
+        `
+        try {
+          await sql`
+            INSERT INTO notifications (id, workspace_id, type, title, body, link, severity, created_at)
+            VALUES (
+              ${newId()}, ${workspaceId}, 'publish_failed',
+              ${`Publish blocked — "${channel}" not supported`},
+              ${'Re-schedule this post to LinkedIn, X/Twitter, or WordPress.'},
+              '/dashboard/calendar',
+              'warning',
+              ${now}
+            )
+          `
+        } catch { /* non-fatal */ }
+        results.push({ id: itemId, status: 'failed', error: 'unsupported_channel' })
         continue
       }
 
@@ -244,11 +306,26 @@ export async function GET(req: NextRequest) {
         if (gate) {
           // 403 from gate — leave permanently failed; don't auto-retry an
           // unapproved artifact.
+          const now = new Date().toISOString()
           await sql`
             UPDATE scheduled_content
-            SET status = 'failed', error_message = 'Artifact not approved', updated_at = ${new Date().toISOString()}
+            SET status = 'failed', error_message = 'Artifact not approved', updated_at = ${now}
             WHERE id = ${itemId}
           `
+          // Sprint 15B (P0 #7): producer-side notification.
+          try {
+            await sql`
+              INSERT INTO notifications (id, workspace_id, type, title, body, link, severity, created_at)
+              VALUES (
+                ${newId()}, ${workspaceId}, 'publish_failed',
+                ${'Publish blocked — artifact not approved'},
+                ${'Open the approval queue and approve before the cron will publish.'},
+                '/dashboard/approvals',
+                'warning',
+                ${now}
+              )
+            `
+          } catch { /* non-fatal */ }
           results.push({ id: itemId, status: 'failed', error: 'artifact_not_approved' })
           continue
         }
@@ -256,7 +333,7 @@ export async function GET(req: NextRequest) {
 
       // ── 3. Resolve OAuth token from oauth_tokens (BYOK) ─────────────────
       if (!channel) {
-        await markFailed(itemId, retryCount, 'No channel set')
+        await markFailed(itemId, retryCount, 'No channel set', workspaceId, null)
         results.push({ id: itemId, status: 'failed', error: 'no_channel' })
         continue
       }
@@ -274,14 +351,21 @@ export async function GET(req: NextRequest) {
       } | undefined
 
       if (!tok?.encrypted_access_token || tok.status !== 'active') {
-        await markFailed(itemId, retryCount, `No active ${channel} connection`)
+        await markFailed(itemId, retryCount, `No active ${channel} connection`, workspaceId, channel)
         results.push({ id: itemId, status: 'failed', error: 'no_oauth_token' })
+        continue
+      }
+
+      // Enforce token expiry before attempting publish.
+      if (tok.expires_at && new Date(tok.expires_at) < new Date()) {
+        await markFailed(itemId, retryCount, `${channel} token expired — reconnect in Settings > Integrations`, workspaceId, channel)
+        results.push({ id: itemId, status: 'failed', error: 'token_expired' })
         continue
       }
 
       const accessToken = decryptSecret(tok.encrypted_access_token)
       if (!accessToken) {
-        await markFailed(itemId, retryCount, 'Token decrypt failed')
+        await markFailed(itemId, retryCount, 'Token decrypt failed', workspaceId, channel)
         results.push({ id: itemId, status: 'failed', error: 'decrypt_failed' })
         continue
       }
@@ -294,7 +378,7 @@ export async function GET(req: NextRequest) {
       // ── 5. Per-platform dispatch ────────────────────────────────────────
       const dispatcher = dispatcherFor(channel)
       if (!dispatcher) {
-        await markFailed(itemId, retryCount, `Channel '${channel}' not supported`)
+        await markFailed(itemId, retryCount, `Channel '${channel}' not supported`, workspaceId, channel)
         results.push({ id: itemId, status: 'failed', error: 'unsupported_channel' })
         continue
       }
@@ -327,19 +411,52 @@ export async function GET(req: NextRequest) {
           SET status = 'published', error_message = NULL, updated_at = ${publishedAt}
           WHERE id = ${itemId}
         `
+
+        // ── Sprint 17D (audit P1 #17) — producer-side success signal ──────
+        // (a) Notify the user that the post went live; (b) seed a zeroed
+        //     post_metrics row so the analytics dashboard surfaces the post
+        //     immediately instead of waiting for the metrics-sync cron.
+        //
+        // Both side effects are non-fatal: a failure here must NOT roll
+        // back the publish, which is already durable via published_content.
+        try {
+          await notifyPublishSuccess(workspaceId, channel, dispatch.permalink || null)
+        } catch (err) {
+          console.warn('[publish-scheduled] notifyPublishSuccess failed:', err)
+        }
+        if (item.artifact_id) {
+          try {
+            await sql`
+              INSERT INTO post_metrics (
+                id, workspace_id, artifact_id, platform,
+                impressions, clicks, likes, comments, shares,
+                total_followers, followers_delta,
+                last_synced_at, created_at
+              ) VALUES (
+                ${newId()}, ${workspaceId}, ${item.artifact_id}, ${channel},
+                0, 0, 0, 0, 0,
+                NULL, 0,
+                ${publishedAt}, ${publishedAt}
+              )
+            `
+          } catch (err) {
+            console.warn('[publish-scheduled] post_metrics seed insert failed:', err)
+          }
+        }
+
         results.push({
           id: itemId, status: 'published', nativePostId: dispatch.nativePostId,
         })
       } else {
         // ── 6b. Failure → bump retry counter; mark failed at 3 strikes ────
-        await markFailed(itemId, retryCount, dispatch.error || 'Unknown dispatch error')
+        await markFailed(itemId, retryCount, dispatch.error || 'Unknown dispatch error', workspaceId, channel)
         results.push({ id: itemId, status: 'retry', error: dispatch.error })
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       console.error(`[publish-scheduled] item ${itemId} threw:`, err)
       try {
-        await markFailed(itemId, retryCount, msg)
+        await markFailed(itemId, retryCount, msg, workspaceId, channel)
       } catch { /* best-effort */ }
       results.push({ id: itemId, status: 'failed', error: msg })
     }
@@ -356,16 +473,45 @@ export async function GET(req: NextRequest) {
 /**
  * Centralised failure handler. Increments retry_count and either flips back
  * to 'pending' for another shot, or to 'failed' once we've burned 3 strikes.
+ *
+ * Sprint 15B (P0 #7): on terminal failure, produce a notification row so the
+ * user sees the failure even if they aren't watching /calendar. workspaceId
+ * and channel are optional only because two early call sites don't have them
+ * yet — both still flow through here so the notification path stays single.
  */
-async function markFailed(itemId: string, currentRetries: number, errMsg: string): Promise<void> {
+async function markFailed(
+  itemId: string,
+  currentRetries: number,
+  errMsg: string,
+  workspaceId?: string,
+  channel?: string | null,
+): Promise<void> {
   const nextRetries = currentRetries + 1
   const finalStatus = nextRetries >= MAX_RETRY_COUNT ? 'failed' : 'pending'
+  const now = new Date().toISOString()
   await sql`
     UPDATE scheduled_content SET
       status        = ${finalStatus},
       retry_count   = ${nextRetries},
       error_message = ${errMsg.slice(0, 500)},
-      updated_at    = ${new Date().toISOString()}
+      updated_at    = ${now}
     WHERE id = ${itemId}
   `
+  if (finalStatus === 'failed' && workspaceId) {
+    try {
+      await sql`
+        INSERT INTO notifications (id, workspace_id, type, title, body, link, severity, created_at)
+        VALUES (
+          ${newId()}, ${workspaceId}, 'publish_failed',
+          ${'Publish failed' + (channel ? ` on ${channel}` : '')},
+          ${errMsg.slice(0, 240)},
+          '/dashboard/calendar',
+          'error',
+          ${now}
+        )
+      `
+    } catch (err) {
+      console.error('[publish-scheduled] notification insert failed:', err)
+    }
+  }
 }

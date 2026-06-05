@@ -6,6 +6,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { Resend } from 'resend'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 
 export async function POST(
   req: NextRequest,
@@ -25,6 +26,10 @@ export async function POST(
     const convResult = await sql`SELECT * FROM inbox_conversations WHERE id = ${conversationId} LIMIT 1`
     const convo = convResult.rows[0]
     if (!convo) return NextResponse.json({ error: 'Conversation not found' }, { status: 404 })
+    // Sprint 7E: ownership check before firing an outbound email on
+    // someone else's workspace.
+    const denied = assertWorkspaceOwnership(req, String(convo.workspace_id))
+    if (denied) return denied
 
     const now = new Date().toISOString()
     const msgId = newId()

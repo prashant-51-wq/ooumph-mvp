@@ -38,6 +38,28 @@ interface FunnelStep {
   view_count: number | string
   conversion_count: number | string
   created_at: string
+  // Sprint 17B (audit P0 #4): new columns from Sprint 16A schema bump.
+  // Older rows may not have populated values; we tolerate them at render
+  // time and apply defaults on save.
+  funnel_id?: string | null
+  stage?: string | null
+  sequence?: number | null
+  is_active?: boolean | number | null
+}
+
+interface FunnelParent {
+  id: string
+  name: string
+  is_active: boolean | number
+  archived_at: string | null
+}
+
+interface LeadMagnet {
+  id: string
+  workspace_id: string
+  title: string
+  asset_url: string
+  funnel_id: string | null
 }
 
 interface Template {
@@ -45,6 +67,23 @@ interface Template {
   name: string
   description: string
   html: (slug: string) => string
+}
+
+// Sprint 17B (audit P0 #4): five allowed stages, matches /api/funnel-steps validation.
+const STAGE_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: 'awareness', label: 'Awareness' },
+  { value: 'interest', label: 'Interest' },
+  { value: 'consideration', label: 'Consideration' },
+  { value: 'conversion', label: 'Conversion' },
+  { value: 'retention', label: 'Retention' },
+]
+
+const STAGE_BADGE_COLOR: Record<string, string> = {
+  awareness: 'bg-sky-900/40 text-sky-300 border-sky-800',
+  interest: 'bg-violet-900/40 text-violet-300 border-violet-800',
+  consideration: 'bg-amber-900/40 text-amber-300 border-amber-800',
+  conversion: 'bg-emerald-900/40 text-emerald-300 border-emerald-800',
+  retention: 'bg-rose-900/40 text-rose-300 border-rose-800',
 }
 
 // ─── Templates ─────────────────────────────────────────────────────────────
@@ -278,6 +317,24 @@ export default function FunnelBuilderPage() {
   const [showTemplates, setShowTemplates] = useState(false)
   const [previewKey, setPreviewKey] = useState(0)  // bump to force iframe reload
 
+  // Sprint 17B (audit P0 #4): step-level metadata controls. These map to
+  // funnel_steps.{funnel_id,stage,sequence,is_active} added by Sprint 16A.
+  // Defaults match the /api/funnel-steps server-side defaults so a
+  // freshly-created step lands in the same place whether the user touches
+  // these controls or not.
+  const [editingFunnelId, setEditingFunnelId] = useState<string>('')  // '' = standalone / none
+  const [editingStage, setEditingStage] = useState<string>('awareness')
+  const [editingSequence, setEditingSequence] = useState<number>(0)
+  const [editingIsDraft, setEditingIsDraft] = useState<boolean>(false)
+
+  // Sprint 17B TASK 4: lead magnet picker for the currently-selected step.
+  // When a step is attached to a funnel, we let the user pin one of this
+  // workspace's lead magnets to that funnel — the magnet's funnel_id gets
+  // PATCH-set on save.
+  const [parentFunnels, setParentFunnels] = useState<FunnelParent[]>([])
+  const [leadMagnets, setLeadMagnets] = useState<LeadMagnet[]>([])
+  const [editingLeadMagnetId, setEditingLeadMagnetId] = useState<string>('')
+
   // Resolve workspace
   useEffect(() => {
     let cancelled = false
@@ -307,6 +364,35 @@ export default function FunnelBuilderPage() {
 
   useEffect(() => { fetchFunnels() }, [fetchFunnels])
 
+  // Sprint 17B (audit P0 #4): load parent funnels for the dropdown. We
+  // filter to the dropdown to active+non-archived rows so a user can't
+  // accidentally re-attach a step to an archived funnel.
+  const fetchParentFunnels = useCallback(async () => {
+    if (!workspaceId) return
+    try {
+      const res = await fetch(`/api/funnels?workspaceId=${workspaceId}`)
+      if (!res.ok) return
+      const rows = await res.json() as FunnelParent[]
+      setParentFunnels(Array.isArray(rows) ? rows.filter(f => !f.archived_at) : [])
+    } catch { /* ignore */ }
+  }, [workspaceId])
+
+  // Sprint 17B TASK 4: fetch all lead magnets for the workspace so we can
+  // offer them in the per-step picker. We filter at render time to
+  // "matches this funnel" + "unassigned".
+  const fetchLeadMagnets = useCallback(async () => {
+    if (!workspaceId) return
+    try {
+      const res = await fetch(`/api/lead-magnets?workspaceId=${workspaceId}`)
+      if (!res.ok) return
+      const rows = await res.json() as LeadMagnet[]
+      setLeadMagnets(Array.isArray(rows) ? rows : [])
+    } catch { /* ignore */ }
+  }, [workspaceId])
+
+  useEffect(() => { fetchParentFunnels() }, [fetchParentFunnels])
+  useEffect(() => { fetchLeadMagnets() }, [fetchLeadMagnets])
+
   const selectedFunnel = useMemo(
     () => funnels.find(f => f.id === selectedId) || null,
     [funnels, selectedId],
@@ -317,17 +403,34 @@ export default function FunnelBuilderPage() {
     if (selectedFunnel) {
       setEditingSlug(selectedFunnel.slug)
       setEditingHtml(selectedFunnel.html_content)
+      setEditingFunnelId(selectedFunnel.funnel_id || '')
+      setEditingStage(typeof selectedFunnel.stage === 'string' && selectedFunnel.stage ? selectedFunnel.stage : 'awareness')
+      setEditingSequence(Number(selectedFunnel.sequence || 0))
+      // is_active stored as 1/0/true/false depending on driver — coerce safely.
+      const active = selectedFunnel.is_active
+      setEditingIsDraft(active === false || active === 0)
+      // Sprint 17B TASK 4: pick the magnet currently attached to this step's
+      // funnel (if any) so the picker reflects reality.
+      const fid = selectedFunnel.funnel_id
+      const attached = fid ? leadMagnets.find(m => m.funnel_id === fid) : undefined
+      setEditingLeadMagnetId(attached?.id || '')
       setSaveError(null); setSaveSuccess(null)
     }
-  }, [selectedFunnel])
+  }, [selectedFunnel, leadMagnets])
 
   const isDirty = useMemo(() => {
     if (!selectedFunnel) return editingSlug.length > 0 || editingHtml.length > 0
+    const prevActive = !(selectedFunnel.is_active === false || selectedFunnel.is_active === 0)
+    const currentActive = !editingIsDraft
     return (
       editingSlug !== selectedFunnel.slug
       || editingHtml !== selectedFunnel.html_content
+      || editingFunnelId !== (selectedFunnel.funnel_id || '')
+      || editingStage !== (selectedFunnel.stage || 'awareness')
+      || editingSequence !== Number(selectedFunnel.sequence || 0)
+      || currentActive !== prevActive
     )
-  }, [selectedFunnel, editingSlug, editingHtml])
+  }, [selectedFunnel, editingSlug, editingHtml, editingFunnelId, editingStage, editingSequence, editingIsDraft])
 
   // Save (create or update)
   const save = async () => {
@@ -336,7 +439,17 @@ export default function FunnelBuilderPage() {
     if (!cleanSlug) { setSaveError('Slug is required'); return }
     if (!editingHtml.trim()) { setSaveError('Page HTML cannot be empty'); return }
     setSaving(true); setSaveError(null); setSaveSuccess(null)
+    // Sprint 17B (audit P0 #4): include the four metadata columns. '' for
+    // funnelId means "standalone" — POST as null. isDraft inverts to isActive.
+    const metaBody = {
+      funnelId: editingFunnelId ? editingFunnelId : null,
+      stage: editingStage,
+      sequence: Number.isFinite(editingSequence) ? editingSequence : 0,
+      isActive: !editingIsDraft,
+    }
     try {
+      let savedStepId: string | null = null
+      let savedFunnelId: string | null = metaBody.funnelId
       if (selectedFunnel) {
         // PATCH
         const res = await fetch('/api/funnel-steps', {
@@ -345,22 +458,48 @@ export default function FunnelBuilderPage() {
           body: JSON.stringify({
             id: selectedFunnel.id, workspaceId,
             slug: cleanSlug, htmlContent: editingHtml,
+            ...metaBody,
           }),
         })
         const data = await res.json() as { ok?: boolean; error?: string; slug?: string }
         if (!res.ok || !data.ok) throw new Error(data.error || 'Save failed')
+        savedStepId = selectedFunnel.id
         setSaveSuccess(`Updated · /lp/${data.slug || cleanSlug}`)
       } else {
         // POST
         const res = await fetch('/api/funnel-steps', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ workspaceId, slug: cleanSlug, htmlContent: editingHtml }),
+          body: JSON.stringify({
+            workspaceId, slug: cleanSlug, htmlContent: editingHtml,
+            ...metaBody,
+          }),
         })
         const data = await res.json() as { ok?: boolean; error?: string; id?: string; slug?: string }
         if (!res.ok || !data.ok) throw new Error(data.error || 'Save failed')
         setSaveSuccess(`Created · /lp/${data.slug || cleanSlug}`)
-        if (data.id) setSelectedId(data.id)
+        if (data.id) { setSelectedId(data.id); savedStepId = data.id }
+      }
+      // Sprint 17B TASK 4: if the user picked a lead magnet AND this step
+      // is part of a funnel, attach the magnet to that funnel (PATCH
+      // lead_magnets). Safe to call only when both are present.
+      void savedStepId
+      if (editingLeadMagnetId && savedFunnelId) {
+        try {
+          const lmRes = await fetch('/api/lead-magnets', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: editingLeadMagnetId, workspaceId, funnelId: savedFunnelId }),
+          })
+          if (!lmRes.ok) {
+            const lmErr = await lmRes.json().catch(() => ({})) as { error?: string }
+            console.warn('[form-builder] lead magnet attach failed:', lmErr.error)
+          } else {
+            fetchLeadMagnets()
+          }
+        } catch (e) {
+          console.warn('[form-builder] lead magnet attach network error:', e)
+        }
       }
       await fetchFunnels()
       // Force the preview iframe to reload so the visitor view is fresh.
@@ -401,6 +540,13 @@ export default function FunnelBuilderPage() {
     setSelectedId(null)
     setEditingSlug('')
     setEditingHtml('')
+    // Sprint 17B (audit P0 #4): reset metadata controls so a new step
+    // doesn't inherit the last-selected step's funnel / stage / sequence.
+    setEditingFunnelId('')
+    setEditingStage('awareness')
+    setEditingSequence(0)
+    setEditingIsDraft(false)
+    setEditingLeadMagnetId('')
     setSaveSuccess(null); setSaveError(null)
   }
 
@@ -471,11 +617,34 @@ export default function FunnelBuilderPage() {
                   const c = Number(f.conversion_count || 0)
                   const cr = v > 0 ? (c / v) * 100 : 0
                   const active = selectedId === f.id
+                  // Sprint 17B (audit P0 #4): badges for stage + parent funnel
+                  // + draft state, so users see funnel membership without
+                  // opening each step.
+                  const stage = (typeof f.stage === 'string' && f.stage) ? f.stage : null
+                  const parent = f.funnel_id ? parentFunnels.find(p => p.id === f.funnel_id) : null
+                  const isDraft = f.is_active === false || f.is_active === 0
                   return (
                     <div key={f.id} className={`relative border-b border-gray-900 ${active ? 'bg-indigo-900/15 border-l-2 border-l-indigo-500' : 'hover:bg-gray-950/50'}`}>
                       <button onClick={() => setSelectedId(f.id)} className="w-full text-left px-3 py-3">
                         <div className="text-sm text-white font-medium truncate">/lp/{f.slug}</div>
-                        <div className="text-[11px] text-gray-500 mt-0.5">
+                        <div className="flex flex-wrap gap-1 mt-1">
+                          {stage && (
+                            <span className={`inline-block px-1.5 py-0.5 rounded border text-[9px] font-medium uppercase tracking-wide ${STAGE_BADGE_COLOR[stage] || 'bg-gray-800 text-gray-400 border-gray-700'}`}>
+                              {stage}
+                            </span>
+                          )}
+                          {parent && (
+                            <span className="inline-block px-1.5 py-0.5 rounded bg-indigo-900/30 border border-indigo-800 text-indigo-300 text-[9px] font-medium truncate max-w-[120px]" title={parent.name}>
+                              {parent.name}
+                            </span>
+                          )}
+                          {isDraft && (
+                            <span className="inline-block px-1.5 py-0.5 rounded bg-gray-800 border border-gray-700 text-gray-400 text-[9px] font-medium uppercase tracking-wide">
+                              Draft
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-[11px] text-gray-500 mt-1">
                           {v.toLocaleString()} views · {c.toLocaleString()} conv ({cr.toFixed(1)}%)
                         </div>
                         <div className="text-[10px] text-gray-600 mt-1">{formatRelative(f.created_at)}</div>
@@ -521,6 +690,86 @@ export default function FunnelBuilderPage() {
                 </button>
               </div>
             </div>
+
+            {/* Sprint 17B (audit P0 #4): step-level metadata bar. */}
+            <div className="px-4 py-2 border-b border-gray-800 bg-gray-950/40 flex items-center gap-3 flex-wrap">
+              <div className="flex items-center gap-1.5">
+                <label className="text-[10px] uppercase tracking-wider text-gray-500 font-medium">Funnel</label>
+                <select
+                  value={editingFunnelId}
+                  onChange={e => setEditingFunnelId(e.target.value)}
+                  className="bg-gray-950 border border-gray-800 rounded px-2 py-1 text-xs text-white focus:border-indigo-600 focus:outline-none max-w-[160px]"
+                >
+                  <option value="">— Standalone —</option>
+                  {parentFunnels.map(p => (
+                    <option key={p.id} value={p.id}>{p.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <label className="text-[10px] uppercase tracking-wider text-gray-500 font-medium">Stage</label>
+                <select
+                  value={editingStage}
+                  onChange={e => setEditingStage(e.target.value)}
+                  className="bg-gray-950 border border-gray-800 rounded px-2 py-1 text-xs text-white focus:border-indigo-600 focus:outline-none"
+                >
+                  {STAGE_OPTIONS.map(s => (
+                    <option key={s.value} value={s.value}>{s.label}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <label className="text-[10px] uppercase tracking-wider text-gray-500 font-medium">Seq</label>
+                <input
+                  type="number"
+                  min={0}
+                  value={editingSequence}
+                  onChange={e => {
+                    const n = parseInt(e.target.value, 10)
+                    setEditingSequence(Number.isFinite(n) && n >= 0 ? n : 0)
+                  }}
+                  className="bg-gray-950 border border-gray-800 rounded px-2 py-1 text-xs text-white w-14 focus:border-indigo-600 focus:outline-none"
+                />
+              </div>
+              <label className="flex items-center gap-1.5 text-xs text-gray-300 cursor-pointer ml-auto">
+                <input
+                  type="checkbox"
+                  checked={editingIsDraft}
+                  onChange={e => setEditingIsDraft(e.target.checked)}
+                  className="accent-indigo-600"
+                />
+                Save as draft
+              </label>
+            </div>
+
+            {/* Sprint 17B TASK 4: lead magnet picker — only visible when this
+                step is part of a funnel (the attachment is funnel-scoped). */}
+            {editingFunnelId && (() => {
+              const candidates = leadMagnets.filter(m => !m.funnel_id || m.funnel_id === editingFunnelId)
+              return (
+                <div className="px-4 py-2 border-b border-gray-800 bg-gray-950/30 flex items-center gap-2 flex-wrap">
+                  <label className="text-[10px] uppercase tracking-wider text-gray-500 font-medium">Attach lead magnet</label>
+                  <select
+                    value={editingLeadMagnetId}
+                    onChange={e => setEditingLeadMagnetId(e.target.value)}
+                    className="bg-gray-950 border border-gray-800 rounded px-2 py-1 text-xs text-white focus:border-indigo-600 focus:outline-none flex-1 max-w-[260px]"
+                  >
+                    <option value="">— None —</option>
+                    {candidates.map(m => (
+                      <option key={m.id} value={m.id}>
+                        {m.title}{m.funnel_id === editingFunnelId ? ' (attached)' : ' (unassigned)'}
+                      </option>
+                    ))}
+                  </select>
+                  {candidates.length === 0 && (
+                    <span className="text-[10px] text-gray-500">
+                      No magnets yet —{' '}
+                      <a href="/dashboard/lead-magnets" className="text-indigo-400 hover:text-indigo-300 underline">create one</a>
+                    </span>
+                  )}
+                </div>
+              )
+            })()}
 
             <div className="flex-1 overflow-hidden flex flex-col">
               {editingMode === 'code' ? (

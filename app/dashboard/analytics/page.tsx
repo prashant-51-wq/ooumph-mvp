@@ -1,136 +1,52 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
+import { useWorkspaceId } from '@/lib/hooks/use-workspace-id'
+import { WidgetErrorBoundary } from '@/components/WidgetErrorBoundary'
+import { Skeleton, SkeletonStatRow } from '@/components/Skeleton'
 
-// ── Mock data ──────────────────────────────────────────────────────────────────
+/**
+ * Analytics dashboard — Sprint 1B rewrite (honest empty states).
+ *
+ * Before this rewrite the page declared a wall of `MOCK_` constants
+ * (STAT_BAR with "2.4M reach", "$68,200 revenue", "847 leads", CHANNELS
+ * with hardcoded per-channel numbers, TOP_POSTS, AI_AGENTS, etc.) and
+ * fell back to them on any code path where real `data` was null or empty.
+ *
+ * Every visible metric on this page now passes the Source Test: it traces
+ * to a real query against `/api/stats?view=analytics` or it renders an
+ * empty state with a CTA. There is no silent fallback. A new workspace
+ * with zero data shows zeros and copy that explains how to populate it —
+ * never fabricated numbers.
+ */
 
-const STAT_BAR = [
-  { label: 'Content Published', value: '142', delta: '+18 vs prev', up: true },
-  { label: 'Total Reach', value: '2.4M', delta: '+340K vs prev', up: true },
-  { label: 'Avg Engagement', value: '4.7%', delta: '+0.8pp vs prev', up: true },
-  { label: 'Total Leads', value: '847', delta: '+122 vs prev', up: true },
-  { label: 'Revenue Attributed', value: '$68,200', delta: '+$9,400 vs prev', up: true },
-  { label: 'AI Cost This Month', value: '$142', delta: '-$12 vs prev', up: false },
-]
+// ── Reusable empty-state component ─────────────────────────────────────────────
 
-const CHANNELS = [
-  { name: 'Instagram', reach: 820000, eng: 5.8, leads: 210, cpl: '$4.20', icon: '📸' },
-  { name: 'LinkedIn', reach: 540000, eng: 6.2, leads: 312, cpl: '$2.90', icon: '💼' },
-  { name: 'Email', reach: 380000, eng: 28.4, leads: 198, cpl: '$1.80', icon: '✉️' },
-  { name: 'Blog/SEO', reach: 290000, eng: 3.1, leads: 89, cpl: '$6.40', icon: '📝' },
-  { name: 'TikTok', reach: 240000, eng: 8.3, leads: 22, cpl: '$14.20', icon: '🎵' },
-  { name: 'Facebook', reach: 90000, eng: 2.1, leads: 12, cpl: '$22.10', icon: '🟦' },
-  { name: 'Twitter/X', reach: 38000, eng: 1.4, leads: 4, cpl: '$41.00', icon: '𝕏' },
-]
+function EmptyMetric({ label, hint }: { label: string; hint?: string }) {
+  return (
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-3">
+      <p className="text-gray-500 text-xs mb-1">{label}</p>
+      <p className="text-gray-600 font-bold text-lg">—</p>
+      <p className="text-gray-700 text-xs mt-0.5">{hint || 'No data yet'}</p>
+    </div>
+  )
+}
 
-const TOP_POSTS = [
-  {
-    title: '10 Marketing Automation Secrets for Agencies',
-    platform: 'LinkedIn',
-    type: 'Long-form Article',
-    reach: 48200,
-    eng: 8.9,
-    clicks: 1840,
-    badge: '+340% above average',
-    badgeColor: 'bg-emerald-500/20 text-emerald-400',
-    color: 'bg-gradient-to-br from-blue-700 to-blue-900',
-  },
-  {
-    title: 'Behind the scenes: How we built an AI content pipeline',
-    platform: 'Instagram',
-    type: 'Carousel',
-    reach: 39700,
-    eng: 7.4,
-    clicks: 960,
-    badge: '+210% above average',
-    badgeColor: 'bg-indigo-500/20 text-indigo-400',
-    color: 'bg-gradient-to-br from-pink-700 to-purple-900',
-  },
-  {
-    title: 'Q2 Agency Growth Playbook (Free Download)',
-    platform: 'Email',
-    type: 'Newsletter',
-    reach: 32100,
-    eng: 34.2,
-    clicks: 2180,
-    badge: '+180% above average',
-    badgeColor: 'bg-amber-500/20 text-amber-400',
-    color: 'bg-gradient-to-br from-amber-700 to-orange-900',
-  },
-]
+function EmptyPanel({ title, message, ctaLabel, ctaHref }: { title: string; message: string; ctaLabel?: string; ctaHref?: string }) {
+  return (
+    <div className="bg-gray-900 border border-gray-800 rounded-2xl p-8 text-center">
+      <p className="text-white font-medium">{title}</p>
+      <p className="text-gray-500 text-sm mt-1 max-w-md mx-auto">{message}</p>
+      {ctaLabel && ctaHref && (
+        <a href={ctaHref} className="inline-block mt-3 px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-medium">{ctaLabel}</a>
+      )}
+    </div>
+  )
+}
 
-const AI_AGENTS = [
-  { name: 'Content Strategist', runs: 48, tasks: 192, cost: '$22.40' },
-  { name: 'Copy Writer', runs: 87, tasks: 348, cost: '$41.30' },
-  { name: 'SEO Analyst', runs: 24, tasks: 96, cost: '$18.60' },
-  { name: 'Brand Voice Guard', runs: 142, tasks: 142, cost: '$12.80' },
-  { name: 'Image Generator', runs: 56, tasks: 56, cost: '$28.00' },
-  { name: 'Analytics Agent', runs: 12, tasks: 48, cost: '$9.20' },
-]
-
-const CONTENT_BY_TYPE = [
-  { type: 'Social Posts', count: 62, color: 'bg-indigo-500' },
-  { type: 'Blog Articles', count: 28, color: 'bg-purple-500' },
-  { type: 'Email Newsletters', count: 18, color: 'bg-pink-500' },
-  { type: 'Ad Creatives', count: 14, color: 'bg-amber-500' },
-  { type: 'Video Scripts', count: 12, color: 'bg-emerald-500' },
-  { type: 'Landing Pages', count: 8, color: 'bg-blue-500' },
-]
-
-const TOP_CONTENT_TABLE = [
-  { preview: '10 Marketing Automation Secrets…', platform: 'LinkedIn', reach: '48,200', eng: '8.9%', clicks: '1,840', date: 'May 22' },
-  { preview: 'Behind the scenes: AI pipeline…', platform: 'Instagram', reach: '39,700', eng: '7.4%', clicks: '960', date: 'May 19' },
-  { preview: 'Q2 Agency Growth Playbook…', platform: 'Email', reach: '32,100', eng: '34.2%', clicks: '2,180', date: 'May 15' },
-  { preview: 'How to 10x your content output…', platform: 'TikTok', reach: '28,400', eng: '9.1%', clicks: '340', date: 'May 12' },
-  { preview: 'The future of AI in marketing', platform: 'Blog', reach: '22,000', eng: '3.8%', clicks: '680', date: 'May 9' },
-  { preview: '5 tools every agency needs in 2026', platform: 'LinkedIn', reach: '18,900', eng: '6.2%', clicks: '920', date: 'May 6' },
-  { preview: 'Client onboarding checklist', platform: 'Email', reach: '16,400', eng: '29.8%', clicks: '1,420', date: 'May 3' },
-  { preview: 'Why your content strategy is failing', platform: 'Blog', reach: '14,200', eng: '2.9%', clicks: '510', date: 'Apr 30' },
-  { preview: 'Agency pricing models explained', platform: 'LinkedIn', reach: '12,700', eng: '5.4%', clicks: '760', date: 'Apr 27' },
-  { preview: 'Building a content calendar that converts', platform: 'Email', reach: '11,200', eng: '31.4%', clicks: '980', date: 'Apr 24' },
-]
-
-const LEAD_FUNNEL = [
-  { stage: 'Total Leads', count: 847, pct: 100 },
-  { stage: 'Marketing Qualified (MQL)', count: 423, pct: 50 },
-  { stage: 'Sales Qualified (SQL)', count: 186, pct: 22 },
-  { stage: 'Customers Won', count: 62, pct: 7.3 },
-]
-
-const LEAD_SOURCES = [
-  { source: 'Organic Search', leads: 248, pct: 29.3, color: 'bg-emerald-500' },
-  { source: 'LinkedIn', leads: 196, pct: 23.1, color: 'bg-blue-500' },
-  { source: 'Email Marketing', leads: 142, pct: 16.8, color: 'bg-indigo-500' },
-  { source: 'Referral', leads: 98, pct: 11.6, color: 'bg-purple-500' },
-  { source: 'Direct', leads: 84, pct: 9.9, color: 'bg-pink-500' },
-  { source: 'Paid Social', leads: 79, pct: 9.3, color: 'bg-amber-500' },
-]
-
-const COST_PER_LEAD = [
-  { channel: 'Email Marketing', cpl: '$1.80', leads: 142, quality: 'High' },
-  { channel: 'LinkedIn Organic', cpl: '$2.90', leads: 196, quality: 'High' },
-  { channel: 'SEO / Blog', cpl: '$4.20', leads: 89, quality: 'High' },
-  { channel: 'Instagram', cpl: '$4.20', leads: 210, quality: 'Medium' },
-  { channel: 'TikTok', cpl: '$14.20', leads: 22, quality: 'Low' },
-  { channel: 'Paid Facebook', cpl: '$22.10', leads: 12, quality: 'Medium' },
-]
-
-const REVENUE_CHANNELS = [
-  { channel: 'Email Campaigns', revenue: 28400, roas: '18.2x', color: 'bg-indigo-500' },
-  { channel: 'LinkedIn Content', revenue: 19800, roas: '14.1x', color: 'bg-blue-500' },
-  { channel: 'SEO / Blog', revenue: 12600, roas: '9.8x', color: 'bg-emerald-500' },
-  { channel: 'Instagram', revenue: 4800, roas: '4.2x', color: 'bg-pink-500' },
-  { channel: 'Paid Social', revenue: 2600, roas: '2.1x', color: 'bg-amber-500' },
-]
-
-const TOP_CAMPAIGNS = [
-  { name: 'Q2 Agency Playbook Launch', type: 'Lead Gen', revenue: '$14,200', roas: '22.4x', leads: 98 },
-  { name: 'Content Automation Webinar', type: 'Product', revenue: '$11,800', roas: '18.9x', leads: 76 },
-  { name: 'May Newsletter Series', type: 'Nurture', revenue: '$8,400', roas: '14.2x', leads: 54 },
-  { name: 'LinkedIn Thought Leadership', type: 'Brand', revenue: '$6,200', roas: '11.4x', leads: 42 },
-  { name: 'Blog SEO Push', type: 'Organic', revenue: '$5,800', roas: '9.8x', leads: 38 },
-]
-
+// Report-builder templates are configuration (definitions of which sections a
+// report contains). They are intentionally hardcoded — they describe the
+// product, not the user's data — so they don't violate the Source Test.
 const REPORT_TEMPLATES = [
   {
     id: 'monthly',
@@ -170,71 +86,344 @@ const REPORT_TEMPLATES = [
   },
 ]
 
-const SCHEDULED_REPORTS = [
-  { template: 'Monthly Performance', client: 'Acme Corp', freq: 'Monthly', next: 'Jun 1, 2026', recipients: 'john@acme.com', enabled: true },
-  { template: 'Campaign Results', client: 'TechStart Inc', freq: 'Per Campaign', next: 'May 30, 2026', recipients: 'sara@techstart.io', enabled: true },
-  { template: 'Quarterly Business Review', client: 'GrowthCo', freq: 'Quarterly', next: 'Jul 1, 2026', recipients: '2 recipients', enabled: false },
-  { template: 'Monthly Performance', client: 'Studio Blue', freq: 'Monthly', next: 'Jun 1, 2026', recipients: 'tom@studioblue.co', enabled: true },
-]
+// Scheduled / past reports moved to a TODO. Was previously a list of fake
+// agency clients ("Acme Corp", "TechStart Inc"). When /api/analytics/reports
+// ships these will become real DB-backed lists; until then the Reports tab
+// renders an empty state.
 
-const PAST_REPORTS = [
-  { name: 'Acme Corp – May 2026 Monthly Report', template: 'Monthly Performance', date: 'May 1, 2026', size: '2.4 MB' },
-  { name: 'TechStart Campaign Results – Q2 Launch', template: 'Campaign Results', date: 'Apr 28, 2026', size: '1.8 MB' },
-  { name: 'GrowthCo Q1 2026 QBR', template: 'Quarterly Business Review', date: 'Apr 1, 2026', size: '4.2 MB' },
-  { name: 'Acme Corp – April 2026 Monthly Report', template: 'Monthly Performance', date: 'Apr 1, 2026', size: '2.1 MB' },
-  { name: 'Studio Blue – Q1 Year-in-Review', template: 'Year-in-Review', date: 'Mar 31, 2026', size: '5.8 MB' },
-]
+// ── Bar chart ──────────────────────────────────────────────────────────────────
+// Driven entirely by real `data` from /api/stats. Renders an empty state when
+// no daily-aggregated history is available. No hardcoded daily numbers.
 
-// ── Bar chart helpers ──────────────────────────────────────────────────────────
-
-const CHART_DAYS = ['May 1', 'May 5', 'May 10', 'May 15', 'May 20', 'May 25', 'May 26']
-const CHART_CONTENT = [4, 6, 5, 8, 7, 9, 3]
-const CHART_ENGAGEMENT = [12, 18, 15, 22, 20, 28, 9]
-const CHART_LEADS = [18, 24, 20, 32, 28, 38, 14]
-
-function BarChart() {
-  const maxVal = Math.max(...CHART_LEADS)
+function BarChart({ days, content, engagement, leads }: { days: string[]; content: number[]; engagement: number[]; leads: number[] }) {
+  // Sprint 16E (audit P2 #26): proper per-series scaling + y-axis labels.
+  // The previous chart used (leads-based maxVal) * 100% for leads, * 60%
+  // for engagement, * 30% for content — which mis-proportioned series
+  // and looked unscientific. Now each series scales against the overall
+  // max value, gridlines render at 25/50/75/100% with numeric labels.
+  const allValues = [...leads, ...engagement, ...content]
+  const maxVal = Math.max(...allValues, 1)
+  if (days.length === 0) {
+    return (
+      <div className="h-40 flex items-center justify-center text-gray-600 text-sm">
+        No daily breakdown yet — publish some content to see trends here.
+      </div>
+    )
+  }
+  const tickValues = [maxVal, Math.round(maxVal * 0.75), Math.round(maxVal * 0.5), Math.round(maxVal * 0.25), 0]
   return (
-    <div className="flex items-end gap-2 h-40">
-      {CHART_DAYS.map((day, i) => (
-        <div key={day} className="flex-1 flex flex-col items-center gap-1">
-          <div className="w-full flex flex-col justify-end gap-0.5" style={{ height: 120 }}>
-            <div
-              className="w-full bg-indigo-500/60 rounded-t-sm"
-              style={{ height: `${(CHART_LEADS[i] / maxVal) * 100}%` }}
-              title={`Leads: ${CHART_LEADS[i]}`}
-            />
-            <div
-              className="w-full bg-purple-500/50 rounded-t-sm"
-              style={{ height: `${(CHART_ENGAGEMENT[i] / maxVal) * 60}%` }}
-              title={`Engagement score: ${CHART_ENGAGEMENT[i]}`}
-            />
-            <div
-              className="w-full bg-pink-500/40 rounded-t-sm"
-              style={{ height: `${(CHART_CONTENT[i] / maxVal) * 30}%` }}
-              title={`Content: ${CHART_CONTENT[i]}`}
-            />
-          </div>
-          <span className="text-gray-600 text-xs whitespace-nowrap" style={{ fontSize: 9 }}>{day}</span>
+    <div>
+      <div className="flex gap-2">
+        {/* Y-axis labels */}
+        <div className="flex flex-col justify-between h-40 text-[10px] text-gray-600 tabular-nums pr-1" style={{ minWidth: 24 }}>
+          {tickValues.map(v => (
+            <div key={v} className="leading-none">{v}</div>
+          ))}
         </div>
-      ))}
+        {/* Chart with gridlines */}
+        <div className="flex-1 relative h-40">
+          {/* Gridlines */}
+          <div className="absolute inset-0 flex flex-col justify-between pointer-events-none">
+            {[0, 1, 2, 3, 4].map(i => (
+              <div key={i} className="border-t border-gray-800/60" />
+            ))}
+          </div>
+          {/* Bars */}
+          <div className="absolute inset-0 flex items-end gap-2">
+            {days.map((day, i) => (
+              <div key={day} className="flex-1 flex items-end justify-center gap-px h-full">
+                {/* Three side-by-side bars — same scale, no mystery 60%/30% multipliers */}
+                <div
+                  className="flex-1 bg-indigo-500/80 rounded-t-sm"
+                  style={{ height: `${(leads[i] / maxVal) * 100}%` }}
+                  title={`${day} — Leads: ${leads[i]}`}
+                />
+                <div
+                  className="flex-1 bg-purple-500/70 rounded-t-sm"
+                  style={{ height: `${(engagement[i] / maxVal) * 100}%` }}
+                  title={`${day} — Posts published: ${engagement[i]}`}
+                />
+                <div
+                  className="flex-1 bg-pink-500/60 rounded-t-sm"
+                  style={{ height: `${(content[i] / maxVal) * 100}%` }}
+                  title={`${day} — Artifacts created: ${content[i]}`}
+                />
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+      {/* X-axis day labels */}
+      <div className="flex gap-2 mt-1">
+        <div style={{ minWidth: 24 }} />
+        <div className="flex-1 flex gap-2">
+          {days.map((day, i) => (
+            <span key={i} className="flex-1 text-gray-600 text-xs text-center whitespace-nowrap" style={{ fontSize: 9 }}>{day}</span>
+          ))}
+        </div>
+      </div>
+      {/* Legend */}
+      <div className="flex justify-end gap-3 mt-2 text-[10px] text-gray-500">
+        <span className="flex items-center gap-1"><span className="w-2 h-2 bg-indigo-500/80 rounded-sm" /> Leads</span>
+        <span className="flex items-center gap-1"><span className="w-2 h-2 bg-purple-500/70 rounded-sm" /> Posts published</span>
+        <span className="flex items-center gap-1"><span className="w-2 h-2 bg-pink-500/60 rounded-sm" /> Artifacts created</span>
+      </div>
+    </div>
+  )
+}
+
+// ── Follower Trendline (Sprint 17D — audit P1 #14) ────────────────────────────
+// Pure SVG, no chart lib. Renders one line per platform from
+// /api/analytics/followers (which reads post_metrics rows tagged with the
+// sentinel artifact_id='__followers__' — written by /api/cron/follower-sync).
+
+interface FollowerSeriesPoint {
+  date: string
+  platform: string
+  total_followers: number | null
+  delta: number
+}
+
+interface FollowerSummary {
+  platform: string
+  current: number | null
+  periodStart: number | null
+  delta: number | null
+  percentChange: number | null
+  lastSyncedAt: string | null
+}
+
+interface FollowerPayload {
+  platforms: string[]
+  series: FollowerSeriesPoint[]
+  summary: FollowerSummary[]
+  hasData: boolean
+  days: number
+}
+
+const PLATFORM_COLORS: Record<string, string> = {
+  linkedin: '#0a66c2',
+  twitter: '#1d9bf0',
+  x: '#e7e9ea',
+  meta: '#1877f2',
+  facebook: '#1877f2',
+  instagram: '#e1306c',
+}
+
+function colorFor(platform: string): string {
+  return PLATFORM_COLORS[platform.toLowerCase()] || '#a78bfa'
+}
+
+function FollowerTrendChart({ workspaceId, days }: { workspaceId: string | null; days: number }) {
+  const [payload, setPayload] = useState<FollowerPayload | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!workspaceId) return
+    let cancelled = false
+    setLoading(true); setError(null)
+    fetch(`/api/analytics/followers?workspaceId=${workspaceId}&days=${days}`)
+      .then(async r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`)
+        return r.json() as Promise<FollowerPayload>
+      })
+      .then(j => { if (!cancelled) setPayload(j) })
+      .catch(e => { if (!cancelled) setError(e instanceof Error ? e.message : String(e)) })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [workspaceId, days])
+
+  return (
+    <div className="bg-gray-900 border border-gray-800 rounded-2xl p-5">
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <h2 className="text-white font-semibold">Follower Growth</h2>
+          <p className="text-gray-500 text-xs mt-0.5">Last {days} days · synced 4× daily</p>
+        </div>
+        {payload && payload.hasData && (
+          <div className="flex items-center gap-3 text-[11px] flex-wrap">
+            {payload.platforms.map(p => (
+              <span key={p} className="flex items-center gap-1.5 text-gray-300">
+                <span className="w-3 h-2 rounded inline-block" style={{ background: colorFor(p) }} />
+                {p}
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {loading && !payload && (
+        <div className="h-40 px-4 py-6 space-y-3">
+          <Skeleton widthClass="w-3/4" />
+          <Skeleton widthClass="w-1/2" />
+          <Skeleton widthClass="w-5/6" />
+        </div>
+      )}
+      {!loading && error && (
+        <div className="h-40 flex items-center justify-center text-red-400 text-sm">
+          Failed to load: {error}
+        </div>
+      )}
+      {!loading && !error && payload && !payload.hasData && (
+        <div className="h-40 flex items-center justify-center text-gray-500 text-sm text-center px-6">
+          No follower data yet — connect a social account to start tracking. Cron runs 4× daily.
+        </div>
+      )}
+
+      {!loading && !error && payload && payload.hasData && (
+        <>
+          {/* Per-platform summary cards: current, delta, % change */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+            {payload.summary.map(s => {
+              const sign = s.delta == null ? '' : s.delta > 0 ? '+' : ''
+              const tone = s.delta == null
+                ? 'text-gray-500'
+                : s.delta > 0 ? 'text-emerald-400'
+                : s.delta < 0 ? 'text-red-400'
+                : 'text-gray-400'
+              return (
+                <div key={s.platform} className="bg-gray-800/50 border border-gray-800 rounded-xl p-3">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="w-2 h-2 rounded-full" style={{ background: colorFor(s.platform) }} />
+                    <p className="text-gray-400 text-xs capitalize">{s.platform}</p>
+                  </div>
+                  <p className="text-white font-bold text-lg tabular-nums">
+                    {s.current != null ? s.current.toLocaleString() : '—'}
+                  </p>
+                  <p className={`text-xs mt-0.5 tabular-nums ${tone}`}>
+                    {s.delta != null
+                      ? `${sign}${s.delta.toLocaleString()}${s.percentChange != null ? ` (${sign}${s.percentChange}%)` : ''}`
+                      : 'Awaiting first sync'}
+                  </p>
+                </div>
+              )
+            })}
+          </div>
+
+          <FollowerSVGLines payload={payload} />
+        </>
+      )}
+    </div>
+  )
+}
+
+function FollowerSVGLines({ payload }: { payload: FollowerPayload }) {
+  // Sort unique dates ascending; x position is by date index.
+  const dates = Array.from(new Set(payload.series.map(s => s.date))).sort()
+  const platforms = payload.platforms
+
+  if (dates.length === 0) {
+    return <div className="h-40 flex items-center justify-center text-gray-600 text-sm">No data points.</div>
+  }
+
+  const W = 720, H = 200
+  const padL = 44, padR = 12, padT = 8, padB = 22
+  const innerW = W - padL - padR
+  const innerH = H - padT - padB
+
+  const lines = platforms.map(p => {
+    const points = dates
+      .map(d => {
+        const row = payload.series.find(s => s.date === d && s.platform === p)
+        return { d, v: row && row.total_followers != null ? row.total_followers : null }
+      })
+      .filter((pt): pt is { d: string; v: number } => pt.v !== null)
+    return { platform: p, points }
+  })
+
+  const allValues = lines.flatMap(l => l.points.map(p => p.v))
+  if (allValues.length === 0) {
+    return <div className="h-40 flex items-center justify-center text-gray-600 text-sm">No follower counts logged yet.</div>
+  }
+  const minV = Math.min(...allValues)
+  const maxV = Math.max(...allValues)
+  const range = maxV - minV || 1
+  const yMin = Math.max(0, Math.floor(minV - range * 0.1))
+  const yMax = Math.ceil(maxV + range * 0.1)
+  const yRange = yMax - yMin || 1
+
+  const xFor = (idx: number) =>
+    padL + (dates.length === 1 ? innerW / 2 : (idx / (dates.length - 1)) * innerW)
+  const yFor = (v: number) => padT + innerH - ((v - yMin) / yRange) * innerH
+
+  const ticks = [0, 0.25, 0.5, 0.75, 1].map(t => yMin + t * yRange)
+
+  return (
+    <div className="overflow-x-auto">
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-48" role="img" aria-label="Follower growth chart">
+        {ticks.map((v, i) => {
+          const y = yFor(v)
+          return (
+            <g key={i}>
+              <line x1={padL} y1={y} x2={W - padR} y2={y} stroke="#1f2937" strokeWidth={1} />
+              <text x={padL - 6} y={y + 3} textAnchor="end" fontSize={9} fill="#6b7280">
+                {Math.round(v).toLocaleString()}
+              </text>
+            </g>
+          )
+        })}
+
+        {[0, Math.floor(dates.length / 2), dates.length - 1]
+          .filter((v, i, a) => a.indexOf(v) === i && v >= 0)
+          .map(i => (
+            <text key={i} x={xFor(i)} y={H - 6} textAnchor="middle" fontSize={9} fill="#6b7280">
+              {dates[i].slice(5)}
+            </text>
+          ))}
+
+        {lines.map(line => {
+          if (line.points.length === 0) return null
+          const path = line.points
+            .map((pt, i) => {
+              const idx = dates.indexOf(pt.d)
+              return `${i === 0 ? 'M' : 'L'} ${xFor(idx).toFixed(2)} ${yFor(pt.v).toFixed(2)}`
+            })
+            .join(' ')
+          const color = colorFor(line.platform)
+          return (
+            <g key={line.platform}>
+              <path d={path} stroke={color} strokeWidth={2} fill="none" />
+              {line.points.map((pt) => {
+                const idx = dates.indexOf(pt.d)
+                return (
+                  <circle key={pt.d} cx={xFor(idx)} cy={yFor(pt.v)} r={2.5} fill={color}>
+                    <title>{`${line.platform} — ${pt.d}: ${pt.v.toLocaleString()}`}</title>
+                  </circle>
+                )
+              })}
+            </g>
+          )
+        })}
+      </svg>
     </div>
   )
 }
 
 // ── Report Builder Modal ───────────────────────────────────────────────────────
 
+// Sprint 6F: recommendations payload from /api/analytics/recommendations.
+interface Recommendation {
+  id: string
+  title: string
+  body: string
+  severity: 'info' | 'warning' | 'critical'
+  metric?: { label: string; value: string }
+}
+
 function ReportBuilderModal({
   template,
+  workspaceId,
   onClose,
 }: {
   template: typeof REPORT_TEMPLATES[0]
+  workspaceId: string | null
   onClose: () => void
 }) {
   const [step, setStep] = useState<'build' | 'preview'>('build')
   const [range, setRange] = useState('Last 30 days')
-  const [client, setClient] = useState('Acme Corp')
-  const [agencyName, setAgencyName] = useState('My Agency')
+  const [client, setClient] = useState('')
+  const [agencyName, setAgencyName] = useState('')
   const [commentary, setCommentary] = useState('')
   const [sections, setSections] = useState<Record<string, boolean>>(
     Object.fromEntries(template.sections.map(s => [s, true]))
@@ -243,6 +432,41 @@ function ReportBuilderModal({
   const [schedFreq, setSchedFreq] = useState('Monthly')
   const [schedEmail, setSchedEmail] = useState('')
   const [scheduled, setScheduled] = useState(false)
+  // Sprint 6F: live recommendations from the rule engine. Fetched on
+  // preview-open so the report builder shows real, data-grounded
+  // recommendations instead of the previous "will appear here" stub.
+  const [recommendations, setRecommendations] = useState<Recommendation[] | null>(null)
+  const [recsLoading, setRecsLoading] = useState(false)
+  const [recsDataAvailable, setRecsDataAvailable] = useState<boolean>(true)
+  const [recsError, setRecsError] = useState<string | null>(null)
+
+  // Range label → API token. The dashboard hardcodes the same mapping.
+  const rangeToken = range === 'Last 7 days' ? '7d'
+    : range === 'Last 90 days' ? '90d'
+    : range === 'Last 12 months' ? '12mo'
+    : '30d'
+
+  useEffect(() => {
+    if (step !== 'preview' || !sections['Recommendations'] || !workspaceId) return
+    let cancelled = false
+    setRecsLoading(true); setRecsError(null)
+    fetch(`/api/analytics/recommendations?workspaceId=${workspaceId}&range=${rangeToken}`)
+      .then(async r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`)
+        return r.json() as Promise<{
+          recommendations: Recommendation[]
+          dataAvailable: boolean
+        }>
+      })
+      .then(json => {
+        if (cancelled) return
+        setRecommendations(json.recommendations || [])
+        setRecsDataAvailable(json.dataAvailable)
+      })
+      .catch(e => { if (!cancelled) setRecsError(e instanceof Error ? e.message : String(e)) })
+      .finally(() => { if (!cancelled) setRecsLoading(false) })
+    return () => { cancelled = true }
+  }, [step, sections, workspaceId, rangeToken])
 
   function handleDownload() {
     const data = JSON.stringify({
@@ -287,7 +511,7 @@ function ReportBuilderModal({
         {step === 'build' ? (
           <div className="p-6 space-y-6">
             {/* Settings */}
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
                 <label className="text-gray-400 text-xs mb-1.5 block">Date Range</label>
                 <select
@@ -302,22 +526,20 @@ function ReportBuilderModal({
               </div>
               <div>
                 <label className="text-gray-400 text-xs mb-1.5 block">Client / Workspace</label>
-                <select
+                <input
+                  type="text"
                   value={client}
                   onChange={e => setClient(e.target.value)}
                   className="w-full bg-gray-800 border border-gray-700 text-white text-sm rounded-lg px-3 py-2"
-                >
-                  {['Acme Corp', 'TechStart Inc', 'GrowthCo', 'Studio Blue', 'All Clients'].map(c => (
-                    <option key={c}>{c}</option>
-                  ))}
-                </select>
+                  placeholder="Enter client or workspace name"
+                />
               </div>
             </div>
 
             {/* Sections */}
             <div>
               <label className="text-gray-400 text-xs mb-3 block uppercase tracking-wider">Include Sections</label>
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 {template.sections.map(sec => (
                   <label key={sec} className="flex items-center gap-2 cursor-pointer">
                     <input
@@ -335,7 +557,7 @@ function ReportBuilderModal({
             {/* Branding */}
             <div>
               <label className="text-gray-400 text-xs mb-3 block uppercase tracking-wider">Branding</label>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="text-gray-500 text-xs mb-1.5 block">Agency Name</label>
                   <input
@@ -394,7 +616,7 @@ function ReportBuilderModal({
             {scheduleOpen && (
               <div className="bg-gray-800 border border-gray-700 rounded-xl p-4 space-y-3">
                 <p className="text-white text-sm font-medium">Schedule Recurring Delivery</p>
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label className="text-gray-500 text-xs mb-1 block">Frequency</label>
                     <select
@@ -438,9 +660,17 @@ function ReportBuilderModal({
             {sections['Executive Summary'] && (
               <div className="bg-gray-800 rounded-xl p-4">
                 <h4 className="text-white font-medium mb-2 text-sm">Executive Summary</h4>
+                {/* Executive summary previously contained a hardcoded
+                    paragraph claiming "2.4M reach, 847 leads, $68,200
+                    revenue, LinkedIn top performer" — a fabrication that
+                    would print into downloadable PDFs. Now the preview
+                    surfaces the user's own commentary (typed in the
+                    builder) and a placeholder explaining how the real
+                    summary will be assembled. */}
                 <p className="text-gray-300 text-sm leading-relaxed">
-                  {client} achieved strong marketing performance in this period, with total reach of 2.4M and 847 leads generated across all channels. LinkedIn and Email were top performers, driving 60% of qualified leads. Revenue attribution reached $68,200 — an increase of $9,400 vs. the prior period.
-                  {commentary && ` ${commentary}`}
+                  {commentary
+                    ? commentary
+                    : `Executive summary for ${client} (${range}) will be assembled from real campaign data once /api/analytics/reports is wired. Use the "Commentary" field in the builder to add your own narrative.`}
                 </p>
               </div>
             )}
@@ -448,33 +678,65 @@ function ReportBuilderModal({
             {sections['KPIs'] && (
               <div>
                 <h4 className="text-white font-medium mb-3 text-sm">Key Performance Indicators</h4>
-                <div className="grid grid-cols-3 gap-3">
-                  {STAT_BAR.slice(0, 6).map(s => (
-                    <div key={s.label} className="bg-gray-800 rounded-lg p-3 text-center">
-                      <p className="text-gray-400 text-xs mb-1">{s.label}</p>
-                      <p className="text-white font-bold text-lg">{s.value}</p>
-                      <p className={`text-xs ${s.up ? 'text-emerald-400' : 'text-red-400'}`}>{s.delta}</p>
-                    </div>
-                  ))}
+                {/* Report preview KPI grid — empty until /api/analytics/reports
+                    returns the period snapshot. The previous version showed
+                    the hardcoded MOCK STAT_BAR in the report preview, which
+                    would print fabricated numbers into a downloadable report. */}
+                <div className="p-4 bg-gray-800 rounded-lg text-center text-gray-500 text-sm">
+                  KPI snapshot will populate from /api/analytics/reports once that endpoint ships.
                 </div>
               </div>
             )}
 
             {sections['Recommendations'] && (
               <div className="bg-gray-800 rounded-xl p-4">
-                <h4 className="text-white font-medium mb-2 text-sm">Strategic Recommendations</h4>
-                <ol className="space-y-1.5">
-                  {[
-                    'Double down on LinkedIn long-form content — highest CPL efficiency at $2.90.',
-                    'Increase email newsletter cadence from 2x/mo to 4x/mo to capitalize on 28.4% engagement.',
-                    'Pause Facebook paid ads — $22.10 CPL is 12x higher than email.',
-                  ].map((r, i) => (
-                    <li key={i} className="flex items-start gap-2 text-sm text-gray-300">
-                      <span className="bg-indigo-600 text-white text-xs rounded-full w-4 h-4 flex items-center justify-center flex-shrink-0 mt-0.5">{i + 1}</span>
-                      {r}
-                    </li>
-                  ))}
-                </ol>
+                <h4 className="text-white font-medium mb-3 text-sm">Strategic Recommendations</h4>
+                {/* Sprint 6F: rule-based recommendations from
+                    /api/analytics/recommendations. Every bullet cites a
+                    real metric from this workspace — no fabrication. */}
+                {!workspaceId && (
+                  <p className="text-gray-500 text-sm">Select a workspace to generate recommendations.</p>
+                )}
+                {workspaceId && recsLoading && (
+                  <p className="text-gray-500 text-sm">Analyzing your data…</p>
+                )}
+                {workspaceId && !recsLoading && recsError && (
+                  <p className="text-red-400 text-sm">Could not load recommendations: {recsError}</p>
+                )}
+                {workspaceId && !recsLoading && !recsError && !recsDataAvailable && (
+                  <p className="text-gray-500 text-sm">
+                    No published content, leads, or paid campaigns yet in this period — recommendations will surface once there's data to analyze.
+                  </p>
+                )}
+                {workspaceId && !recsLoading && !recsError && recsDataAvailable && recommendations && (
+                  recommendations.length === 0 ? (
+                    <p className="text-gray-500 text-sm">No issues flagged for this period.</p>
+                  ) : (
+                    <ul className="space-y-2.5">
+                      {recommendations.map(r => {
+                        const dot = r.severity === 'critical' ? 'bg-red-500'
+                          : r.severity === 'warning' ? 'bg-amber-500'
+                          : 'bg-emerald-500'
+                        return (
+                          <li key={r.id} className="flex gap-3">
+                            <span className={`mt-1.5 w-2 h-2 rounded-full flex-shrink-0 ${dot}`} />
+                            <div className="flex-1">
+                              <p className="text-gray-200 text-sm font-medium">
+                                {r.title}
+                                {r.metric && (
+                                  <span className="ml-2 text-xs font-normal text-gray-500">
+                                    ({r.metric.label}: {r.metric.value})
+                                  </span>
+                                )}
+                              </p>
+                              <p className="text-gray-400 text-xs mt-0.5 leading-relaxed">{r.body}</p>
+                            </div>
+                          </li>
+                        )
+                      })}
+                    </ul>
+                  )
+                )}
               </div>
             )}
 
@@ -517,16 +779,42 @@ interface AnalyticsData {
   topArtifacts: { id: string; title: string; type: string; created_at: string }[]
   contentByType: { type: string; count: number }[]
   publishByPlatform: { platform: string; count: number }[]
+  // Sprint 15E (P1 #14): daily trendline arrays for the Overview bar chart.
+  dailySeries?: { day: string; content: number; published: number; leads: number }[]
+}
+
+// Sprint 6G: shape returned by /api/analytics/posts. Top Performing Content
+// panel ranks by engagement (likes+comments+shares) rather than recency.
+interface TopPost {
+  artifactId: string
+  title: string
+  type: string
+  createdAt: string
+  publishedPlatforms: string[]
+  publishedAt: string | null
+  impressions: number
+  clicks: number
+  likes: number
+  comments: number
+  shares: number
+  engagement: number
+  engagementRate: number
+  hasMetrics: boolean
+  paidMetrics: { spend: number; conversions: number; revenue: number } | null
 }
 
 export default function AnalyticsPage() {
   const [activeTab, setActiveTab] = useState<TabId>('overview')
   const [range, setRange] = useState<RangeId>('30d')
   const [compare, setCompare] = useState(false)
+  // Sprint 5 fix: brief banner for the Generate Report / Export Data buttons
+  // so the user sees the silent file download actually happened.
+  const [reportToast, setReportToast] = useState<string | null>(null)
   const [activeTemplate, setActiveTemplate] = useState<typeof REPORT_TEMPLATES[0] | null>(null)
-  const [scheduledToggles, setScheduledToggles] = useState<Record<number, boolean>>(
-    Object.fromEntries(SCHEDULED_REPORTS.map((r, i) => [i, r.enabled]))
-  )
+  // scheduledToggles previously seeded from MOCK SCHEDULED_REPORTS. Now starts
+  // empty — when the real scheduled-reports endpoint lands the state will be
+  // hydrated from /api/analytics/reports/scheduled.
+  const [scheduledToggles, setScheduledToggles] = useState<Record<number, boolean>>({})
   const [roisPend, setRoiSpend] = useState(5000)
   const [roiRoas] = useState(14)
 
@@ -535,6 +823,9 @@ export default function AnalyticsPage() {
   const [data, setData] = useState<AnalyticsData | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  // Sprint 6G: per-post engagement (Top Performing Content panel).
+  const [topPosts, setTopPosts] = useState<TopPost[] | null>(null)
+  const [topPostsLoading, setTopPostsLoading] = useState(false)
 
   const loadAnalytics = useCallback(async (wsId: string, r: RangeId) => {
     setLoading(true); setError(null)
@@ -551,33 +842,58 @@ export default function AnalyticsPage() {
     }
   }, [])
 
+  // Sprint 10C: session-derived workspaceId.
+  const { workspaceId: sessionWorkspaceId, resolved: sessionResolved } = useWorkspaceId()
   useEffect(() => {
-    const wsId = typeof window !== 'undefined' ? localStorage.getItem('workspaceId') : null
-    setWorkspaceId(wsId)
-    if (wsId) loadAnalytics(wsId, range)
-    else setLoading(false)
-  }, [loadAnalytics])
+    setWorkspaceId(sessionWorkspaceId)
+    if (sessionWorkspaceId) loadAnalytics(sessionWorkspaceId, range)
+    else if (sessionResolved) setLoading(false)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionWorkspaceId, sessionResolved, loadAnalytics])
 
   // Refetch when range changes
   useEffect(() => {
     if (workspaceId) loadAnalytics(workspaceId, range)
   }, [range, workspaceId, loadAnalytics])
 
-  // ── Computed values from real data (with mock fallback when zero) ─────────
+  // Sprint 6G: load Top Performing Content via /api/analytics/posts. This
+  // replaces the recency-sorted topArtifacts surface with true engagement
+  // ranking. Runs in parallel with the main stats load.
+  useEffect(() => {
+    if (!workspaceId) return
+    let cancelled = false
+    setTopPostsLoading(true)
+    fetch(`/api/analytics/posts?workspaceId=${workspaceId}&range=${range}&sortBy=engagement&limit=6`)
+      .then(async r => r.ok ? r.json() as Promise<{ posts: TopPost[] }> : Promise.reject(new Error(`HTTP ${r.status}`)))
+      .then(json => { if (!cancelled) setTopPosts(Array.isArray(json?.posts) ? json.posts : []) })
+      .catch(() => { if (!cancelled) setTopPosts([]) })
+      .finally(() => { if (!cancelled) setTopPostsLoading(false) })
+    return () => { cancelled = true }
+  }, [workspaceId, range])
+
+  // ── Computed values from real data (NO mock fallback — Source Test) ──────
+  // `data` is the response from /api/stats?view=analytics. `hasData` flags
+  // whether the workspace has ANY measurable activity yet. When false, the
+  // stat bar / KPIs / channel table render zeros + empty-state copy. We do
+  // NOT substitute hardcoded numbers; that was the central deception of the
+  // previous version.
   const hasData = !!data && (data.leads > 0 || data.published > 0 || data.totalRuns > 0 || data.reach > 0)
 
-  // Build real STAT_BAR values
-  const realStatBar = data ? [
+  // Build STAT_BAR values from real data only. When `data` is null (loading
+  // / errored) we render placeholder empty cards; we never substitute fake
+  // values.
+  const realStatBar: { label: string; value: string; delta: string; up: boolean }[] = data ? [
     { label: 'Content Published', value: String(data.published), delta: data.published > 0 ? `${data.published} this period` : 'No content yet', up: true },
     { label: 'Total Reach', value: data.reach >= 1000 ? `${(data.reach / 1000).toFixed(1)}K` : String(data.reach), delta: data.reach > 0 ? 'From paid campaigns' : 'No ad data yet', up: true },
     { label: 'Avg Engagement', value: `${data.engagementRate}%`, delta: data.engagementRate > 0 ? 'CTR from ads' : 'No campaigns yet', up: true },
     { label: 'Total Leads', value: String(data.leads), delta: data.leads > 0 ? `${data.leads} captured` : 'No leads yet', up: true },
     { label: 'Revenue Attributed', value: `$${data.revenue.toLocaleString()}`, delta: data.revenue > 0 ? 'From tracked campaigns' : 'No revenue yet', up: true },
     { label: 'AI Cost This Month', value: `$${data.totalCost.toFixed(2)}`, delta: `${data.totalRuns} runs`, up: false },
-  ] : STAT_BAR
+  ] : []
 
-  // Build channel breakdown from real publish data + lead sources
-  const realChannels = data && (data.publishByPlatform.length > 0 || data.leadsBySource.length > 0)
+  // Channel breakdown from real publish data + lead sources. Empty array
+  // when no data — the table below renders its own "no channel data" row.
+  const realChannels: { name: string; reach: number; eng: number; leads: number; cpl: string; icon: string }[] = data
     ? (() => {
         const merged = new Map<string, { name: string; reach: number; eng: number; leads: number; cpl: string; icon: string }>()
         data.publishByPlatform.forEach(p => {
@@ -599,7 +915,7 @@ export default function AnalyticsPage() {
         })
         return Array.from(merged.values())
       })()
-    : CHANNELS
+    : []
 
   const TABS: { id: TabId; label: string }[] = [
     { id: 'overview', label: 'Overview' },
@@ -637,7 +953,9 @@ export default function AnalyticsPage() {
                 {r.label}
               </button>
             ))}
-            <button className={`px-3 py-1.5 rounded text-xs font-medium transition-colors text-gray-400 hover:text-white`}>Custom</button>
+            {/* Sprint 0: was a "Custom" range button with no date-picker
+                wired. Disabled until the picker lands in Sprint 6 polish. */}
+            <button disabled title="Custom range picker coming soon" className="px-3 py-1.5 rounded text-xs font-medium text-gray-600 opacity-50 cursor-not-allowed">Custom</button>
           </div>
 
           {/* Compare toggle */}
@@ -651,17 +969,38 @@ export default function AnalyticsPage() {
 
           <button
             onClick={() => {
-              const payload = {
-                generatedAt: new Date().toISOString(),
-                workspaceId,
-                range,
-                data,
+              // Sprint 5 fix: the click DID trigger a JSON download but
+              // most browsers download silently — users thought the button
+              // was broken. Now we:
+              //   (a) append/remove the anchor to/from the DOM for max
+              //       cross-browser compat (some older browsers ignore
+              //       detached anchor clicks),
+              //   (b) fall back to alert() if Blob URL creation fails,
+              //   (c) flip a brief `downloadedAt` state that surfaces a
+              //       confirmation banner so the user sees it worked.
+              try {
+                const payload = {
+                  generatedAt: new Date().toISOString(),
+                  workspaceId,
+                  range,
+                  data,
+                }
+                const filename = `analytics-report-${range}-${Date.now()}.json`
+                const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
+                const url = URL.createObjectURL(blob)
+                const a = document.createElement('a')
+                a.href = url
+                a.download = filename
+                document.body.appendChild(a)
+                a.click()
+                document.body.removeChild(a)
+                URL.revokeObjectURL(url)
+                setReportToast(`Downloaded ${filename}`)
+                setTimeout(() => setReportToast(null), 4000)
+              } catch (err) {
+                setReportToast(`Download failed: ${err instanceof Error ? err.message : String(err)}`)
+                setTimeout(() => setReportToast(null), 6000)
               }
-              const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
-              const url = URL.createObjectURL(blob)
-              const a = document.createElement('a')
-              a.href = url; a.download = `analytics-report-${range}-${Date.now()}.json`; a.click()
-              URL.revokeObjectURL(url)
             }}
             className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
           >
@@ -670,21 +1009,33 @@ export default function AnalyticsPage() {
           <button
             onClick={() => {
               if (!data) return
-              const lines: string[] = []
-              lines.push('metric,value')
-              lines.push(`published,${data.published}`)
-              lines.push(`leads,${data.leads}`)
-              lines.push(`reach,${data.reach}`)
-              lines.push(`revenue,${data.revenue}`)
-              lines.push(`engagement_rate,${data.engagementRate}`)
-              lines.push(`ai_runs,${data.totalRuns}`)
-              lines.push(`ai_cost,${data.totalCost}`)
-              const csv = lines.join('\n')
-              const blob = new Blob([csv], { type: 'text/csv' })
-              const url = URL.createObjectURL(blob)
-              const a = document.createElement('a')
-              a.href = url; a.download = `analytics-${range}.csv`; a.click()
-              URL.revokeObjectURL(url)
+              try {
+                const lines: string[] = []
+                lines.push('metric,value')
+                lines.push(`published,${data.published}`)
+                lines.push(`leads,${data.leads}`)
+                lines.push(`reach,${data.reach}`)
+                lines.push(`revenue,${data.revenue}`)
+                lines.push(`engagement_rate,${data.engagementRate}`)
+                lines.push(`ai_runs,${data.totalRuns}`)
+                lines.push(`ai_cost,${data.totalCost}`)
+                const csv = lines.join('\n')
+                const filename = `analytics-${range}.csv`
+                const blob = new Blob([csv], { type: 'text/csv' })
+                const url = URL.createObjectURL(blob)
+                const a = document.createElement('a')
+                a.href = url
+                a.download = filename
+                document.body.appendChild(a)
+                a.click()
+                document.body.removeChild(a)
+                URL.revokeObjectURL(url)
+                setReportToast(`Downloaded ${filename}`)
+                setTimeout(() => setReportToast(null), 4000)
+              } catch (err) {
+                setReportToast(`Export failed: ${err instanceof Error ? err.message : String(err)}`)
+                setTimeout(() => setReportToast(null), 6000)
+              }
             }}
             disabled={!data}
             className="bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 disabled:opacity-50 px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
@@ -694,11 +1045,23 @@ export default function AnalyticsPage() {
         </div>
       </div>
 
+      {/* Sprint 5 fix: feedback for the silent file-download buttons above. */}
+      {reportToast && (
+        <div className="mb-4 p-3 rounded-xl bg-emerald-950/40 border border-emerald-800/50 text-emerald-300 text-sm flex items-center gap-2">
+          <span>✓</span>
+          <span className="flex-1">{reportToast}</span>
+          <button onClick={() => setReportToast(null)} className="text-gray-500 hover:text-white">×</button>
+        </div>
+      )}
+
       {/* ── Loading & error states ── */}
       {loading && (
-        <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 text-center text-gray-500">
-          <div className="inline-block w-6 h-6 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin mb-2" />
-          <p>Loading analytics…</p>
+        <div className="space-y-4">
+          <SkeletonStatRow count={6} />
+          <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 space-y-3">
+            <Skeleton widthClass="w-1/4" />
+            <Skeleton widthClass="w-full" className="h-40" />
+          </div>
         </div>
       )}
       {!loading && error && (
@@ -752,6 +1115,9 @@ export default function AnalyticsPage() {
           <div>
             <h2 className="text-white font-semibold mb-3">Performance KPIs</h2>
             <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
+              {/* KPI grid — every value traces to /api/stats data. When data
+                  is null we render placeholder cards rather than fabricating
+                  numbers. */}
               {(data ? [
                 { label: 'Content Published', value: String(data.published), sub: `Last ${data.days}d` },
                 { label: 'Total Reach', value: data.reach >= 1000 ? `${(data.reach / 1000).toFixed(1)}K` : String(data.reach), sub: 'From paid campaigns' },
@@ -765,30 +1131,20 @@ export default function AnalyticsPage() {
                 { label: 'Top Platform', value: (data.publishByPlatform[0]?.platform || '—'), sub: data.publishByPlatform[0] ? `${data.publishByPlatform[0].count} posts` : 'No data' },
                 { label: 'Top Content Type', value: (data.contentByType[0]?.type || '—'), sub: data.contentByType[0] ? `${data.contentByType[0].count} items` : 'No data' },
                 { label: 'Pending Approvals', value: String(data.leadsByStatus.find(s => s.status === 'pending')?.count || 0), sub: 'Leads awaiting review' },
-              ] : [
-                { label: 'Content Published', value: '142', sub: '+18 this period' },
-                { label: 'Total Reach', value: '2.4M', sub: '+340K vs prev' },
-                { label: 'Avg Engagement', value: '4.7%', sub: 'Industry avg: 2.1%' },
-                { label: 'Total Clicks', value: '94,200', sub: '+22% vs prev' },
-                { label: 'Total Leads', value: '847', sub: 'Target: 800 ✓' },
-                { label: 'Revenue Attr.', value: '$68,200', sub: '+$9,400 vs prev' },
-                { label: 'AI Cost', value: '$142', sub: '$0.17/content piece' },
-                { label: 'Time Saved', value: '284 hrs', sub: 'vs manual baseline' },
-                { label: 'Approval Rate', value: '89%', sub: 'Target: 85% ✓' },
-                { label: 'Brand Voice Score', value: '94/100', sub: '+2 pts vs prev' },
-                { label: 'Top Channel', value: 'LinkedIn', sub: '312 leads this period' },
-                { label: 'Best Content Type', value: 'Long-form', sub: '8.9% avg engagement' },
-              ]).map(k => (
+              ] : (
+                // No data yet — render 12 empty placeholders, not fake numbers.
+                ['Content Published','Total Reach','Avg Engagement','Total Clicks','Total Leads','Revenue Attr.','AI Cost','Agent Runs','Top Source','Top Platform','Top Content Type','Pending Approvals'].map(label => ({ label, value: '—', sub: 'No data yet' }))
+              )).map(k => (
                 <div key={k.label} className="bg-gray-900 border border-gray-800 rounded-xl p-3">
                   <p className="text-gray-500 text-xs mb-1">{k.label}</p>
-                  <p className="text-white font-bold">{k.value}</p>
+                  <p className={`font-bold ${k.value === '—' ? 'text-gray-600' : 'text-white'}`}>{k.value}</p>
                   <p className="text-gray-600 text-xs mt-0.5">{k.sub}</p>
                 </div>
               ))}
             </div>
           </div>
 
-          {/* Performance Trend Chart */}
+          {/* Performance Trend Chart — empty until /api/stats returns daily aggregates */}
           <div className="bg-gray-900 border border-gray-800 rounded-2xl p-5">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-white font-semibold">Performance Trend</h2>
@@ -798,8 +1154,24 @@ export default function AnalyticsPage() {
                 <span className="flex items-center gap-1.5"><span className="w-3 h-2 rounded bg-pink-500/40 inline-block" /> Content</span>
               </div>
             </div>
-            <BarChart />
+            {/* Sprint 15E (P1 #14): daily series now comes from /api/stats.
+                If the workspace is empty the arrays stay empty and the chart
+                shows an honest "no data" rail — never fabricated. */}
+            <BarChart
+              days={(data?.dailySeries || []).map(d => d.day.slice(5))}
+              content={(data?.dailySeries || []).map(d => d.content)}
+              engagement={(data?.dailySeries || []).map(d => d.published)}
+              leads={(data?.dailySeries || []).map(d => d.leads)}
+            />
           </div>
+
+          {/* Sprint 17D (audit P1 #14): follower trendline.
+              Reads /api/analytics/followers (post_metrics rows with sentinel
+              artifact_id='__followers__' written by /api/cron/follower-sync). */}
+          <FollowerTrendChart
+            workspaceId={workspaceId}
+            days={range === '7d' ? 7 : range === '90d' ? 90 : range === '12mo' ? 365 : 30}
+          />
 
           {/* Channel Breakdown */}
           <div className="bg-gray-900 border border-gray-800 rounded-2xl p-5">
@@ -845,53 +1217,74 @@ export default function AnalyticsPage() {
             </div>
           </div>
 
-          {/* Top Performing Content */}
+          {/* Top Performing Content — Sprint 6G: ranks by engagement (likes
+              + comments + shares) using /api/analytics/posts. Posts with
+              synced platform metrics rank above posts that haven't been
+              synced yet. Honest empty state: no fabricated zeros. */}
           <div>
-            <h2 className="text-white font-semibold mb-3">Top Recent Content</h2>
-            {data && data.topArtifacts.length > 0 ? (
+            <div className="flex items-baseline justify-between mb-3">
+              <h2 className="text-white font-semibold">Top Performing Content</h2>
+              {topPosts && topPosts.some(p => !p.hasMetrics) && (
+                <p className="text-gray-500 text-xs">
+                  Some posts have no synced metrics yet — connect platform integrations to populate.
+                </p>
+              )}
+            </div>
+            {topPostsLoading && !topPosts && (
+              <div className="bg-gray-900 border border-gray-800 rounded-2xl p-8 text-center text-gray-500 text-sm">Loading…</div>
+            )}
+            {topPosts && topPosts.length === 0 && (
+              <div className="bg-gray-900 border border-gray-800 rounded-2xl p-8 text-center text-gray-500 text-sm">
+                No content published yet in this date range.
+              </div>
+            )}
+            {topPosts && topPosts.length > 0 && (
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                {data.topArtifacts.slice(0, 3).map(art => (
-                  <div key={art.id} className="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden">
-                    <div className="h-24 bg-gradient-to-br from-indigo-700 to-purple-900 flex items-center justify-center">
+                {topPosts.slice(0, 6).map(post => (
+                  <div key={post.artifactId} className="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden">
+                    <div className="h-24 bg-gradient-to-br from-indigo-700 to-purple-900 flex items-center justify-center relative">
                       <span className="text-4xl">📝</span>
+                      {post.hasMetrics && (
+                        <span className="absolute top-2 right-2 text-emerald-300 text-[10px] bg-emerald-950/70 px-1.5 py-0.5 rounded">
+                          {post.engagement.toLocaleString()} eng
+                        </span>
+                      )}
                     </div>
                     <div className="p-4">
-                      <div className="flex items-center gap-2 mb-2">
-                        <span className="text-gray-400 text-xs bg-gray-800 px-2 py-0.5 rounded">{art.type}</span>
+                      <div className="flex items-center gap-2 mb-2 flex-wrap">
+                        <span className="text-gray-400 text-xs bg-gray-800 px-2 py-0.5 rounded">{post.type}</span>
+                        {post.publishedPlatforms.slice(0, 3).map(pl => (
+                          <span key={pl} className="text-indigo-300 text-xs bg-indigo-950/60 px-2 py-0.5 rounded">{pl}</span>
+                        ))}
                       </div>
-                      <p className="text-white text-sm font-medium mb-2 line-clamp-2">{art.title}</p>
-                      <p className="text-gray-500 text-xs">{new Date(art.created_at).toLocaleDateString()}</p>
+                      <p className="text-white text-sm font-medium mb-2 line-clamp-2">{post.title}</p>
+                      {post.hasMetrics ? (
+                        <div className="grid grid-cols-3 gap-1 mt-2 mb-2">
+                          <div className="text-center">
+                            <p className="text-white text-xs font-semibold">{post.likes.toLocaleString()}</p>
+                            <p className="text-gray-600 text-[10px]">Likes</p>
+                          </div>
+                          <div className="text-center">
+                            <p className="text-white text-xs font-semibold">{post.comments.toLocaleString()}</p>
+                            <p className="text-gray-600 text-[10px]">Comments</p>
+                          </div>
+                          <div className="text-center">
+                            <p className="text-white text-xs font-semibold">{post.shares.toLocaleString()}</p>
+                            <p className="text-gray-600 text-[10px]">Shares</p>
+                          </div>
+                        </div>
+                      ) : (
+                        <p className="text-gray-600 text-[11px] italic mt-1.5 mb-1">No metrics synced yet</p>
+                      )}
+                      <p className="text-gray-500 text-xs">
+                        {post.publishedAt
+                          ? `Published ${new Date(post.publishedAt).toLocaleDateString()}`
+                          : `Drafted ${new Date(post.createdAt).toLocaleDateString()}`}
+                      </p>
                     </div>
                   </div>
                 ))}
               </div>
-            ) : data ? (
-              <div className="bg-gray-900 border border-gray-800 rounded-2xl p-8 text-center text-gray-500 text-sm">
-                No content published yet in this date range
-              </div>
-            ) : (
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              {TOP_POSTS.map(post => (
-                <div key={post.title} className="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden">
-                  <div className={`h-24 ${post.color} flex items-center justify-center`}>
-                    <span className="text-4xl">
-                      {post.platform === 'LinkedIn' ? '💼' : post.platform === 'Instagram' ? '📸' : '✉️'}
-                    </span>
-                  </div>
-                  <div className="p-4">
-                    <div className="flex items-center gap-2 mb-2">
-                      <span className="text-gray-400 text-xs bg-gray-800 px-2 py-0.5 rounded">{post.platform}</span>
-                      <span className="text-gray-500 text-xs">{post.type}</span>
-                    </div>
-                    <p className="text-white text-sm font-medium mb-2 line-clamp-2">{post.title}</p>
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="text-gray-400">{(post.reach / 1000).toFixed(1)}K reach · {post.eng}% eng</span>
-                    </div>
-                    <span className={`inline-block mt-2 text-xs px-2 py-0.5 rounded-full ${post.badgeColor}`}>{post.badge}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
             )}
           </div>
 
@@ -922,17 +1315,9 @@ export default function AnalyticsPage() {
                   {data && data.agentRuns.length === 0 && (
                     <tr><td colSpan={4} className="text-center py-6 text-gray-500 text-sm">No agent runs in this date range</td></tr>
                   )}
-                  {!data && AI_AGENTS.map(agent => (
-                    <tr key={agent.name} className="border-b border-gray-800/40 hover:bg-gray-800/30 transition-colors">
-                      <td className="px-3 py-3 text-sm text-white flex items-center gap-2">
-                        <span className="w-2 h-2 rounded-full bg-emerald-400 flex-shrink-0" />
-                        {agent.name}
-                      </td>
-                      <td className="px-3 py-3 text-sm text-gray-300">{agent.runs}</td>
-                      <td className="px-3 py-3 text-sm text-gray-300">{agent.tasks}</td>
-                      <td className="px-3 py-3 text-sm text-gray-400">{agent.cost}</td>
-                    </tr>
-                  ))}
+                  {!data && (
+                    <tr><td colSpan={4} className="text-center py-6 text-gray-600 text-sm">Loading…</td></tr>
+                  )}
                 </tbody>
               </table>
             </div>
@@ -946,34 +1331,42 @@ export default function AnalyticsPage() {
       {activeTab === 'content' && (
         <div className="space-y-6">
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* Content by type */}
+            {/* Content by type — real */}
             <div className="bg-gray-900 border border-gray-800 rounded-2xl p-5">
               <h2 className="text-white font-semibold mb-4">Content Volume by Type</h2>
-              <div className="space-y-3">
-                {CONTENT_BY_TYPE.map(item => (
-                  <div key={item.type}>
-                    <div className="flex justify-between text-xs mb-1">
-                      <span className="text-gray-400">{item.type}</span>
-                      <span className="text-gray-300 font-medium">{item.count}</span>
-                    </div>
-                    <div className="h-2.5 bg-gray-800 rounded-full overflow-hidden">
-                      <div className={`h-full ${item.color} rounded-full`} style={{ width: `${(item.count / 62) * 100}%` }} />
-                    </div>
+              {data && data.contentByType.length > 0 ? (() => {
+                const palette = ['bg-indigo-500', 'bg-purple-500', 'bg-pink-500', 'bg-amber-500', 'bg-emerald-500', 'bg-blue-500']
+                const max = Math.max(...data.contentByType.map(t => t.count), 1)
+                return (
+                  <div className="space-y-3">
+                    {data.contentByType.map((item, i) => (
+                      <div key={item.type}>
+                        <div className="flex justify-between text-xs mb-1">
+                          <span className="text-gray-400">{item.type || 'Other'}</span>
+                          <span className="text-gray-300 font-medium">{item.count}</span>
+                        </div>
+                        <div className="h-2.5 bg-gray-800 rounded-full overflow-hidden">
+                          <div className={`h-full ${palette[i % palette.length]} rounded-full`} style={{ width: `${(item.count / max) * 100}%` }} />
+                        </div>
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
+                )
+              })() : (
+                <p className="text-gray-500 text-sm">No content created yet.</p>
+              )}
             </div>
 
-            {/* Best performing */}
+            {/* Best performing — empty until insights pipeline ships.
+                Previously hardcoded "Tuesday 9–11am · +34% above average"
+                etc. — those numbers were fabricated. */}
             <div className="bg-gray-900 border border-gray-800 rounded-2xl p-5">
               <h2 className="text-white font-semibold mb-4">Best Performing</h2>
               <div className="space-y-3">
                 {[
-                  { label: 'Content Type', value: 'Long-form Article', badge: '8.9% avg engagement', color: 'text-emerald-400' },
-                  { label: 'Top Platform', value: 'LinkedIn', badge: '312 leads', color: 'text-blue-400' },
-                  { label: 'Best Posting Time', value: 'Tuesday 9–11am', badge: '+34% above average', color: 'text-indigo-400' },
-                  { label: 'Optimal Length', value: '1,200–1,800 words', badge: 'Blog posts', color: 'text-purple-400' },
-                  { label: 'Brand Voice Score', value: '94/100', badge: '+2 pts vs last period', color: 'text-amber-400' },
+                  { label: 'Best Posting Time', value: '—', badge: 'Needs post history', color: 'text-gray-600' },
+                  { label: 'Optimal Length', value: '—', badge: 'Needs published content', color: 'text-gray-600' },
+                  { label: 'Brand Voice Score', value: '—', badge: 'Coming after first approval', color: 'text-gray-600' },
                 ].map(item => (
                   <div key={item.label} className="flex items-center justify-between py-2 border-b border-gray-800/50 last:border-0">
                     <span className="text-gray-400 text-sm">{item.label}</span>
@@ -987,21 +1380,19 @@ export default function AnalyticsPage() {
             </div>
           </div>
 
-          {/* Content velocity */}
+          {/* Content velocity — empty until /api/stats returns a daily series.
+              Previously showed a hardcoded 14-bar sparkline with fake numbers. */}
           <div className="bg-gray-900 border border-gray-800 rounded-2xl p-5">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-white font-semibold">Content Velocity</h2>
-              <span className="text-gray-400 text-sm">Avg <span className="text-white font-medium">4.7</span> posts/day</span>
+              <span className="text-gray-400 text-sm">
+                {data && data.days > 0 && data.published > 0
+                  ? <>Avg <span className="text-white font-medium">{(data.published / data.days).toFixed(1)}</span> posts/day</>
+                  : 'No history yet'}
+              </span>
             </div>
-            <div className="flex items-end gap-1 h-24">
-              {[3, 5, 4, 7, 6, 5, 8, 4, 6, 7, 5, 9, 6, 8].map((v, i) => (
-                <div
-                  key={i}
-                  className="flex-1 bg-indigo-500/50 hover:bg-indigo-500 rounded-t transition-colors cursor-default"
-                  style={{ height: `${(v / 9) * 100}%` }}
-                  title={`${v} posts`}
-                />
-              ))}
+            <div className="h-24 flex items-center justify-center text-gray-600 text-sm">
+              Daily content trend will populate once /api/stats exposes daily aggregates.
             </div>
           </div>
 
@@ -1009,7 +1400,8 @@ export default function AnalyticsPage() {
           <div className="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden">
             <div className="px-5 py-4 border-b border-gray-800 flex items-center justify-between">
               <h2 className="text-white font-semibold">Top 10 Posts</h2>
-              <button className="text-gray-400 hover:text-white text-xs border border-gray-700 px-3 py-1 rounded-lg transition-colors">Export CSV</button>
+              {/* Sprint 0: Export CSV had no handler — disabled. */}
+              <button disabled title="Coming soon" className="text-gray-600 text-xs border border-gray-800 px-3 py-1 rounded-lg opacity-50 cursor-not-allowed">Export CSV</button>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full">
@@ -1021,16 +1413,22 @@ export default function AnalyticsPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {TOP_CONTENT_TABLE.map((row, i) => (
-                    <tr key={i} className="border-b border-gray-800/40 hover:bg-gray-800/30 transition-colors">
-                      <td className="px-4 py-3 text-sm text-gray-300 max-w-xs truncate">{row.preview}</td>
-                      <td className="px-4 py-3 text-sm text-indigo-400">{row.platform}</td>
-                      <td className="px-4 py-3 text-sm text-gray-300">{row.reach}</td>
-                      <td className="px-4 py-3 text-sm text-emerald-400 font-medium">{row.eng}</td>
-                      <td className="px-4 py-3 text-sm text-gray-300">{row.clicks}</td>
-                      <td className="px-4 py-3 text-sm text-gray-500">{row.date}</td>
+                  {/* Sprint 6G: driven by /api/analytics/posts. Reach /
+                      Eng Rate / Clicks columns now show real synced
+                      metrics, or "—" when a post hasn't been synced yet.
+                      Empty dashes are honest "no data" — not zero. */}
+                  {topPosts && topPosts.length > 0 ? topPosts.map(post => (
+                    <tr key={post.artifactId} className="border-b border-gray-800/40 hover:bg-gray-800/30 transition-colors">
+                      <td className="px-4 py-3 text-sm text-gray-300 max-w-xs truncate">{post.title}</td>
+                      <td className="px-4 py-3 text-sm text-indigo-400">{post.publishedPlatforms[0] || post.type}</td>
+                      <td className="px-4 py-3 text-sm text-gray-300">{post.hasMetrics ? post.impressions.toLocaleString() : '—'}</td>
+                      <td className="px-4 py-3 text-sm text-gray-300">{post.hasMetrics ? `${post.engagementRate.toFixed(2)}%` : '—'}</td>
+                      <td className="px-4 py-3 text-sm text-gray-300">{post.hasMetrics ? post.clicks.toLocaleString() : '—'}</td>
+                      <td className="px-4 py-3 text-sm text-gray-500">{new Date(post.publishedAt || post.createdAt).toLocaleDateString()}</td>
                     </tr>
-                  ))}
+                  )) : (
+                    <tr><td colSpan={6} className="text-center py-8 text-gray-500 text-sm">{topPostsLoading ? 'Loading…' : 'No content created yet in this date range.'}</td></tr>
+                  )}
                 </tbody>
               </table>
             </div>
@@ -1095,21 +1493,31 @@ export default function AnalyticsPage() {
 
           {/* Highlight + sources */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* Best month highlight */}
+            {/* Period summary — real data, not a fake "best month" highlight.
+                The previous version hardcoded "April 2026 · 1,142 leads ·
+                LinkedIn · $3.40 CPL" regardless of the workspace. */}
             <div className="bg-gradient-to-br from-indigo-900/60 to-purple-900/60 border border-indigo-700/40 rounded-2xl p-5 flex flex-col justify-between">
               <div>
-                <p className="text-indigo-300 text-xs font-medium uppercase tracking-wider mb-1">Best Month</p>
-                <h3 className="text-white text-2xl font-bold">April 2026</h3>
-                <p className="text-indigo-200 text-sm mt-1">1,142 leads generated — a record month</p>
+                <p className="text-indigo-300 text-xs font-medium uppercase tracking-wider mb-1">This Period</p>
+                <h3 className="text-white text-2xl font-bold">
+                  {data ? `${data.leads} lead${data.leads === 1 ? '' : 's'}` : '—'}
+                </h3>
+                <p className="text-indigo-200 text-sm mt-1">
+                  {data ? `Captured across ${data.leadsBySource.length} source${data.leadsBySource.length === 1 ? '' : 's'} over the last ${data.days} days.` : 'Loading…'}
+                </p>
               </div>
-              <div className="mt-4 grid grid-cols-2 gap-3">
+              <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div className="bg-white/10 rounded-lg p-3">
                   <p className="text-indigo-200 text-xs">Top Source</p>
-                  <p className="text-white font-semibold text-sm">LinkedIn</p>
+                  <p className="text-white font-semibold text-sm">{data?.leadsBySource[0]?.source || '—'}</p>
                 </div>
                 <div className="bg-white/10 rounded-lg p-3">
                   <p className="text-indigo-200 text-xs">Avg CPL</p>
-                  <p className="text-white font-semibold text-sm">$3.40</p>
+                  <p className="text-white font-semibold text-sm">
+                    {data && data.leads > 0 && data.campTotals.spend > 0
+                      ? `$${(data.campTotals.spend / data.leads).toFixed(2)}`
+                      : '—'}
+                  </p>
                 </div>
               </div>
             </div>
@@ -1160,41 +1568,35 @@ export default function AnalyticsPage() {
                 </tr>
               </thead>
               <tbody>
-                {COST_PER_LEAD.map(row => (
-                  <tr key={row.channel} className="border-b border-gray-800/40 hover:bg-gray-800/30 transition-colors">
-                    <td className="px-5 py-3 text-sm text-white">{row.channel}</td>
-                    <td className="px-5 py-3 text-sm font-medium text-indigo-300">{row.cpl}</td>
-                    <td className="px-5 py-3 text-sm text-gray-300">{row.leads}</td>
-                    <td className="px-5 py-3">
-                      <span className={`text-xs px-2 py-0.5 rounded-full ${
-                        row.quality === 'High' ? 'bg-emerald-500/20 text-emerald-400' :
-                        row.quality === 'Medium' ? 'bg-amber-500/20 text-amber-400' :
-                        'bg-red-500/20 text-red-400'
-                      }`}>{row.quality}</span>
-                    </td>
-                  </tr>
-                ))}
+                {/* Real CPL table — joins `leadsBySource` with `campaignByPlatform`
+                    spend. Lead-quality requires a scoring engine we haven't
+                    built; shown as "—" rather than the fabricated High/Medium/Low
+                    labels that the previous mock baked in. */}
+                {data && data.leadsBySource.length > 0 ? data.leadsBySource.map(src => {
+                  const camp = data.campaignByPlatform.find(c => c.platform.toLowerCase() === (src.source || '').toLowerCase())
+                  const cpl = camp && src.count > 0 ? `$${(camp.spend / src.count).toFixed(2)}` : '—'
+                  return (
+                    <tr key={src.source} className="border-b border-gray-800/40 hover:bg-gray-800/30 transition-colors">
+                      <td className="px-5 py-3 text-sm text-white">{src.source || 'Unknown'}</td>
+                      <td className="px-5 py-3 text-sm font-medium text-indigo-300">{cpl}</td>
+                      <td className="px-5 py-3 text-sm text-gray-300">{src.count}</td>
+                      <td className="px-5 py-3"><span className="text-xs px-2 py-0.5 rounded-full bg-gray-800 text-gray-500">—</span></td>
+                    </tr>
+                  )
+                }) : (
+                  <tr><td colSpan={4} className="text-center py-6 text-gray-500 text-sm">{data ? 'No lead source data yet.' : 'Loading…'}</td></tr>
+                )}
               </tbody>
             </table>
           </div>
 
-          {/* Lead scoring distribution */}
+          {/* Lead scoring distribution — empty until a scoring engine exists.
+              Previously showed fake bars (42 / 88 / 156 / 312 / 249) regardless
+              of real lead data. We do not yet score leads; show honest empty. */}
           <div className="bg-gray-900 border border-gray-800 rounded-2xl p-5">
             <h2 className="text-white font-semibold mb-4">Lead Scoring Distribution</h2>
-            <div className="flex items-end gap-2 h-28">
-              {[
-                { range: '0–20', count: 42, color: 'bg-red-500/60' },
-                { range: '21–40', count: 88, color: 'bg-amber-500/60' },
-                { range: '41–60', count: 156, color: 'bg-yellow-500/60' },
-                { range: '61–80', count: 312, color: 'bg-indigo-500/60' },
-                { range: '81–100', count: 249, color: 'bg-emerald-500/60' },
-              ].map(bar => (
-                <div key={bar.range} className="flex-1 flex flex-col items-center gap-1">
-                  <span className="text-gray-500 text-xs">{bar.count}</span>
-                  <div className={`w-full ${bar.color} rounded-t`} style={{ height: `${(bar.count / 312) * 80}%`, minHeight: 4 }} />
-                  <span className="text-gray-600 text-xs">{bar.range}</span>
-                </div>
-              ))}
+            <div className="h-28 flex items-center justify-center text-gray-600 text-sm">
+              Lead scoring will appear here once the scoring engine is configured.
             </div>
           </div>
         </div>
@@ -1206,43 +1608,58 @@ export default function AnalyticsPage() {
       {activeTab === 'revenue' && (
         <div className="space-y-6">
 
-          {/* Revenue summary */}
+          {/* Revenue summary — every value from real data, no deltas yet
+              (delta needs a previous-period comparison which /api/stats
+              doesn't currently return). */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {[
-              { label: 'Revenue Attributed', value: '$68,200', delta: '+$9,400 vs prev', sub: 'Marketing-driven revenue', up: true },
-              { label: 'Customer Acq. Cost', value: '$38.40', delta: '-$4.20 vs prev', sub: '62 new customers', up: false },
-              { label: 'Blended ROAS', value: '14.1x', delta: '+1.8x vs prev', sub: 'Across all channels', up: true },
-            ].map(card => (
+            {(data ? [
+              { label: 'Revenue Attributed', value: `$${data.revenue.toLocaleString()}`, sub: data.revenue > 0 ? 'From tracked campaigns' : 'No revenue attribution yet' },
+              { label: 'Total Ad Spend', value: `$${data.campTotals.spend.toLocaleString()}`, sub: data.campTotals.spend > 0 ? `${data.campTotals.conversions} conversions` : 'No paid spend yet' },
+              { label: 'Blended ROAS', value: data.campTotals.spend > 0 ? `${(data.revenue / data.campTotals.spend).toFixed(2)}x` : '—', sub: data.campTotals.spend > 0 ? 'Revenue ÷ spend' : 'Awaiting paid campaign data' },
+            ] : [
+              { label: 'Revenue Attributed', value: '—', sub: 'Loading…' },
+              { label: 'Total Ad Spend', value: '—', sub: 'Loading…' },
+              { label: 'Blended ROAS', value: '—', sub: 'Loading…' },
+            ]).map(card => (
               <div key={card.label} className="bg-gray-900 border border-gray-800 rounded-2xl p-5">
                 <p className="text-gray-400 text-xs mb-1">{card.label}</p>
-                <p className="text-white text-3xl font-bold">{card.value}</p>
-                <p className={`text-sm mt-1 ${card.up ? 'text-emerald-400' : 'text-emerald-400'}`}>{card.delta}</p>
+                <p className={`text-3xl font-bold ${card.value === '—' ? 'text-gray-600' : 'text-white'}`}>{card.value}</p>
                 <p className="text-gray-600 text-xs mt-0.5">{card.sub}</p>
               </div>
             ))}
           </div>
 
-          {/* Revenue by channel */}
+          {/* Revenue by channel — real campaignByPlatform data */}
           <div className="bg-gray-900 border border-gray-800 rounded-2xl p-5">
             <h2 className="text-white font-semibold mb-4">Revenue by Channel</h2>
-            <div className="space-y-3">
-              {REVENUE_CHANNELS.map(ch => (
-                <div key={ch.channel} className="flex items-center gap-4">
-                  <div className="w-36 text-sm text-gray-300 flex-shrink-0">{ch.channel}</div>
-                  <div className="flex-1 h-6 bg-gray-800 rounded-lg overflow-hidden">
-                    <div
-                      className={`h-full ${ch.color} rounded-lg flex items-center px-3`}
-                      style={{ width: `${(ch.revenue / 28400) * 100}%` }}
-                    >
-                      <span className="text-white text-xs font-medium whitespace-nowrap">
-                        ${(ch.revenue / 1000).toFixed(1)}K
-                      </span>
+            {data && data.campaignByPlatform.length > 0 ? (() => {
+              const palette = ['bg-indigo-500', 'bg-blue-500', 'bg-emerald-500', 'bg-pink-500', 'bg-amber-500']
+              const maxRev = Math.max(...data.campaignByPlatform.map(c => c.revenue), 1)
+              return (
+                <div className="space-y-3">
+                  {data.campaignByPlatform.map((ch, i) => (
+                    <div key={ch.platform} className="flex items-center gap-4">
+                      <div className="w-36 text-sm text-gray-300 flex-shrink-0">{ch.platform}</div>
+                      <div className="flex-1 h-6 bg-gray-800 rounded-lg overflow-hidden">
+                        <div
+                          className={`h-full ${palette[i % palette.length]} rounded-lg flex items-center px-3`}
+                          style={{ width: `${Math.max(2, (ch.revenue / maxRev) * 100)}%` }}
+                        >
+                          <span className="text-white text-xs font-medium whitespace-nowrap">
+                            ${(ch.revenue / 1000).toFixed(1)}K
+                          </span>
+                        </div>
+                      </div>
+                      <div className="w-16 text-right text-xs text-gray-400 flex-shrink-0">
+                        {ch.spend > 0 ? `${(ch.revenue / ch.spend).toFixed(1)}x` : '—'}
+                      </div>
                     </div>
-                  </div>
-                  <div className="w-16 text-right text-xs text-gray-400 flex-shrink-0">{ch.roas}</div>
+                  ))}
                 </div>
-              ))}
-            </div>
+              )
+            })() : (
+              <p className="text-gray-500 text-sm">No channel revenue tracked yet. Connect ad accounts in Integrations to start.</p>
+            )}
           </div>
 
           {/* ROI Calculator + Forecast */}
@@ -1267,7 +1684,7 @@ export default function AnalyticsPage() {
                     <span>$50K</span>
                   </div>
                 </div>
-                <div className="bg-gray-800 rounded-xl p-4 grid grid-cols-2 gap-3">
+                <div className="bg-gray-800 rounded-xl p-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <p className="text-gray-500 text-xs">Projected Revenue</p>
                     <p className="text-emerald-400 font-bold text-xl">${(roisPend * roiRoas).toLocaleString()}</p>
@@ -1289,61 +1706,26 @@ export default function AnalyticsPage() {
               </div>
             </div>
 
-            {/* Revenue forecast */}
+            {/* Revenue forecast — empty until we have monthly revenue series.
+                The previous version showed a hardcoded "Jan $42K → Aug $87K"
+                trajectory regardless of actual data. */}
             <div className="bg-gray-900 border border-gray-800 rounded-2xl p-5">
               <h2 className="text-white font-semibold mb-4">Revenue Forecast</h2>
-              <div className="flex items-end gap-1 h-32">
-                {[
-                  { month: 'Jan', rev: 42000, forecast: false },
-                  { month: 'Feb', rev: 48000, forecast: false },
-                  { month: 'Mar', rev: 54000, forecast: false },
-                  { month: 'Apr', rev: 61000, forecast: false },
-                  { month: 'May', rev: 68200, forecast: false },
-                  { month: 'Jun', rev: 74000, forecast: true },
-                  { month: 'Jul', rev: 80000, forecast: true },
-                  { month: 'Aug', rev: 87000, forecast: true },
-                ].map((m) => (
-                  <div key={m.month} className="flex-1 flex flex-col items-center gap-1">
-                    <div
-                      className={`w-full rounded-t ${m.forecast ? 'border-t-2 border-dashed border-indigo-400 bg-indigo-500/20' : 'bg-indigo-500/70'}`}
-                      style={{ height: `${(m.rev / 87000) * 100}%` }}
-                    />
-                    <span className="text-gray-600 text-xs">{m.month}</span>
-                  </div>
-                ))}
-              </div>
-              <div className="flex items-center gap-4 mt-2 text-xs text-gray-500">
-                <span className="flex items-center gap-1"><span className="w-3 h-2 bg-indigo-500/70 rounded inline-block" /> Actual</span>
-                <span className="flex items-center gap-1"><span className="w-3 h-2 bg-indigo-500/20 border border-dashed border-indigo-400 rounded inline-block" /> Forecast</span>
+              <div className="h-32 flex items-center justify-center text-gray-600 text-sm">
+                Forecast charts will appear after 3+ months of revenue history.
               </div>
             </div>
           </div>
 
-          {/* Top campaigns */}
+          {/* Top campaigns — empty until /api/analytics/campaigns ships.
+              Previously showed fake "Q2 Agency Playbook Launch · $14,200 · 22.4x". */}
           <div className="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden">
             <div className="px-5 py-4 border-b border-gray-800">
               <h2 className="text-white font-semibold">Top Revenue-Generating Campaigns</h2>
             </div>
-            <table className="w-full">
-              <thead>
-                <tr className="border-b border-gray-800">
-                  {['Campaign', 'Type', 'Revenue', 'ROAS', 'Leads'].map(h => (
-                    <th key={h} className="text-left text-gray-400 text-xs font-medium px-5 py-3">{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {TOP_CAMPAIGNS.map(camp => (
-                  <tr key={camp.name} className="border-b border-gray-800/40 hover:bg-gray-800/30 transition-colors">
-                    <td className="px-5 py-3 text-sm text-white">{camp.name}</td>
-                    <td className="px-5 py-3"><span className="bg-gray-800 text-gray-400 text-xs px-2 py-0.5 rounded">{camp.type}</span></td>
-                    <td className="px-5 py-3 text-sm font-medium text-emerald-400">{camp.revenue}</td>
-                    <td className="px-5 py-3 text-sm text-indigo-300 font-medium">{camp.roas}</td>
-                    <td className="px-5 py-3 text-sm text-gray-300">{camp.leads}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <div className="p-8 text-center text-gray-500 text-sm">
+              Per-campaign revenue attribution will populate here once ad campaigns are running and conversions are tracked.
+            </div>
           </div>
         </div>
       )}
@@ -1387,59 +1769,25 @@ export default function AnalyticsPage() {
             </div>
           </div>
 
-          {/* Scheduled reports */}
+          {/* Scheduled reports — empty until /api/analytics/reports/scheduled
+              ships. The previous version listed fake clients (Acme Corp /
+              TechStart Inc / GrowthCo) regardless of who the user actually has. */}
           <div>
             <h2 className="text-white font-semibold mb-4">Scheduled Reports</h2>
-            <div className="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden">
-              <table className="w-full">
-                <thead>
-                  <tr className="border-b border-gray-800">
-                    {['Template', 'Client', 'Frequency', 'Next Send', 'Recipients', 'Status'].map(h => (
-                      <th key={h} className="text-left text-gray-400 text-xs font-medium px-5 py-3">{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {SCHEDULED_REPORTS.map((r, i) => (
-                    <tr key={i} className="border-b border-gray-800/40 hover:bg-gray-800/30 transition-colors">
-                      <td className="px-5 py-3 text-sm text-white">{r.template}</td>
-                      <td className="px-5 py-3 text-sm text-gray-300">{r.client}</td>
-                      <td className="px-5 py-3 text-sm text-gray-400">{r.freq}</td>
-                      <td className="px-5 py-3 text-sm text-gray-400">{r.next}</td>
-                      <td className="px-5 py-3 text-sm text-gray-400">{r.recipients}</td>
-                      <td className="px-5 py-3">
-                        <button
-                          onClick={() => setScheduledToggles(prev => ({ ...prev, [i]: !prev[i] }))}
-                          className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${scheduledToggles[i] ? 'bg-indigo-600' : 'bg-gray-700'}`}
-                        >
-                          <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${scheduledToggles[i] ? 'translate-x-4' : 'translate-x-1'}`} />
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div className="bg-gray-900 border border-gray-800 rounded-2xl p-8 text-center text-gray-500 text-sm">
+              No scheduled reports yet. Generate one from a template above, then choose &ldquo;Schedule&rdquo; in the builder.
             </div>
+            {/* scheduledToggles state is preserved for when the real scheduled-
+                reports list arrives; intentionally unused right now. */}
+            {Object.keys(scheduledToggles).length === 0 ? null : null}
           </div>
 
-          {/* Past reports */}
+          {/* Past reports — empty until /api/analytics/reports/history ships.
+              Previously listed fake "Acme Corp – May 2026 Monthly Report" etc. */}
           <div>
             <h2 className="text-white font-semibold mb-4">Past Reports</h2>
-            <div className="space-y-2">
-              {PAST_REPORTS.map((r, i) => (
-                <div key={i} className="bg-gray-900 border border-gray-800 rounded-xl px-5 py-3 flex items-center justify-between hover:border-gray-700 transition-colors">
-                  <div className="flex items-center gap-3">
-                    <span className="text-2xl">📊</span>
-                    <div>
-                      <p className="text-white text-sm font-medium">{r.name}</p>
-                      <p className="text-gray-500 text-xs">{r.template} · {r.date} · {r.size}</p>
-                    </div>
-                  </div>
-                  <button className="flex items-center gap-1.5 text-indigo-400 hover:text-indigo-300 text-xs font-medium border border-indigo-800/50 px-3 py-1.5 rounded-lg transition-colors">
-                    ↓ Download
-                  </button>
-                </div>
-              ))}
+            <div className="bg-gray-900 border border-gray-800 rounded-2xl p-8 text-center text-gray-500 text-sm">
+              No past reports yet. Reports you download will appear here.
             </div>
           </div>
 
@@ -1450,6 +1798,7 @@ export default function AnalyticsPage() {
       {activeTemplate && (
         <ReportBuilderModal
           template={activeTemplate}
+          workspaceId={workspaceId}
           onClose={() => setActiveTemplate(null)}
         />
       )}

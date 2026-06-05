@@ -1,5 +1,7 @@
 // Brevo (formerly Sendinblue) Transactional Email & Marketing
 
+import { getCredential } from '@/lib/credential-context'
+
 const BREVO_BASE = 'https://api.brevo.com/v3'
 
 export interface BrevoList {
@@ -23,11 +25,11 @@ export async function sendTransactionalEmail(
   fromName = 'Ooumph',
   fromEmail?: string
 ): Promise<boolean> {
-  const key = process.env.BREVO_API_KEY
+  const key = getCredential('BREVO_API_KEY')
   if (!key) return false
   try {
     const senderEmail =
-      fromEmail ?? process.env.BREVO_FROM_EMAIL ?? 'noreply@ooumph.ai'
+      fromEmail ?? getCredential('BREVO_FROM_EMAIL') ?? 'noreply@ooumph.ai'
     const res = await fetch(`${BREVO_BASE}/smtp/email`, {
       method: 'POST',
       headers: {
@@ -54,11 +56,11 @@ export async function createEmailCampaign(
   listIds: number[],
   fromName = 'Ooumph'
 ): Promise<{ id: number } | null> {
-  const key = process.env.BREVO_API_KEY
+  const key = getCredential('BREVO_API_KEY')
   if (!key) return null
   try {
     const fromEmail =
-      process.env.BREVO_FROM_EMAIL ?? 'noreply@ooumph.ai'
+      getCredential('BREVO_FROM_EMAIL') ?? 'noreply@ooumph.ai'
     const res = await fetch(`${BREVO_BASE}/emailCampaigns`, {
       method: 'POST',
       headers: {
@@ -85,7 +87,7 @@ export async function createEmailCampaign(
 export async function getContacts(
   limit = 50
 ): Promise<{ contacts: { email: string; attributes?: Record<string, string> }[]; count: number } | null> {
-  const key = process.env.BREVO_API_KEY
+  const key = getCredential('BREVO_API_KEY')
   if (!key) return null
   try {
     const res = await fetch(`${BREVO_BASE}/contacts?limit=${limit}`, {
@@ -103,7 +105,7 @@ export async function createContact(
   attributes?: Record<string, string>,
   listIds?: number[]
 ): Promise<boolean> {
-  const key = process.env.BREVO_API_KEY
+  const key = getCredential('BREVO_API_KEY')
   if (!key) return false
   try {
     const res = await fetch(`${BREVO_BASE}/contacts`, {
@@ -125,7 +127,7 @@ export async function createContact(
 }
 
 export async function getBrevoLists(): Promise<BrevoList[]> {
-  const key = process.env.BREVO_API_KEY
+  const key = getCredential('BREVO_API_KEY')
   if (!key) return []
   try {
     const res = await fetch(`${BREVO_BASE}/contacts/lists?limit=50`, {
@@ -140,5 +142,5 @@ export async function getBrevoLists(): Promise<BrevoList[]> {
 }
 
 export function isBrevoAvailable(): boolean {
-  return !!process.env.BREVO_API_KEY
+  return !!getCredential('BREVO_API_KEY')
 }

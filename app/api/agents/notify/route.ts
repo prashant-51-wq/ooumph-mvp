@@ -5,6 +5,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
 import { Resend } from 'resend'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 
 const FROM = 'Ooumph AI <onboarding@resend.dev>'
 
@@ -38,7 +39,7 @@ const ARTIFACT_LABELS: Record<string, string> = {
   whatsapp_broadcast: 'WhatsApp Broadcast',
   analytics_report: 'Analytics & Performance Report',
   ab_test: 'A/B Test Variations',
-  brand_monitor: 'Brand Monitor Report',
+  brand_monitor: 'Brand Snapshot Report',
 }
 
 type NotifyType = 'approval_needed' | 'approved' | 'rejected'
@@ -55,6 +56,8 @@ export async function POST(req: NextRequest) {
     }
 
     if (!workspaceId) return NextResponse.json({ error: 'Missing workspaceId' }, { status: 400 })
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
     if (!type) return NextResponse.json({ error: 'Missing notification type' }, { status: 400 })
 
     // Load workspace + brand profile to get approval email and business name

@@ -1,74 +1,66 @@
 /**
  * AI Ad Copy Generator — Paid Ads Supervisor
- * POST /api/agents/ads/generate — generate ad variations with Claude
+ * POST /api/agents/ads/generate — generate ad variations with Claude native tools
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
-import Anthropic from '@anthropic-ai/sdk'
+import { assertWorkspaceOwnership } from '@/lib/guards'
+import { runAgentWithTools } from '@/lib/agents/tool-calling'
+import { AgentSetupError } from '@/lib/claude'
 
 interface AdGenerateRequest {
   workspaceId: string
   platform: 'meta' | 'google' | 'linkedin' | 'all'
-  product: string       // What you're advertising
-  audience: string      // Target audience description
-  goal: string          // e.g., "drive signups", "increase brand awareness", "generate leads"
-  budget?: string       // e.g., "$50/day"
-  tone?: string         // professional | friendly | urgent | inspirational
-  count?: number        // variations to generate, default 3, max 5
+  product: string
+  audience: string
+  goal: string
+  budget?: string
+  tone?: string
+  count?: number
 }
 
-async function getSettings(workspaceId: string) {
-  const wsResult = await sql`SELECT model_settings FROM workspaces WHERE id = ${workspaceId} LIMIT 1`
-  const workspace = wsResult.rows[0]
-  if (!workspace) return null
-  try {
-    return typeof workspace.model_settings === 'string'
-      ? JSON.parse(workspace.model_settings || '{}')
-      : (workspace.model_settings as Record<string, unknown>) || {}
-  } catch {
-    return {}
-  }
+interface AdVariation {
+  headline: string
+  primaryText: string
+  description: string
+  callToAction: string
+  hook: string
+  targetingHint: string
+  estimatedCtr: string
+  psychologyPrinciple: string
+}
+
+interface AdGenerateResult {
+  variations: AdVariation[]
+  campaignStrategy: string
+  budgetAllocation: string
+  keywordSuggestions: string[]
 }
 
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json() as AdGenerateRequest
-    const {
-      workspaceId,
-      platform,
-      product,
-      audience,
-      goal,
-      budget,
-      tone,
-      count: rawCount,
-    } = body
+    const { workspaceId, platform, product, audience, goal, budget, tone, count: rawCount } = body
 
     if (!workspaceId) return NextResponse.json({ error: 'Missing workspaceId' }, { status: 400 })
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
     if (!product) return NextResponse.json({ error: 'Missing product' }, { status: 400 })
     if (!audience) return NextResponse.json({ error: 'Missing audience' }, { status: 400 })
     if (!goal) return NextResponse.json({ error: 'Missing goal' }, { status: 400 })
 
     const count = Math.min(Math.max(rawCount || 3, 1), 5)
 
-    const settings = await getSettings(workspaceId)
-    if (!settings) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 })
+    const systemPrompt = `You are a world-class performance marketer specialising in paid advertising.
 
-    // Get Anthropic API key from workspace settings or environment
-    const anthropicKey = (settings.anthropicApiKey as string | undefined) || process.env.ANTHROPIC_API_KEY
-    if (!anthropicKey) {
-      return NextResponse.json({
-        ok: false,
-        error: 'Anthropic API key not configured. Add it in Settings → API Keys.',
-        requiresSetup: true,
-      })
-    }
+You have tools available:
+- query_brand_memory: fetch approved brand voice examples (call this first)
+- search: research competitor ads, audience insights, platform best practices
+- persist_artifact: save the finished ad copy as a workspace artifact
 
-    const modelId = (settings.claudeModel as string | undefined) || 'claude-sonnet-4-6'
+Always call query_brand_memory first to match brand tone. Then optionally search for platform trends. Then generate the ad variations and return JSON.`
 
-    const client = new Anthropic({ apiKey: anthropicKey })
-
-    const prompt = `You are a world-class performance marketer. Generate ${count} distinct ad variations for ${platform} advertising.
+    const userPrompt = `Generate ${count} distinct ad variations for ${platform} advertising.
 
 PRODUCT: ${product}
 TARGET AUDIENCE: ${audience}
@@ -76,7 +68,7 @@ CAMPAIGN GOAL: ${goal}
 BUDGET: ${budget || 'Not specified'}
 TONE: ${tone || 'professional'}
 
-For each variation, generate platform-optimized copy. Return ONLY valid JSON:
+For each variation, generate platform-optimised copy. Return valid JSON:
 {
   "variations": [
     {
@@ -101,36 +93,20 @@ Character limits to respect:
 - description: max 30 chars for Meta/Google; max 200 chars for LinkedIn
 - callToAction: short phrase e.g. "Sign Up Free", "Learn More", "Get Started"
 - estimatedCtr: range string e.g. "1.5-2.5%"
-- psychologyPrinciple: one of social proof, scarcity, curiosity gap, authority, reciprocity, fear of missing out, etc.`
+- psychologyPrinciple: one of social proof, scarcity, curiosity gap, authority, reciprocity, fear of missing out`
 
-    const message = await client.messages.create({
-      model: modelId,
-      max_tokens: 2048,
-      messages: [{ role: 'user', content: prompt }],
-    })
-
-    const rawText = message.content
-      .filter(block => block.type === 'text')
-      .map(block => (block as { type: 'text'; text: string }).text)
-      .join('')
-
-    // Extract JSON — strip any markdown code fences if present
-    const jsonMatch = rawText.match(/\{[\s\S]*\}/)
-    if (!jsonMatch) {
-      return NextResponse.json({ ok: false, error: 'Claude did not return valid JSON' }, { status: 500 })
-    }
-
-    let result: {
-      variations: unknown[]
-      campaignStrategy?: string
-      budgetAllocation?: string
-      keywordSuggestions?: string[]
-    }
-
+    let result: AdGenerateResult
     try {
-      result = JSON.parse(jsonMatch[0])
-    } catch {
-      return NextResponse.json({ ok: false, error: 'Failed to parse Claude response as JSON' }, { status: 500 })
+      result = await runAgentWithTools<AdGenerateResult>(systemPrompt, userPrompt, workspaceId)
+    } catch (e) {
+      if (e instanceof AgentSetupError) {
+        return NextResponse.json({
+          ok: false,
+          error: e.message,
+          requiresSetup: true,
+        }, { status: 402 })
+      }
+      throw e
     }
 
     // Save as artifact
@@ -138,29 +114,21 @@ Character limits to respect:
     await sql`
       INSERT INTO artifacts (id, workspace_id, agent_run_id, type, title, content_json, status)
       VALUES (
-        ${artifactId},
-        ${workspaceId},
-        ${null},
+        ${artifactId}, ${workspaceId}, ${null},
         ${'ad_copy'},
         ${'Ad Copy: ' + product.slice(0, 60) + ' (' + platform + ')'},
-        ${JSON.stringify({
-          platform,
-          product,
-          audience,
-          goal,
-          variations: result.variations,
-        })},
+        ${JSON.stringify({ platform, product, audience, goal, variations: result.variations })},
         ${'pending_approval'}
       )
-    `.catch(() => { /* ignore if artifacts table structure differs */ })
+    `.catch(() => { /* non-fatal if artifacts table structure differs */ })
 
     return NextResponse.json({
       ok: true,
       artifactId,
-      variations: result.variations,
-      campaignStrategy: result.campaignStrategy || '',
-      budgetAllocation: result.budgetAllocation || '',
-      keywordSuggestions: result.keywordSuggestions || [],
+      variations: result.variations ?? [],
+      campaignStrategy: result.campaignStrategy ?? '',
+      budgetAllocation: result.budgetAllocation ?? '',
+      keywordSuggestions: result.keywordSuggestions ?? [],
     })
   } catch (error) {
     console.error('Ad Generate route error:', error)

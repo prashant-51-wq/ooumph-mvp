@@ -7,9 +7,19 @@ import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
 import { Resend } from 'resend'
 
+export const runtime = 'nodejs'
+export const maxDuration = 300
+
 export async function GET(req: NextRequest) {
-  const authHeader = req.headers.get('authorization')
-  if (process.env.CRON_SECRET && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+  const secret = process.env.CRON_SECRET || ''
+  const adminSecret = process.env.ADMIN_SECRET || ''
+  const authHeader = req.headers.get('authorization') || ''
+  const internalSecret = req.headers.get('x-internal-secret') || ''
+  const isDev = process.env.NODE_ENV !== 'production'
+  const authorized =
+    (secret && authHeader === `Bearer ${secret}`) ||
+    (adminSecret && internalSecret === adminSecret)
+  if (!authorized && (!isDev || secret || adminSecret)) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
@@ -22,6 +32,9 @@ export async function GET(req: NextRequest) {
 
   try {
     // ── Send reminders for meetings in next 24h ───────────────────────────────
+    // Sprint 7E: LIMIT 200 so a single workspace with thousands of confirmed
+    // bookings in the next 24h can't drain the cron's maxDuration. Remaining
+    // bookings get picked up by the next tick.
     const upcomingResult = await sql`
       SELECT b.*, w.name as workspace_name, w.owner_email, bp.business_name
       FROM bookings b
@@ -31,6 +44,8 @@ export async function GET(req: NextRequest) {
         AND b.reminder_sent = 0
         AND b.start_time >= ${now.toISOString()}
         AND b.start_time <= ${in24h.toISOString()}
+      ORDER BY b.start_time ASC
+      LIMIT 200
     `
 
     const resendKey = process.env.RESEND_API_KEY

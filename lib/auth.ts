@@ -1,6 +1,30 @@
 import crypto from 'crypto'
 
-const SECRET = process.env.AUTH_SECRET || 'ooumph-dev-secret-change-in-production'
+// Sprint 18A (audit pass #5 P0 #2): AUTH_SECRET defaulted to a public,
+// hardcoded string used for BOTH JWT signing AND AES-256-GCM master key
+// derivation. A prod deploy that forgot to set the env var ended up with
+// forgeable sessions AND decryptable secrets. We now fail-loudly in
+// production and fail-noisily in dev so the warning is impossible to miss.
+const DEFAULT_SECRET = 'ooumph-dev-secret-change-in-production'
+function resolveSecret(): string {
+  const raw = process.env.AUTH_SECRET
+  if (raw && raw.length >= 32 && raw !== DEFAULT_SECRET) return raw
+  if (process.env.NODE_ENV === 'production') {
+    // Fail boot. Any caller trying to mint or verify a token in production
+    // without a real AUTH_SECRET should crash now, not silently downgrade
+    // to a known-insecure key.
+    throw new Error(
+      '[lib/auth] AUTH_SECRET is unset, too short, or still set to the default. ' +
+      'Set AUTH_SECRET to a >=32-char random value in your environment before booting in production.',
+    )
+  }
+  // Dev — loud warning but allow the workflow.
+  if (raw !== DEFAULT_SECRET) {
+    console.warn('[lib/auth] AUTH_SECRET is missing or too short; falling back to the dev default. Sessions and BYOK encryption will NOT be secure.')
+  }
+  return raw || DEFAULT_SECRET
+}
+const SECRET = resolveSecret()
 
 export function hashPassword(password: string): { hash: string; salt: string } {
   const salt = crypto.randomBytes(32).toString('hex')

@@ -5,6 +5,15 @@
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
+import { assertWorkspaceOwnership } from '@/lib/guards'
+
+// Sprint 8A — added workspace ownership guards. Reviews + replies are
+// customer-facing content; cross-tenant exposure leaks reputation data.
+
+async function workspaceForReview(id: string): Promise<string | null> {
+  const r = await sql`SELECT workspace_id FROM reputation_reviews WHERE id = ${id} LIMIT 1`
+  return (r.rows[0] as { workspace_id?: string } | undefined)?.workspace_id ?? null
+}
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
@@ -15,6 +24,8 @@ export async function GET(req: NextRequest) {
   const source = searchParams.get('source')
 
   if (!workspaceId) return NextResponse.json({ error: 'workspaceId required' }, { status: 400 })
+  const denied = assertWorkspaceOwnership(req, workspaceId)
+  if (denied) return denied
 
   if (type === 'requests') {
     const result = await sql`
@@ -87,6 +98,8 @@ export async function POST(req: NextRequest) {
     } = body
 
     if (!workspaceId) return NextResponse.json({ error: 'workspaceId required' }, { status: 400 })
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     // Auto-compute sentiment from rating if not provided
     const autoSentiment = sentiment || (
@@ -115,6 +128,10 @@ export async function PATCH(req: NextRequest) {
     }
     const { id, status, responseText, sentiment } = body
     if (!id) return NextResponse.json({ error: 'id required' }, { status: 400 })
+    const wsId = await workspaceForReview(id)
+    if (!wsId) return NextResponse.json({ error: 'Review not found' }, { status: 404 })
+    const denied = assertWorkspaceOwnership(req, wsId)
+    if (denied) return denied
 
     const now = new Date().toISOString()
     await sql`
@@ -123,7 +140,7 @@ export async function PATCH(req: NextRequest) {
         sentiment = COALESCE(${sentiment || null}, sentiment),
         response_text = COALESCE(${responseText || null}, response_text),
         response_sent_at = CASE WHEN ${responseText || null} IS NOT NULL THEN ${now} ELSE response_sent_at END
-      WHERE id = ${id}
+      WHERE id = ${id} AND workspace_id = ${wsId}
     `
     return NextResponse.json({ ok: true })
   } catch (error) {

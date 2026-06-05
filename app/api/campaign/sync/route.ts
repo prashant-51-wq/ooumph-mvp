@@ -5,6 +5,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
 import { syncCampaignPerformance } from '@/lib/ad-platforms'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 
 export async function POST(req: NextRequest) {
   try {
@@ -16,6 +17,9 @@ export async function POST(req: NextRequest) {
     if (!workspaceId || !campaignArtifactId) {
       return NextResponse.json({ error: 'Missing workspaceId or campaignArtifactId' }, { status: 400 })
     }
+    // Sprint 9A: ownership.
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     const snapshots = await syncCampaignPerformance(workspaceId, campaignArtifactId, days)
 
@@ -38,6 +42,9 @@ export async function GET(req: NextRequest) {
   if (!workspaceId || !campaignArtifactId) {
     return NextResponse.json({ platforms: [], performance: [], links: [] })
   }
+  // Sprint 9A: ownership.
+  const denied = assertWorkspaceOwnership(req, workspaceId)
+  if (denied) return denied
 
   const [perfResult, linksResult] = await Promise.all([
     sql`

@@ -19,6 +19,7 @@ import crypto from 'crypto'
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { fetchWithTimeout } from '@/lib/fetch-with-timeout'
+import { readAccessToken } from '@/lib/integrations'
 
 // ─── Signature verification ────────────────────────────────────────────────────
 
@@ -29,7 +30,8 @@ function verifyHubspotSignature(
   signature: string,
 ): boolean {
   const clientSecret = process.env.HUBSPOT_CLIENT_SECRET
-  if (!clientSecret) return true // dev mode: skip
+  // Fail-closed: no secret configured → reject everything except in local dev.
+  if (!clientSecret) return process.env.NODE_ENV !== 'production'
 
   const payload = clientSecret + requestUri + rawBody + timestamp
   const expected = crypto.createHmac('sha256', clientSecret).update(payload, 'utf8').digest('hex')
@@ -380,9 +382,10 @@ export async function POST(req: NextRequest) {
     if (!SUPPORTED_TYPES.has(event.subscriptionType)) continue
     if (!event.portalId) continue
 
-    // Map portalId → workspace + access token
+    // Map portalId → workspace + access token.
+    // Sprint 10B: select both token columns; readAccessToken() resolves.
     const integResult = await sql`
-      SELECT workspace_id, access_token FROM integrations
+      SELECT workspace_id, access_token, encrypted_access_token FROM integrations
       WHERE platform = 'hubspot' AND account_id = ${String(event.portalId)}
       LIMIT 1
     `
@@ -390,7 +393,10 @@ export async function POST(req: NextRequest) {
     if (!integResult.rows[0]) continue
 
     const workspaceId = String(integResult.rows[0].workspace_id)
-    const accessToken = String(integResult.rows[0].access_token || '')
+    const accessToken = readAccessToken({
+      access_token: integResult.rows[0].access_token as string | null,
+      encrypted_access_token: integResult.rows[0].encrypted_access_token as string | null,
+    }) || ''
 
     await processEvent(event, workspaceId, accessToken).catch((err) => {
       console.error(`HubSpot event processing failed [${event.subscriptionType}]:`, err)

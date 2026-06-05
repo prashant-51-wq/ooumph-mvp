@@ -7,6 +7,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { runAgent } from '@/lib/claude'
 import { assertWorkspaceOwnership } from '@/lib/guards'
+import { assertAgentRunQuota } from '@/lib/quota'
 import { sendApprovalRequestEmail } from '@/lib/email'
 import type { BrandProfile } from '@/types'
 import { buildRetargetingCampaign, segmentAudiences, type AudienceSegment } from '@/lib/agents/retargeting'
@@ -30,6 +31,9 @@ export async function POST(req: NextRequest) {
 
     const denied = assertWorkspaceOwnership(req, workspaceId)
     if (denied) return denied
+    // Sprint 13B: plan-tier quota.
+    const overQuota = await assertAgentRunQuota(req, workspaceId)
+    if (overQuota) return overQuota
 
     const brandResult = await sql`SELECT * FROM brand_profiles WHERE workspace_id = ${workspaceId} LIMIT 1`
     const brand = brandResult.rows[0] as unknown as BrandProfile
@@ -151,7 +155,8 @@ Return a Meta campaign structure JSON:
   "campaignBudget": "$X/month",
   "bidStrategy": "recommended bid strategy with reasoning",
   "pixelEvents": ["Purchase", "Lead", "InitiateCheckout"]
-}`
+}`,
+          workspaceId,
         )
         platformSpecs.meta = metaSpec
       }
@@ -214,7 +219,8 @@ Return a Google Ads retargeting structure:
   ],
   "bidStrategy": "Target CPA|Target ROAS|Maximize Conversions",
   "dailyBudget": "$X/day"
-}`
+}`,
+          workspaceId,
         )
         platformSpecs.google = googleSpec
       }
@@ -277,7 +283,8 @@ Return a LinkedIn Ads retargeting structure:
   ],
   "targetJobTitles": ["relevant job titles"],
   "targetIndustries": ["relevant industries"]
-}`
+}`,
+          workspaceId,
         )
         platformSpecs.linkedin = linkedinSpec
       }
@@ -333,7 +340,8 @@ Return a TikTok Ads retargeting structure:
   "creatorBriefs": [
     "Brief for UGC creator — what to show, say, and how"
   ]
-}`
+}`,
+          workspaceId,
         )
         platformSpecs.tiktok = tiktokSpec
       }

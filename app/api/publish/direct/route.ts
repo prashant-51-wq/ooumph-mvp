@@ -16,7 +16,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { publishTweet } from '@/lib/twitter-oauth'
 import { fetchWithTimeout } from '@/lib/fetch-with-timeout'
-import { assertArtifactApproved } from '@/lib/guards'
+import { assertArtifactApproved, assertWorkspaceOwnership } from '@/lib/guards'
+import { readAccessToken } from '@/lib/integrations'
 
 interface DirectPublishBody {
   workspaceId: string
@@ -128,6 +129,11 @@ export async function POST(req: NextRequest) {
     if (!workspaceId || !platforms?.length || !content) {
       return NextResponse.json({ error: 'workspaceId, platforms, and content required' }, { status: 400 })
     }
+    // Sprint 7E: session must own this workspace. Without this an
+    // authenticated user with a stolen artifactId could trigger external
+    // posts on someone else's connected social accounts.
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     // ─── Human governance gate (defense in depth) ─────────────────────────
     // When this route is called with an artifactId (the normal flow from
@@ -137,15 +143,21 @@ export async function POST(req: NextRequest) {
     const gate = await assertArtifactApproved(workspaceId, artifactId)
     if (gate) return gate
 
-    // Load all integrations for this workspace
+    // Load all integrations for this workspace.
+    // Sprint 9B: select both token columns; readAccessToken() prefers
+    // encrypted (decrypted), falls back to plaintext for legacy rows.
     const integResult = await sql`
-      SELECT platform, access_token, account_id, metadata FROM integrations
+      SELECT platform, access_token, encrypted_access_token, account_id, metadata FROM integrations
       WHERE workspace_id = ${workspaceId} AND status = 'active'
     `
     const integrations: Record<string, { access_token?: string; account_id?: string; metadata?: unknown }> = {}
     for (const row of integResult.rows) {
+      const token = readAccessToken({
+        access_token: row.access_token as string | null,
+        encrypted_access_token: row.encrypted_access_token as string | null,
+      })
       integrations[String(row.platform)] = {
-        access_token: row.access_token ? String(row.access_token) : undefined,
+        access_token: token || undefined,
         account_id: row.account_id ? String(row.account_id) : undefined,
         metadata: row.metadata,
       }
@@ -225,6 +237,9 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
   const workspaceId = searchParams.get('workspaceId')
   if (!workspaceId) return NextResponse.json([])
+  // Sprint 7E: session must own this workspace.
+  const denied = assertWorkspaceOwnership(req, workspaceId)
+  if (denied) return denied
 
   const result = await sql`
     SELECT * FROM published_content

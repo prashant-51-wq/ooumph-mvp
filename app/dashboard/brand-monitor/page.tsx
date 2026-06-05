@@ -80,12 +80,16 @@ const CRISIS_SEVERITY_STYLES: Record<CrisisSeverity, string> = {
   CRITICAL: 'bg-red-900 text-red-200 animate-pulse',
 }
 
-const DEMO_CRISIS_EVENTS: CrisisEvent[] = [
-  { time: '2h ago', event: 'Negative mention spike detected on Twitter/X — 47% negative sentiment', severity: 'HIGH' },
-  { time: '1h 45m ago', event: 'Reddit thread gaining traction: "Bad experience with [Brand]"', severity: 'HIGH' },
-  { time: '1h 20m ago', event: 'Local news outlet picked up the story', severity: 'CRITICAL' },
-  { time: '45m ago', event: 'Customer complaints spreading to Facebook groups', severity: 'MEDIUM' },
-]
+// Sprint 6A: DEMO_CRISIS_EVENTS deleted. Was a 4-row hardcoded array of
+// fake crisis events ("47% negative sentiment", "Local news outlet picked
+// up the story"). The panel that rendered it is gated by
+// `{crisisDetected && ...}` which defaults to false (Sprint 3B) and has
+// no UI path to trigger to true. So it was unreachable AND fake.
+//
+// When a real brand-monitoring backend ships (/api/brand-monitor/crisis
+// or a webhook that flips crisisDetected + provides real events), pass
+// the events as an array prop to the panel and render those instead of
+// any hardcoded array.
 
 export default function BrandMonitorPage() {
   const [monitorType, setMonitorType] = useState<MonitorType>('all')
@@ -95,9 +99,22 @@ export default function BrandMonitorPage() {
   const [history, setHistory] = useState<HistoryItem[]>([])
   const [lastScan, setLastScan] = useState<string | null>(null)
 
-  // Crisis detection state
-  const [crisisDetected] = useState(true) // demo: always show crisis panel
-  const [crisisSeverity] = useState<CrisisSeverity>('HIGH')
+  // Crisis detection state — Sprint 3B.
+  //
+  // Previously hardcoded to `useState(true)` with an "always show crisis
+  // panel" demo comment. That meant every workspace, on every page load,
+  // saw a fake "HIGH SEVERITY CRISIS DETECTED" banner regardless of any
+  // real signal. Wildly dishonest.
+  //
+  // The honest state is `false` by default. A real crisis detection flow
+  // requires a backend monitoring agent that flips this flag based on
+  // mention sentiment thresholds — that's a separate effort (no
+  // /api/brand-monitor/* endpoints exist in this codebase yet). Until
+  // then, the panel only appears when the operator explicitly triggers
+  // the "Demo crisis response" button, which is now visible only behind
+  // an honest "Demo only" label so no one mistakes it for real signal.
+  const [crisisDetected, setCrisisDetected] = useState(false)
+  const [crisisSeverity, setCrisisSeverity] = useState<CrisisSeverity>('HIGH')
   const [crisisModalOpen, setCrisisModalOpen] = useState(false)
   const [crisisResponse, setCrisisResponse] = useState('')
   const [generatingCrisis, setGeneratingCrisis] = useState(false)
@@ -111,13 +128,54 @@ export default function BrandMonitorPage() {
     mentions: true, sentiment: true, competitors: true, trends: true, actions: true,
   })
 
-  // Auto-scan settings state
+  // Auto-scan settings state — Sprint 4D.
+  //
+  // Persisted to localStorage under `ooumph_brand_monitor_settings_v1`.
+  // This is device-local (NOT cloud-synced) because there's no
+  // /api/brand-monitor/settings endpoint yet. The amber notice in the
+  // settings panel surfaces that limitation so a user never assumes
+  // their config follows them across browsers.
+  //
+  // When a backend endpoint ships, swap loadSettings/saveSettings for
+  // GET/PATCH calls — the rest of this page doesn't need to change.
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [scanFrequency, setScanFrequency] = useState<ScanFrequency>('hourly')
   const [crisisThreshold, setCrisisThreshold] = useState(35)
   const [notifyEmail, setNotifyEmail] = useState(true)
   const [notifyInApp, setNotifyInApp] = useState(true)
   const [notifySlack, setNotifySlack] = useState(false)
+
+  // Hydrate from localStorage on mount.
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    try {
+      const raw = localStorage.getItem('ooumph_brand_monitor_settings_v1')
+      if (!raw) return
+      const s = JSON.parse(raw) as Partial<{
+        scanFrequency: ScanFrequency
+        crisisThreshold: number
+        notifyEmail: boolean
+        notifyInApp: boolean
+        notifySlack: boolean
+      }>
+      if (s.scanFrequency) setScanFrequency(s.scanFrequency)
+      if (typeof s.crisisThreshold === 'number') setCrisisThreshold(s.crisisThreshold)
+      if (typeof s.notifyEmail === 'boolean') setNotifyEmail(s.notifyEmail)
+      if (typeof s.notifyInApp === 'boolean') setNotifyInApp(s.notifyInApp)
+      if (typeof s.notifySlack === 'boolean') setNotifySlack(s.notifySlack)
+    } catch { /* corrupted JSON / disabled storage — fall back to defaults */ }
+  }, [])
+
+  // Persist every change. Cheap enough to run on every setter — the
+  // payload is tiny (5 fields).
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    try {
+      localStorage.setItem('ooumph_brand_monitor_settings_v1', JSON.stringify({
+        scanFrequency, crisisThreshold, notifyEmail, notifyInApp, notifySlack,
+      }))
+    } catch { /* best-effort */ }
+  }, [scanFrequency, crisisThreshold, notifyEmail, notifyInApp, notifySlack])
 
   // Toast
   const [toast, setToast] = useState('')
@@ -187,11 +245,22 @@ export default function BrandMonitorPage() {
     setGeneratingCrisis(false)
   }
 
+  // Sprint 3B: aligned with the CRM "Send to CMO" pattern. Writes to the
+  // same `ooumph_cmo_prefill` localStorage key the CMO Dashboard reads.
+  // The legacy `pendingCMOInsights` array was a Brand-Monitor-only stash
+  // that nothing else in the app ever read back — confirmed via codebase
+  // grep. Per-source ledgers turn into write-only audit caches; one shared
+  // prefill key keeps the contract simple.
   const feedToCMO = (context: string) => {
-    const existing = JSON.parse(localStorage.getItem('pendingCMOInsights') || '[]')
-    existing.push({ context, timestamp: new Date().toISOString(), source: 'brand-monitor' })
-    localStorage.setItem('pendingCMOInsights', JSON.stringify(existing))
-    showToast('✓ Sent to CMO — she\'ll factor this into your next strategy')
+    try {
+      const payload = {
+        source: 'brand-monitor',
+        context,
+        ts: Date.now(),
+      }
+      localStorage.setItem('ooumph_cmo_prefill', JSON.stringify(payload))
+    } catch { /* localStorage may be disabled — best-effort only */ }
+    showToast('Sent to CMO. Open the CMO Dashboard to continue with this context.')
   }
 
   const downloadReport = () => {
@@ -230,8 +299,8 @@ export default function BrandMonitorPage() {
       {/* Header */}
       <div className="mb-8 flex items-start justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-white">👁️ Brand Monitor</h1>
-          <p className="text-gray-400 text-sm mt-1">Real-time brand & competitor intelligence powered by live web signals.</p>
+          <h1 className="text-2xl font-bold text-white">📸 Brand Snapshot</h1>
+          <p className="text-gray-400 text-sm mt-1">One-shot AI-generated digest of your brand & competitor positioning. Continuous social-listening ingestion ships post-beta.</p>
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -250,32 +319,25 @@ export default function BrandMonitorPage() {
         </div>
       </div>
 
-      {/* PR Crisis Detection Panel */}
+      {/* PR Crisis Detection Panel — Sprint 6A.
+          Renders ONLY when crisisDetected===true AND a real crisis events
+          array exists. There is no real backend writing to either right
+          now, so this panel does not appear in normal use. The crisis
+          response generation + Deploy-to-CMO buttons are preserved so
+          that when /api/brand-monitor/crisis lands, the wiring is here. */}
       {crisisDetected && (
         <div className="mb-6 bg-red-950 border border-red-700 rounded-xl p-5 space-y-4">
           <div className="flex items-start justify-between gap-4">
             <div className="flex items-start gap-3">
               <span className="text-2xl">🚨</span>
               <div>
-                <p className="text-red-200 font-bold text-base">Crisis Alert: Negative sentiment spike detected — 47% negative mentions in last 2h</p>
-                <p className="text-red-400 text-xs mt-1">Detected at {new Date(Date.now() - 7200000).toLocaleTimeString()} · Monitoring active</p>
+                <p className="text-red-200 font-bold text-base">Crisis detected for this workspace</p>
+                <p className="text-red-400 text-xs mt-1">Severity {crisisSeverity} — review the AI-drafted response below.</p>
               </div>
             </div>
             <span className={`px-3 py-1 rounded-full text-xs font-bold flex-shrink-0 ${CRISIS_SEVERITY_STYLES[crisisSeverity]}`}>
               {crisisSeverity}
             </span>
-          </div>
-
-          {/* Crisis Timeline */}
-          <div className="space-y-2">
-            <p className="text-red-300 text-xs font-semibold uppercase tracking-wider">Crisis Timeline</p>
-            {DEMO_CRISIS_EVENTS.map((ev, i) => (
-              <div key={i} className="flex items-start gap-3 bg-red-900/40 rounded-lg px-3 py-2">
-                <span className="text-red-500 text-xs flex-shrink-0 w-16">{ev.time}</span>
-                <p className="text-red-200 text-xs flex-1">{ev.event}</p>
-                <span className={`px-1.5 py-0.5 rounded text-xs font-semibold flex-shrink-0 ${CRISIS_SEVERITY_STYLES[ev.severity]}`}>{ev.severity}</span>
-              </div>
-            ))}
           </div>
 
           <div className="flex gap-3 flex-wrap">
@@ -286,7 +348,7 @@ export default function BrandMonitorPage() {
               Generate Crisis Response
             </button>
             <button
-              onClick={() => feedToCMO('CRISIS ALERT: 47% negative sentiment spike detected in last 2h. Severity: HIGH. Multiple platforms affected including Twitter, Reddit, Facebook.')}
+              onClick={() => feedToCMO(`Brand crisis flagged — severity ${crisisSeverity}. Open Brand Snapshot for context.`)}
               className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm rounded-lg transition-colors"
             >
               📤 Deploy to CMO

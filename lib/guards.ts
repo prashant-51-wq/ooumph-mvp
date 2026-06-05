@@ -104,6 +104,117 @@ export function getSessionUserId(req: NextRequest): string | null {
   return session?.userId ?? null
 }
 
+export type WorkspaceRole = 'owner' | 'admin' | 'manager' | 'analyst' | 'viewer'
+
+const ROLE_RANK: Record<WorkspaceRole, number> = {
+  viewer: 0,
+  analyst: 1,
+  manager: 2,
+  admin: 3,
+  owner: 4,
+}
+
+/**
+ * Sprint 16B (audit P1 #11) — workspace role enforcement.
+ *
+ * The audit found that `workspace_invites.role` and `workspace_members.role`
+ * were declared (admin/member/viewer values stored) but **never enforced**.
+ * No route checked role anywhere. This helper closes the gap.
+ *
+ * Usage:
+ *
+ *   import { requireRole } from '@/lib/guards'
+ *
+ *   export async function POST(req: NextRequest) {
+ *     const denied = await requireRole(req, workspaceId, 'admin')
+ *     if (denied) return denied
+ *     // ... admin-only mutation
+ *   }
+ *
+ * Resolution order:
+ *   1. workspace owner (workspaces.user_id matches session) → always passes
+ *   2. workspace_members row for (workspace_id, user_id) → use role
+ *   3. workspace_invites row matching the session email → use role
+ *   4. Internal/admin secrets bypass (same rules as assertWorkspaceOwnership)
+ *
+ * `minRole` is hierarchical: owner > admin > manager > analyst > viewer.
+ * Returns null on success or a 403 NextResponse with diagnostic.
+ */
+export async function requireRole(
+  req: NextRequest,
+  workspaceId: string,
+  minRole: WorkspaceRole,
+): Promise<NextResponse | null> {
+  // Internal/cron bypass first — same as ownership.
+  const adminSecret = process.env.ADMIN_SECRET || ''
+  const cronSecret = process.env.CRON_SECRET || ''
+  const internalSecret = req.headers.get('x-internal-secret') || ''
+  if (internalSecret && ((adminSecret && internalSecret === adminSecret) || (cronSecret && internalSecret === cronSecret))) {
+    return null
+  }
+
+  const userId = getSessionUserId(req)
+  if (!userId) {
+    return NextResponse.json({ error: 'Authentication required' }, { status: 401 })
+  }
+  // Lazy-import sql to avoid a circular load at module init time.
+  const { sql } = await import('@/lib/db')
+
+  // 1. Owner check — fastest path.
+  try {
+    const ownerRes = await sql`SELECT user_id FROM workspaces WHERE id = ${workspaceId} LIMIT 1`
+    const owner = ownerRes.rows[0] as { user_id?: string } | undefined
+    if (owner?.user_id === userId) return null
+  } catch (err) {
+    // Audit pass #6 P1: surface schema drift so missing-table failures aren't
+    // silently swallowed as generic 403s.
+    console.error('[requireRole] workspaces:', err)
+  }
+
+  // 2. workspace_members table — most common path for invited collaborators.
+  try {
+    const memRes = await sql`
+      SELECT role FROM workspace_members
+      WHERE workspace_id = ${workspaceId} AND user_id = ${userId} LIMIT 1
+    `
+    const mem = memRes.rows[0] as { role?: string } | undefined
+    if (mem?.role) {
+      const role = (mem.role as WorkspaceRole) || 'viewer'
+      if ((ROLE_RANK[role] ?? -1) >= ROLE_RANK[minRole]) return null
+      return NextResponse.json(
+        { error: `Requires role >= ${minRole}; you have ${role}` },
+        { status: 403 },
+      )
+    }
+  } catch (err) {
+    console.error('[requireRole] workspace_members:', err)
+  }
+
+  // 3. workspace_invites — pending invite that hasn't been promoted yet.
+  try {
+    const userRes = await sql`SELECT email FROM users WHERE id = ${userId} LIMIT 1`
+    const email = (userRes.rows[0] as { email?: string } | undefined)?.email
+    if (email) {
+      const invRes = await sql`
+        SELECT role FROM workspace_invites
+        WHERE workspace_id = ${workspaceId} AND email = ${email} LIMIT 1
+      `
+      const inv = invRes.rows[0] as { role?: string } | undefined
+      if (inv?.role) {
+        const role = (inv.role as WorkspaceRole) || 'viewer'
+        if ((ROLE_RANK[role] ?? -1) >= ROLE_RANK[minRole]) return null
+      }
+    }
+  } catch (err) {
+    console.error('[requireRole] workspace_invites:', err)
+  }
+
+  return NextResponse.json(
+    { error: `Workspace role of '${minRole}' or higher required` },
+    { status: 403 },
+  )
+}
+
 /**
  * Asserts the authenticated user is a platform-level super admin.
  *
@@ -130,14 +241,17 @@ export async function assertSuperAdmin(req: NextRequest): Promise<NextResponse |
   // Dynamic import to avoid circular deps
   const { sql } = await import('@/lib/db')
   const result = await sql`SELECT email, is_admin FROM users WHERE id = ${userId} LIMIT 1`
-  const user = result.rows[0] as { email?: string; is_admin?: number } | undefined
+  const user = result.rows[0] as { email?: string; is_admin?: number | string | boolean } | undefined
 
   if (!user) {
     return NextResponse.json({ error: 'User not found' }, { status: 401 })
   }
 
-  // Method 1: users.is_admin column
-  if (user.is_admin === 1) return null
+  // Method 1: users.is_admin column.
+  // Sprint 18R: coercion-tolerant — Neon/Vercel Postgres may return INTEGER
+  // columns as either number or string depending on driver version. Use a
+  // truthy check that handles 1, '1', true, and the rare BigInt 1n.
+  if (Number(user.is_admin) === 1 || user.is_admin === true) return null
 
   // Method 2: SUPER_ADMIN_EMAILS env var allowlist
   const adminEmails = (process.env.SUPER_ADMIN_EMAILS || '')
@@ -268,9 +382,10 @@ export async function isSessionSuperAdmin(req: NextRequest): Promise<boolean> {
   if (!userId) return false
   const { sql } = await import('@/lib/db')
   const result = await sql`SELECT email, is_admin FROM users WHERE id = ${userId} LIMIT 1`
-  const user = result.rows[0] as { email?: string; is_admin?: number } | undefined
+  const user = result.rows[0] as { email?: string; is_admin?: number | string | boolean } | undefined
   if (!user) return false
-  if (user.is_admin === 1) return true
+  // Sprint 18R: coercion-tolerant (see assertSuperAdmin for context)
+  if (Number(user.is_admin) === 1 || user.is_admin === true) return true
   const adminEmails = (process.env.SUPER_ADMIN_EMAILS || '')
     .split(',')
     .map(e => e.trim().toLowerCase())

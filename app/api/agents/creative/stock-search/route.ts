@@ -4,6 +4,7 @@
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { searchUnsplash, searchPexels, searchStockImages } from '@/lib/tools/stock-images'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 
 export async function POST(req: NextRequest) {
   try {
@@ -15,6 +16,8 @@ export async function POST(req: NextRequest) {
     }
 
     if (!workspaceId) return NextResponse.json({ error: 'Missing workspaceId' }, { status: 400 })
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
     if (!query?.trim()) return NextResponse.json({ error: 'Missing query' }, { status: 400 })
 
     let images

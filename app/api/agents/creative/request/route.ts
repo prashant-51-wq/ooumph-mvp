@@ -12,6 +12,7 @@ import {
   generateVideoBrief,
   generateLandingVisual,
 } from '@/lib/creative-workers'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 
 export type CreativeType =
   | 'visual_post'
@@ -47,6 +48,8 @@ export async function POST(req: NextRequest) {
     if (!workspaceId || !requestingAgent || !creativeType) {
       return NextResponse.json({ error: 'Missing workspaceId, requestingAgent, or creativeType' }, { status: 400 })
     }
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     // Create the request record
     const requestId = newId()

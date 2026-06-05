@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
+import { assertAgentRunQuota } from '@/lib/quota'
+import { assertWorkspaceOwnership } from '@/lib/guards'
+import { recordMediaAsset } from '@/lib/media-assets'
+import { withCredentials } from '@/lib/credential-context'
+import { getWorkspaceSecret } from '@/lib/secrets'
 import {
   generateVideoFromText,
   generateVideoFromImage,
@@ -35,13 +40,25 @@ export async function POST(req: NextRequest) {
     if (!workspaceId || !action) {
       return NextResponse.json({ error: 'workspaceId and action are required' }, { status: 400 })
     }
+    // Sprint 15D: ownership gate on every call (status polls included).
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
+    // Sprint 12C: plan-tier quota — only on generation actions, not status.
+    if (action === 'text_to_video' || action === 'image_to_video') {
+      const overQuota = await assertAgentRunQuota(req, workspaceId)
+      if (overQuota) return overQuota
+    }
 
-    // 1. Fetch workspace settings and inject API key
+    // 1. Fetch workspace settings and run handler with request-scoped credentials.
+    // Sprint 19G: BYOK from workspace_secrets first.
     const ws = await sql`SELECT model_settings FROM workspaces WHERE id = ${workspaceId}`
     const settings = (ws.rows[0]?.model_settings || {}) as Record<string, string>
+    const runwayKey = (await getWorkspaceSecret(workspaceId, 'runway'))
+      || settings.runwayApiKey
+      || process.env.RUNWAY_API_KEY
+      || ''
 
-    process.env.RUNWAY_API_KEY = settings.runwayApiKey || ''
-
+    return await withCredentials({ RUNWAY_API_KEY: runwayKey }, async () => {
     // 2. Check availability
     if (!isRunwayAvailable()) {
       return NextResponse.json({
@@ -148,6 +165,27 @@ export async function POST(req: NextRequest) {
           WHERE workspace_id = ${workspaceId}
             AND content_json LIKE ${'%' + taskId + '%'}
         `
+        // Sprint 15D (P0 #4): mirror into media_assets so it appears in
+        // /dashboard/media-library and can be attached to posts. Dedupe via
+        // task ID stored in metadata so a re-polled status doesn't insert
+        // a duplicate row.
+        const existing = await sql`
+          SELECT id FROM media_assets
+          WHERE workspace_id = ${workspaceId}
+            AND metadata_json LIKE ${'%"taskId":"' + taskId + '"%'}
+          LIMIT 1
+        `
+        if (!existing.rows[0]) {
+          await recordMediaAsset({
+            workspaceId,
+            url: videoUrl,
+            filename: 'runway-' + taskId + '.mp4',
+            assetType: 'video',
+            mimeType: 'video/mp4',
+            sourceProvider: 'runway',
+            metadata: { taskId },
+          })
+        }
       }
 
       return NextResponse.json({
@@ -171,6 +209,7 @@ export async function POST(req: NextRequest) {
     }
 
     return NextResponse.json({ error: `Unknown action: ${action}` }, { status: 400 })
+    })
   } catch (error) {
     console.error('Runway agent error:', error)
     return NextResponse.json({ ok: false, error: String(error) }, { status: 500 })

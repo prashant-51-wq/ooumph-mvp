@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 
 /**
  * GET /api/agent-runs
@@ -19,6 +20,10 @@ export async function GET(req: NextRequest) {
   const parentNull = searchParams.get('parentNull') === 'true'
   const since = searchParams.get('since')
   if (!workspaceId) return NextResponse.json([])
+  // Sprint 7E: session must own this workspace — agent_runs contain
+  // input_json + output_json that can leak business intelligence.
+  const denied = assertWorkspaceOwnership(req, workspaceId)
+  if (denied) return denied
 
   let result
   if (parentNull && since) {

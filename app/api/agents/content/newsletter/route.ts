@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { runAgent } from '@/lib/claude'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 
 interface NewsletterSection {
   title: string
@@ -63,6 +64,8 @@ export async function POST(req: NextRequest) {
     if (!workspaceId || !theme) {
       return NextResponse.json({ error: 'workspaceId and theme are required' }, { status: 400 })
     }
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     // 1. Load brand profile
     const brandResult = await sql`
@@ -89,6 +92,11 @@ export async function POST(req: NextRequest) {
       ? `Include these sections: ${sections.join(', ')}`
       : 'Include a mix of industry news, tips, and a featured story'
 
+    // Sprint 15E (P0 #6): inject brand memory so subscribers feel a
+    // continuous voice across newsletter editions.
+    const { getMemoryPromptBlock } = await import('@/lib/tools/memory')
+    const memoryBlock = await getMemoryPromptBlock(workspaceId, { query: theme, maxNotes: 6, maxVoiceExamples: 3 })
+
     const userPrompt = `Write a complete email newsletter for ${brand.business_name || 'the brand'}.
 
 BRAND DETAILS:
@@ -96,7 +104,7 @@ BRAND DETAILS:
 - Tone: ${brand.tone_of_voice || brand.tone || tone}
 - Target audience: ${brand.target_audience || 'subscribers'}
 - Industry: ${brand.industry || ''}
-
+${memoryBlock ? `\n${memoryBlock}\n` : ''}
 NEWSLETTER BRIEF:
 - Theme / Topic: ${theme}
 - Edition: ${edition || 'Current Edition'}

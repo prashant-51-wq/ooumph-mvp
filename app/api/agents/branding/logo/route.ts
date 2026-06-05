@@ -8,6 +8,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { assertWorkspaceOwnership } from '@/lib/guards'
+import { assertAgentRunQuota } from '@/lib/quota'
 import type { BrandProfile } from '@/types'
 import type { BrandIdentity } from '@/lib/agents/branding'
 
@@ -23,6 +24,9 @@ export async function POST(req: NextRequest) {
     if (!workspaceId) return NextResponse.json({ error: 'workspaceId required' }, { status: 400 })
     const denied = assertWorkspaceOwnership(req, workspaceId)
     if (denied) return denied
+    // Sprint 13B: plan-tier quota.
+    const overQuota = await assertAgentRunQuota(req, workspaceId)
+    if (overQuota) return overQuota
 
     const [brandResult, identityResult] = await Promise.all([
       sql`SELECT * FROM brand_profiles WHERE workspace_id = ${workspaceId} LIMIT 1`,
@@ -60,9 +64,17 @@ export async function POST(req: NextRequest) {
       })
     }
 
-    // Call DALL-E 3 via lib/tools/openai (raw fetch, no SDK dependency)
+    // Call DALL-E 3 via lib/tools/openai (raw fetch, no SDK dependency).
+    // Sprint 19I: generateImage now throws the real OpenAI error message.
     const { generateImage } = await import('@/lib/tools/openai')
-    const generated = await generateImage(finalPrompt, { size: '1024x1024', quality: 'hd', style: 'natural' })
+    let generated: Awaited<ReturnType<typeof generateImage>> = null
+    try {
+      generated = await generateImage(finalPrompt, { size: '1024x1024', quality: 'hd', style: 'natural' })
+    } catch (err) {
+      return NextResponse.json({
+        error: err instanceof Error ? err.message : 'DALL-E call failed',
+      }, { status: 500 })
+    }
 
     const imageUrl = generated?.url
     if (!imageUrl) {

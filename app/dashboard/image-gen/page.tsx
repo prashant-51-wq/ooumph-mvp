@@ -1,6 +1,8 @@
 'use client'
 
 import { useState, useEffect } from 'react'
+import { ProviderConnectBanner } from '@/components/dashboard/ProviderConnectBanner'
+import { usePersistedState } from '@/lib/hooks/use-persisted-state'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -26,12 +28,13 @@ interface GeneratedImage {
 
 // ─── Static config ───────────────────────────────────────────────────────────
 
+// Sprint 4B: collapsed to just DALL-E 3 — the only model with a real
+// /api/agents/creative/image backend wiring. Midjourney/SDXL/Ideogram/Flux
+// were visual placeholders that routed silently to DALL-E 3 anyway,
+// disguising "we don't actually have this model" as "this model exists."
+// When Replicate / Stability / Flux are properly wired add them back here.
 const IMAGE_MODELS = [
   { id: 'dalle3', name: 'DALL-E 3', specialty: 'Photorealistic', speedDot: 'bg-emerald-500' },
-  { id: 'mj6', name: 'Midjourney v6', specialty: 'Artistic', speedDot: 'bg-amber-500' },
-  { id: 'sdxl', name: 'Stable Diffusion XL', specialty: 'Versatile', speedDot: 'bg-emerald-500' },
-  { id: 'ideogram', name: 'Ideogram v2', specialty: 'Logo & Brand', speedDot: 'bg-emerald-500' },
-  { id: 'flux', name: 'Flux Pro', specialty: 'Photorealistic', speedDot: 'bg-emerald-500' },
   { id: 'firefly', name: 'Adobe Firefly', specialty: 'Corporate', speedDot: 'bg-amber-500' },
 ]
 
@@ -81,7 +84,10 @@ function Spinner({ size = 4 }: { size?: number }) {
 }
 
 function ApiSettingsPanel({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const [provider, setProvider] = useState('DALL-E 3 (OpenAI)')
+  // Sprint 4B: `provider` state removed — was only consumed by the 5-option
+  // dropdown that's been deleted. The image generation backend reads its
+  // provider from /api/workspace-secrets (the BYOK key resolution path),
+  // not from a per-page user selection.
   const [apiKey, setApiKey] = useState('')
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<'idle' | 'ok' | 'fail'>('idle')
@@ -106,21 +112,15 @@ function ApiSettingsPanel({ open, onClose }: { open: boolean; onClose: () => voi
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
           </button>
         </div>
-        <p className="text-amber-300 text-xs bg-amber-900/20 border border-amber-800/40 rounded-lg p-3">
-          API keys are configured in Settings → AI Assistants. Currently only DALL-E 3 (OpenAI) is wired up for actual generation — other models are visual placeholders.
+        <p className="text-gray-400 text-xs bg-gray-900/40 border border-gray-800 rounded-lg p-3">
+          API keys are configured in Settings → AI Assistants. The image
+          generator routes through OpenAI's DALL-E 3 endpoint using the key
+          stored on your workspace.
         </p>
-        <div>
-          <label className="text-gray-400 text-xs mb-1.5 block">API Provider</label>
-          <select
-            value={provider}
-            onChange={e => setProvider(e.target.value)}
-            className="w-full px-3 py-2.5 rounded-lg bg-gray-800 border border-gray-700 text-white text-sm focus:outline-none focus:border-indigo-500"
-          >
-            {['DALL-E 3 (OpenAI)', 'Midjourney (Unofficial)', 'Replicate (SDXL/Flux)', 'Adobe Firefly', 'Ideogram API'].map(p => (
-              <option key={p} value={p}>{p}</option>
-            ))}
-          </select>
-        </div>
+        {/* Sprint 4B: removed the 5-option provider dropdown
+            (Midjourney / Replicate / Adobe Firefly / Ideogram). Only the
+            OpenAI path is implemented — listing the others as if you could
+            switch was misleading. Restore when those providers are wired. */}
         <div>
           <label className="text-gray-400 text-xs mb-1.5 block">API Key</label>
           <input
@@ -167,18 +167,33 @@ export default function ImageGenPage() {
   const [apiPanelOpen, setApiPanelOpen] = useState(false)
   const [workspaceId, setWorkspaceId] = useState<string | null>(null)
 
+  // Sprint 19D: ProviderConnectBanner readiness — image-gen needs OpenAI
+  // (DALL-E 3) or Stability AI. We surface a banner for whichever the user
+  // currently has selected. Default model is dalle3 so we check openai
+  // first; if user switches to stability we re-check.
+  const [providerReady, setProviderReady] = useState<boolean | null>(null)
+  const refreshProvider = async (provider: 'openai' | 'stability') => {
+    if (!workspaceId) return
+    try {
+      const r = await fetch(`/api/workspaces?id=${workspaceId}`, { credentials: 'include' })
+      if (!r.ok) { setProviderReady(false); return }
+      const data = await r.json() as { secrets?: Record<string, boolean> }
+      setProviderReady(Boolean(data.secrets?.[provider]))
+    } catch { setProviderReady(false) }
+  }
+
   // Left panel state
-  const [prompt, setPrompt] = useState('')
-  const [negativePrompt, setNegativePrompt] = useState('')
+  const [prompt, setPrompt] = usePersistedState<string>('image-gen:prompt', '')
+  const [negativePrompt, setNegativePrompt] = usePersistedState<string>('image-gen:negativePrompt', '')
   const [showNegative, setShowNegative] = useState(false)
-  const [selectedModel, setSelectedModel] = useState('dalle3')
-  const [selectedStyle, setSelectedStyle] = useState('Photorealistic')
-  const [selectedSize, setSelectedSize] = useState('1024×1024')
-  const [quality, setQuality] = useState('HD')
+  const [selectedModel, setSelectedModel] = usePersistedState<string>('image-gen:model', 'dalle3')
+  const [selectedStyle, setSelectedStyle] = usePersistedState<string>('image-gen:style', 'Photorealistic')
+  const [selectedSize, setSelectedSize] = usePersistedState<string>('image-gen:size', '1024×1024')
+  const [quality, setQuality] = usePersistedState<string>('image-gen:quality', 'HD')
   const [styleStrength, setStyleStrength] = useState(75)
-  const [imageCount, setImageCount] = useState('1')
-  const [seed, setSeed] = useState('')
-  const [lighting, setLighting] = useState('Studio')
+  const [imageCount, setImageCount] = usePersistedState<string>('image-gen:count', '1')
+  const [seed, setSeed] = usePersistedState<string>('image-gen:seed', '')
+  const [lighting, setLighting] = usePersistedState<string>('image-gen:lighting', 'Studio')
   const [applyBrandColors, setApplyBrandColors] = useState(false)
   const [logoPlacement, setLogoPlacement] = useState('None')
   const [safeMode, setSafeMode] = useState(true)
@@ -187,7 +202,7 @@ export default function ImageGenPage() {
   const [generationError, setGenerationError] = useState<string | null>(null)
 
   // Studio tab state
-  const [generatedImages, setGeneratedImages] = useState<GeneratedImage[]>([])
+  const [generatedImages, setGeneratedImages] = usePersistedState<GeneratedImage[]>('image-gen:results', [])
   const [hoveredImage, setHoveredImage] = useState<number | null>(null)
   const [mediaLibStatus, setMediaLibStatus] = useState<Record<number, 'idle' | 'saving' | 'saved' | 'error'>>({})
 
@@ -212,6 +227,14 @@ export default function ImageGenPage() {
       setWorkspaceId(localStorage.getItem('workspaceId'))
     }
   }, [])
+
+  // Sprint 19D: refresh provider readiness when workspace or model changes
+  useEffect(() => {
+    if (!workspaceId) return
+    const p: 'openai' | 'stability' = selectedModel === 'stability' ? 'stability' : 'openai'
+    void refreshProvider(p)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspaceId, selectedModel])
 
   // Fetch gallery whenever the gallery tab opens or workspace changes
   useEffect(() => {
@@ -466,9 +489,9 @@ export default function ImageGenPage() {
                 </button>
               ))}
             </div>
-            {selectedModel !== 'dalle3' && (
-              <p className="text-amber-400 text-[10px] mt-2">Note: only DALL-E 3 is wired to a live API. Other models will route to DALL-E 3.</p>
-            )}
+            {/* Sprint 4B: removed "other models route to DALL-E 3 anyway"
+                disclaimer — the model list now contains only DALL-E 3, so
+                there's nothing to disclaim. */}
           </div>
 
           {/* Style Presets */}
@@ -701,6 +724,38 @@ export default function ImageGenPage() {
         {/* ─── STUDIO TAB ─── */}
         {studioTab === 'studio' && (
           <div className="flex-1 overflow-y-auto p-5">
+            {/* Sprint 19D: in-product provider connect banner */}
+            {selectedModel === 'stability' ? (
+              <ProviderConnectBanner
+                ready={providerReady}
+                workspaceId={workspaceId}
+                providerId="stability"
+                providerName="Stability AI"
+                icon="🎨"
+                description="Stable Diffusion XL generates the images on this page."
+                signupUrl="https://platform.stability.ai/"
+                keysHelpUrl="https://platform.stability.ai/account/keys"
+                freeTierNote="25 free credits on signup (~25 images). Pay-as-you-go after."
+                fields={[{ label: 'API Key', placeholder: 'sk-…', payloadKey: 'key', password: true }]}
+                testMode="workspace-secrets"
+                onConnected={() => void refreshProvider('stability')}
+              />
+            ) : (
+              <ProviderConnectBanner
+                ready={providerReady}
+                workspaceId={workspaceId}
+                providerId="openai"
+                providerName="OpenAI"
+                icon="🖼️"
+                description="DALL-E 3 generates the images on this page."
+                signupUrl="https://platform.openai.com/signup"
+                keysHelpUrl="https://platform.openai.com/api-keys"
+                freeTierNote="Pay-as-you-go. Pre-paid balance starts at $5."
+                fields={[{ label: 'API Key', placeholder: 'sk-proj-…', payloadKey: 'key', password: true }]}
+                testMode="workspace-secrets"
+                onConnected={() => void refreshProvider('openai')}
+              />
+            )}
             {generatedImages.length === 0 ? (
               <div className="flex flex-col items-center justify-center h-full text-center py-20">
                 <div className="w-20 h-20 rounded-2xl bg-gray-900 border border-gray-800 flex items-center justify-center mb-4">
@@ -819,7 +874,8 @@ export default function ImageGenPage() {
               <div className="flex items-center gap-2 mb-4 p-3 rounded-xl bg-indigo-900/30 border border-indigo-800/50">
                 <span className="text-indigo-300 text-xs font-medium">{selectedGalleryIds.size} selected</span>
                 <div className="flex gap-2 ml-auto">
-                  <button className="px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs transition-colors">Batch Download</button>
+                  {/* Sprint 0: Batch Download had no handler. */}
+                  <button disabled title="Coming soon" className="px-3 py-1.5 rounded-lg bg-gray-800 text-gray-500 text-xs opacity-50 cursor-not-allowed">Batch Download</button>
                 </div>
               </div>
             )}

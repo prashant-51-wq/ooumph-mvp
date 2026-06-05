@@ -9,6 +9,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
 import { runAgent, getModel } from '@/lib/claude'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 
 interface ScoreResponse {
   score: number
@@ -32,6 +33,8 @@ export async function POST(req: NextRequest) {
     if (!workspaceId) {
       return NextResponse.json({ error: 'workspaceId required' }, { status: 400 })
     }
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     // ── If approvalId provided, check for cached score ────────────────────────
     if (approvalId) {
@@ -118,7 +121,7 @@ Provide 3 short bullet reasons (each under 60 chars).`
 
     let result: ScoreResponse
     try {
-      result = await runAgent<ScoreResponse>(systemPrompt, userPrompt, SCHEMA, {
+      result = await runAgent<ScoreResponse>(systemPrompt, userPrompt, workspaceId, SCHEMA, {
         model: getModel(null),
       })
     } catch (err) {

@@ -47,6 +47,7 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { after } from 'next/server'
+import crypto from 'crypto'
 import { sql, newId } from '@/lib/db'
 import { runAgent } from '@/lib/claude'
 
@@ -128,12 +129,12 @@ function buildAnswerTwiml(opts: {
     `</Response>`
 }
 
-/** Single safe entry point for parsing both JSON and x-www-form-urlencoded. */
-async function readBody(req: NextRequest): Promise<Record<string, string>> {
-  const contentType = (req.headers.get('content-type') || '').toLowerCase()
-  if (contentType.includes('application/json')) {
+/** Parses a Twilio request body that has already been consumed as text. */
+function parseBodyFromText(rawBody: string, contentType: string): Record<string, string> {
+  const ct = contentType.toLowerCase()
+  if (ct.includes('application/json')) {
     try {
-      const json = (await req.json()) as Record<string, unknown>
+      const json = JSON.parse(rawBody) as Record<string, unknown>
       const out: Record<string, string> = {}
       for (const [k, v] of Object.entries(json)) out[k] = v == null ? '' : String(v)
       return out
@@ -143,8 +144,7 @@ async function readBody(req: NextRequest): Promise<Record<string, string>> {
   }
   // form-urlencoded — Twilio's default
   try {
-    const text = await req.text()
-    const params = new URLSearchParams(text)
+    const params = new URLSearchParams(rawBody)
     const out: Record<string, string> = {}
     params.forEach((v, k) => { out[k] = v })
     return out
@@ -153,28 +153,69 @@ async function readBody(req: NextRequest): Promise<Record<string, string>> {
   }
 }
 
-function authOk(req: NextRequest, workspaceId: string): boolean {
-  // 1. Admin bypass for tests / CI
+/**
+ * Sprint 18Z (audit pass #8 P0 #2): real Twilio HMAC-SHA1 verification.
+ * Algorithm: HMAC-SHA1(authToken, validationString) base64-encoded, compared
+ * timing-safely to x-twilio-signature. validationString is the full request
+ * URL followed by alphabetically-sorted form params concatenated as
+ * key1+value1+key2+value2+... For JSON bodies Twilio signs only the URL.
+ */
+function verifyTwilioSignature(req: NextRequest, rawBody: string, contentType: string): boolean {
+  const authToken = process.env.TWILIO_AUTH_TOKEN || ''
+  if (!authToken) return false
+  const sig = req.headers.get('x-twilio-signature') || ''
+  if (!sig) return false
+
+  // Sprint 19F (audit pass #9 P1-8): behind Vercel's edge proxy `req.url`
+  // can be the internal host, but Twilio signs with the PUBLIC URL it
+  // dialled. Reconstruct using the forwarded headers so the HMAC matches.
+  const parsed = new URL(req.url)
+  const fwdProto = req.headers.get('x-forwarded-proto') || parsed.protocol.replace(':', '')
+  const fwdHost = req.headers.get('x-forwarded-host') || req.headers.get('host') || parsed.host
+  const url = `${fwdProto}://${fwdHost}${parsed.pathname}${parsed.search}`
+  let validationString = url
+  if (contentType.toLowerCase().includes('application/x-www-form-urlencoded')) {
+    const params = new URLSearchParams(rawBody)
+    const sorted: [string, string][] = []
+    params.forEach((v, k) => sorted.push([k, v]))
+    sorted.sort((a, b) => a[0].localeCompare(b[0]))
+    for (const [k, v] of sorted) validationString += k + v
+  }
+  const expected = crypto.createHmac('sha1', authToken).update(validationString).digest('base64')
+  try {
+    return crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))
+  } catch {
+    return false
+  }
+}
+
+function authOk(req: NextRequest, rawBody: string, contentType: string, workspaceId: string): boolean {
+  // 1. Admin bypass for tests / CI.
   const adminSecret = process.env.ADMIN_SECRET || ''
   const adminHdr = req.headers.get('x-admin-secret') || ''
   if (adminSecret && adminHdr === adminSecret) return true
 
-  // 2. Twilio signature (when configured)
+  // 2. Real Twilio HMAC signature (preferred — Sprint 18Z).
   const twilioToken = process.env.TWILIO_AUTH_TOKEN || ''
-  const sig = req.headers.get('x-twilio-signature') || ''
-  if (twilioToken && sig) {
-    // Full HMAC verification requires the original request URL and form body;
-    // we accept presence of the header here for the MVP and tighten in Sprint 9.
-    // The shared-secret check below provides the actual gate.
-    return true
+  if (twilioToken) {
+    if (verifyTwilioSignature(req, rawBody, contentType)) return true
+    // If a token IS configured we don't fall through to the URL-secret path —
+    // Twilio is calling and the signature failed. Reject.
+    return false
   }
 
-  // 3. Workspace-bound shared secret in the URL query
+  // 3. Workspace-bound shared secret in the URL query (legacy fallback).
   const expectedSecret = process.env.TWILIO_WEBHOOK_SECRET || ''
-  if (!expectedSecret) return true  // dev mode — no secret configured
-  const { searchParams } = new URL(req.url)
-  const providedSecret = searchParams.get('secret') || ''
-  return Boolean(providedSecret && providedSecret === expectedSecret && workspaceId)
+  if (expectedSecret) {
+    const { searchParams } = new URL(req.url)
+    const providedSecret = searchParams.get('secret') || ''
+    return Boolean(providedSecret && providedSecret === expectedSecret && workspaceId)
+  }
+
+  // 4. No auth material configured.
+  // Sprint 18Z (audit pass #8 P1 #9): fail-closed in production. Dev OK.
+  if (process.env.NODE_ENV === 'production') return false
+  return true
 }
 
 // ─── Background analysis ──────────────────────────────────────────────────
@@ -300,11 +341,19 @@ export async function POST(req: NextRequest) {
   if (!workspaceId) {
     return twimlResponse(`<Response><Say>Missing workspace identifier. Goodbye.</Say><Hangup/></Response>`)
   }
-  if (!authOk(req, workspaceId)) {
+
+  // Sprint 18Z: read body as text ONCE for HMAC verification, then parse.
+  // The Web Fetch API request body is a one-shot stream; consuming it via
+  // .text() now means we can't re-read via .json() later.
+  const contentType = req.headers.get('content-type') || ''
+  let rawBody = ''
+  try { rawBody = await req.text() } catch { rawBody = '' }
+
+  if (!authOk(req, rawBody, contentType, workspaceId)) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
-  const body = await readBody(req)
+  const body = parseBodyFromText(rawBody, contentType)
 
   // ──────────────────────────────────────────────────────────────────────
   // ANSWER sub-action — synchronous TwiML reply

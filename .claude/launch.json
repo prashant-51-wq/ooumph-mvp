@@ -3,9 +3,10 @@
   "configurations": [
     {
       "name": "ooumph-mvp",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev"],
-      "port": 3000
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["next", "dev", "-p", "3100"],
+      "port": 3100,
+      "autoPort": false
     }
   ]
 }

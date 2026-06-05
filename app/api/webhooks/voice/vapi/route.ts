@@ -140,9 +140,12 @@ export async function POST(req: NextRequest) {
       req.headers.get('x-vapi-secret') ||
       req.headers.get('x-internal-secret') ||
       ''
+    // Fail-closed: if neither secret is configured the endpoint is locked.
+    // Dev bypass only when NODE_ENV !== 'production'.
+    const isDev = process.env.NODE_ENV !== 'production'
     const cronOrAdminOk =
       provided && ((expected && provided === expected) || (internal && provided === internal))
-    if (expected && !cronOrAdminOk) {
+    if (!cronOrAdminOk && (!isDev || expected || internal)) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 

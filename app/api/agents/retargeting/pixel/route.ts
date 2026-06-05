@@ -7,6 +7,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { runAgent } from '@/lib/claude'
 import { assertWorkspaceOwnership } from '@/lib/guards'
+import { assertAgentRunQuota } from '@/lib/quota'
 import { sendApprovalRequestEmail } from '@/lib/email'
 import type { BrandProfile } from '@/types'
 import { designPixelStrategy } from '@/lib/agents/retargeting'
@@ -27,6 +28,9 @@ export async function POST(req: NextRequest) {
 
     const denied = assertWorkspaceOwnership(req, workspaceId)
     if (denied) return denied
+    // Sprint 13B: plan-tier quota.
+    const overQuota = await assertAgentRunQuota(req, workspaceId)
+    if (overQuota) return overQuota
 
     const brandResult = await sql`SELECT * FROM brand_profiles WHERE workspace_id = ${workspaceId} LIMIT 1`
     const brand = brandResult.rows[0] as unknown as BrandProfile
@@ -83,7 +87,8 @@ Return the most likely page paths for this type of business:
 {
   "pages": ["/", "/about", "/services", "/pricing", "/contact", "/book", "/thank-you"],
   "reasoning": "brief explanation of why these pages"
-}`
+}`,
+        workspaceId,
       )
       pages = pagesResult.pages || ['/', '/about', '/services', '/pricing', '/contact', '/book', '/thank-you']
     }
@@ -139,7 +144,8 @@ Return a GTM configuration:
     "Step 2: Visit each page and verify tags fire",
     "Step 3: Check Facebook Pixel Helper extension for Meta events"
   ]
-}`
+}`,
+      workspaceId,
     )
 
     // ── Verification checklist per platform ────────────────────────────────────

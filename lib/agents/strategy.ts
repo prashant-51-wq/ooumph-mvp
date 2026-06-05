@@ -21,7 +21,7 @@ function normalizeChannels(channels: unknown): string[] {
   return []
 }
 
-export async function generateStrategy(brand: BrandProfile): Promise<Strategy> {
+export async function generateStrategy(brand: BrandProfile, workspaceId: string): Promise<Strategy> {
   const industry = brand.industry || brand.offer || ''
   const audience = brand.target_audience || ''
   const competitors = brand.competitors || ''
@@ -114,5 +114,5 @@ Return JSON matching this exact shape:
   ]
 }`
 
-  return runAgent<Strategy>(SYSTEM_PROMPT, userPrompt)
+  return runAgent<Strategy>(SYSTEM_PROMPT, userPrompt, workspaceId)
 }

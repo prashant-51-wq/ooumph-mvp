@@ -9,6 +9,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { assertWorkspaceOwnership } from '@/lib/guards'
+import { prepareAccessTokenWrite, tokenPreview } from '@/lib/integrations'
 
 // ─── GET: Return GHL integration status ───────────────────────────────────────
 
@@ -23,10 +24,13 @@ export async function GET(req: NextRequest) {
   const denied = assertWorkspaceOwnership(req, workspaceId)
   if (denied) return denied
 
+  // Sprint 10B: select both token columns and derive the preview via
+  // tokenPreview() helper instead of SUBSTR(access_token). This way the
+  // preview works for new rows where the plaintext column has been
+  // emptied out by Phase 2 of the encryption rollout.
   const result = await sql`
     SELECT id, workspace_id, platform, account_id, status, connected_at,
-           SUBSTR(access_token, 1, 8) AS token_preview,
-           metadata
+           access_token, encrypted_access_token, metadata
     FROM integrations
     WHERE workspace_id = ${workspaceId} AND platform = 'ghl'
     LIMIT 1
@@ -49,7 +53,10 @@ export async function GET(req: NextRequest) {
     locationId: row.account_id,
     status: row.status,
     connectedAt: row.connected_at,
-    tokenPreview: row.token_preview,
+    tokenPreview: tokenPreview({
+      access_token: row.access_token as string | null,
+      encrypted_access_token: row.encrypted_access_token as string | null,
+    }, 8),
     hasRefreshToken: Boolean(meta.refresh_token),
     hasApiKey: Boolean(meta.api_key),
   })
@@ -97,12 +104,14 @@ export async function POST(req: NextRequest) {
     WHERE workspace_id = ${workspaceId} AND platform = 'ghl'
   `
 
+  // Sprint 10B: dual-write the access token via prepareAccessTokenWrite().
+  const tokenWrite = prepareAccessTokenWrite(accessToken)
   const id = newId()
   await sql`
     INSERT INTO integrations
-      (id, workspace_id, platform, access_token, account_id, metadata, status, connected_at)
+      (id, workspace_id, platform, access_token, encrypted_access_token, account_id, metadata, status, connected_at)
     VALUES
-      (${id}, ${workspaceId}, 'ghl', ${accessToken}, ${locationId}, ${metadata}, 'active', ${now})
+      (${id}, ${workspaceId}, 'ghl', ${tokenWrite.plaintext}, ${tokenWrite.encrypted}, ${locationId}, ${metadata}, 'active', ${now})
   `
 
   return NextResponse.json({ ok: true, connected: true, id, locationId })

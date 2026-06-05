@@ -226,10 +226,13 @@ export async function getDV360InsertionOrderMetrics(
     return []
   }
 
-  // Return empty for now — real implementation polls until report is ready
-  // In production: poll GET /queries/{queryId}/reports until status=DONE, then download CSV
-  console.log('DV360 report created, queryId:', queryData.queryId, '— async polling needed')
-  return []
+  // DV360 report creation is async — the report is not immediately available.
+  // Polling is not yet implemented. Throw so callers surface a clear error
+  // instead of silently showing zero metrics.
+  throw new Error(
+    `DV360 reporting not yet available: report queued (queryId: ${queryData.queryId}) ` +
+    `but async polling is not implemented. DV360 performance data cannot be displayed until this is complete.`
+  )
 }
 
 function _isoToDate(iso: string): { year: number; month: number; day: number } {

@@ -1,14 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
-import { runAgent } from '@/lib/claude'
+import { runAgentWithTools } from '@/lib/agents/tool-calling'
 import { Resend } from 'resend'
 import type { BrandProfile } from '@/types'
-import { assertArtifactApproved } from '@/lib/guards'
+import { assertArtifactApproved, assertWorkspaceOwnership } from '@/lib/guards'
+import { buildMemoryMatrix, logMemoryInjection } from '@/lib/agents/memory-retrieval'
 
 export async function POST(req: NextRequest) {
   try {
     const { workspaceId, action, campaignName, goal, audience, campaignId, recipients } = await req.json()
     if (!workspaceId) return NextResponse.json({ error: 'workspaceId required' }, { status: 400 })
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     const brandResult = await sql`SELECT * FROM brand_profiles WHERE workspace_id = ${workspaceId} LIMIT 1`
     const brand = brandResult.rows[0] as unknown as BrandProfile
@@ -19,12 +22,31 @@ export async function POST(req: NextRequest) {
       const runId = newId()
       await sql`INSERT INTO agent_runs (id, workspace_id, agent_name, status) VALUES (${runId}, ${workspaceId}, 'email_marketing_agent', 'running')`
 
-      const content = await runAgent<{
+      // ─── Sprint 1: Postgres memory matrix ────────────────────────────
+      // Top historic email CTRs + brand voice rules + live campaign
+      // state get injected as an explicit '### SYSTEM MEMORY' block
+      // ABOVE the campaign-specific brief, so the copywriter LLM treats
+      // past winners as authoritative style reference. logMemoryInjection
+      // writes the agent_run_events row that proves it.
+      const memoryMatrix = await buildMemoryMatrix(workspaceId)
+      await logMemoryInjection({ workspaceId, agentRunId: runId, agent: 'email_marketing_agent', matrix: memoryMatrix })
+
+      const content = await runAgentWithTools<{
         subject: string; previewText: string; headline: string; body: string;
         cta: string; ctaUrl: string; ps: string; suggestedSendTime: string;
       }>(
-        'You are an expert email marketing copywriter. Write high-converting email campaigns that get opens, clicks, and replies. Always respond with valid JSON.',
-        `Business: ${brand.business_name}
+        `You are an expert email marketing copywriter. Write high-converting email campaigns that get opens, clicks, and replies.
+
+You have tools available:
+- query_brand_memory: fetch approved brand voice examples (call this first)
+- search: research email marketing trends, subject line best practices, or competitor campaigns
+- persist_artifact: save the finished email draft as a workspace artifact
+
+Always call query_brand_memory first. Then write the email and return JSON.`,
+        `### SYSTEM MEMORY & PAST WORKSPACE LEARNINGS
+${memoryMatrix.matrix}
+
+Business: ${brand.business_name}
 Offer: ${brand.offer}
 Audience: ${brand.target_audience}
 Tone: ${brand.tone}
@@ -42,7 +64,8 @@ Write a marketing email campaign. Return JSON:
   "ctaUrl": "example CTA URL placeholder",
   "ps": "P.S. line that adds urgency or extra value",
   "suggestedSendTime": "best time to send (e.g. Tuesday 10am)"
-}`
+}`,
+        workspaceId,
       )
 
       await sql`UPDATE agent_runs SET status = 'completed', completed_at = CURRENT_TIMESTAMP WHERE id = ${runId}`

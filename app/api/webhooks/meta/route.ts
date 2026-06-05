@@ -9,9 +9,31 @@
  *  2. Verify Token: set META_WEBHOOK_VERIFY_TOKEN env var
  *  3. Subscribe to: feed, messages, mention, comment
  */
+import crypto from 'crypto'
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { runAgent } from '@/lib/claude'
+
+// ─── Signature verification (audit pass #6 P0) ─────────────────────────────────
+// Meta signs every webhook delivery with x-hub-signature-256, computed over the
+// raw request body using HMAC-SHA256 keyed with the app secret. Without this
+// check anyone with the webhook URL could POST arbitrary "comment" payloads,
+// triggering LLM calls and writes to learning_notes against any workspace.
+function verifyMetaSignature(rawBody: string, signatureHeader: string | null): boolean {
+  const secret = process.env.META_APP_SECRET
+  if (!secret) return false // fail-closed handled separately with 503
+  if (!signatureHeader || !signatureHeader.startsWith('sha256=')) return false
+  const provided = signatureHeader.slice('sha256='.length)
+  const expected = crypto.createHmac('sha256', secret).update(rawBody, 'utf8').digest('hex')
+  try {
+    const a = Buffer.from(expected, 'hex')
+    const b = Buffer.from(provided, 'hex')
+    if (a.length !== b.length) return false
+    return crypto.timingSafeEqual(a, b)
+  } catch {
+    return false
+  }
+}
 
 const SYSTEM = `You are the Engagement Agent for Ooumph AI Marketing OS.
 Generate authentic, brand-aligned reply suggestions for social media comments.
@@ -29,7 +51,7 @@ interface CommentEvent {
   timestamp: string
 }
 
-async function generateReply(comment: CommentEvent, brand: Record<string, unknown>, playbook: Record<string, unknown> | null) {
+async function generateReply(comment: CommentEvent, brand: Record<string, unknown>, playbook: Record<string, unknown> | null, workspaceId: string) {
   const templates = (playbook as { replyTemplates?: Array<{ scenario: string; platform: string; template: string }> } | null)?.replyTemplates || []
   const relevantTemplates = templates.filter(t =>
     t.platform.toLowerCase().includes(comment.platform) ||
@@ -58,7 +80,7 @@ Generate 2-3 reply options. Return JSON:
 }`
 
   interface ReplyResult { replies: Array<{ text: string; tone: string; recommended: boolean }>; sentiment: string; suggestedAction: string }
-  return runAgent<ReplyResult>(SYSTEM, prompt)
+  return runAgent<ReplyResult>(SYSTEM, prompt, workspaceId)
 }
 
 // ─── GET: Meta webhook verification ───────────────────────────────────────────
@@ -79,13 +101,33 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json() as {
+    // Audit pass #6 P0: verify x-hub-signature-256 against the raw body BEFORE
+    // parsing/dispatching. Misconfigured prod (no META_APP_SECRET) must
+    // fail-closed rather than silently processing unsigned events.
+    if (!process.env.META_APP_SECRET) {
+      return NextResponse.json(
+        { error: 'META_APP_SECRET not configured — webhook intake refused' },
+        { status: 503 },
+      )
+    }
+    const rawBody = await req.text()
+    const signature = req.headers.get('x-hub-signature-256')
+    if (!verifyMetaSignature(rawBody, signature)) {
+      return NextResponse.json({ error: 'Invalid signature' }, { status: 401 })
+    }
+
+    let body: {
       object: string
       entry: Array<{
         id: string
         changes?: Array<{ field: string; value: Record<string, unknown> }>
         messaging?: Array<Record<string, unknown>>
       }>
+    }
+    try {
+      body = JSON.parse(rawBody)
+    } catch {
+      return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 })
     }
 
     if (body.object !== 'page' && body.object !== 'instagram') {
@@ -129,7 +171,7 @@ export async function POST(req: NextRequest) {
         }
 
         // Generate reply suggestions asynchronously (don't block webhook ack)
-        generateReply(comment, brand, playbook).then(async (result) => {
+        generateReply(comment, brand, playbook, workspaceId).then(async (result) => {
           const noteId = newId()
           await sql`INSERT INTO learning_notes (id, workspace_id, source_type, source_id, note, confidence)
                     VALUES (${noteId}, ${workspaceId}, 'webhook_comment', ${comment.commentId || noteId},
@@ -151,7 +193,7 @@ export async function POST(req: NextRequest) {
           timestamp: msgData.timestamp ? new Date(msgData.timestamp).toISOString() : new Date().toISOString(),
         }
 
-        generateReply(comment, brand, playbook).then(async (result) => {
+        generateReply(comment, brand, playbook, workspaceId).then(async (result) => {
           const noteId = newId()
           await sql`INSERT INTO learning_notes (id, workspace_id, source_type, source_id, note, confidence)
                     VALUES (${noteId}, ${workspaceId}, 'webhook_dm', ${comment.from},

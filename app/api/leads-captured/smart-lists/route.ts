@@ -5,6 +5,7 @@
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
@@ -12,6 +13,9 @@ export async function GET(req: NextRequest) {
   const listId = searchParams.get('list')   // if specified, return full leads for that list
 
   if (!workspaceId) return NextResponse.json([])
+  // Sprint 9A: ownership check — smart lists are full lead rows.
+  const denied = assertWorkspaceOwnership(req, workspaceId)
+  if (denied) return denied
 
   // If a specific list is requested, return its leads
   if (listId) {

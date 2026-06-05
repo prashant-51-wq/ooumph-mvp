@@ -21,6 +21,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useWorkspaceId } from '@/lib/hooks/use-workspace-id'
 import {
   Mail, MessageSquare, Send, RefreshCw, Sparkles, ChevronRight,
   AlertCircle, Loader2, Search, User, Clock, X, Check, Bot,
@@ -120,20 +121,14 @@ export default function InboxPage() {
   // AI assistant per-conversation toggle (persisted in localStorage)
   const [aiAssistantEnabled, setAiAssistantEnabled] = useState<Record<string, boolean>>({})
 
+  // Sprint 10C: session-derived via useWorkspaceId().
+  const { workspaceId: sessionWorkspaceId, resolved: sessionResolved, loading: sessionLoading } = useWorkspaceId()
   useEffect(() => {
-    let cancelled = false
-    fetch('/api/auth/me')
-      .then(r => r.ok ? r.json() : null)
-      .then(data => {
-        if (cancelled) return
-        const id: string | null = data?.user?.workspaceId
-          || (typeof window !== 'undefined' ? localStorage.getItem('workspaceId') : null)
-        setWorkspaceId(id)
-        if (!id) setError('No workspace selected — finish onboarding first.')
-      })
-      .catch(() => { if (!cancelled) setError('Failed to load session') })
-    return () => { cancelled = true }
-  }, [])
+    setWorkspaceId(sessionWorkspaceId)
+    if (sessionResolved && !sessionLoading && !sessionWorkspaceId) {
+      setError('No workspace selected — finish onboarding first.')
+    }
+  }, [sessionWorkspaceId, sessionResolved, sessionLoading])
 
   // Hydrate AI toggle preferences from localStorage
   useEffect(() => {
@@ -166,7 +161,14 @@ export default function InboxPage() {
       .finally(() => setLoadingList(false))
   }, [workspaceId, search, selectedId])
 
-  useEffect(() => { fetchConvos() }, [fetchConvos])
+  // Sprint 5 fix: debounce the search-driven refetch. Without this, every
+  // keystroke in the search box re-triggers fetchConvos, the loading flag
+  // never settles, and "Loading…" appears stuck. 300ms is short enough to
+  // feel responsive and long enough to coalesce a burst of keystrokes.
+  useEffect(() => {
+    const t = setTimeout(() => { fetchConvos() }, 300)
+    return () => clearTimeout(t)
+  }, [fetchConvos])
 
   const fetchThread = useCallback(() => {
     if (!selectedId) { setThread(null); return }

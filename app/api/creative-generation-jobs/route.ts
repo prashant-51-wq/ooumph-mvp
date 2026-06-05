@@ -34,6 +34,8 @@ import { assertWorkspaceOwnership } from '@/lib/guards'
 import { generateImage as openaiGenerateImage } from '@/lib/tools/openai'
 import { generateVideoFromText as runwayGenerateVideo, getRunwayTaskStatus } from '@/lib/tools/runway'
 import { textToSpeech as elevenlabsTts } from '@/lib/tools/elevenlabs'
+import { generateStabilityImage } from '@/lib/tools/stability'
+import { withCredentials, getCredential } from '@/lib/credential-context'
 
 export const runtime = 'nodejs'
 export const maxDuration = 300
@@ -174,11 +176,30 @@ export async function POST(req: NextRequest) {
     )
   }
 
+  // Sprint 18K: inject workspace BYOK keys into the request-scoped
+  // credential store so tool wrappers (openai, stability, runway, ...)
+  // pick them up via getCredential() instead of process.env. We don't
+  // mutate process.env (would race across tenants).
+  let wsKeys: Record<string, string | undefined> = {}
+  try {
+    const wsRes = await sql`SELECT model_settings FROM workspaces WHERE id = ${workspaceId} LIMIT 1`
+    const ms = wsRes.rows[0]?.model_settings
+    const parsed: Record<string, unknown> = typeof ms === 'string'
+      ? JSON.parse(ms)
+      : (ms as Record<string, unknown> || {})
+    wsKeys = {
+      OPENAI_API_KEY: parsed.openaiApiKey as string | undefined,
+      STABILITY_API_KEY: parsed.stabilityApiKey as string | undefined,
+      RUNWAY_API_KEY: parsed.runwayApiKey as string | undefined,
+      ELEVENLABS_API_KEY: parsed.elevenLabsApiKey as string | undefined,
+    }
+  } catch { /* fall back to process.env */ }
+
   // 3. Provider dispatch — wrapped in try/catch so failures land safely
   const startedAt = Date.now()
   let dispatch: ProviderResult
   try {
-    dispatch = await dispatchProvider(provider, prompt, options || {}, negativePrompt)
+    dispatch = await withCredentials(wsKeys, () => dispatchProvider(provider, prompt, options || {}, negativePrompt))
   } catch (err) {
     dispatch = {
       ok: false,
@@ -303,17 +324,26 @@ async function dispatchProvider(
   _negativePrompt?: string,
 ): Promise<ProviderResult> {
   if (provider === 'openai_dalle') {
-    if (!process.env.OPENAI_API_KEY) return mockImageResult(provider, prompt)
+    // Sprint 18Z (audit pass #8 P1 #6): was reading process.env directly —
+    // shadowed BYOK keys set via withCredentials(). Now reads through the
+    // request-scoped credential context.
+    if (!getCredential('OPENAI_API_KEY')) return mockImageResult(provider, prompt)
     const opts = options as { size?: 'square' | 'landscape' | 'portrait' | string }
     const sizeMap: Record<string, '1024x1024' | '1792x1024' | '1024x1792'> = {
       square: '1024x1024',
       landscape: '1792x1024',
       portrait: '1024x1792',
     }
-    const result = await openaiGenerateImage(prompt, {
-      size: sizeMap[opts.size as string] || '1024x1024',
-      quality: 'standard',
-    })
+    // Sprint 19I: openaiGenerateImage now throws OpenAI's real error message.
+    let result: Awaited<ReturnType<typeof openaiGenerateImage>> = null
+    try {
+      result = await openaiGenerateImage(prompt, {
+        size: sizeMap[opts.size as string] || '1024x1024',
+        quality: 'standard',
+      })
+    } catch (err) {
+      return { ok: false, assetType: 'image', costEstimate: 0, error: err instanceof Error ? err.message : 'OpenAI call failed' }
+    }
     if (!result?.url) return { ok: false, assetType: 'image', costEstimate: 0, error: 'OpenAI returned no URL' }
     const dims = (sizeMap[opts.size as string] || '1024x1024')
     return {
@@ -329,7 +359,7 @@ async function dispatchProvider(
   }
 
   if (provider === 'runway_gen3') {
-    if (!process.env.RUNWAY_API_KEY) return mockVideoResult(provider, prompt)
+    if (!getCredential('RUNWAY_API_KEY')) return mockVideoResult(provider, prompt)
     const opts = options as { aspectRatio?: string; durationSeconds?: 5 | 10 }
     // Runway expects `ratio` (specific pixel pairs) + `duration` (5|10).
     // Map our friendly aspectRatio strings to Runway's pixel format.
@@ -369,7 +399,7 @@ async function dispatchProvider(
   }
 
   if (provider === 'elevenlabs') {
-    if (!process.env.ELEVENLABS_API_KEY) return mockAudioResult(provider, prompt)
+    if (!getCredential('ELEVENLABS_API_KEY')) return mockAudioResult(provider, prompt)
     const opts = options as { voiceId?: string; modelId?: string }
     const ttsResult = await elevenlabsTts(prompt, {
       voiceId: opts.voiceId || 'EXAVITQu4vr4xnSDxMaL',
@@ -395,8 +425,41 @@ async function dispatchProvider(
   }
 
   if (provider === 'stability') {
-    // No first-party wrapper — fall through to mock until a key + helper land.
-    return mockImageResult(provider, prompt)
+    // Real Stability v2beta SD3.5 Core. Wrapper resolves credentials via
+    // getCredential('STABILITY_API_KEY') — that checks the request-scoped
+    // store (workspace BYOK injected via withCredentials) before falling
+    // back to process.env. If no key anywhere, fall through to mock so
+    // the dev flow still works.
+    const opts = options as { aspectRatio?: string; outputFormat?: 'png' | 'jpeg' | 'webp'; seed?: number }
+    const aspectMap: Record<string, '1:1' | '16:9' | '9:16'> = {
+      square: '1:1',
+      landscape: '16:9',
+      portrait: '9:16',
+    }
+    const aspect = (aspectMap[opts.aspectRatio as string] || (opts.aspectRatio as '1:1' | '16:9' | '9:16') || '1:1')
+    const result = await generateStabilityImage(prompt, {
+      aspectRatio: aspect,
+      negativePrompt: _negativePrompt,
+      outputFormat: opts.outputFormat || 'png',
+      seed: typeof opts.seed === 'number' ? opts.seed : undefined,
+    })
+    if (!result?.url) {
+      // Distinguish "no key configured" from real provider failure: wrapper
+      // returns null when STABILITY_API_KEY is absent. Fall back to mock
+      // for a smooth zero-config dev experience.
+      if (!process.env.STABILITY_API_KEY) return mockImageResult(provider, prompt)
+      return { ok: false, assetType: 'image', costEstimate: 0, error: 'Stability returned no image (check key, content filter, or quota)' }
+    }
+    return {
+      ok: true,
+      url: result.url,
+      filename: `stability-${Date.now().toString(36)}.${(result.mimeType.split('/')[1] || 'png')}`,
+      mimeType: result.mimeType,
+      dimensions: aspect === '1:1' ? '1024x1024' : (aspect === '16:9' ? '1344x768' : '768x1344'),
+      assetType: 'image',
+      costEstimate: COST_ESTIMATE.stability,
+      metadata: { aspect, finishReason: result.finishReason, seed: result.seed },
+    }
   }
 
   return { ok: false, assetType: 'image', costEstimate: 0, error: `Unknown provider '${provider}'` }

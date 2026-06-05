@@ -4,6 +4,8 @@ import { generateContentCalendar } from '@/lib/agents/content'
 import { sendApprovalRequestEmail } from '@/lib/email'
 import { generateStaticPost, generateStoryCover, generateVideoBrief } from '@/lib/creative-workers'
 import { assertWorkspaceOwnership } from '@/lib/guards'
+import { assertAgentRunQuota } from '@/lib/quota'
+import { buildMemoryMatrix, logMemoryInjection } from '@/lib/agents/memory-retrieval'
 import type { BrandProfile } from '@/types'
 
 export async function POST(req: NextRequest) {
@@ -12,6 +14,9 @@ export async function POST(req: NextRequest) {
     const { workspaceId } = await req.json()
     const denied = assertWorkspaceOwnership(req, workspaceId)
     if (denied) return denied
+    // Sprint 13B: plan-tier quota.
+    const overQuota = await assertAgentRunQuota(req, workspaceId)
+    if (overQuota) return overQuota
     const [brandResult, strategyResult] = await Promise.all([
       sql`SELECT * FROM brand_profiles WHERE workspace_id = ${workspaceId} LIMIT 1`,
       sql`SELECT content_json FROM artifacts WHERE workspace_id = ${workspaceId} AND type = 'strategy' ORDER BY created_at DESC LIMIT 1`,
@@ -23,9 +28,16 @@ export async function POST(req: NextRequest) {
     runId = newId()
     await sql`INSERT INTO agent_runs (id, workspace_id, agent_name, status) VALUES (${runId}, ${workspaceId}, 'content_calendar', 'running')`
 
+    // Sprint 1: build Postgres memory matrix + log injection event so we
+    // can audit (via SELECT FROM agent_run_events WHERE event_type='memory_injected')
+    // that the content calendar agent read past performance signals
+    // before generating.
+    const memoryMatrix = await buildMemoryMatrix(workspaceId)
+    await logMemoryInjection({ workspaceId, agentRunId: runId, agent: 'content_calendar', matrix: memoryMatrix })
+
     let calendar
     try {
-      calendar = await generateContentCalendar(brand, strategy)
+      calendar = await generateContentCalendar(brand, strategy, memoryMatrix.matrix)
     } catch (agentError) {
       await sql`UPDATE agent_runs SET status = 'failed', completed_at = CURRENT_TIMESTAMP WHERE id = ${runId}`
       throw agentError

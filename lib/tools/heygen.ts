@@ -1,5 +1,7 @@
 // HeyGen API
 
+import { getCredential } from '@/lib/credential-context'
+
 const HEYGEN_BASE = 'https://api.heygen.com'
 
 export interface HeyGenAvatar {
@@ -39,7 +41,7 @@ export interface HeyGenGenerateOptions {
 }
 
 function heyGenHeaders(): Record<string, string> {
-  const key = process.env.HEYGEN_API_KEY || ''
+  const key = getCredential('HEYGEN_API_KEY') || ''
   return {
     'X-Api-Key': key,
     'Content-Type': 'application/json',
@@ -47,7 +49,7 @@ function heyGenHeaders(): Record<string, string> {
 }
 
 export async function getHeyGenAvatars(): Promise<HeyGenAvatar[]> {
-  const key = process.env.HEYGEN_API_KEY
+  const key = getCredential('HEYGEN_API_KEY')
   if (!key) return []
   try {
     const res = await fetch(`${HEYGEN_BASE}/v2/avatars`, {
@@ -62,7 +64,7 @@ export async function getHeyGenAvatars(): Promise<HeyGenAvatar[]> {
 }
 
 export async function getHeyGenVoices(): Promise<HeyGenVoice[]> {
-  const key = process.env.HEYGEN_API_KEY
+  const key = getCredential('HEYGEN_API_KEY')
   if (!key) return []
   try {
     const res = await fetch(`${HEYGEN_BASE}/v2/voices`, {
@@ -79,7 +81,7 @@ export async function getHeyGenVoices(): Promise<HeyGenVoice[]> {
 export async function generateHeyGenVideo(
   options: HeyGenGenerateOptions
 ): Promise<{ videoId: string } | null> {
-  const key = process.env.HEYGEN_API_KEY
+  const key = getCredential('HEYGEN_API_KEY')
   if (!key) return null
   try {
     const backgroundValue = options.background || '#ffffff'
@@ -126,7 +128,7 @@ export async function generateHeyGenVideo(
 }
 
 export async function getHeyGenVideoStatus(videoId: string): Promise<HeyGenVideo | null> {
-  const key = process.env.HEYGEN_API_KEY
+  const key = getCredential('HEYGEN_API_KEY')
   if (!key) return null
   try {
     const res = await fetch(`${HEYGEN_BASE}/v2/video_status.get?video_id=${videoId}`, {
@@ -149,7 +151,7 @@ export async function getHeyGenVideoStatus(videoId: string): Promise<HeyGenVideo
 }
 
 export async function listHeyGenVideos(): Promise<HeyGenVideo[]> {
-  const key = process.env.HEYGEN_API_KEY
+  const key = getCredential('HEYGEN_API_KEY')
   if (!key) return []
   try {
     const res = await fetch(`${HEYGEN_BASE}/v1/video.list?limit=20`, {
@@ -173,5 +175,5 @@ export async function listHeyGenVideos(): Promise<HeyGenVideo[]> {
 }
 
 export function isHeyGenAvailable(): boolean {
-  return !!process.env.HEYGEN_API_KEY
+  return !!getCredential('HEYGEN_API_KEY')
 }

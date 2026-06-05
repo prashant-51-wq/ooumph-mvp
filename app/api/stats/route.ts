@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
+import { assertWorkspaceOwnership } from '@/lib/guards'
+import { checkApiRateLimit } from '@/lib/rate-limiter'
 
 function rangeToDays(range: string | null): number {
   switch (range) {
@@ -12,6 +14,9 @@ function rangeToDays(range: string | null): number {
 }
 
 export async function GET(req: NextRequest) {
+  const limited = checkApiRateLimit(req, 'stats')
+  if (limited) return limited
+
   const { searchParams } = new URL(req.url)
   const workspaceId = searchParams.get('workspaceId')
   const view = searchParams.get('view')        // 'analytics' | null (default)
@@ -20,6 +25,10 @@ export async function GET(req: NextRequest) {
   if (!workspaceId) {
     return NextResponse.json({ artifacts: 0, pendingApprovals: 0, learningNotes: 0, completedTypes: [] })
   }
+  // Sprint 8A: session must own this workspace. Without this the home
+  // dashboard would leak any tenant's KPIs by URL-tampering ?workspaceId=.
+  const denied = assertWorkspaceOwnership(req, workspaceId)
+  if (denied) return denied
 
   // ── Default (dashboard) view ────────────────────────────────────────────────
   if (view !== 'analytics') {
@@ -65,6 +74,45 @@ export async function GET(req: NextRequest) {
       sql`SELECT type, COUNT(*) as count FROM artifacts WHERE workspace_id = ${workspaceId} AND created_at >= ${sinceISO} GROUP BY type`,
       sql`SELECT platform, COUNT(*) as count FROM publish_log WHERE workspace_id = ${workspaceId} AND published_at >= ${sinceISO} GROUP BY platform`,
     ])
+
+    // Sprint 15E (P1 #14): daily series for the Overview bar chart, which
+    // shipped with empty arrays because /api/stats had no date-grouped
+    // query. Three streams (content created, posts published, leads
+    // captured) bucketed by day. Built in a second Promise.all to keep
+    // the first one's type inference clean.
+    const [contentDaily, publishedDaily, leadsDaily] = await Promise.all([
+      sql`SELECT substr(CAST(created_at AS TEXT), 1, 10) as day, COUNT(*) as count
+          FROM artifacts WHERE workspace_id = ${workspaceId} AND created_at >= ${sinceISO}
+          GROUP BY substr(CAST(created_at AS TEXT), 1, 10)`,
+      sql`SELECT substr(CAST(published_at AS TEXT), 1, 10) as day, COUNT(*) as count
+          FROM publish_log WHERE workspace_id = ${workspaceId} AND published_at >= ${sinceISO}
+          GROUP BY substr(CAST(published_at AS TEXT), 1, 10)`,
+      sql`SELECT substr(CAST(created_at AS TEXT), 1, 10) as day, COUNT(*) as count
+          FROM leads_captured WHERE workspace_id = ${workspaceId} AND created_at >= ${sinceISO}
+          GROUP BY substr(CAST(created_at AS TEXT), 1, 10)`,
+    ])
+    // Build a contiguous day series so the chart doesn't have gaps for
+    // zero-activity days.
+    const dayMap = new Map<string, { content: number; published: number; leads: number }>()
+    for (let i = 0; i < days; i++) {
+      const d = new Date(sinceMs + i * 86400000).toISOString().slice(0, 10)
+      dayMap.set(d, { content: 0, published: 0, leads: 0 })
+    }
+    for (const r of contentDaily.rows) {
+      const k = String(r.day || '').slice(0, 10)
+      if (dayMap.has(k)) dayMap.get(k)!.content = Number(r.count || 0)
+    }
+    for (const r of publishedDaily.rows) {
+      const k = String(r.day || '').slice(0, 10)
+      if (dayMap.has(k)) dayMap.get(k)!.published = Number(r.count || 0)
+    }
+    for (const r of leadsDaily.rows) {
+      const k = String(r.day || '').slice(0, 10)
+      if (dayMap.has(k)) dayMap.get(k)!.leads = Number(r.count || 0)
+    }
+    const dailySeries = Array.from(dayMap.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([day, v]) => ({ day, ...v }))
 
     const totalRuns = agentRunsResult.rows.reduce((s, r) => s + Number(r.run_count || 0), 0)
     const totalCost = agentRunsResult.rows.reduce((s, r) => s + Number(r.total_cost || 0), 0)
@@ -125,6 +173,7 @@ export async function GET(req: NextRequest) {
       })),
       contentByType: contentByTypeResult.rows.map(r => ({ type: r.type as string, count: Number(r.count) })),
       publishByPlatform: publishByPlatformResult.rows.map(r => ({ platform: r.platform as string, count: Number(r.count) })),
+      dailySeries,
     })
   } catch (error) {
     console.error('Analytics stats error:', error)

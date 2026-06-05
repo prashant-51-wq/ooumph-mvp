@@ -1,12 +1,14 @@
 // Mailchimp Email Marketing API
 
+import { getCredential } from '@/lib/credential-context'
+
 function mailchimpBase(): string {
-  const server = process.env.MAILCHIMP_SERVER ?? 'us1'
+  const server = getCredential('MAILCHIMP_SERVER') ?? 'us1'
   return `https://${server}.api.mailchimp.com/3.0`
 }
 
 function mailchimpAuth(): string {
-  const key = process.env.MAILCHIMP_API_KEY ?? ''
+  const key = getCredential('MAILCHIMP_API_KEY') ?? ''
   return `Basic ${Buffer.from(`anystring:${key}`).toString('base64')}`
 }
 
@@ -24,7 +26,7 @@ export interface MailchimpCampaign {
 }
 
 export async function getLists(): Promise<MailchimpList[]> {
-  if (!process.env.MAILCHIMP_API_KEY || !process.env.MAILCHIMP_SERVER) return []
+  if (!getCredential('MAILCHIMP_API_KEY') || !getCredential('MAILCHIMP_SERVER')) return []
   try {
     const res = await fetch(`${mailchimpBase()}/lists?count=100`, {
       headers: { Authorization: mailchimpAuth() },
@@ -42,7 +44,7 @@ export async function addSubscriber(
   email: string,
   mergeFields?: { FNAME?: string; LNAME?: string; [key: string]: string | undefined }
 ): Promise<boolean> {
-  if (!process.env.MAILCHIMP_API_KEY || !process.env.MAILCHIMP_SERVER) return false
+  if (!getCredential('MAILCHIMP_API_KEY') || !getCredential('MAILCHIMP_SERVER')) return false
   try {
     const res = await fetch(`${mailchimpBase()}/lists/${listId}/members`, {
       method: 'POST',
@@ -69,7 +71,7 @@ export async function createCampaign(
   fromName = 'Ooumph',
   replyTo = 'noreply@ooumph.ai'
 ): Promise<string | null> {
-  if (!process.env.MAILCHIMP_API_KEY || !process.env.MAILCHIMP_SERVER) return null
+  if (!getCredential('MAILCHIMP_API_KEY') || !getCredential('MAILCHIMP_SERVER')) return null
   try {
     const createRes = await fetch(`${mailchimpBase()}/campaigns`, {
       method: 'POST',
@@ -111,7 +113,7 @@ export async function createCampaign(
 }
 
 export async function getCampaigns(count = 10): Promise<MailchimpCampaign[]> {
-  if (!process.env.MAILCHIMP_API_KEY || !process.env.MAILCHIMP_SERVER) return []
+  if (!getCredential('MAILCHIMP_API_KEY') || !getCredential('MAILCHIMP_SERVER')) return []
   try {
     const res = await fetch(`${mailchimpBase()}/campaigns?count=${count}`, {
       headers: { Authorization: mailchimpAuth() },
@@ -127,7 +129,7 @@ export async function getCampaigns(count = 10): Promise<MailchimpCampaign[]> {
 export async function getCampaignReport(
   campaignId: string
 ): Promise<{ opens: { open_rate: number }; clicks: { click_rate: number }; emails_sent: number } | null> {
-  if (!process.env.MAILCHIMP_API_KEY || !process.env.MAILCHIMP_SERVER) return null
+  if (!getCredential('MAILCHIMP_API_KEY') || !getCredential('MAILCHIMP_SERVER')) return null
   try {
     const res = await fetch(`${mailchimpBase()}/reports/${campaignId}`, {
       headers: { Authorization: mailchimpAuth() },
@@ -140,5 +142,5 @@ export async function getCampaignReport(
 }
 
 export function isMailchimpAvailable(): boolean {
-  return !!process.env.MAILCHIMP_API_KEY && !!process.env.MAILCHIMP_SERVER
+  return !!getCredential('MAILCHIMP_API_KEY') && !!getCredential('MAILCHIMP_SERVER')
 }

@@ -28,15 +28,9 @@ interface Subscription {
   features?: string[] | string
 }
 
-// ── Static fallback (kept for the addons + history sections only) ─────────────
-
-const ADDONS = [
-  { id: 'ai_1k', name: '+1,000 AI Requests', description: 'Extra AI request credits', price: 19, unit: 'mo' },
-  { id: 'ai_5k', name: '+5,000 AI Requests', description: 'Bulk AI request credits', price: 79, unit: 'mo' },
-  { id: 'storage', name: '+10GB Storage', description: 'Extra cloud storage', price: 9, unit: 'mo' },
-  { id: 'client_seat', name: 'Extra Client Seat', description: 'Add one more client account', price: 29, unit: 'mo / seat' },
-  { id: 'team_member', name: 'Extra Team Member', description: 'Add one more team member', price: 15, unit: 'mo / member' },
-]
+// ADDONS const + AddonCard component removed Sprint 15F (P1 #15) — the
+// grid was UI-only with no `/api/billing/addons` endpoint. Will reinstate
+// once a real fulfilment path lands.
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -57,6 +51,106 @@ function parseFeatures(features: string[] | string | undefined): string[] {
 
 // ── Subcomponents ─────────────────────────────────────────────────────────────
 
+interface UsageData {
+  used: number; limit: number; remaining: number
+  planName: string; periodStart: string; periodEnd: string
+  percent: number; nearLimit: boolean
+}
+
+/**
+ * Sprint 16E (audit P1 #10) — current plan-period usage meter.
+ *
+ * Renders a progress bar + numeric counter sourced from
+ * /api/billing/usage (which reads lib/quota.ts getAgentRunQuotaUsage).
+ * Honest empty state when the workspace has no usage yet.
+ */
+function UsageMeter({ workspaceId }: { workspaceId: string | null }) {
+  const [usage, setUsage] = useState<UsageData | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!workspaceId) return
+    setLoading(true)
+    fetch(`/api/billing/usage?workspaceId=${workspaceId}`)
+      .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
+      .then((data: UsageData | { error?: string }) => {
+        if ('error' in data && !('used' in data)) {
+          setError((data as { error?: string }).error || 'Unable to load usage')
+        } else {
+          setUsage(data as UsageData)
+        }
+      })
+      .catch(e => setError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setLoading(false))
+  }, [workspaceId])
+
+  if (loading) {
+    return (
+      <div className="mb-6">
+        <h2 className="text-white font-semibold text-lg mb-3">Usage this period</h2>
+        <div className="bg-gray-900 border border-gray-800 rounded-2xl p-5 text-gray-500 text-sm">Loading…</div>
+      </div>
+    )
+  }
+  if (error || !usage) {
+    return (
+      <div className="mb-6">
+        <h2 className="text-white font-semibold text-lg mb-3">Usage this period</h2>
+        <div className="bg-gray-900 border border-gray-800 rounded-2xl p-5 text-gray-500 text-sm">
+          {error || 'No usage data yet.'}
+        </div>
+      </div>
+    )
+  }
+
+  const barColor = usage.percent >= 100
+    ? 'bg-red-500'
+    : usage.percent >= 80
+      ? 'bg-amber-500'
+      : 'bg-indigo-500'
+  const period = `${new Date(usage.periodStart).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} – ${new Date(usage.periodEnd).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`
+
+  return (
+    <div className="mb-6">
+      <div className="flex items-baseline justify-between mb-3">
+        <h2 className="text-white font-semibold text-lg">Usage this period</h2>
+        <p className="text-gray-500 text-xs">{usage.planName} · {period}</p>
+      </div>
+      <div className="bg-gray-900 border border-gray-800 rounded-2xl p-5">
+        <div className="flex items-baseline justify-between mb-2">
+          <div>
+            <span className="text-3xl font-bold text-white tabular-nums">{usage.used.toLocaleString()}</span>
+            <span className="text-gray-500 text-sm ml-1">/ {usage.limit.toLocaleString()} AI runs</span>
+          </div>
+          <span className={`text-sm font-medium ${usage.percent >= 100 ? 'text-red-400' : usage.percent >= 80 ? 'text-amber-400' : 'text-gray-400'}`}>
+            {usage.percent.toFixed(1)}%
+          </span>
+        </div>
+        <div className="h-2.5 bg-gray-800 rounded-full overflow-hidden">
+          <div className={`h-full ${barColor} transition-all duration-300`} style={{ width: `${Math.min(100, usage.percent)}%` }} />
+        </div>
+        <div className="flex items-center justify-between mt-3 text-xs">
+          {/* Sprint 17E (audit P2 #26): clamp negative remaining. The API
+              returned (limit - used) raw, so over-quota workspaces saw
+              "-12 runs remaining" which scans as a bug. Switch the copy
+              to "Limit reached — N over" with red type once we're under. */}
+          {usage.remaining < 0 ? (
+            <span className="text-red-400 font-medium">
+              Limit reached — {Math.abs(usage.remaining).toLocaleString()} over
+            </span>
+          ) : (
+            <span className="text-gray-500">{usage.remaining.toLocaleString()} runs remaining</span>
+          )}
+          {usage.nearLimit && usage.remaining >= 0 && (
+            <span className="text-amber-400">Approaching limit — consider upgrading.</span>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function FaqItem({ q, a }: { q: string; a: string }) {
   const [open, setOpen] = useState(false)
   return (
@@ -70,44 +164,7 @@ function FaqItem({ q, a }: { q: string; a: string }) {
   )
 }
 
-function AddonCard({ addon }: { addon: typeof ADDONS[0] }) {
-  const [qty, setQty] = useState(0)
-  const [added, setAdded] = useState(false)
-  // TODO: wire add-on purchases to a real /api/billing/addons endpoint once available.
-  function handleAdd() {
-    if (qty === 0) setQty(1)
-    setAdded(true)
-    setTimeout(() => setAdded(false), 2000)
-  }
-  return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 flex flex-col gap-3">
-      <div>
-        <p className="text-white font-medium text-sm">{addon.name}</p>
-        <p className="text-gray-500 text-xs mt-0.5">{addon.description}</p>
-      </div>
-      <div className="flex items-center justify-between">
-        <span className="text-indigo-300 font-semibold text-sm">${addon.price}<span className="text-gray-500 font-normal text-xs">/{addon.unit}</span></span>
-        <div className="flex items-center gap-2">
-          {qty > 0 && (
-            <div className="flex items-center gap-1 bg-gray-800 rounded-lg border border-gray-700">
-              <button onClick={() => setQty(q => Math.max(0, q - 1))} className="px-2 py-1 text-gray-400 hover:text-white text-sm transition-colors">−</button>
-              <span className="text-white text-sm w-5 text-center">{qty}</span>
-              <button onClick={() => setQty(q => q + 1)} className="px-2 py-1 text-gray-400 hover:text-white text-sm transition-colors">+</button>
-            </div>
-          )}
-          <button
-            onClick={handleAdd}
-            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-              added ? 'bg-emerald-600 text-white' : 'bg-indigo-600 hover:bg-indigo-500 text-white'
-            }`}
-          >
-            {added ? 'Added' : 'Add'}
-          </button>
-        </div>
-      </div>
-    </div>
-  )
-}
+// AddonCard removed Sprint 15F (P1 #15) — see ADDONS removal note above.
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
@@ -467,21 +524,15 @@ export default function BillingPage() {
         </div>
       </div>
 
-      {/* ── Add-ons (TODO: not wired to backend yet) ── */}
-      <div>
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <h2 className="text-white font-semibold text-lg">Add-ons</h2>
-            <p className="text-gray-500 text-xs mt-0.5">Note: add-on purchases are not yet connected to billing.</p>
-          </div>
-          <p className="text-gray-500 text-sm">Extend your plan without upgrading</p>
-        </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
-          {ADDONS.map(addon => (
-            <AddonCard key={addon.id} addon={addon} />
-          ))}
-        </div>
-      </div>
+      {/* Sprint 16E (P1 #10): real usage meter consuming /api/billing/usage,
+          which exposes lib/quota.ts getAgentRunQuotaUsage() — previously a
+          dead export with no UI consumer. */}
+      <UsageMeter workspaceId={workspaceId} />
+
+      {/* ── Add-ons removed Sprint 15F (P1 #15) ──
+          The grid was UI-only — clicking "Add" just toggled local state and
+          no `/api/billing/addons` endpoint existed. Honest move was to ship
+          it or remove it; we removed pending a real fulfilment story. */}
 
       {/* ── Payment Methods ── */}
       <div>

@@ -45,7 +45,8 @@ export interface AssetPackage {
 export async function generateAssets(
   brand: BrandProfile,
   strategy: Strategy,
-  learningNotes?: string[]
+  learningNotes?: string[],
+  workspaceId?: string,
 ): Promise<AssetPackage> {
   const notesContext = learningNotes?.length
     ? `\n\nIMPORTANT — Apply these learnings from previous feedback:\n${learningNotes.map((n, i) => `${i + 1}. ${n}`).join('\n')}`
@@ -106,5 +107,5 @@ Return as JSON:
   }
 }`
 
-  return runAgent<AssetPackage>(SYSTEM_PROMPT, userPrompt)
+  return runAgent<AssetPackage>(SYSTEM_PROMPT, userPrompt, workspaceId ?? '')
 }

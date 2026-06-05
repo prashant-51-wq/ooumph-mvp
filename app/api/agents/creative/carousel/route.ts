@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { sendApprovalRequestEmail } from '@/lib/email'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 import type { BrandProfile } from '@/types'
 
 interface CarouselCopy {
@@ -24,6 +25,8 @@ export async function POST(req: NextRequest) {
   try {
     const { workspaceId } = await req.json()
     if (!workspaceId) return NextResponse.json({ error: 'Missing workspaceId' }, { status: 400 })
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     const [brandResult, carouselResult] = await Promise.all([
       sql`SELECT * FROM brand_profiles WHERE workspace_id = ${workspaceId} LIMIT 1`,

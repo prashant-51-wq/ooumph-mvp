@@ -20,6 +20,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
 import { runAgent } from '@/lib/claude'
 import { assertWorkspaceOwnership } from '@/lib/guards'
+import { assertAgentRunQuota } from '@/lib/quota'
 
 export const runtime = 'nodejs'
 
@@ -87,6 +88,9 @@ export async function POST(req: NextRequest) {
   }
   const denied = assertWorkspaceOwnership(req, workspaceId)
   if (denied) return denied
+    // Sprint 13B: plan-tier quota.
+    const overQuota = await assertAgentRunQuota(req, workspaceId)
+    if (overQuota) return overQuota
 
   // Load the mention + workspace brand context
   const [mentionRes, brandRes] = await Promise.all([
@@ -117,7 +121,7 @@ ${mention.content_text.slice(0, 4000)}
 Draft the reply per the OUTPUT CONTRACT.`
 
   try {
-    const draft = await runAgent<DraftResult>(SYSTEM_PROMPT, userPrompt)
+    const draft = await runAgent<DraftResult>(SYSTEM_PROMPT, userPrompt, workspaceId)
     // Hard-clip Twitter/X to 280 just in case the model overshoots.
     const finalReply = isHardLimit && draft.reply.length > limit
       ? draft.reply.slice(0, limit - 1) + '…'

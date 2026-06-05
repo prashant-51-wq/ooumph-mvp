@@ -6,6 +6,7 @@
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 
 function getWorkspaceId(req: NextRequest): string | null {
   return req.headers.get('x-workspace-id') || new URL(req.url).searchParams.get('workspaceId')
@@ -14,6 +15,10 @@ function getWorkspaceId(req: NextRequest): string | null {
 export async function GET(req: NextRequest) {
   const workspaceId = getWorkspaceId(req)
   if (!workspaceId) return NextResponse.json({ error: 'workspaceId required' }, { status: 400 })
+  // Sprint 9A: ownership — vendor's client list contains revenue +
+  // commission breakdowns. Cross-tenant leak of competitor revenue.
+  const denied = assertWorkspaceOwnership(req, workspaceId)
+  if (denied) return denied
 
   const { searchParams } = new URL(req.url)
   const status = searchParams.get('status') // active | trial | suspended | all
@@ -58,6 +63,9 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   const workspaceId = getWorkspaceId(req)
   if (!workspaceId) return NextResponse.json({ error: 'workspaceId required' }, { status: 400 })
+  // Sprint 9A: ownership.
+  const denied = assertWorkspaceOwnership(req, workspaceId)
+  if (denied) return denied
 
   try {
     const body = await req.json() as {
@@ -91,6 +99,9 @@ export async function POST(req: NextRequest) {
 export async function PATCH(req: NextRequest) {
   const workspaceId = getWorkspaceId(req)
   if (!workspaceId) return NextResponse.json({ error: 'workspaceId required' }, { status: 400 })
+  // Sprint 9A: ownership.
+  const denied = assertWorkspaceOwnership(req, workspaceId)
+  if (denied) return denied
 
   try {
     const body = await req.json() as {
@@ -134,6 +145,9 @@ export async function PATCH(req: NextRequest) {
 export async function DELETE(req: NextRequest) {
   const workspaceId = getWorkspaceId(req)
   if (!workspaceId) return NextResponse.json({ error: 'workspaceId required' }, { status: 400 })
+  // Sprint 9A: ownership.
+  const denied = assertWorkspaceOwnership(req, workspaceId)
+  if (denied) return denied
 
   const { searchParams } = new URL(req.url)
   const clientId = searchParams.get('clientId')

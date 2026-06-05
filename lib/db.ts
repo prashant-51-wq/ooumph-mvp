@@ -107,6 +107,10 @@ async function postgresQuery(strings: TemplateStringsArray, ...values: unknown[]
     await pgSql`ALTER TABLE leads_captured ADD COLUMN IF NOT EXISTS hubspot_id TEXT`
     await pgSql`ALTER TABLE approvals ADD COLUMN IF NOT EXISTS brand_voice_score INTEGER`
     await pgSql`ALTER TABLE approvals ADD COLUMN IF NOT EXISTS brand_voice_reasoning TEXT`
+    // Audit pass #6 P1: composite index for paginated approvals UI fetch and
+    // hourly auto-approve cron. Both filter (workspace_id, status) and order
+    // by created_at DESC.
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_approvals_workspace_status_created ON approvals(workspace_id, status, created_at DESC)`
     await pgSql`CREATE TABLE IF NOT EXISTS brand_memory (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, content TEXT NOT NULL, content_type TEXT NOT NULL DEFAULT 'learning_note', platform TEXT, performance_score INTEGER DEFAULT 0, metadata_json TEXT DEFAULT '{}', created_at TIMESTAMPTZ DEFAULT NOW())`
     await pgSql`CREATE INDEX IF NOT EXISTS idx_brand_memory_workspace ON brand_memory(workspace_id)`
     await pgSql`CREATE TABLE IF NOT EXISTS scheduled_content (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, platform TEXT NOT NULL, content TEXT NOT NULL, media_urls TEXT DEFAULT '[]', artifact_id TEXT, scheduled_for TEXT, buffer_update_id TEXT, status TEXT NOT NULL DEFAULT 'pending', error_message TEXT, published_at TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`
@@ -117,6 +121,10 @@ async function postgresQuery(strings: TemplateStringsArray, ...values: unknown[]
     await pgSql`CREATE TABLE IF NOT EXISTS calendar_availability (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL UNIQUE, days_of_week TEXT DEFAULT '[1,2,3,4,5]', start_hour INTEGER DEFAULT 9, end_hour INTEGER DEFAULT 17, slot_minutes INTEGER DEFAULT 30, timezone TEXT DEFAULT 'UTC', buffer_minutes INTEGER DEFAULT 10, advance_days INTEGER DEFAULT 14, updated_at TIMESTAMPTZ DEFAULT NOW())`
     await pgSql`CREATE TABLE IF NOT EXISTS lead_activities (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, lead_id TEXT NOT NULL, type TEXT NOT NULL, title TEXT NOT NULL, description TEXT, metadata_json TEXT DEFAULT '{}', created_at TIMESTAMPTZ DEFAULT NOW())`
     await pgSql`CREATE INDEX IF NOT EXISTS idx_lead_activities_lead ON lead_activities(lead_id, created_at DESC)`
+    // Audit pass #6 P1: dedicated indexed column to replace metadata_json LIKE
+    // scans on the GHL webhook hot path. Lookup is (workspace_id, ghl_contact_id).
+    await pgSql`ALTER TABLE lead_activities ADD COLUMN IF NOT EXISTS ghl_contact_id TEXT`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_lead_activities_ghl_contact ON lead_activities(workspace_id, ghl_contact_id)`
     await pgSql`CREATE TABLE IF NOT EXISTS workflows (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT, trigger_type TEXT NOT NULL, trigger_config TEXT DEFAULT '{}', nodes TEXT NOT NULL DEFAULT '[]', status TEXT DEFAULT 'draft', run_count INTEGER DEFAULT 0, last_run_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
     await pgSql`CREATE TABLE IF NOT EXISTS workflow_runs (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, workspace_id TEXT NOT NULL, lead_id TEXT, contact_email TEXT, trigger_data TEXT DEFAULT '{}', status TEXT DEFAULT 'running', current_node INTEGER DEFAULT 0, nodes_completed TEXT DEFAULT '[]', error_message TEXT, started_at TIMESTAMPTZ DEFAULT NOW(), completed_at TIMESTAMPTZ)`
     await pgSql`CREATE TABLE IF NOT EXISTS workflow_pending_steps (id TEXT PRIMARY KEY, workflow_run_id TEXT NOT NULL, workflow_id TEXT NOT NULL, workspace_id TEXT NOT NULL, node_index INTEGER NOT NULL, node_data TEXT NOT NULL, lead_id TEXT, contact_email TEXT, scheduled_for TIMESTAMPTZ NOT NULL, status TEXT DEFAULT 'pending', error_message TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`
@@ -128,6 +136,14 @@ async function postgresQuery(strings: TemplateStringsArray, ...values: unknown[]
     await pgSql`CREATE INDEX IF NOT EXISTS idx_reputation_requests_workspace ON reputation_requests(workspace_id, created_at DESC)`
     await pgSql`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin INTEGER DEFAULT 0`
     await pgSql`ALTER TABLE users ADD COLUMN IF NOT EXISTS workspace_id TEXT`
+    await pgSql`ALTER TABLE users ADD COLUMN IF NOT EXISTS suspended INTEGER DEFAULT 0`
+    // /dashboard/admin panel — append-only audit trail for every super-admin action
+    await pgSql`CREATE TABLE IF NOT EXISTS admin_audit_log (id TEXT PRIMARY KEY, actor_id TEXT NOT NULL, actor_email TEXT, action TEXT NOT NULL, resource_type TEXT, resource_id TEXT, details_json TEXT, ip_address TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_admin_audit_log_created ON admin_audit_log(created_at DESC)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_admin_audit_log_actor ON admin_audit_log(actor_id, created_at DESC)`
+    // Sprint 19F (audit pass #9 P2-1): formalise the Stripe-webhook-idempotency
+    // table that Sprint 18E was lazy-creating on first hit.
+    await pgSql`CREATE TABLE IF NOT EXISTS stripe_webhook_events (event_id TEXT PRIMARY KEY, type TEXT, received_at TIMESTAMPTZ DEFAULT NOW())`
     await pgSql`CREATE TABLE IF NOT EXISTS plans (id TEXT PRIMARY KEY, name TEXT NOT NULL, slug TEXT NOT NULL UNIQUE, price_monthly INTEGER NOT NULL, price_yearly INTEGER, stripe_price_id TEXT, stripe_price_id_yearly TEXT, commission_rate REAL DEFAULT 0.15, max_sub_accounts INTEGER DEFAULT 0, max_ai_runs_monthly INTEGER DEFAULT 500, features TEXT DEFAULT '[]', is_active INTEGER DEFAULT 1, sort_order INTEGER DEFAULT 0, created_at TIMESTAMPTZ DEFAULT NOW())`
     await pgSql`CREATE TABLE IF NOT EXISTS subscriptions (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL UNIQUE, plan_id TEXT NOT NULL, stripe_customer_id TEXT, stripe_subscription_id TEXT, status TEXT DEFAULT 'trialing', current_period_start TIMESTAMPTZ, current_period_end TIMESTAMPTZ, cancel_at_period_end INTEGER DEFAULT 0, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
     await pgSql`CREATE TABLE IF NOT EXISTS vendor_profiles (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL UNIQUE, stripe_connect_account_id TEXT, stripe_connect_status TEXT DEFAULT 'not_connected', commission_rate_override REAL, white_label_name TEXT, white_label_logo_url TEXT, white_label_primary_color TEXT DEFAULT '#4F46E5', white_label_domain TEXT, is_approved INTEGER DEFAULT 1, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
@@ -145,6 +161,48 @@ async function postgresQuery(strings: TemplateStringsArray, ...values: unknown[]
     await pgSql`CREATE INDEX IF NOT EXISTS idx_workspace_invites_workspace ON workspace_invites(workspace_id)`
     await pgSql`CREATE TABLE IF NOT EXISTS sales_deals (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, lead_id TEXT, contact_name TEXT NOT NULL, contact_email TEXT, company TEXT, title TEXT NOT NULL, value REAL DEFAULT 0, currency VARCHAR(10) DEFAULT 'USD', stage VARCHAR(50) DEFAULT 'prospect', probability INTEGER DEFAULT 10, expected_close TEXT, actual_close TEXT, notes TEXT, source TEXT, custom_fields TEXT DEFAULT '{}', created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
     await pgSql`CREATE INDEX IF NOT EXISTS idx_sales_deals_workspace ON sales_deals(workspace_id, stage)`
+    // Sprint 6E: Lost-reason capture for sales_deals (analytics + retro).
+    // Lets the CRM Kanban prompt for "why did we lose this?" when a deal
+    // moves to Closed Lost — feeds future win/loss analysis.
+    await pgSql`ALTER TABLE sales_deals ADD COLUMN IF NOT EXISTS lost_reason TEXT`
+    await pgSql`ALTER TABLE sales_deals ADD COLUMN IF NOT EXISTS lost_at TIMESTAMPTZ`
+    // Sprint 6G: per-post organic engagement. Populated by future platform
+    // sync workers (LinkedIn Insights, Twitter Analytics, etc.). The
+    // /api/analytics/posts endpoint joins this with publish_log + artifacts
+    // so Top Performing Content can sort by real engagement, not recency.
+    await pgSql`CREATE TABLE IF NOT EXISTS post_metrics (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, artifact_id TEXT NOT NULL, platform VARCHAR(50) NOT NULL, post_id TEXT, impressions INTEGER DEFAULT 0, clicks INTEGER DEFAULT 0, likes INTEGER DEFAULT 0, comments INTEGER DEFAULT 0, shares INTEGER DEFAULT 0, saves INTEGER DEFAULT 0, video_views INTEGER DEFAULT 0, last_synced_at TIMESTAMPTZ DEFAULT NOW(), created_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE UNIQUE INDEX IF NOT EXISTS idx_post_metrics_unique ON post_metrics(artifact_id, platform)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_post_metrics_workspace ON post_metrics(workspace_id, last_synced_at DESC)`
+    // Sprint 7C: real session tracking + login event history. Replaces the
+    // hardcoded session/login arrays on /dashboard/settings/security. Each
+    // successful login inserts a user_sessions row (token_hash = sha256(JWT))
+    // and a login_events row. Revoke = set revoked_at. Login history table
+    // also records failed attempts so the operator can spot abuse.
+    await pgSql`CREATE TABLE IF NOT EXISTS user_sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, workspace_id TEXT, token_hash TEXT NOT NULL UNIQUE, user_agent TEXT, ip TEXT, created_at TIMESTAMPTZ DEFAULT NOW(), last_seen_at TIMESTAMPTZ DEFAULT NOW(), revoked_at TIMESTAMPTZ)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_user_sessions_user ON user_sessions(user_id, created_at DESC)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_user_sessions_token ON user_sessions(token_hash)`
+    await pgSql`CREATE TABLE IF NOT EXISTS login_events (id TEXT PRIMARY KEY, user_id TEXT, email_attempted TEXT, ip TEXT, user_agent TEXT, success INTEGER DEFAULT 0, failure_reason TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_login_events_user ON login_events(user_id, created_at DESC)`
+    // Sprint 7D: manual + Stripe payout ledger. Until Stripe Connect
+    // payouts are wired, super-admin "Mark Paid" inserts a row here with
+    // payment_method='manual'. commission balance on /super-admin =
+    // SUM(commission_ledger.commission_amount) - SUM(commission_payouts.amount_cents)
+    // for each vendor. stripe_transfer_id populated only when the real
+    // Stripe path lands.
+    await pgSql`CREATE TABLE IF NOT EXISTS commission_payouts (id TEXT PRIMARY KEY, vendor_workspace_id TEXT NOT NULL, amount_cents INTEGER NOT NULL, paid_at TIMESTAMPTZ DEFAULT NOW(), notes TEXT, paid_by_user_id TEXT, payment_method VARCHAR(20) DEFAULT 'manual', stripe_transfer_id TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_commission_payouts_vendor ON commission_payouts(vendor_workspace_id, paid_at DESC)`
+    // Sprint 9B: encrypt-at-rest for integration access tokens. AES-256-GCM
+    // via lib/secrets.ts. New writes go into encrypted_access_token;
+    // legacy rows continue to use access_token (plaintext) until they're
+    // re-saved. The shared lib/integrations.ts:readAccessToken() helper
+    // hides the difference from readers.
+    await pgSql`ALTER TABLE integrations ADD COLUMN IF NOT EXISTS encrypted_access_token TEXT`
+    // Sprint 13A: human-readable slugs for hosted landing pages. Allows
+    // /lp/acme-launch instead of /lp/<uuid>. NULL on artifacts that
+    // aren't landing pages or haven't had a slug set. Unique enforced
+    // at the column level so two LPs can't claim the same URL.
+    await pgSql`ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS lp_slug VARCHAR(128)`
+    await pgSql`CREATE UNIQUE INDEX IF NOT EXISTS idx_artifacts_lp_slug ON artifacts(lp_slug) WHERE lp_slug IS NOT NULL`
     // === Phase Remediation tables (Postgres first-call init) ===
     await pgSql`CREATE TABLE IF NOT EXISTS workspace_secrets (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, provider VARCHAR(50) NOT NULL, encrypted_value TEXT NOT NULL, label TEXT, status TEXT DEFAULT 'active', last_tested_at TIMESTAMPTZ, test_result TEXT, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
     await pgSql`CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_secrets_unique ON workspace_secrets(workspace_id, provider)`
@@ -166,6 +224,101 @@ async function postgresQuery(strings: TemplateStringsArray, ...values: unknown[]
     await pgSql`CREATE INDEX IF NOT EXISTS idx_project_tasks_initiative ON project_tasks(initiative_run_id, task_index ASC)`
     await pgSql`CREATE INDEX IF NOT EXISTS idx_project_tasks_workspace ON project_tasks(workspace_id, created_at DESC)`
     await pgSql`CREATE INDEX IF NOT EXISTS idx_project_tasks_status ON project_tasks(status, created_at ASC)`
+
+    // ─── Sprint 20P: dashboard hot-path indexes ──────────────────────────
+    // /api/stats runs 4 COUNT/DISTINCT queries on artifacts +
+    // learning_notes filtered by workspace_id. /api/agent-runs orders
+    // by created_at DESC scoped to workspace_id. Without these, every
+    // dashboard mount was a full seq-scan on growing tables. Composite
+    // (workspace_id, created_at DESC) supports both the COUNT and the
+    // recent-rows view in one btree.
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_artifacts_workspace_created ON artifacts(workspace_id, created_at DESC)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_artifacts_workspace_type ON artifacts(workspace_id, type)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_learning_notes_workspace ON learning_notes(workspace_id, created_at DESC)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_agent_runs_workspace_created ON agent_runs(workspace_id, created_at DESC)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_agent_runs_workspace_status ON agent_runs(workspace_id, status, created_at DESC)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_leads_captured_workspace ON leads_captured(workspace_id, created_at DESC)`
+
+    // Sprint 20O — allow CMO to persist tasks at proposal time, BEFORE a
+    // strategy artifact exists. parent_artifact_id and initiative_run_id
+    // are populated only after the user approves the strategy bubble and
+    // decompose-strategy runs. Until then they're null; a CHECK keeps the
+    // invariant honest: those fields can ONLY be null while status='proposed'.
+    await pgSql`ALTER TABLE project_tasks ALTER COLUMN parent_artifact_id DROP NOT NULL`
+    await pgSql`ALTER TABLE project_tasks ALTER COLUMN initiative_run_id DROP NOT NULL`
+    await pgSql`ALTER TABLE project_tasks ADD COLUMN IF NOT EXISTS proposal_payload TEXT`
+    await pgSql`ALTER TABLE project_tasks ADD COLUMN IF NOT EXISTS cmo_run_id TEXT`
+    try {
+      await pgSql`
+        ALTER TABLE project_tasks ADD CONSTRAINT chk_task_proposal_state
+          CHECK (status = 'proposed' OR (parent_artifact_id IS NOT NULL AND initiative_run_id IS NOT NULL))
+      `
+    } catch { /* constraint may already exist; idempotent ALTER ADD CONSTRAINT isn't supported pre-PG14 */ }
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_project_tasks_cmo_run ON project_tasks(cmo_run_id) WHERE cmo_run_id IS NOT NULL`
+    // === Sprint 2 Commit 1: Agent Lifecycle + Workspace Projects (Postgres inline init) ===
+    //
+    //   agents — per-workspace agent registry. One row per (workspace_id, name).
+    //   This is the table the operator's Pause/Resume UI mutates and the table
+    //   the cron worker filters on (`WHERE status = 'active'`). Architecture
+    //   recommendation: status column gating, not external process teardown —
+    //   matches the Vercel serverless deployment model (no daemons to SIGTERM).
+    //
+    //   The CHECK constraint enforces the four states the worker recognizes:
+    //     active   — runnable, default for new rows
+    //     paused   — operator-paused; cron skips on next tick
+    //     error    — system-flagged after repeated failures (set by runner, not UI)
+    //     disabled — soft-deleted by an admin; never returns to runnable without
+    //                explicit re-enable
+    //
+    //   paused_at / paused_by are captured at the moment of pause so the timeline
+    //   can attribute the action (audit log feeder for Sprint 2D).
+    //
+    //   Note: there was no prior `agents` table in this codebase — only
+    //   `agent_runs` (per-invocation log) and `voice_agents` (telephony). This
+    //   creates the registry table with the three Sprint 2 tracking columns
+    //   built-in. CREATE TABLE IF NOT EXISTS keeps it safe to re-run.
+    await pgSql`CREATE TABLE IF NOT EXISTS agents (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+      name VARCHAR(100) NOT NULL,
+      status VARCHAR(20) NOT NULL DEFAULT 'active' CHECK (status IN ('active','paused','error','disabled')),
+      paused_at TIMESTAMPTZ,
+      paused_by TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`
+    // Forward-compat: if a future version's CREATE TABLE was applied without
+    // the tracking columns, top them up. ADD COLUMN IF NOT EXISTS is a no-op
+    // when the column already exists.
+    await pgSql`ALTER TABLE agents ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'active'`
+    await pgSql`ALTER TABLE agents ADD COLUMN IF NOT EXISTS paused_at TIMESTAMPTZ`
+    await pgSql`ALTER TABLE agents ADD COLUMN IF NOT EXISTS paused_by TEXT`
+    await pgSql`CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_workspace_name ON agents(workspace_id, name)`
+    // Composite (workspace_id, status) is the index the cron filter hits every
+    // tick — `WHERE workspace_id = ? AND status = 'active'`. Keep it first.
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_agents_workspace_status ON agents(workspace_id, status)`
+    //
+    //   workspace_projects — persistent project registry. Replaces the
+    //   `ooumph_projects_v1` localStorage stash on the CMO dashboard, which
+    //   trapped projects on a single browser. After Sprint 2A wires the UI to
+    //   /api/projects, the same project list is available across devices and
+    //   survives a localStorage clear.
+    //
+    //   Schema kept intentionally minimal per the Sprint 2 spec — id + name +
+    //   status + standard timestamps. No CHECK constraint on status so workflow
+    //   evolution doesn't require a migration: callers can use whatever vocab
+    //   the product needs (active / archived / completed / etc.). If a fixed
+    //   vocabulary becomes needed, add CHECK in a follow-up migration.
+    await pgSql`CREATE TABLE IF NOT EXISTS workspace_projects (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+      name VARCHAR(255) NOT NULL,
+      status VARCHAR(20) NOT NULL DEFAULT 'active',
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_workspace_projects_workspace ON workspace_projects(workspace_id, created_at DESC)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_workspace_projects_status ON workspace_projects(workspace_id, status)`
     // === Sprint 1: Email Department schema (Postgres inline init) ===
     // Bridges email_campaigns into the artifact safety gate (artifact_id) and
     // adds scheduling + provider tracking columns. Adds list management tables
@@ -516,6 +669,164 @@ async function postgresQuery(strings: TemplateStringsArray, ...values: unknown[]
     // tokens like {platform}, {campaign_slug}, {creative_id}). Per-campaign
     // override lives in ad_campaigns.utm_override.
     await pgSql`ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS utm_template TEXT`
+
+    // Sprint 15A: onboarding-complete marker so mid-wizard refresh resumes
+    // correctly (previously the wizard had no persisted completion state).
+    await pgSql`ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS onboarding_completed_at TIMESTAMPTZ`
+    await pgSql`ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS onboarding_step INTEGER NOT NULL DEFAULT 0`
+
+    // Audit pass #6 P1: per-workspace inbound webhook token. Compared against
+    // the x-zapier-token header on /api/webhooks/zapier so Zaps configured for
+    // workspace A can't post to workspace B.
+    await pgSql`ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS webhook_secret TEXT`
+
+    // Sprint 15A: persisted CRM segments. Previously segments were UI-only —
+    // computed each render over leads_captured rows. Persisting the rule
+    // lets users share/save segments and lets workflows trigger on them.
+    await pgSql`
+      CREATE TABLE IF NOT EXISTS lead_segments (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+        name VARCHAR(255) NOT NULL,
+        description TEXT,
+        rule_json TEXT NOT NULL,
+        member_count INTEGER NOT NULL DEFAULT 0,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `
+    await pgSql`CREATE INDEX IF NOT EXISTS lead_segments_ws ON lead_segments(workspace_id)`
+
+    // Sprint 16A: multi-stage funnels.
+    //   - funnels parent table groups multiple landing pages/forms.
+    //   - funnel_steps gets funnel_id + stage + sequence + is_active so the
+    //     awareness→retention narrative (audit Promise D) is finally modeled.
+    //   - The implicit-always-live behaviour where every saved funnel_steps
+    //     row was publicly resolvable from /api/f/[slug] is closed by adding
+    //     is_active=false default. The publish flow flips it true.
+    await pgSql`
+      CREATE TABLE IF NOT EXISTS funnels (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+        name VARCHAR(255) NOT NULL,
+        goal VARCHAR(100),
+        is_active BOOLEAN NOT NULL DEFAULT FALSE,
+        archived_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `
+    await pgSql`CREATE INDEX IF NOT EXISTS funnels_ws ON funnels(workspace_id)`
+    await pgSql`ALTER TABLE funnel_steps ADD COLUMN IF NOT EXISTS funnel_id TEXT`
+    await pgSql`ALTER TABLE funnel_steps ADD COLUMN IF NOT EXISTS stage VARCHAR(40) NOT NULL DEFAULT 'awareness'`
+    await pgSql`ALTER TABLE funnel_steps ADD COLUMN IF NOT EXISTS sequence INTEGER NOT NULL DEFAULT 0`
+    await pgSql`ALTER TABLE funnel_steps ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE`
+    await pgSql`CREATE INDEX IF NOT EXISTS funnel_steps_funnel ON funnel_steps(funnel_id, sequence)`
+
+    // Sprint 16A: ad campaigns gain an objective enum so the deploy route can
+    // map to Meta's PAGE_LIKES / awareness / conversions etc instead of the
+    // hardcoded 'leads' that the audit found in deploy/route.ts:119.
+    await pgSql`ALTER TABLE ad_campaigns ADD COLUMN IF NOT EXISTS objective VARCHAR(40) NOT NULL DEFAULT 'leads'`
+    await pgSql`ALTER TABLE ad_campaigns ADD COLUMN IF NOT EXISTS targeting_json TEXT DEFAULT '{}'`
+
+    // Sprint 16A: follower-growth tracking. The audit found post_metrics had
+    // no follower column, so J4 step 8 (track follower growth) was impossible.
+    await pgSql`ALTER TABLE post_metrics ADD COLUMN IF NOT EXISTS followers_delta INTEGER NOT NULL DEFAULT 0`
+    await pgSql`ALTER TABLE post_metrics ADD COLUMN IF NOT EXISTS total_followers INTEGER`
+    // Sprint 17H (audit pass #3 P2 #40): attribution metadata (ad campaign,
+    // etc.) — gives follower-sync rows a place to record which ad campaign
+    // most likely drove the delta. Free-form JSON to avoid more migrations.
+    await pgSql`ALTER TABLE post_metrics ADD COLUMN IF NOT EXISTS metadata_json TEXT DEFAULT '{}'`
+
+    // Sprint 16A: approval audit trail. approvals table previously overwrote
+    // status/notes in place on PATCH — no record of WHO approved WHEN. We add
+    // approved_by + approved_at + an append-only approval_events log.
+    await pgSql`ALTER TABLE approvals ADD COLUMN IF NOT EXISTS approved_by TEXT`
+    await pgSql`ALTER TABLE approvals ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ`
+    await pgSql`
+      CREATE TABLE IF NOT EXISTS approval_events (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        approval_id TEXT NOT NULL,
+        artifact_id TEXT,
+        actor_id TEXT,
+        actor_email VARCHAR(255),
+        action VARCHAR(40) NOT NULL,
+        notes TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `
+    await pgSql`CREATE INDEX IF NOT EXISTS approval_events_approval ON approval_events(approval_id, created_at DESC)`
+
+    // Sprint 16A: brand_profiles gains structured ICP + logo_url so the
+    // strategy/research agents stop hallucinating these from prose.
+    await pgSql`ALTER TABLE brand_profiles ADD COLUMN IF NOT EXISTS icp_json TEXT DEFAULT '{}'`
+    await pgSql`ALTER TABLE brand_profiles ADD COLUMN IF NOT EXISTS logo_url TEXT`
+
+    // Sprint 16A: lead_magnet artifact lineage table — gives downloads a
+    // resolvable hosted URL + tracks fulfilment counts independently of
+    // form submissions.
+    await pgSql`
+      CREATE TABLE IF NOT EXISTS lead_magnets (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+        title VARCHAR(255) NOT NULL,
+        description TEXT,
+        asset_url TEXT NOT NULL,
+        funnel_id TEXT,
+        download_count INTEGER NOT NULL DEFAULT 0,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `
+    await pgSql`CREATE INDEX IF NOT EXISTS lead_magnets_ws ON lead_magnets(workspace_id)`
+
+    // ── TASK-001: Compliance fields on leads_captured ─────────────────────────
+    // Required by COMPLIANCE_GUARDRAILS.md — every contact must have consent
+    // status, do-not-contact flag, and channel consent recorded. Without these,
+    // the Compliance Review Agent cannot make safe outreach decisions and we
+    // risk CAN-SPAM / GDPR / TCPA violations on any outbound action.
+    await pgSql`ALTER TABLE leads_captured ADD COLUMN IF NOT EXISTS consent_status TEXT NOT NULL DEFAULT 'not_set'`
+    await pgSql`ALTER TABLE leads_captured ADD COLUMN IF NOT EXISTS do_not_contact INTEGER NOT NULL DEFAULT 0`
+    await pgSql`ALTER TABLE leads_captured ADD COLUMN IF NOT EXISTS consent_channel TEXT`
+    await pgSql`ALTER TABLE leads_captured ADD COLUMN IF NOT EXISTS consent_date TIMESTAMPTZ`
+    await pgSql`ALTER TABLE leads_captured ADD COLUMN IF NOT EXISTS unsubscribed_at TIMESTAMPTZ`
+    await pgSql`ALTER TABLE leads_captured ADD COLUMN IF NOT EXISTS fit_score INTEGER DEFAULT 0`
+    await pgSql`ALTER TABLE leads_captured ADD COLUMN IF NOT EXISTS intent_score INTEGER DEFAULT 0`
+    // Index: the Compliance Review Agent and outreach agents filter by
+    // (workspace_id, do_not_contact, consent_status) on every outreach check.
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_leads_compliance ON leads_captured(workspace_id, do_not_contact, consent_status)`
+
+    // ── TASK-003: Structured memory items table ───────────────────────────────
+    // Required by MEMORY_ARCHITECTURE.md — stores typed, labeled, reviewed
+    // learning extracted from approved/rejected artifacts and campaign results.
+    // NEVER raw chat. ALWAYS structured with type, content, applies_to, evidence.
+    await pgSql`
+      CREATE TABLE IF NOT EXISTS memory_items (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        type TEXT NOT NULL CHECK (type IN (
+          'winning_hook', 'failed_pattern', 'brand_rule', 'sales_pattern',
+          'audience_insight', 'compliance_note', 'performance_benchmark',
+          'approved_template', 'objection_response', 'competitor_intel'
+        )),
+        content TEXT NOT NULL,
+        applies_to TEXT NOT NULL DEFAULT '',
+        confidence TEXT NOT NULL DEFAULT 'medium' CHECK (confidence IN ('low', 'medium', 'high')),
+        evidence TEXT DEFAULT '',
+        source_artifact_id TEXT REFERENCES artifacts(id) ON DELETE SET NULL,
+        source_approval_id TEXT,
+        status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'archived')),
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_memory_items_workspace_type ON memory_items(workspace_id, type, status)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_memory_items_workspace_recent ON memory_items(workspace_id, created_at DESC)`
+    await pgSql`CREATE INDEX IF NOT EXISTS idx_memory_items_artifact ON memory_items(source_artifact_id) WHERE source_artifact_id IS NOT NULL`
+
+    // ── TASK-001+003: approvals table fields for actor tracking ──────────────
+    // updated_at column for approvals (used by memory extraction timing)
+    await pgSql`ALTER TABLE approvals ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()`
   }
 
   const rows = await pgSql(strings, ...values) as Record<string, unknown>[]
@@ -1054,6 +1365,12 @@ function initSQLiteSync(db: import('better-sqlite3').Database) {
     'CREATE INDEX IF NOT EXISTS idx_reputation_requests_workspace ON reputation_requests(workspace_id, created_at DESC)',
     'ALTER TABLE users ADD COLUMN is_admin INTEGER DEFAULT 0',
     'ALTER TABLE users ADD COLUMN workspace_id TEXT',
+    'ALTER TABLE users ADD COLUMN suspended INTEGER DEFAULT 0',
+    'CREATE TABLE IF NOT EXISTS admin_audit_log (id TEXT PRIMARY KEY, actor_id TEXT NOT NULL, actor_email TEXT, action TEXT NOT NULL, resource_type TEXT, resource_id TEXT, details_json TEXT, ip_address TEXT, created_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE INDEX IF NOT EXISTS idx_admin_audit_log_created ON admin_audit_log(created_at DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_admin_audit_log_actor ON admin_audit_log(actor_id, created_at DESC)',
+    // Sprint 19F: Stripe webhook idempotency table (lazy-created by handler before).
+    'CREATE TABLE IF NOT EXISTS stripe_webhook_events (event_id TEXT PRIMARY KEY, type TEXT, received_at TEXT DEFAULT (datetime(\'now\')))',
     'CREATE TABLE IF NOT EXISTS plans (id TEXT PRIMARY KEY, name TEXT NOT NULL, slug TEXT NOT NULL UNIQUE, price_monthly INTEGER NOT NULL, price_yearly INTEGER, stripe_price_id TEXT, stripe_price_id_yearly TEXT, commission_rate REAL DEFAULT 0.15, max_sub_accounts INTEGER DEFAULT 0, max_ai_runs_monthly INTEGER DEFAULT 500, features TEXT DEFAULT \'[]\', is_active INTEGER DEFAULT 1, sort_order INTEGER DEFAULT 0, created_at TEXT DEFAULT (datetime(\'now\')))',
     'CREATE TABLE IF NOT EXISTS subscriptions (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL UNIQUE, plan_id TEXT NOT NULL, stripe_customer_id TEXT, stripe_subscription_id TEXT, status TEXT DEFAULT \'trialing\', current_period_start TEXT, current_period_end TEXT, cancel_at_period_end INTEGER DEFAULT 0, created_at TEXT DEFAULT (datetime(\'now\')), updated_at TEXT DEFAULT (datetime(\'now\')))',
     'CREATE TABLE IF NOT EXISTS vendor_profiles (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL UNIQUE, stripe_connect_account_id TEXT, stripe_connect_status TEXT DEFAULT \'not_connected\', commission_rate_override REAL, white_label_name TEXT, white_label_logo_url TEXT, white_label_primary_color TEXT DEFAULT \'#4F46E5\', white_label_domain TEXT, is_approved INTEGER DEFAULT 1, created_at TEXT DEFAULT (datetime(\'now\')), updated_at TEXT DEFAULT (datetime(\'now\')))',
@@ -1071,6 +1388,58 @@ function initSQLiteSync(db: import('better-sqlite3').Database) {
     'CREATE INDEX IF NOT EXISTS idx_workspace_invites_workspace ON workspace_invites(workspace_id)',
     'CREATE TABLE IF NOT EXISTS sales_deals (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, lead_id TEXT, contact_name TEXT NOT NULL, contact_email TEXT, company TEXT, title TEXT NOT NULL, value REAL DEFAULT 0, currency TEXT DEFAULT \'USD\', stage TEXT DEFAULT \'prospect\', probability INTEGER DEFAULT 10, expected_close TEXT, actual_close TEXT, notes TEXT, source TEXT, custom_fields TEXT DEFAULT \'{}\', created_at TEXT DEFAULT (datetime(\'now\')), updated_at TEXT DEFAULT (datetime(\'now\')))',
     'CREATE INDEX IF NOT EXISTS idx_sales_deals_workspace ON sales_deals(workspace_id, stage)',
+    // Sprint 6E: Lost-reason capture (try/catch swallows duplicate-column on re-run).
+    'ALTER TABLE sales_deals ADD COLUMN lost_reason TEXT',
+    'ALTER TABLE sales_deals ADD COLUMN lost_at TEXT',
+    // Sprint 6G: per-post organic engagement.
+    'CREATE TABLE IF NOT EXISTS post_metrics (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, artifact_id TEXT NOT NULL, platform TEXT NOT NULL, post_id TEXT, impressions INTEGER DEFAULT 0, clicks INTEGER DEFAULT 0, likes INTEGER DEFAULT 0, comments INTEGER DEFAULT 0, shares INTEGER DEFAULT 0, saves INTEGER DEFAULT 0, video_views INTEGER DEFAULT 0, last_synced_at TEXT DEFAULT (datetime(\'now\')), created_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_post_metrics_unique ON post_metrics(artifact_id, platform)',
+    'CREATE INDEX IF NOT EXISTS idx_post_metrics_workspace ON post_metrics(workspace_id, last_synced_at DESC)',
+    // Sprint 7C: real session + login event tracking.
+    'CREATE TABLE IF NOT EXISTS user_sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, workspace_id TEXT, token_hash TEXT NOT NULL UNIQUE, user_agent TEXT, ip TEXT, created_at TEXT DEFAULT (datetime(\'now\')), last_seen_at TEXT DEFAULT (datetime(\'now\')), revoked_at TEXT)',
+    'CREATE INDEX IF NOT EXISTS idx_user_sessions_user ON user_sessions(user_id, created_at DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_user_sessions_token ON user_sessions(token_hash)',
+    'CREATE TABLE IF NOT EXISTS login_events (id TEXT PRIMARY KEY, user_id TEXT, email_attempted TEXT, ip TEXT, user_agent TEXT, success INTEGER DEFAULT 0, failure_reason TEXT, created_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE INDEX IF NOT EXISTS idx_login_events_user ON login_events(user_id, created_at DESC)',
+    // Sprint 7D: manual + Stripe payout ledger.
+    'CREATE TABLE IF NOT EXISTS commission_payouts (id TEXT PRIMARY KEY, vendor_workspace_id TEXT NOT NULL, amount_cents INTEGER NOT NULL, paid_at TEXT DEFAULT (datetime(\'now\')), notes TEXT, paid_by_user_id TEXT, payment_method TEXT DEFAULT \'manual\', stripe_transfer_id TEXT, created_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE INDEX IF NOT EXISTS idx_commission_payouts_vendor ON commission_payouts(vendor_workspace_id, paid_at DESC)',
+    // Sprint 9B: encrypted_access_token column on integrations (SQLite — try/catch swallows duplicate).
+    'ALTER TABLE integrations ADD COLUMN encrypted_access_token TEXT',
+    // Sprint 13A: lp_slug on artifacts.
+    'ALTER TABLE artifacts ADD COLUMN lp_slug TEXT',
+    // SQLite needs a separate CREATE UNIQUE INDEX (no partial-index syntax with WHERE in older SQLite,
+    // but modern SQLite supports WHERE — better-sqlite3 ships ≥ 3.40 where this works fine).
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_artifacts_lp_slug ON artifacts(lp_slug) WHERE lp_slug IS NOT NULL',
+    // Sprint 15A: onboarding-complete marker + persisted CRM segments.
+    'ALTER TABLE workspaces ADD COLUMN onboarding_completed_at TEXT',
+    'ALTER TABLE workspaces ADD COLUMN onboarding_step INTEGER NOT NULL DEFAULT 0',
+    // Audit pass #6 P1: per-workspace inbound webhook token (Zapier auth).
+    'ALTER TABLE workspaces ADD COLUMN webhook_secret TEXT',
+    'CREATE TABLE IF NOT EXISTS lead_segments (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT, rule_json TEXT NOT NULL, member_count INTEGER NOT NULL DEFAULT 0, created_at TEXT DEFAULT (datetime(\'now\')), updated_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE INDEX IF NOT EXISTS lead_segments_ws ON lead_segments(workspace_id)',
+    // Sprint 16A: multi-stage funnels + ad objective + follower metrics + approval audit + ICP/logo + lead magnets.
+    'CREATE TABLE IF NOT EXISTS funnels (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, name TEXT NOT NULL, goal TEXT, is_active INTEGER NOT NULL DEFAULT 0, archived_at TEXT, created_at TEXT DEFAULT (datetime(\'now\')), updated_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE INDEX IF NOT EXISTS funnels_ws ON funnels(workspace_id)',
+    'ALTER TABLE funnel_steps ADD COLUMN funnel_id TEXT',
+    'ALTER TABLE funnel_steps ADD COLUMN stage TEXT NOT NULL DEFAULT \'awareness\'',
+    'ALTER TABLE funnel_steps ADD COLUMN sequence INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE funnel_steps ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1',
+    'CREATE INDEX IF NOT EXISTS funnel_steps_funnel ON funnel_steps(funnel_id, sequence)',
+    'ALTER TABLE ad_campaigns ADD COLUMN objective TEXT NOT NULL DEFAULT \'leads\'',
+    'ALTER TABLE ad_campaigns ADD COLUMN targeting_json TEXT DEFAULT \'{}\'',
+    'ALTER TABLE post_metrics ADD COLUMN followers_delta INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE post_metrics ADD COLUMN total_followers INTEGER',
+    // Sprint 17H (audit pass #3 P2 #40): attribution metadata column.
+    'ALTER TABLE post_metrics ADD COLUMN metadata_json TEXT DEFAULT \'{}\'',
+    'ALTER TABLE approvals ADD COLUMN approved_by TEXT',
+    'ALTER TABLE approvals ADD COLUMN approved_at TEXT',
+    'CREATE TABLE IF NOT EXISTS approval_events (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, approval_id TEXT NOT NULL, artifact_id TEXT, actor_id TEXT, actor_email TEXT, action TEXT NOT NULL, notes TEXT, created_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE INDEX IF NOT EXISTS approval_events_approval ON approval_events(approval_id, created_at DESC)',
+    'ALTER TABLE brand_profiles ADD COLUMN icp_json TEXT DEFAULT \'{}\'',
+    'ALTER TABLE brand_profiles ADD COLUMN logo_url TEXT',
+    'CREATE TABLE IF NOT EXISTS lead_magnets (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, title TEXT NOT NULL, description TEXT, asset_url TEXT NOT NULL, funnel_id TEXT, download_count INTEGER NOT NULL DEFAULT 0, created_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE INDEX IF NOT EXISTS lead_magnets_ws ON lead_magnets(workspace_id)',
     // === Phase Remediation: BYOK secrets + notifications + agent configs ===
     'CREATE TABLE IF NOT EXISTS workspace_secrets (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, provider TEXT NOT NULL, encrypted_value TEXT NOT NULL, label TEXT, status TEXT DEFAULT \'active\', last_tested_at TEXT, test_result TEXT, created_at TEXT DEFAULT (datetime(\'now\')), updated_at TEXT DEFAULT (datetime(\'now\')))',
     'CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_secrets_unique ON workspace_secrets(workspace_id, provider)',
@@ -1099,6 +1468,38 @@ function initSQLiteSync(db: import('better-sqlite3').Database) {
     'CREATE INDEX IF NOT EXISTS idx_project_tasks_initiative ON project_tasks(initiative_run_id, task_index ASC)',
     'CREATE INDEX IF NOT EXISTS idx_project_tasks_workspace ON project_tasks(workspace_id, created_at DESC)',
     'CREATE INDEX IF NOT EXISTS idx_project_tasks_status ON project_tasks(status, created_at ASC)',
+    // === Sprint 2 Commit 1: Agent Lifecycle + Workspace Projects (SQLite track) ===
+    //
+    //   `agents` — per-workspace agent registry. This is the table the
+    //   operator's Pause/Resume UI mutates and the cron worker filters on
+    //   (`WHERE status = 'active'`). SQLite honours CHECK constraints in
+    //   CREATE TABLE, so the four-state vocabulary is enforced at write time.
+    //
+    //   The status check matches the Postgres definition above:
+    //   active / paused / error / disabled. paused_at / paused_by capture
+    //   the moment of pause for audit attribution.
+    //
+    //   The runner loop at the bottom of this array wraps every statement
+    //   in try/catch — so the follow-up ALTER TABLE ADD COLUMN entries below
+    //   are safe on re-run (SQLite throws "duplicate column name", we swallow).
+    //   Timestamps use SQLite's `datetime(\'now\')` default (TEXT-encoded ISO)
+    //   instead of TIMESTAMPTZ so the same row shape works on both engines.
+    'CREATE TABLE IF NOT EXISTS agents (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, name TEXT NOT NULL, status TEXT NOT NULL DEFAULT \'active\' CHECK (status IN (\'active\', \'paused\', \'error\', \'disabled\')), paused_at TEXT, paused_by TEXT, created_at TEXT DEFAULT (datetime(\'now\')), updated_at TEXT DEFAULT (datetime(\'now\')))',
+    // Forward-compat ALTERs for installs where `agents` predates this commit.
+    // The migration runner's try/catch makes "duplicate column" a no-op.
+    'ALTER TABLE agents ADD COLUMN status TEXT NOT NULL DEFAULT \'active\'',
+    'ALTER TABLE agents ADD COLUMN paused_at TEXT',
+    'ALTER TABLE agents ADD COLUMN paused_by TEXT',
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_workspace_name ON agents(workspace_id, name)',
+    'CREATE INDEX IF NOT EXISTS idx_agents_workspace_status ON agents(workspace_id, status)',
+    //
+    //   `workspace_projects` — persistent project registry replacing the
+    //   `ooumph_projects_v1` localStorage stash on the CMO dashboard. Minimal
+    //   shape (id / name / status / timestamps) per Sprint 2 spec — no CHECK
+    //   so callers can evolve the status vocabulary without a migration.
+    'CREATE TABLE IF NOT EXISTS workspace_projects (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, name TEXT NOT NULL, status TEXT NOT NULL DEFAULT \'active\', created_at TEXT DEFAULT (datetime(\'now\')), updated_at TEXT DEFAULT (datetime(\'now\')))',
+    'CREATE INDEX IF NOT EXISTS idx_workspace_projects_workspace ON workspace_projects(workspace_id, created_at DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_workspace_projects_status ON workspace_projects(workspace_id, status)',
     // === Sprint 1: Email Department schema ===
     // ALTER additions to email_campaigns: artifact_id links to the AI-generated
     // source artifact (powering the assertArtifactApproved safety gate),
@@ -1331,9 +1732,44 @@ function initSQLiteSync(db: import('better-sqlite3').Database) {
     // Workspace-level UTM template (e.g. "utm_source={platform}&utm_medium=cpc&utm_campaign={campaign_slug}").
     // Wrapped in try/catch by the migration loop — safe to run twice.
     'ALTER TABLE workspaces ADD COLUMN utm_template TEXT',
+    // Audit pass #6 P1: composite index for approvals UI + auto-approve cron.
+    // SQLite gracefully ignores DESC in index columns.
+    'CREATE INDEX IF NOT EXISTS idx_approvals_workspace_status_created ON approvals(workspace_id, status, created_at DESC)',
+    // Audit pass #6 P1: dedicated indexed column to replace metadata_json LIKE
+    // scans on the GHL webhook hot path.
+    'ALTER TABLE lead_activities ADD COLUMN ghl_contact_id TEXT',
+    'CREATE INDEX IF NOT EXISTS idx_lead_activities_ghl_contact ON lead_activities(workspace_id, ghl_contact_id)',
+    // TASK-001: Compliance fields on leads_captured (CODING_STANDARDS.md + COMPLIANCE_GUARDRAILS.md)
+    'ALTER TABLE leads_captured ADD COLUMN consent_status TEXT NOT NULL DEFAULT \'not_set\'',
+    'ALTER TABLE leads_captured ADD COLUMN do_not_contact INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE leads_captured ADD COLUMN consent_channel TEXT',
+    'ALTER TABLE leads_captured ADD COLUMN consent_date TEXT',
+    'ALTER TABLE leads_captured ADD COLUMN unsubscribed_at TEXT',
+    'ALTER TABLE leads_captured ADD COLUMN fit_score INTEGER DEFAULT 0',
+    'ALTER TABLE leads_captured ADD COLUMN intent_score INTEGER DEFAULT 0',
+    'CREATE INDEX IF NOT EXISTS idx_leads_compliance ON leads_captured(workspace_id, do_not_contact, consent_status)',
+    // TASK-003: Structured memory items table (MEMORY_ARCHITECTURE.md)
+    // Never stores raw chat — always typed, labeled, reviewed experience
+    `CREATE TABLE IF NOT EXISTS memory_items (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      type TEXT NOT NULL,
+      content TEXT NOT NULL,
+      applies_to TEXT NOT NULL DEFAULT '',
+      confidence TEXT NOT NULL DEFAULT 'medium',
+      evidence TEXT DEFAULT '',
+      source_artifact_id TEXT,
+      source_approval_id TEXT,
+      status TEXT NOT NULL DEFAULT 'active',
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    )`,
+    'CREATE INDEX IF NOT EXISTS idx_memory_items_workspace_type ON memory_items(workspace_id, type, status)',
+    'CREATE INDEX IF NOT EXISTS idx_memory_items_workspace_recent ON memory_items(workspace_id, created_at DESC)',
+    'ALTER TABLE approvals ADD COLUMN updated_at TEXT DEFAULT (datetime(\'now\'))',
   ]
   for (const m of migrations) {
-    try { db.exec(m) } catch { /* column already exists */ }
+    try { db.exec(m) } catch { /* column already exists or index already exists */ }
   }
 }
 
@@ -1371,6 +1807,9 @@ export async function initializeDatabase() {
   await pgSql`ALTER TABLE leads_captured ADD COLUMN IF NOT EXISTS hubspot_id TEXT`
   await pgSql`ALTER TABLE approvals ADD COLUMN IF NOT EXISTS brand_voice_score INTEGER`
   await pgSql`ALTER TABLE approvals ADD COLUMN IF NOT EXISTS brand_voice_reasoning TEXT`
+  // Audit pass #6 P1: composite index for paginated approvals UI fetch and
+  // hourly auto-approve cron.
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_approvals_workspace_status_created ON approvals(workspace_id, status, created_at DESC)`
   await pgSql`CREATE TABLE IF NOT EXISTS brand_memory (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, content TEXT NOT NULL, content_type TEXT NOT NULL DEFAULT 'learning_note', platform TEXT, performance_score INTEGER DEFAULT 0, metadata_json TEXT DEFAULT '{}', created_at TIMESTAMPTZ DEFAULT NOW())`
   await pgSql`CREATE INDEX IF NOT EXISTS idx_brand_memory_workspace ON brand_memory(workspace_id)`
   await pgSql`CREATE TABLE IF NOT EXISTS scheduled_content (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, platform TEXT NOT NULL, content TEXT NOT NULL, media_urls TEXT DEFAULT '[]', artifact_id TEXT, scheduled_for TEXT, buffer_update_id TEXT, status TEXT NOT NULL DEFAULT 'pending', error_message TEXT, published_at TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`
@@ -1381,6 +1820,9 @@ export async function initializeDatabase() {
   await pgSql`CREATE TABLE IF NOT EXISTS calendar_availability (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL UNIQUE, days_of_week TEXT DEFAULT '[1,2,3,4,5]', start_hour INTEGER DEFAULT 9, end_hour INTEGER DEFAULT 17, slot_minutes INTEGER DEFAULT 30, timezone TEXT DEFAULT 'UTC', buffer_minutes INTEGER DEFAULT 10, advance_days INTEGER DEFAULT 14, updated_at TIMESTAMPTZ DEFAULT NOW())`
   await pgSql`CREATE TABLE IF NOT EXISTS lead_activities (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, lead_id TEXT NOT NULL, type TEXT NOT NULL, title TEXT NOT NULL, description TEXT, metadata_json TEXT DEFAULT '{}', created_at TIMESTAMPTZ DEFAULT NOW())`
   await pgSql`CREATE INDEX IF NOT EXISTS idx_lead_activities_lead ON lead_activities(lead_id, created_at DESC)`
+  // Audit pass #6 P1: dedicated indexed column to replace metadata_json LIKE scans.
+  await pgSql`ALTER TABLE lead_activities ADD COLUMN IF NOT EXISTS ghl_contact_id TEXT`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_lead_activities_ghl_contact ON lead_activities(workspace_id, ghl_contact_id)`
   await pgSql`CREATE TABLE IF NOT EXISTS workflows (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT, trigger_type TEXT NOT NULL, trigger_config TEXT DEFAULT '{}', nodes TEXT NOT NULL DEFAULT '[]', status TEXT DEFAULT 'draft', run_count INTEGER DEFAULT 0, last_run_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
   await pgSql`CREATE TABLE IF NOT EXISTS workflow_runs (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, workspace_id TEXT NOT NULL, lead_id TEXT, contact_email TEXT, trigger_data TEXT DEFAULT '{}', status TEXT DEFAULT 'running', current_node INTEGER DEFAULT 0, nodes_completed TEXT DEFAULT '[]', error_message TEXT, started_at TIMESTAMPTZ DEFAULT NOW(), completed_at TIMESTAMPTZ)`
   await pgSql`CREATE TABLE IF NOT EXISTS workflow_pending_steps (id TEXT PRIMARY KEY, workflow_run_id TEXT NOT NULL, workflow_id TEXT NOT NULL, workspace_id TEXT NOT NULL, node_index INTEGER NOT NULL, node_data TEXT NOT NULL, lead_id TEXT, contact_email TEXT, scheduled_for TIMESTAMPTZ NOT NULL, status TEXT DEFAULT 'pending', error_message TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`
@@ -1392,6 +1834,12 @@ export async function initializeDatabase() {
   await pgSql`CREATE INDEX IF NOT EXISTS idx_reputation_requests_workspace ON reputation_requests(workspace_id, created_at DESC)`
   await pgSql`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin INTEGER DEFAULT 0`
   await pgSql`ALTER TABLE users ADD COLUMN IF NOT EXISTS workspace_id TEXT`
+  await pgSql`ALTER TABLE users ADD COLUMN IF NOT EXISTS suspended INTEGER DEFAULT 0`
+  await pgSql`CREATE TABLE IF NOT EXISTS admin_audit_log (id TEXT PRIMARY KEY, actor_id TEXT NOT NULL, actor_email TEXT, action TEXT NOT NULL, resource_type TEXT, resource_id TEXT, details_json TEXT, ip_address TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_admin_audit_log_created ON admin_audit_log(created_at DESC)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_admin_audit_log_actor ON admin_audit_log(actor_id, created_at DESC)`
+  // Sprint 19F: Stripe webhook idempotency.
+  await pgSql`CREATE TABLE IF NOT EXISTS stripe_webhook_events (event_id TEXT PRIMARY KEY, type TEXT, received_at TIMESTAMPTZ DEFAULT NOW())`
   await pgSql`CREATE TABLE IF NOT EXISTS plans (id TEXT PRIMARY KEY, name TEXT NOT NULL, slug TEXT NOT NULL UNIQUE, price_monthly INTEGER NOT NULL, price_yearly INTEGER, stripe_price_id TEXT, stripe_price_id_yearly TEXT, commission_rate REAL DEFAULT 0.15, max_sub_accounts INTEGER DEFAULT 0, max_ai_runs_monthly INTEGER DEFAULT 500, features TEXT DEFAULT '[]', is_active INTEGER DEFAULT 1, sort_order INTEGER DEFAULT 0, created_at TIMESTAMPTZ DEFAULT NOW())`
   await pgSql`CREATE TABLE IF NOT EXISTS subscriptions (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL UNIQUE, plan_id TEXT NOT NULL, stripe_customer_id TEXT, stripe_subscription_id TEXT, status TEXT DEFAULT 'trialing', current_period_start TIMESTAMPTZ, current_period_end TIMESTAMPTZ, cancel_at_period_end INTEGER DEFAULT 0, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
   await pgSql`CREATE TABLE IF NOT EXISTS vendor_profiles (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL UNIQUE, stripe_connect_account_id TEXT, stripe_connect_status TEXT DEFAULT 'not_connected', commission_rate_override REAL, white_label_name TEXT, white_label_logo_url TEXT, white_label_primary_color TEXT DEFAULT '#4F46E5', white_label_domain TEXT, is_approved INTEGER DEFAULT 1, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
@@ -1409,6 +1857,27 @@ export async function initializeDatabase() {
   await pgSql`CREATE INDEX IF NOT EXISTS idx_workspace_invites_workspace ON workspace_invites(workspace_id)`
   await pgSql`CREATE TABLE IF NOT EXISTS sales_deals (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, lead_id TEXT, contact_name TEXT NOT NULL, contact_email TEXT, company TEXT, title TEXT NOT NULL, value REAL DEFAULT 0, currency VARCHAR(10) DEFAULT 'USD', stage VARCHAR(50) DEFAULT 'prospect', probability INTEGER DEFAULT 10, expected_close TEXT, actual_close TEXT, notes TEXT, source TEXT, custom_fields TEXT DEFAULT '{}', created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
   await pgSql`CREATE INDEX IF NOT EXISTS idx_sales_deals_workspace ON sales_deals(workspace_id, stage)`
+  // Sprint 6E: Lost-reason capture for sales_deals.
+  await pgSql`ALTER TABLE sales_deals ADD COLUMN IF NOT EXISTS lost_reason TEXT`
+  await pgSql`ALTER TABLE sales_deals ADD COLUMN IF NOT EXISTS lost_at TIMESTAMPTZ`
+  // Sprint 6G: per-post organic engagement.
+  await pgSql`CREATE TABLE IF NOT EXISTS post_metrics (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, artifact_id TEXT NOT NULL, platform VARCHAR(50) NOT NULL, post_id TEXT, impressions INTEGER DEFAULT 0, clicks INTEGER DEFAULT 0, likes INTEGER DEFAULT 0, comments INTEGER DEFAULT 0, shares INTEGER DEFAULT 0, saves INTEGER DEFAULT 0, video_views INTEGER DEFAULT 0, last_synced_at TIMESTAMPTZ DEFAULT NOW(), created_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE UNIQUE INDEX IF NOT EXISTS idx_post_metrics_unique ON post_metrics(artifact_id, platform)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_post_metrics_workspace ON post_metrics(workspace_id, last_synced_at DESC)`
+  // Sprint 7C: real session + login event tracking.
+  await pgSql`CREATE TABLE IF NOT EXISTS user_sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, workspace_id TEXT, token_hash TEXT NOT NULL UNIQUE, user_agent TEXT, ip TEXT, created_at TIMESTAMPTZ DEFAULT NOW(), last_seen_at TIMESTAMPTZ DEFAULT NOW(), revoked_at TIMESTAMPTZ)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_user_sessions_user ON user_sessions(user_id, created_at DESC)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_user_sessions_token ON user_sessions(token_hash)`
+  await pgSql`CREATE TABLE IF NOT EXISTS login_events (id TEXT PRIMARY KEY, user_id TEXT, email_attempted TEXT, ip TEXT, user_agent TEXT, success INTEGER DEFAULT 0, failure_reason TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_login_events_user ON login_events(user_id, created_at DESC)`
+  // Sprint 7D: manual + Stripe payout ledger.
+  await pgSql`CREATE TABLE IF NOT EXISTS commission_payouts (id TEXT PRIMARY KEY, vendor_workspace_id TEXT NOT NULL, amount_cents INTEGER NOT NULL, paid_at TIMESTAMPTZ DEFAULT NOW(), notes TEXT, paid_by_user_id TEXT, payment_method VARCHAR(20) DEFAULT 'manual', stripe_transfer_id TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_commission_payouts_vendor ON commission_payouts(vendor_workspace_id, paid_at DESC)`
+  // Sprint 9B: encrypted_access_token column on integrations.
+  await pgSql`ALTER TABLE integrations ADD COLUMN IF NOT EXISTS encrypted_access_token TEXT`
+  // Sprint 13A: lp_slug on artifacts.
+  await pgSql`ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS lp_slug VARCHAR(128)`
+  await pgSql`CREATE UNIQUE INDEX IF NOT EXISTS idx_artifacts_lp_slug ON artifacts(lp_slug) WHERE lp_slug IS NOT NULL`
   // === Phase Remediation tables ===
   await pgSql`CREATE TABLE IF NOT EXISTS workspace_secrets (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, provider VARCHAR(50) NOT NULL, encrypted_value TEXT NOT NULL, label TEXT, status TEXT DEFAULT 'active', last_tested_at TIMESTAMPTZ, test_result TEXT, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
   await pgSql`CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_secrets_unique ON workspace_secrets(workspace_id, provider)`
@@ -1430,6 +1899,44 @@ export async function initializeDatabase() {
   await pgSql`CREATE INDEX IF NOT EXISTS idx_project_tasks_initiative ON project_tasks(initiative_run_id, task_index ASC)`
   await pgSql`CREATE INDEX IF NOT EXISTS idx_project_tasks_workspace ON project_tasks(workspace_id, created_at DESC)`
   await pgSql`CREATE INDEX IF NOT EXISTS idx_project_tasks_status ON project_tasks(status, created_at ASC)`
+  // === Sprint 2 Commit 1: Agent Lifecycle + Workspace Projects (Postgres standalone init) ===
+  //
+  //   Mirrors the inline-init definitions above. The standalone path is used
+  //   when callers (cron workers, scripts, the health page) explicitly call
+  //   `initializeDatabase()` instead of going through the lazy postgresQuery
+  //   first-use init. Both paths must agree on schema or one consumer will
+  //   see "column does not exist" errors after a deploy.
+  //
+  //   See the inline-init block above for the rationale on status vocabulary,
+  //   the index strategy (UNIQUE workspace_name + composite workspace_status),
+  //   and why CREATE TABLE IF NOT EXISTS + targeted ALTER COLUMN IF NOT EXISTS
+  //   gives us forward-compatible idempotency.
+  await pgSql`CREATE TABLE IF NOT EXISTS agents (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+    name VARCHAR(100) NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'active' CHECK (status IN ('active','paused','error','disabled')),
+    paused_at TIMESTAMPTZ,
+    paused_by TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+  )`
+  await pgSql`ALTER TABLE agents ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'active'`
+  await pgSql`ALTER TABLE agents ADD COLUMN IF NOT EXISTS paused_at TIMESTAMPTZ`
+  await pgSql`ALTER TABLE agents ADD COLUMN IF NOT EXISTS paused_by TEXT`
+  await pgSql`CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_workspace_name ON agents(workspace_id, name)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_agents_workspace_status ON agents(workspace_id, status)`
+
+  await pgSql`CREATE TABLE IF NOT EXISTS workspace_projects (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+    name VARCHAR(255) NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'active',
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+  )`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_workspace_projects_workspace ON workspace_projects(workspace_id, created_at DESC)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_workspace_projects_status ON workspace_projects(workspace_id, status)`
   // === Sprint 1: Email Department schema (Postgres standalone init) ===
   await pgSql`ALTER TABLE email_campaigns ADD COLUMN IF NOT EXISTS artifact_id TEXT`
   await pgSql`ALTER TABLE email_campaigns ADD COLUMN IF NOT EXISTS list_id TEXT`
@@ -1598,5 +2105,67 @@ export async function initializeDatabase() {
   await pgSql`ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS hard_max_daily_spend INTEGER NOT NULL DEFAULT 50000`
   await pgSql`ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS alert_threshold_budget INTEGER NOT NULL DEFAULT 25000`
   await pgSql`ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS utm_template TEXT`
+  // Sprint 15A: onboarding marker + lead_segments table (standalone init path).
+  await pgSql`ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS onboarding_completed_at TIMESTAMPTZ`
+  await pgSql`ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS onboarding_step INTEGER NOT NULL DEFAULT 0`
+  // Audit pass #6 P1: per-workspace inbound webhook token (Zapier auth).
+  await pgSql`ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS webhook_secret TEXT`
+  await pgSql`CREATE TABLE IF NOT EXISTS lead_segments (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), name VARCHAR(255) NOT NULL, description TEXT, rule_json TEXT NOT NULL, member_count INTEGER NOT NULL DEFAULT 0, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE INDEX IF NOT EXISTS lead_segments_ws ON lead_segments(workspace_id)`
+  // Sprint 16A: multi-stage funnels + ad objective + follower metrics + approval audit + ICP/logo + lead magnets.
+  await pgSql`CREATE TABLE IF NOT EXISTS funnels (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), name VARCHAR(255) NOT NULL, goal VARCHAR(100), is_active BOOLEAN NOT NULL DEFAULT FALSE, archived_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE INDEX IF NOT EXISTS funnels_ws ON funnels(workspace_id)`
+  await pgSql`ALTER TABLE funnel_steps ADD COLUMN IF NOT EXISTS funnel_id TEXT`
+  await pgSql`ALTER TABLE funnel_steps ADD COLUMN IF NOT EXISTS stage VARCHAR(40) NOT NULL DEFAULT 'awareness'`
+  await pgSql`ALTER TABLE funnel_steps ADD COLUMN IF NOT EXISTS sequence INTEGER NOT NULL DEFAULT 0`
+  await pgSql`ALTER TABLE funnel_steps ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE`
+  await pgSql`CREATE INDEX IF NOT EXISTS funnel_steps_funnel ON funnel_steps(funnel_id, sequence)`
+  await pgSql`ALTER TABLE ad_campaigns ADD COLUMN IF NOT EXISTS objective VARCHAR(40) NOT NULL DEFAULT 'leads'`
+  await pgSql`ALTER TABLE ad_campaigns ADD COLUMN IF NOT EXISTS targeting_json TEXT DEFAULT '{}'`
+  await pgSql`ALTER TABLE post_metrics ADD COLUMN IF NOT EXISTS followers_delta INTEGER NOT NULL DEFAULT 0`
+  await pgSql`ALTER TABLE post_metrics ADD COLUMN IF NOT EXISTS total_followers INTEGER`
+  // Sprint 17H (audit pass #3 P2 #40): attribution metadata column.
+  await pgSql`ALTER TABLE post_metrics ADD COLUMN IF NOT EXISTS metadata_json TEXT DEFAULT '{}'`
+  await pgSql`ALTER TABLE approvals ADD COLUMN IF NOT EXISTS approved_by TEXT`
+  await pgSql`ALTER TABLE approvals ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ`
+  await pgSql`CREATE TABLE IF NOT EXISTS approval_events (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, approval_id TEXT NOT NULL, artifact_id TEXT, actor_id TEXT, actor_email VARCHAR(255), action VARCHAR(40) NOT NULL, notes TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE INDEX IF NOT EXISTS approval_events_approval ON approval_events(approval_id, created_at DESC)`
+  await pgSql`ALTER TABLE brand_profiles ADD COLUMN IF NOT EXISTS icp_json TEXT DEFAULT '{}'`
+  await pgSql`ALTER TABLE brand_profiles ADD COLUMN IF NOT EXISTS logo_url TEXT`
+  await pgSql`CREATE TABLE IF NOT EXISTS lead_magnets (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), title VARCHAR(255) NOT NULL, description TEXT, asset_url TEXT NOT NULL, funnel_id TEXT, download_count INTEGER NOT NULL DEFAULT 0, created_at TIMESTAMPTZ DEFAULT NOW())`
+  await pgSql`CREATE INDEX IF NOT EXISTS lead_magnets_ws ON lead_magnets(workspace_id)`
+  // TASK-001: Compliance fields on leads_captured
+  await pgSql`ALTER TABLE leads_captured ADD COLUMN IF NOT EXISTS consent_status TEXT NOT NULL DEFAULT 'not_set'`
+  await pgSql`ALTER TABLE leads_captured ADD COLUMN IF NOT EXISTS do_not_contact INTEGER NOT NULL DEFAULT 0`
+  await pgSql`ALTER TABLE leads_captured ADD COLUMN IF NOT EXISTS consent_channel TEXT`
+  await pgSql`ALTER TABLE leads_captured ADD COLUMN IF NOT EXISTS consent_date TIMESTAMPTZ`
+  await pgSql`ALTER TABLE leads_captured ADD COLUMN IF NOT EXISTS unsubscribed_at TIMESTAMPTZ`
+  await pgSql`ALTER TABLE leads_captured ADD COLUMN IF NOT EXISTS fit_score INTEGER DEFAULT 0`
+  await pgSql`ALTER TABLE leads_captured ADD COLUMN IF NOT EXISTS intent_score INTEGER DEFAULT 0`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_leads_compliance ON leads_captured(workspace_id, do_not_contact, consent_status)`
+  // TASK-003: Structured memory items table
+  await pgSql`
+    CREATE TABLE IF NOT EXISTS memory_items (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      type TEXT NOT NULL CHECK (type IN (
+        'winning_hook', 'failed_pattern', 'brand_rule', 'sales_pattern',
+        'audience_insight', 'compliance_note', 'performance_benchmark',
+        'approved_template', 'objection_response', 'competitor_intel'
+      )),
+      content TEXT NOT NULL,
+      applies_to TEXT NOT NULL DEFAULT '',
+      confidence TEXT NOT NULL DEFAULT 'medium' CHECK (confidence IN ('low', 'medium', 'high')),
+      evidence TEXT DEFAULT '',
+      source_artifact_id TEXT REFERENCES artifacts(id) ON DELETE SET NULL,
+      source_approval_id TEXT,
+      status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'archived')),
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_memory_items_workspace_type ON memory_items(workspace_id, type, status)`
+  await pgSql`CREATE INDEX IF NOT EXISTS idx_memory_items_workspace_recent ON memory_items(workspace_id, created_at DESC)`
+  await pgSql`ALTER TABLE approvals ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()`
   console.log('✅ Neon Postgres DB initialized')
 }

@@ -5,6 +5,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { runAgent } from '@/lib/claude'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 import type { BrandProfile } from '@/types'
 
 const SYSTEM = `You are the Content Repurposing Agent for Ooumph AI Marketing OS.
@@ -50,6 +51,8 @@ export async function POST(req: NextRequest) {
     }
 
     if (!workspaceId) return NextResponse.json({ error: 'Missing workspaceId' }, { status: 400 })
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
     if (!originalContent?.trim()) return NextResponse.json({ error: 'Missing originalContent' }, { status: 400 })
     if (!targetFormats?.length) return NextResponse.json({ error: 'Select at least one target format' }, { status: 400 })
 
@@ -84,6 +87,11 @@ export async function POST(req: NextRequest) {
       .map(f => `- ${f}: ${formatInstructions[f] || f}`)
       .join('\n')
 
+    // Sprint 15E (P0 #6): inject brand memory so repurposed snippets
+    // keep voice continuity with prior approved posts.
+    const { getMemoryPromptBlock } = await import('@/lib/tools/memory')
+    const memoryBlock = await getMemoryPromptBlock(workspaceId, { maxNotes: 5, maxVoiceExamples: 3 })
+
     const prompt = `Repurpose the following ${contentType} content into all requested formats for this brand:
 
 BRAND CONTEXT:
@@ -93,7 +101,7 @@ Target Audience: ${brand.target_audience}
 Brand Tone: ${brand.tone}
 Offer: ${brand.offer}
 Channels: ${Array.isArray(brand.channels) ? brand.channels.join(', ') : brand.channels || 'Not specified'}
-
+${memoryBlock ? `\n${memoryBlock}\n` : ''}
 ORIGINAL CONTENT (${contentType}):
 ---
 ${originalContent.slice(0, 8000)}
@@ -124,7 +132,7 @@ Return ONLY valid JSON:
 Include one object per requested format. The "format" field must match the format key exactly.
 For "characterCount" provide the total character count of the content field.`
 
-    const result = await runAgent<RepurposeResult>(SYSTEM, prompt)
+    const result = await runAgent<RepurposeResult>(SYSTEM, prompt, workspaceId)
 
     // Ensure characterCount is accurate
     const repurposed = (result.repurposed || []).map(item => ({

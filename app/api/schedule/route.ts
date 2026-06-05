@@ -5,6 +5,7 @@
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 
 export async function POST(req: NextRequest) {
   try {
@@ -20,6 +21,9 @@ export async function POST(req: NextRequest) {
     if (!workspaceId || !platform || !content || !scheduledTime) {
       return NextResponse.json({ error: 'Missing required fields: workspaceId, platform, content, scheduledTime' }, { status: 400 })
     }
+    // Sprint 8A: ownership before queuing a future publish.
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     const id = newId()
     await sql`
@@ -44,6 +48,9 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
   const workspaceId = searchParams.get('workspaceId')
   if (!workspaceId) return NextResponse.json([], { status: 200 })
+  // Sprint 8A: ownership check.
+  const denied = assertWorkspaceOwnership(req, workspaceId)
+  if (denied) return denied
 
   const result = await sql`
     SELECT id, platform, content_json, scheduled_time, status, error, published_at
@@ -60,6 +67,9 @@ export async function DELETE(req: NextRequest) {
   const id = searchParams.get('id')
   const workspaceId = searchParams.get('workspaceId')
   if (!id || !workspaceId) return NextResponse.json({ error: 'Missing id or workspaceId' }, { status: 400 })
+  // Sprint 8A: ownership check.
+  const denied = assertWorkspaceOwnership(req, workspaceId)
+  if (denied) return denied
 
   await sql`DELETE FROM scheduled_posts WHERE id = ${id} AND workspace_id = ${workspaceId} AND status = 'queued'`
   return NextResponse.json({ ok: true })

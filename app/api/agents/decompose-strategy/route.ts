@@ -27,6 +27,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { after } from 'next/server'
 import { sql } from '@/lib/db'
 import { assertWorkspaceOwnership } from '@/lib/guards'
+import { assertAgentRunQuota } from '@/lib/quota'
+import { getBaseUrl } from '@/lib/base-url'
 import {
   decomposeStrategyArtifact,
   dispatchPendingTasks,
@@ -59,6 +61,9 @@ export async function POST(req: NextRequest) {
   }
   const denied = assertWorkspaceOwnership(req, workspaceId)
   if (denied) return denied
+    // Sprint 13B: plan-tier quota.
+    const overQuota = await assertAgentRunQuota(req, workspaceId)
+    if (overQuota) return overQuota
 
   // Idempotency guard — if tasks already exist for this artifact, refuse to
   // re-decompose (the caller can DELETE existing tasks first if they want).
@@ -98,10 +103,9 @@ export async function POST(req: NextRequest) {
   // immediately so the approval handler stays fast and the task board can
   // start polling for live updates.
   if (!skipDispatch) {
-    const baseUrl =
-      process.env.NEXT_PUBLIC_BASE_URL ||
-      process.env.NEXT_PUBLIC_APP_URL ||
-      `http://localhost:${process.env.PORT || 3000}`
+    // Sprint 19Y: shared helper handles VERCEL_URL fallback so dispatch
+    // doesn't try to hit localhost on Vercel.
+    const baseUrl = getBaseUrl()
     after(async () => {
       try {
         await dispatchPendingTasks(outcome.tasks, baseUrl, 3)

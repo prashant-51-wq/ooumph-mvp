@@ -1,8 +1,12 @@
 'use client'
 
-import Link from 'next/link'
+// Sprint 20I: dropped next/link in favor of plain <a> tags throughout
+// the dashboard layout to bypass synthetic-event tampering from wallet
+// extensions (SES/LavaMoat). See NavItem for the full rationale.
 import { usePathname, useRouter } from 'next/navigation'
 import { useEffect, useState, useCallback, useRef } from 'react'
+import { useWorkspaceId } from '@/lib/hooks/use-workspace-id'
+import { readJsonArray } from '@/lib/hooks/fetch-array'
 
 interface AgentRun {
   id: string
@@ -34,7 +38,7 @@ const ADVANCED_NAV = [
     items: [
       { href: '/dashboard/strategy', label: 'Strategy', icon: '🧠' },
       { href: '/dashboard/research', label: 'Market Research', icon: '🔍' },
-      { href: '/dashboard/brand-monitor', label: 'Brand Monitor', icon: '👁️' },
+      { href: '/dashboard/brand-monitor', label: 'Brand Snapshot', icon: '📸' },
       { href: '/dashboard/memory', label: 'Brand Memory', icon: '📚' },
       { href: '/dashboard/learning', label: 'AI Learning', icon: '🧬' },
     ],
@@ -42,14 +46,19 @@ const ADVANCED_NAV = [
   {
     label: 'CREATE',
     items: [
-      { href: '/dashboard/content', label: 'Content', icon: '📝' },
-      { href: '/dashboard/creative', label: 'Creative Studio', icon: '🎨' },
-      { href: '/dashboard/blog', label: 'Blog & Scripts', icon: '✍️' },
+      // Hidden /dashboard/content (redirect stub — Sprint 11E). It was a
+      // searchable grid of scheduled + published rows, which exactly
+      // duplicates the "Queue" tab on /dashboard/publishing. Page still
+      // exists as a server redirect for old bookmarks.
+      // Swapped /dashboard/creative (fake) → /dashboard/creative-studio (real) — Sprint 1E
+      { href: '/dashboard/creative-studio', label: 'Creative Studio', icon: '🎨' },
+      { href: '/dashboard/blog', label: 'Blog Drafts', icon: '✍️' },
       { href: '/dashboard/image-gen', label: 'Image Studio', icon: '🖼️' },
       { href: '/dashboard/video-gen', label: 'Video Studio', icon: '🎬' },
       { href: '/dashboard/voiceover', label: 'Voiceover', icon: '🎙️' },
       { href: '/dashboard/repurpose', label: 'Repurpose', icon: '♻️' },
-      { href: '/dashboard/media', label: 'Media Library', icon: '🗂️' },
+      // Swapped /dashboard/media (fake) → /dashboard/media-library (real) — Sprint 1E
+      { href: '/dashboard/media-library', label: 'Media Library', icon: '🗂️' },
     ],
   },
   {
@@ -68,7 +77,13 @@ const ADVANCED_NAV = [
       { href: '/dashboard/leads', label: 'Lead Gen', icon: '🎯' },
       { href: '/dashboard/funnel', label: 'Funnel Plan', icon: '🔮' },
       { href: '/dashboard/funnel/form-builder', label: 'Form Builder', icon: '📋' },
-      { href: '/dashboard/campaign', label: 'Campaigns', icon: '📣' },
+      // Sprint 17B TASK 3 — backend CRUD shipped Sprint 16E but no nav
+      // entry existed, so the feature was orphaned (audit P1 #12).
+      { href: '/dashboard/lead-magnets', label: 'Lead Magnets', icon: '🎁' },
+      // Sprint 15F (P1 #16): renamed from "Campaigns" — the page is a
+      // read-only performance ledger. Multi-channel campaign creation
+      // happens via the CMO chat, not here.
+      { href: '/dashboard/campaign', label: 'Campaign Performance', icon: '📣' },
       { href: '/dashboard/ads', label: 'Paid Ads', icon: '💸' },
     ],
   },
@@ -77,8 +92,8 @@ const ADVANCED_NAV = [
     items: [
       { href: '/dashboard/workflows', label: 'Workflows', icon: '⚡' },
       { href: '/dashboard/ab-test', label: 'A/B Testing', icon: '🧪' },
-      { href: '/dashboard/growth', label: 'Growth Engine', icon: '📈' },
-      { href: '/dashboard/export', label: 'Data Export', icon: '📤' },
+      // Hidden /dashboard/growth (all hardcoded MRR_TREND, 0 fetch calls) — Sprint 1E
+      // Hidden /dashboard/export (all MOCK_SCHEDULES/MOCK_HISTORY, 0 fetch calls) — Sprint 1E
       { href: '/dashboard/assets', label: 'Assets', icon: '📦' },
     ],
   },
@@ -86,9 +101,11 @@ const ADVANCED_NAV = [
     label: 'ACCOUNT',
     items: [
       { href: '/dashboard/billing', label: 'Billing & Plans', icon: '💳' },
-      { href: '/dashboard/agency', label: 'Agency Dashboard', icon: '🏢' },
-      { href: '/dashboard/payments', label: 'Payments', icon: '💰' },
-      { href: '/dashboard/connections', label: 'Connections', icon: '🔗' },
+      // Hidden /dashboard/agency (all MOCK_ data, 0 fetch calls) — Sprint 1E
+      // Hidden /dashboard/payments (TRANSACTIONS/SUBSCRIPTIONS/PAYOUTS all fabricated, 0 fetch calls) — Sprint 7B
+      // Page now redirects to /dashboard/billing.
+      // Swapped /dashboard/connections (all hardcoded, 0 fetch calls) → /dashboard/integrations (real) — Sprint 1E
+      { href: '/dashboard/integrations', label: 'Integrations', icon: '🔗' },
       { href: '/dashboard/onboarding', label: 'Workspace Setup', icon: '🚀' },
     ],
   },
@@ -98,14 +115,21 @@ const ADVANCED_NAV = [
       { href: '/dashboard/workspace', label: 'Workspace Hub', icon: '🗂️' },
       { href: '/dashboard/health', label: 'System Health', icon: '🩺' },
       { href: '/dashboard/activity', label: 'Activity Feed', icon: '📡' },
-      { href: '/dashboard/audit', label: 'Audit Log', icon: '📋' },
-      { href: '/dashboard/privacy', label: 'Privacy & Trust', icon: '🔒' },
+      // Hidden /dashboard/audit (all hardcoded ACTIVITY_LOGS/AGENT_TASKS/API_CALLS, refresh is `// In production:` comment, 0 fetch calls) — Sprint 1E
+      // Hidden /dashboard/privacy (CHECKLIST/CONSENT_RECORDS/LEGAL_DOCS all fabricated, 0 fetch calls) — Sprint 7B
+      // Page now redirects to /dashboard/settings/security (the actual
+      // privacy / data controls surface).
     ],
   },
   {
     label: 'PLATFORM',
     items: [
-      { href: '/dashboard/super-admin', label: 'Super Admin', icon: '🛡️' },
+      // Sprint 18T: admin panel is its own top-level portal at /admin
+      // (separate root layout, no user-dashboard sidebar). The layout
+      // filters this group out for non-admin sessions based on
+      // /api/auth/me's isAdmin flag. Click opens the standalone portal.
+      { href: '/admin', label: 'Admin Panel', icon: '⚡' },
+      { href: '/dashboard/super-admin', label: 'Super Admin (legacy)', icon: '🛡️' },
     ],
   },
 ]
@@ -115,10 +139,11 @@ function getPageTitle(pathname: string): string {
     '/dashboard': 'CMO Dashboard',
     '/dashboard/activity': 'Activity Feed',
     '/dashboard/strategy': 'Strategy',
-    '/dashboard/content': 'Content Calendar',
+    // /dashboard/content redirects to /dashboard/publishing (Sprint 11E) —
+    // no breadcrumb entry needed since it's never the resolved URL.
     '/dashboard/approvals': 'Approvals',
     '/dashboard/agents': 'Agents',
-    '/dashboard/connections': 'Connections',
+    '/dashboard/integrations': 'Integrations',
     '/dashboard/settings': 'Settings',
     '/dashboard/inbox': 'Unified Inbox',
     '/dashboard/calendar': 'Calendar',
@@ -129,34 +154,32 @@ function getPageTitle(pathname: string): string {
     '/dashboard/campaign': 'Campaigns',
     '/dashboard/email-marketing': 'Email Marketing',
     '/dashboard/ads': 'Paid Ads',
-    '/dashboard/growth': 'Growth',
     '/dashboard/analytics': 'Analytics',
     '/dashboard/research': 'Research',
-    '/dashboard/blog': 'Blog & Scripts',
-    '/dashboard/creative': 'Creative Studio',
+    '/dashboard/blog': 'Blog Drafts',
+    '/dashboard/creative-studio': 'Creative Studio',
     '/dashboard/voiceover': 'Voiceover',
     '/dashboard/voice-ai': 'Voice AI',
     '/dashboard/video-gen': 'Video Studio',
     '/dashboard/image-gen': 'Image Studio',
-    '/dashboard/media': 'Media Library',
+    '/dashboard/media-library': 'Media Library',
     '/dashboard/repurpose': 'Repurpose',
     '/dashboard/pr': 'PR Studio',
     '/dashboard/publishing': 'Publishing',
     '/dashboard/billing': 'Billing & Plans',
-    '/dashboard/payments': 'Payments',
-    '/dashboard/agency': 'Agency Dashboard',
-    '/dashboard/audit': 'Audit Log',
-    '/dashboard/privacy': 'Privacy & Trust',
+    // /dashboard/payments and /dashboard/privacy redirect server-side
+    // (Sprint 7B). Breadcrumb entries removed since they're never the
+    // resolved URL after the redirect fires.
     '/dashboard/funnel': 'Funnel Plan',
     '/dashboard/funnel/form-builder': 'Form Builder',
+    '/dashboard/lead-magnets': 'Lead Magnets',
     '/dashboard/super-admin': 'Super Admin',
     '/dashboard/health': 'System Health',
     '/dashboard/workspace': 'Workspace Hub',
     '/dashboard/memory': 'Brand Memory',
     '/dashboard/learning': 'AI Learning',
-    '/dashboard/brand-monitor': 'Brand Monitor',
+    '/dashboard/brand-monitor': 'Brand Snapshot',
     '/dashboard/ab-test': 'A/B Testing',
-    '/dashboard/export': 'Data Export',
     '/dashboard/assets': 'Assets',
     '/dashboard/onboarding': 'Workspace Setup',
   }
@@ -176,17 +199,28 @@ const STATUS_COLOR: Record<string, string> = {
   pending: 'text-gray-500',
 }
 
-function agentLabel(name: string) {
+function agentLabel(name: unknown): string {
+  if (!name || typeof name !== 'string') return 'Agent'
   return name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
 }
 
 function NavItem({ href, label, icon, isActive }: { href: string; label: string; icon: string; isActive: boolean }) {
+  // Sprint 20I: use a plain <a> instead of Next's <Link>. The user
+  // reported "hover shows the URL in the status bar but clicking does
+  // nothing" — that means the anchor IS rendered (status-bar preview
+  // proves it) but the React synthetic click handler isn't firing.
+  // SES/LavaMoat content scripts in some wallet extensions freeze
+  // primitives that React relies on for its event system, breaking
+  // Link's interceptor. A plain <a> uses the browser's native
+  // navigation which can't be broken by event-system tampering.
+  // Cost: full page reload between routes instead of SPA navigation
+  // (~300ms instead of instant). Worth the bulletproof reliability.
   return (
-    <Link href={href}
+    <a href={href}
       className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors ${isActive ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-white hover:bg-gray-800'}`}>
       <span className="text-base flex-shrink-0">{icon}</span>
       <span className="truncate">{label}</span>
-    </Link>
+    </a>
   )
 }
 
@@ -209,13 +243,13 @@ function SidebarContent({
     <>
       {/* Logo */}
       <div className="p-4 border-b border-gray-800 flex-shrink-0">
-        <Link href="/" className="flex items-center gap-2">
+        <a href="/" className="flex items-center gap-2">
           <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white font-bold text-sm flex-shrink-0">O</div>
           <div className="min-w-0">
             <span className="font-semibold text-white text-sm">Ooumph</span>
             <p className="text-xs text-gray-600 leading-none">AI Marketing OS</p>
           </div>
-        </Link>
+        </a>
       </div>
 
       {/* Nav */}
@@ -339,6 +373,41 @@ function CommandPalette({ open, onClose }: { open: boolean; onClose: () => void 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
   const router = useRouter()
+  // Sprint 10C: layout reads workspaceId for notification bell + agent
+  // run badge polling. Previously each callback re-read localStorage,
+  // which meant a stale value in any one tab could silently fetch the
+  // wrong tenant's notifications. Now sourced via the session-derived
+  // hook so the layout's polling is always pointed at the current session.
+  const { workspaceId: sessionWorkspaceId, onboardingCompletedAt, resolved: meResolved } = useWorkspaceId()
+
+  // Sprint 16B (audit P0 #3): redirect users with no completed onboarding
+  // to the wizard. The flag is now persisted (Sprint 15F) AND read (here),
+  // closing the audit gap where the wizard reloaded on every visit. We
+  // wait for /me to resolve before deciding so a transient cache miss
+  // doesn't kick a fully-onboarded user out of the dashboard.
+  useEffect(() => {
+    if (!meResolved) return
+    if (typeof window === 'undefined') return
+    // Allow the onboarding wizard itself + the workspace switcher to render
+    // without being kicked back to themselves.
+    if (pathname === '/dashboard/onboarding' || pathname?.startsWith('/dashboard/onboarding/')) return
+    if (sessionWorkspaceId && !onboardingCompletedAt) {
+      router.replace('/dashboard/onboarding')
+    }
+  }, [meResolved, sessionWorkspaceId, onboardingCompletedAt, pathname, router])
+  // Sprint 20G: nuclear hydration fix. After three rounds of whack-a-mole
+  // on individual hydration-mismatch sources (lazy useState localStorage
+  // reads, module-level new Date(), locale-dependent toLocaleTimeString),
+  // React #418 was still firing in prod and tripping the dashboard error
+  // boundary → no sidebar → "nothing works." Approach: skip the server
+  // render entirely for the dashboard layout. Server emits an empty
+  // skeleton; the real UI renders only AFTER the client mounts. Since
+  // there's no SSR HTML to compare against, mismatch is impossible.
+  // The cost is ~50ms of blank screen on first paint; that's acceptable
+  // versus the page being permanently broken.
+  const [mounted, setMounted] = useState(false)
+  useEffect(() => { setMounted(true) }, [])
+
   const [businessName, setBusinessName] = useState('')
   const [userName, setUserName] = useState('')
   const [agentRuns, setAgentRuns] = useState<AgentRun[]>([])
@@ -371,6 +440,19 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     setMobileMenuOpen(false)
   }, [pathname])
 
+  // Sprint 20C: visible navigation feedback. The user kept reporting
+  // "the sidebar keys don't work" — actually the click DOES fire and
+  // routing DOES happen, but with no top progress bar and identical
+  // surrounding chrome, the change can be invisible on similar-looking
+  // pages. Flash a 600ms blue bar across the top whenever pathname
+  // changes so there's an unambiguous "yes I navigated" signal.
+  const [navFlash, setNavFlash] = useState(false)
+  useEffect(() => {
+    setNavFlash(true)
+    const t = setTimeout(() => setNavFlash(false), 600)
+    return () => clearTimeout(t)
+  }, [pathname])
+
   useEffect(() => {
     setBusinessName(localStorage.getItem('businessName') || '')
     setUserName(localStorage.getItem('userName') || '')
@@ -381,15 +463,31 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     try {
       const me = await fetch('/api/auth/me').then(r => r.json())
       if (!me?.user?.id) return
-      const res = await fetch('/api/workspaces')
-      const list = await res.json() as Array<{ id: string; name: string; user_id?: string }>
-      // Filter to workspaces owned by current user
+      // Sprint 19T: array-safe fetch. /api/workspaces can return an
+      // error object on auth failures; the old `as Array<...>` cast
+      // crashed the layout on the very next .filter call.
+      const list = await readJsonArray<{ id: string; name: string; user_id?: string }>(
+        await fetch('/api/workspaces')
+      )
       const mine = list.filter(w => !w.user_id || w.user_id === me.user.id)
       setWorkspaces(mine.length ? mine : list)
     } catch { /* ignore */ }
   }, [])
 
   useEffect(() => { loadWorkspaces() }, [loadWorkspaces])
+
+  // Sprint 20H bug #8: Escape closes notification panel, workspace menu,
+  // user menu. None of these listened for Escape before.
+  useEffect(() => {
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      setNotifTooltip(false)
+      setWorkspaceMenuOpen(false)
+      setUserMenuOpen(false)
+    }
+    window.addEventListener('keydown', onEsc)
+    return () => window.removeEventListener('keydown', onEsc)
+  }, [])
 
   // Switch active workspace
   const switchWorkspace = (id: string, name: string) => {
@@ -405,25 +503,33 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
   // Notification bell — poll /api/notifications every 30s
   const loadNotifications = useCallback(async () => {
-    const wid = localStorage.getItem('workspaceId')
+    const wid = sessionWorkspaceId  // Sprint 10C
     if (!wid) return
     try {
       const res = await fetch(`/api/notifications?workspaceId=${wid}`)
       if (!res.ok) return
       const data = await res.json()
-      setNotifications(data.items || [])
-      setUnreadCount(data.unreadCount || 0)
+      // Sprint 19T: guard against shape drift; .map on non-array crashes the bell.
+      setNotifications(Array.isArray(data?.items) ? data.items : [])
+      setUnreadCount(typeof data?.unreadCount === 'number' ? data.unreadCount : 0)
     } catch { /* ignore */ }
-  }, [])
+  }, [sessionWorkspaceId])
 
+  // Sprint 20M: poll only when the tab is visible AND throttle to 90s
+  // (was 30s). User's Neon DB hit the data-transfer quota — every poll
+  // was a fresh round-trip. Page Visibility API guard prevents wasted
+  // queries when the user has the tab in the background.
   useEffect(() => {
     loadNotifications()
-    const interval = setInterval(loadNotifications, 30000)
-    return () => clearInterval(interval)
+    const tick = () => { if (typeof document === 'undefined' || !document.hidden) void loadNotifications() }
+    const interval = setInterval(tick, 90000)
+    const onVis = () => { if (!document.hidden) void loadNotifications() }
+    document.addEventListener('visibilitychange', onVis)
+    return () => { clearInterval(interval); document.removeEventListener('visibilitychange', onVis) }
   }, [loadNotifications])
 
   const markAllNotifsRead = async () => {
-    const wid = localStorage.getItem('workspaceId')
+    const wid = sessionWorkspaceId  // Sprint 10C
     if (!wid) return
     try {
       await fetch(`/api/notifications?workspaceId=${wid}`, {
@@ -437,20 +543,31 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   }
 
   const loadRuns = useCallback(async () => {
-    const wid = localStorage.getItem('workspaceId')
+    const wid = sessionWorkspaceId  // Sprint 10C
     if (!wid) return
     try {
-      const res = await fetch(`/api/agent-runs?workspaceId=${wid}&limit=8`)
-      const data: AgentRun[] = await res.json()
+      // Sprint 19T: array-safe. /api/agent-runs can return `{error}` or
+      // a paginated `{rows, nextCursor}` shape; both used to crash the
+      // bottom activity bar's .some/.filter/.slice calls on render.
+      const data = await readJsonArray<AgentRun>(
+        await fetch(`/api/agent-runs?workspaceId=${wid}&limit=8`)
+      )
       setAgentRuns(data)
       setHasRunning(data.some(r => r.status === 'running'))
     } catch { /* ignore */ }
-  }, [])
+  }, [sessionWorkspaceId])
 
+  // Sprint 20M: 8s → 60s + Page Visibility guard. The bottom activity
+  // bar refreshes the layout's per-page agent-runs snapshot. 8-second
+  // polling on every dashboard tab was a big driver of the Neon
+  // data-transfer overage.
   useEffect(() => {
     loadRuns()
-    const interval = setInterval(loadRuns, 8000)
-    return () => clearInterval(interval)
+    const tick = () => { if (typeof document === 'undefined' || !document.hidden) void loadRuns() }
+    const interval = setInterval(tick, 60000)
+    const onVis = () => { if (!document.hidden) void loadRuns() }
+    document.addEventListener('visibilitychange', onVis)
+    return () => { clearInterval(interval); document.removeEventListener('visibilitychange', onVis) }
   }, [loadRuns])
 
   const logout = async () => {
@@ -461,14 +578,47 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
   const sidebarProps = { pathname, businessName, userName, advancedOpen, setAdvancedOpen, logout }
 
+  // Sprint 20G: render an empty skeleton until mounted. Server emits the
+  // skeleton, client first paint also emits the skeleton — identical
+  // HTML on both sides → no hydration check fails. After mount, the
+  // real UI swaps in. This eliminates ANY possible source of mismatch
+  // (dates, locales, localStorage, env-dependent values).
+  if (!mounted) {
+    return (
+      <div className="h-screen bg-gray-950 flex items-center justify-center">
+        <div className="flex items-center gap-2 text-gray-600 text-xs">
+          <div className="w-3 h-3 border-2 border-gray-700 border-t-indigo-500 rounded-full animate-spin" />
+          <span>Loading dashboard…</span>
+        </div>
+      </div>
+    )
+  }
+
   return (
-    <div className="min-h-screen bg-gray-950 flex flex-col">
+    // Sprint 5 fix: was `min-h-screen` — root grew to fit content, so the
+    // sidebar's `overflow-y-auto` nav had no viewport ceiling to scroll
+    // inside. When the Advanced section expanded, the nav grew below the
+    // visible viewport and items appeared "missing" until the user scrolled
+    // the whole page. `h-screen` locks the root to exactly the viewport so
+    // the inner nav can scroll independently of main content.
+    <div className="h-screen bg-gray-950 flex flex-col">
+      {/* Sprint 20C: route-change progress bar. Slides across the top
+          for ~600ms each time pathname changes so clicking a sidebar
+          item produces an obvious "yes, I navigated" signal. Sits at
+          z-[200] so dropdowns + modals don't cover it. */}
+      <div className="fixed top-0 left-0 right-0 h-0.5 z-[200] pointer-events-none">
+        <div
+          className={`h-full bg-indigo-500 transition-all duration-500 ease-out ${
+            navFlash ? 'w-full opacity-100' : 'w-0 opacity-0'
+          }`}
+        />
+      </div>
       {/* Mobile top bar */}
       <div className="lg:hidden flex items-center justify-between px-4 py-3 border-b border-gray-800 bg-gray-950 flex-shrink-0">
-        <Link href="/" className="flex items-center gap-2">
+        <a href="/" className="flex items-center gap-2">
           <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white font-bold text-xs">O</div>
           <span className="font-semibold text-white text-sm">Ooumph</span>
-        </Link>
+        </a>
         <div className="flex items-center gap-2">
           <button onClick={() => setCmdPaletteOpen(true)}
             className="p-2 rounded-lg text-gray-400 hover:text-white hover:bg-gray-800 transition-colors">
@@ -502,7 +652,15 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             meaning they refuse to shrink below their content's intrinsic
             min-content. Without min-w-0, a wide page (e.g. /dashboard with
             its 3-column rail layout) can force <main> to grow horizontally,
-            pushing the fixed-width sidebar off the viewport's left edge. */}
+            pushing the fixed-width sidebar off the viewport's left edge.
+
+            Sprint 20B: reverted 20A's flex-col wrapping. The wrapper
+            interacted badly with the layout shift system — sidebar
+            <Link> clicks weren't triggering route transitions on some
+            browser/state combinations. Going back to plain overflow-auto
+            for compatibility. The auto-scroll issue from before is
+            re-addressed by tightening the CMO page's internal flex
+            chain (separate fix). */}
         <main className="flex-1 min-w-0 overflow-auto">
           {/* Command palette */}
           <CommandPalette open={cmdPaletteOpen} onClose={() => setCmdPaletteOpen(false)} />
@@ -543,18 +701,14 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                         ))}
                       </div>
                       <div className="border-t border-gray-800 py-1">
-                        <Link
+                        <a
                           href="/dashboard/onboarding"
                           onClick={() => setWorkspaceMenuOpen(false)}
                           className="block px-3 py-2 text-xs text-gray-300 hover:text-white hover:bg-gray-800">
                           + Create new workspace
-                        </Link>
-                        <Link
-                          href="/dashboard/agency"
-                          onClick={() => setWorkspaceMenuOpen(false)}
-                          className="block px-3 py-2 text-xs text-gray-400 hover:text-white hover:bg-gray-800">
-                          Manage all clients →
-                        </Link>
+                        </a>
+                        {/* "Manage all clients" link removed Sprint 1E — agency page was 100% mock data.
+                            Restore when /dashboard/agency is rewired to real client/team data. */}
                       </div>
                     </div>
                   )}
@@ -614,6 +768,29 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                         const sevIcons: Record<string, string> = {
                           info: 'ℹ️', success: '✅', warning: '⚠️', error: '❌',
                         }
+                        const typeIcons: Record<string, string> = {
+                          lead_captured: '🎯',
+                          publish_failed: '⚠️',
+                          publish_success: '🚀',
+                          // Sprint 18A (audit pass #5 P0 #4 — Sprint 17 self-regression):
+                          // notifyPublishSuccess writes type='post_published'.
+                          // Keep both keys so already-persisted rows and new
+                          // producers both render the rocket.
+                          post_published: '🚀',
+                          post_queued: '⏰',
+                          calendar_queued: '📅',
+                          nurture_reply: '💬',
+                          oauth_expiring: '🔑',
+                          agent_run_failed: '🔴',
+                          budget_alert: '💸',
+                          // Sprint 18A: pass #4 finding A8 — was falling back
+                          // to severity icon.
+                          follower_sync_skipped: '📉',
+                          // Sprint 18A: workflow_trigger_failed surfaced from
+                          // lp-submit in Sprint 17G; keeps timeline scannable.
+                          workflow_trigger_failed: '🛑',
+                        }
+                        const pickIcon = (n: any) => typeIcons[n.type] || sevIcons[n.severity] || '🔔'
                         const ago = (iso: string) => {
                           const diff = Date.now() - new Date(iso).getTime()
                           if (diff < 60_000) return 'just now'
@@ -624,7 +801,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                         const Content = (
                           <>
                             <div className="flex items-start gap-2">
-                              <span className="text-sm flex-shrink-0">{sevIcons[n.severity] || 'ℹ️'}</span>
+                              <span className="text-sm flex-shrink-0">{pickIcon(n)}</span>
                               <div className="flex-1 min-w-0">
                                 <p className={`text-xs leading-snug ${n.read ? 'text-gray-400' : 'text-white font-medium'}`}>{n.title}</p>
                                 {n.body && <p className="text-[11px] text-gray-500 mt-0.5 line-clamp-2">{n.body}</p>}
@@ -635,13 +812,13 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                           </>
                         )
                         return n.link ? (
-                          <Link
+                          <a
                             key={n.id}
                             href={n.link}
                             onClick={() => setNotifTooltip(false)}
                             className={`block px-4 py-3 hover:bg-gray-800 border-l-2 ${sevColors[n.severity] || sevColors.info}`}>
                             {Content}
-                          </Link>
+                          </a>
                         ) : (
                           <div
                             key={n.id}
@@ -652,12 +829,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                       })}
                     </div>
                     {notifications.length > 0 && (
-                      <Link
+                      <a
                         href="/dashboard/activity"
                         onClick={() => setNotifTooltip(false)}
                         className="block px-4 py-2 border-t border-gray-800 text-xs text-indigo-400 hover:text-indigo-300 text-center">
                         View all activity →
-                      </Link>
+                      </a>
                     )}
                   </div>
                 )}

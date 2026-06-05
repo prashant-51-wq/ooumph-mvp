@@ -6,6 +6,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { runAgent } from '@/lib/claude'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 import type { BrandProfile } from '@/types'
 
 const SYSTEM = `You are the Influencer Mapper Agent for Ooumph AI Marketing OS.
@@ -66,6 +67,8 @@ export async function POST(req: NextRequest) {
       platform?: string
     }
     if (!workspaceId) return NextResponse.json({ error: 'Missing workspaceId' }, { status: 400 })
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     const [brandResult, strategyResult] = await Promise.all([
       sql`SELECT * FROM brand_profiles WHERE workspace_id = ${workspaceId} LIMIT 1`,
@@ -151,7 +154,7 @@ Return JSON:
   "budgetAllocation": "How to split influencer budget across tiers"
 }`
 
-    const report = await runAgent<InfluencerMapReport>(SYSTEM, prompt)
+    const report = await runAgent<InfluencerMapReport>(SYSTEM, prompt, workspaceId)
 
     await sql`UPDATE agent_runs SET status = 'completed', output_json = ${JSON.stringify(report)}, completed_at = CURRENT_TIMESTAMP WHERE id = ${runId}`
 

@@ -8,6 +8,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { runAgent } from '@/lib/claude'
 import { sendApprovalRequestEmail } from '@/lib/email'
+import { readAccessToken } from '@/lib/integrations'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 import type { BrandProfile } from '@/types'
 
 const SYSTEM = `You are the WhatsApp Broadcast Agent for Ooumph AI Marketing OS.
@@ -63,6 +65,8 @@ export async function POST(req: NextRequest) {
       templateType?: 'promotional' | 'reengagement' | 'transactional' | 'event' | 'support'
     }
     if (!workspaceId) return NextResponse.json({ error: 'Missing workspaceId' }, { status: 400 })
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     const [brandResult, strategyResult, funnelResult] = await Promise.all([
       sql`SELECT * FROM brand_profiles WHERE workspace_id = ${workspaceId} LIMIT 1`,
@@ -73,14 +77,21 @@ export async function POST(req: NextRequest) {
     const brand = brandResult.rows[0] as unknown as BrandProfile
     if (!brand) return NextResponse.json({ error: 'Complete onboarding first.' }, { status: 400 })
 
-    // Check if WhatsApp integration is configured
+    // Check if WhatsApp integration is configured.
+    // Sprint 10B: select both token columns. isConnected is now based on
+    // whether readAccessToken() returns a usable token rather than just
+    // the row's existence (a row with empty access_token shouldn't count).
     const integrationResult = await sql`
-      SELECT access_token, account_id, metadata FROM integrations
+      SELECT access_token, encrypted_access_token, account_id, metadata FROM integrations
       WHERE workspace_id = ${workspaceId} AND platform = 'whatsapp' AND status = 'active'
       LIMIT 1
     `
     const integration = integrationResult.rows[0]
-    const isConnected = !!integration
+    const _integToken = integration ? readAccessToken({
+      access_token: integration.access_token as string | null,
+      encrypted_access_token: integration.encrypted_access_token as string | null,
+    }) : null
+    const isConnected = !!_integToken
 
     runId = newId()
     await sql`INSERT INTO agent_runs (id, workspace_id, agent_name, status)
@@ -158,7 +169,7 @@ Return JSON:
   "setupInstructions": "Step-by-step guide to launch via WhatsApp Business API / 360dialog / Twilio"
 }`
 
-    const broadcast = await runAgent<WhatsAppBroadcast>(SYSTEM, prompt)
+    const broadcast = await runAgent<WhatsAppBroadcast>(SYSTEM, prompt, workspaceId)
 
     await sql`UPDATE agent_runs SET status = 'completed', output_json = ${JSON.stringify(broadcast)}, completed_at = CURRENT_TIMESTAMP WHERE id = ${runId}`
 
@@ -230,6 +241,8 @@ export async function PUT(req: NextRequest) {
     if (!workspaceId || !broadcastArtifactId || !recipientPhones?.length) {
       return NextResponse.json({ error: 'Missing workspaceId, broadcastArtifactId, or recipientPhones' }, { status: 400 })
     }
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     // Verify broadcast is approved
     const approvalResult = await sql`
@@ -242,17 +255,22 @@ export async function PUT(req: NextRequest) {
       return NextResponse.json({ error: 'Broadcast must be approved before sending.' }, { status: 403 })
     }
 
+    // Sprint 10B: select both token columns; readAccessToken() resolves
+    // encrypted (preferred) or legacy plaintext.
     const integrationResult = await sql`
-      SELECT access_token, account_id, metadata FROM integrations
+      SELECT access_token, encrypted_access_token, account_id, metadata FROM integrations
       WHERE workspace_id = ${workspaceId} AND platform = 'whatsapp' AND status = 'active'
       LIMIT 1
     `
-    if (!integrationResult.rows[0]) {
+    const integration = integrationResult.rows[0]
+    const accessToken = integration ? readAccessToken({
+      access_token: integration.access_token as string | null,
+      encrypted_access_token: integration.encrypted_access_token as string | null,
+    }) : null
+    if (!integration || !accessToken) {
       return NextResponse.json({ error: 'WhatsApp Business API not connected. Add it in Integrations.' }, { status: 400 })
     }
 
-    const integration = integrationResult.rows[0]
-    const accessToken = String(integration.access_token)
     const phoneNumberId = String(integration.account_id)
 
     const artifactResult = await sql`

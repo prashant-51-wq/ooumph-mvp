@@ -6,6 +6,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { getBufferProfiles, scheduleBufferPost, groqChat, isGroqAvailable } from '@/lib/tools'
+import { assertWorkspaceOwnership } from '@/lib/guards'
+import { isAgentActive } from '@/lib/agents'
+import { getWorkspaceSecret } from '@/lib/secrets'
 
 type SocialPlatform = 'twitter' | 'linkedin' | 'instagram' | 'facebook'
 
@@ -62,23 +65,37 @@ export async function POST(req: NextRequest) {
     if (!workspaceId) return NextResponse.json({ error: 'Missing workspaceId' }, { status: 400 })
     if (!content) return NextResponse.json({ error: 'Missing content' }, { status: 400 })
     if (!platforms || platforms.length === 0) return NextResponse.json({ error: 'Select at least one platform' }, { status: 400 })
+    // Sprint 15F (P2 #20): real-time scheduling must honor agent pause.
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
+    if (!(await isAgentActive(workspaceId, 'social-agent'))) {
+      return NextResponse.json({ ok: false, error: 'social-agent is paused', paused: true }, { status: 423 })
+    }
 
-    // 1. Load workspace model_settings
+    // 1. Load Buffer token — encrypted in workspace_secrets (provider='buffer').
+    // Legacy plaintext tokens in model_settings.bufferAccessToken are migrated
+    // on first settings save; we read encrypted source only from here.
     const wsResult = await sql`SELECT model_settings FROM workspaces WHERE id = ${workspaceId} LIMIT 1`
     const workspace = wsResult.rows[0]
     if (!workspace) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 })
 
-    let modelSettings: Record<string, unknown> = {}
-    try {
-      modelSettings = typeof workspace.model_settings === 'string'
-        ? JSON.parse(workspace.model_settings)
-        : (workspace.model_settings as Record<string, unknown>) || {}
-    } catch { modelSettings = {} }
+    // Primary: encrypted workspace_secrets table
+    let bufferAccessToken = await getWorkspaceSecret(workspaceId, 'buffer')
 
-    const bufferAccessToken = modelSettings.bufferAccessToken as string | undefined
+    // Fallback: legacy plaintext model_settings (read-only, not written back)
+    if (!bufferAccessToken) {
+      try {
+        const modelSettings: Record<string, unknown> =
+          typeof workspace.model_settings === 'string'
+            ? JSON.parse(workspace.model_settings as string)
+            : (workspace.model_settings as Record<string, unknown>) || {}
+        bufferAccessToken = (modelSettings.bufferAccessToken as string | undefined) || null
+      } catch { /* ignore parse error */ }
+    }
+
     if (!bufferAccessToken) {
       return NextResponse.json({
-        error: 'Buffer not connected. Add Buffer Access Token in Settings.',
+        error: 'Buffer not connected. Add Buffer Access Token in Settings > Integrations.',
         configured: false,
       })
     }

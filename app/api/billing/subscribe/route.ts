@@ -8,6 +8,7 @@
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 
 export async function POST(req: NextRequest) {
   try {
@@ -21,6 +22,11 @@ export async function POST(req: NextRequest) {
     if (!workspaceId || !planSlug) {
       return NextResponse.json({ error: 'workspaceId and planSlug required' }, { status: 400 })
     }
+    // Sprint 10A: ownership before creating a Checkout session whose
+    // metadata.workspace_id stamps the eventual subscription. Without
+    // this, an attacker could attach their card to a victim workspace.
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     const stripeKey = process.env.STRIPE_SECRET_KEY
     if (!stripeKey) {
@@ -77,6 +83,9 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
   const workspaceId = searchParams.get('workspaceId')
   if (!workspaceId) return NextResponse.json(null)
+  // Sprint 10A: ownership before exposing plan + period dates.
+  const denied = assertWorkspaceOwnership(req, workspaceId)
+  if (denied) return denied
 
   const result = await sql`
     SELECT s.*, p.name as plan_name, p.slug as plan_slug, p.price_monthly,

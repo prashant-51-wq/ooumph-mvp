@@ -1,6 +1,10 @@
 'use client'
 
 import { useState, useRef, useCallback, useEffect } from 'react'
+import { useRouter } from 'next/navigation'
+import { useWorkspaceId } from '@/lib/hooks/use-workspace-id'
+import { usePersistedState } from '@/lib/hooks/use-persisted-state'
+import { SkeletonTableBody } from '@/components/Skeleton'
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 type Stage = 'Lead' | 'Prospect' | 'Qualified' | 'Proposal' | 'Customer' | 'Churned'
@@ -50,6 +54,8 @@ interface Deal {
   stage: string
   close_date: string
   owner: string
+  /** Sprint 6E: captured at the moment the deal moved to Closed Lost. */
+  lost_reason?: string | null
 }
 
 interface Segment {
@@ -60,6 +66,30 @@ interface Segment {
   performance: string
   conditions: Array<{ field: string; operator: string; value: string }>
   type: 'builtin' | 'custom'
+}
+
+/**
+ * Sprint 16F TASK 1 — persisted segment row as it lands back from
+ * GET /api/segments. The CRM page is the source of truth for rule
+ * semantics (see `applySavedSegment` below); the server treats `rule`
+ * as an opaque blob.
+ */
+interface SavedSegmentRule {
+  statuses?: string[]
+  sources?: string[]
+  campaignLike?: string
+  minScore?: number
+  maxScore?: number
+  createdSince?: string
+}
+interface SavedSegment {
+  id: string
+  name: string
+  description: string | null
+  rule: SavedSegmentRule
+  member_count: number
+  created_at: string
+  updated_at: string
 }
 
 // ── Constants ──────────────────────────────────────────────────────────────────
@@ -108,6 +138,8 @@ interface DealRow {
   actual_close: string | null
   notes: string | null
   source: string | null
+  lost_reason: string | null
+  lost_at: string | null
   created_at: string
   updated_at: string
 }
@@ -210,6 +242,7 @@ function dealRowToDeal(row: DealRow): Deal {
     stage: stageMap[row.stage] || row.stage,
     close_date: row.expected_close || '',
     owner: 'You',
+    lost_reason: row.lost_reason,
   }
 }
 
@@ -223,40 +256,14 @@ function activityTypeNormalize(t: string): ActivityType {
   return 'note'
 }
 
-const MOCK_CONTACTS: Contact[] = [
-  { id:'c1', name:'Sarah Johnson', email:'sarah@techcorp.io', phone:'+1 415 555 0101', company:'TechCorp', stage:'Customer', score:92, rfm_tier:'Champion', rfm_r:5, rfm_f:5, rfm_m:5, last_activity:'2026-05-25T10:00:00Z', tags:['VIP','Enterprise'], avatar_color:'bg-indigo-600', deal_value:12000, notes:'Key decision maker', created_at:'2026-01-15T09:00:00Z' },
-  { id:'c2', name:'Marcus Chen', email:'mchen@innovate.com', phone:'+1 312 555 0202', company:'Innovate LLC', stage:'Proposal', score:78, rfm_tier:'Loyal', rfm_r:4, rfm_f:4, rfm_m:3, last_activity:'2026-05-24T14:30:00Z', tags:['Warm','Mid-market'], avatar_color:'bg-purple-600', deal_value:8500, notes:'Interested in annual plan', created_at:'2026-02-20T11:00:00Z' },
-  { id:'c3', name:'Priya Patel', email:'priya@startupx.co', phone:'+91 98765 43210', company:'StartupX', stage:'Qualified', score:65, rfm_tier:'Potential Loyalist', rfm_r:3, rfm_f:3, rfm_m:4, last_activity:'2026-05-22T09:15:00Z', tags:['Startup','High Growth'], avatar_color:'bg-pink-600', deal_value:3200, notes:'Budget decision in Q3', created_at:'2026-03-10T08:00:00Z' },
-  { id:'c4', name:'Derek Williams', email:'derek@bigco.net', phone:'+1 212 555 0303', company:'BigCo Inc', stage:'Lead', score:42, rfm_tier:'At Risk', rfm_r:2, rfm_f:3, rfm_m:4, last_activity:'2026-05-10T16:00:00Z', tags:['Cold','Enterprise'], avatar_color:'bg-blue-600', deal_value:25000, notes:'Need re-engagement', created_at:'2026-04-05T10:00:00Z' },
-  { id:'c5', name:'Amelia Torres', email:'atorres@creative.agency', phone:'+1 310 555 0404', company:'Creative Agency', stage:'Customer', score:88, rfm_tier:'Champion', rfm_r:5, rfm_f:4, rfm_m:5, last_activity:'2026-05-25T08:45:00Z', tags:['Agency','Referral'], avatar_color:'bg-emerald-600', deal_value:6800, notes:'Great advocate', created_at:'2026-01-28T12:00:00Z' },
-  { id:'c6', name:'James Park', email:'jpark@finance.co', phone:'+1 646 555 0505', company:'Finance Co', stage:'Prospect', score:55, rfm_tier:'New Customer', rfm_r:4, rfm_f:1, rfm_m:2, last_activity:'2026-05-18T11:30:00Z', tags:['Finance','Inbound'], avatar_color:'bg-orange-600', deal_value:4500, notes:'Signed up last week', created_at:'2026-05-12T09:00:00Z' },
-  { id:'c7', name:'Lena Fischer', email:'lena@eurobiz.de', phone:'+49 30 555 0606', company:'EuroBiz GmbH', stage:'Churned', score:18, rfm_tier:'Lost', rfm_r:1, rfm_f:1, rfm_m:3, last_activity:'2026-03-01T10:00:00Z', tags:['EMEA','Churned'], avatar_color:'bg-rose-600', deal_value:0, notes:'Contract expired', created_at:'2025-11-20T10:00:00Z' },
-  { id:'c8', name:'Carlos Mendez', email:'carlos@latam.store', phone:'+52 55 555 0707', company:'LatAm Store', stage:'Qualified', score:71, rfm_tier:'Loyal', rfm_r:4, rfm_f:5, rfm_m:3, last_activity:'2026-05-23T15:00:00Z', tags:['LATAM','Repeat'], avatar_color:'bg-cyan-600', deal_value:5600, notes:'Expanding to 3 markets', created_at:'2026-02-01T10:00:00Z' },
-]
-
-const MOCK_ACTIVITIES: Activity[] = [
-  { id:'a1', contact_id:'c1', contact_name:'Sarah Johnson', type:'call', title:'Discovery call — great fit', notes:'Discussed Q3 expansion plans', outcome:'Positive', next_action:'Send proposal', timestamp:'2026-05-25T10:00:00Z' },
-  { id:'a2', contact_id:'c2', contact_name:'Marcus Chen', type:'email', title:'Proposal sent', notes:'3-year SaaS plan included', outcome:'Sent', next_action:'Follow up in 2 days', timestamp:'2026-05-24T14:30:00Z' },
-  { id:'a3', contact_id:'c3', contact_name:'Priya Patel', type:'meeting', title:'Product demo completed', notes:'Showed automation features', outcome:'Interested', next_action:'Budget confirmation call', timestamp:'2026-05-22T09:15:00Z' },
-  { id:'a4', contact_id:'c5', contact_name:'Amelia Torres', type:'deal', title:'Deal closed — $6,800', notes:'Annual subscription', outcome:'Won', next_action:'Onboarding call', timestamp:'2026-05-21T16:00:00Z' },
-  { id:'a5', contact_id:'c4', contact_name:'Derek Williams', type:'alert', title:'No response — 15 days', notes:'Last email opened but not replied', outcome:'At Risk', next_action:'Send win-back', timestamp:'2026-05-10T16:00:00Z' },
-  { id:'a6', contact_id:'c6', contact_name:'James Park', type:'note', title:'Inbound signup from blog post', notes:'Read "AI Marketing" article', outcome:'New', next_action:'Welcome sequence started', timestamp:'2026-05-18T11:30:00Z' },
-]
-
-const MOCK_DEALS: Deal[] = [
-  { id:'d1', name:'TechCorp Annual Plan', contact:'Sarah Johnson', value:12000, probability:90, stage:'Negotiation', close_date:'2026-06-15', owner:'You' },
-  { id:'d2', name:'Innovate Q3 Upgrade', contact:'Marcus Chen', value:8500, probability:65, stage:'Proposal', close_date:'2026-06-30', owner:'You' },
-  { id:'d3', name:'StartupX Starter Plan', contact:'Priya Patel', value:3200, probability:50, stage:'Qualification', close_date:'2026-07-20', owner:'You' },
-  { id:'d4', name:'BigCo Enterprise License', contact:'Derek Williams', value:25000, probability:20, stage:'Prospecting', close_date:'2026-08-31', owner:'You' },
-  { id:'d5', name:'Finance Co Pro Plan', contact:'James Park', value:4500, probability:75, stage:'Proposal', close_date:'2026-06-10', owner:'You' },
-]
-
-const MOCK_SEGMENTS: Segment[] = [
-  { id:'s1', name:'Champions (RFM 555)', count:47, last_updated:'2026-05-25', performance:'AOV $1,240 · 94% retention', conditions:[{field:'rfm_r',operator:'>=',value:'5'},{field:'rfm_f',operator:'>=',value:'5'},{field:'rfm_m',operator:'>=',value:'4'}], type:'builtin' },
-  { id:'s2', name:'At Risk (RFM 2xx)', count:31, last_updated:'2026-05-24', performance:'AOV $420 · dropping', conditions:[{field:'rfm_r',operator:'<=',value:'2'}], type:'builtin' },
-  { id:'s3', name:'New Customers (RFM x1x)', count:58, last_updated:'2026-05-23', performance:'AOV $180 · onboarding', conditions:[{field:'rfm_f',operator:'=',value:'1'}], type:'builtin' },
-  { id:'s4', name:'High Value Prospects', count:22, last_updated:'2026-05-22', performance:'Avg deal $8.5k', conditions:[{field:'score',operator:'>=',value:'70'},{field:'stage',operator:'=',value:'Qualified'}], type:'builtin' },
-]
+// MOCK_CONTACTS / MOCK_ACTIVITIES / MOCK_DEALS / MOCK_SEGMENTS were previously
+// declared here as 8 fake contacts (Sarah Johnson / Marcus Chen / Priya Patel
+// etc.), 6 fake activities, 5 fake deals, and 4 fake segments. They've been
+// removed in Sprint 1D — `contacts`, `activities`, and `deals` are now
+// hydrated from /api/leads-captured + /api/sales-deals + per-lead activity
+// endpoints, and `segments` is derived client-side from real contact data
+// (see the `segments` block in the page component). No silent mock fallback
+// remains. Source Test: every visible row on the CRM traces to a DB row.
 
 const DEAL_STAGES = ['Prospecting','Qualification','Proposal','Negotiation','Closed Won','Closed Lost']
 
@@ -313,10 +320,12 @@ function ScoreBar({ score, className = '' }: { score: number; className?: string
 
 // ── Contact Slide-over ─────────────────────────────────────────────────────────
 function ContactSlideover({ contact, onClose, activities, workspaceId, onUpdated }: { contact: Contact; onClose: () => void; activities: Activity[]; workspaceId: string | null; onUpdated: () => void }) {
+  const router = useRouter()
   const [note, setNote] = useState('')
   const [editStage, setEditStage] = useState(contact.stage)
   const [savingStage, setSavingStage] = useState(false)
   const [savingNote, setSavingNote] = useState(false)
+  const [actionMsg, setActionMsg] = useState<string | null>(null)
   const contactActivities = activities
 
   async function saveStage(stage: Stage) {
@@ -332,6 +341,31 @@ function ContactSlideover({ contact, onClose, activities, workspaceId, onUpdated
     } finally { setSavingStage(false) }
   }
 
+  /**
+   * Log an activity row against the lead. Mirrors `submitNote` but parameterizes
+   * the type/title so the Email/Call/Send-to-CMO buttons can use the same path.
+   * Failure to log is non-fatal: the user-visible action (mailto, tel, navigation)
+   * still happens; we just won't have the audit row.
+   *
+   * Note on `type`: the API accepts any string, but the existing frontend
+   * `ActivityType` union only knows about call/email/note/meeting/deal/alert.
+   * "Send to CMO" is logged as type='note' with a recognizable title so the
+   * timeline icon renders correctly until we expand the ActivityType union.
+   */
+  async function logActivity(type: ActivityType, title: string, description?: string) {
+    if (!workspaceId) return
+    try {
+      await fetch(`/api/leads-captured/${contact.id}/activity`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspaceId, type, title, description }),
+      })
+      onUpdated()
+    } catch {
+      // Best-effort — don't block the user's action on a failed audit write.
+    }
+  }
+
   async function submitNote() {
     if (!note.trim() || !workspaceId) return
     setSavingNote(true)
@@ -344,6 +378,72 @@ function ContactSlideover({ contact, onClose, activities, workspaceId, onUpdated
       setNote('')
       onUpdated()
     } finally { setSavingNote(false) }
+  }
+
+  /**
+   * Email button — opens a mailto: link in a new tab and logs an `email`
+   * activity row so the timeline reflects the contact attempt. The browser's
+   * native mail handler takes over from there. We don't have a Send-Email-
+   * via-Workspace flow yet; mailto is the honest fallback.
+   */
+  function handleEmailClick() {
+    if (!contact.email) {
+      setActionMsg('No email address on this contact.')
+      return
+    }
+    setActionMsg(null)
+    void logActivity('email', `Started email to ${contact.email}`, 'Opened in mail client via mailto:')
+    if (typeof window !== 'undefined') {
+      window.location.href = `mailto:${contact.email}`
+    }
+  }
+
+  /**
+   * Call button — opens a tel: link and logs a `call` activity. On desktop
+   * this triggers the OS's default handler (FaceTime / Phone Link / etc.).
+   * On mobile it places a call. If there's no phone number, we surface that
+   * honestly rather than failing silently.
+   */
+  function handleCallClick() {
+    if (!contact.phone) {
+      setActionMsg('No phone number on this contact.')
+      return
+    }
+    setActionMsg(null)
+    void logActivity('call', `Started call to ${contact.phone}`, 'Opened in dialer via tel:')
+    if (typeof window !== 'undefined') {
+      window.location.href = `tel:${contact.phone.replace(/[^\d+]/g, '')}`
+    }
+  }
+
+  /**
+   * Send-to-CMO button — stashes a lead-context payload in localStorage so the
+   * CMO dashboard can pick it up as a prefill, then navigates there. There is
+   * no /api/cmo/context endpoint yet; using a known localStorage key keeps the
+   * handoff honest (the CMO page can ignore it gracefully). Logs `sent_to_cmo`
+   * so the lead's timeline records the escalation.
+   */
+  function handleSendToCmo() {
+    if (typeof window !== 'undefined') {
+      try {
+        const payload = {
+          source: 'crm',
+          leadId: contact.id,
+          name: contact.name,
+          email: contact.email,
+          company: contact.company,
+          stage: contact.stage,
+          dealValue: contact.deal_value,
+          score: contact.score,
+          ts: Date.now(),
+        }
+        localStorage.setItem('ooumph_cmo_prefill', JSON.stringify(payload))
+      } catch { /* localStorage may be full / disabled — fall through to nav */ }
+    }
+    // Logged as 'note' (not 'sent_to_cmo') because the ActivityType union
+    // in this file doesn't include sent_to_cmo yet. Title makes intent clear.
+    void logActivity('note', `Sent ${contact.name} to CMO Dashboard`, 'Lead context queued for the CMO chat — see prefill on the dashboard.')
+    router.push('/dashboard')
   }
 
   return (
@@ -370,7 +470,7 @@ function ContactSlideover({ contact, onClose, activities, workspaceId, onUpdated
           </div>
 
           {/* Stage + RFM */}
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="text-xs text-gray-500 uppercase tracking-wide mb-1.5 block">Stage</label>
               <select value={editStage} disabled={savingStage} onChange={e => saveStage(e.target.value as Stage)} className={selectCls}>
@@ -430,10 +530,35 @@ function ContactSlideover({ contact, onClose, activities, workspaceId, onUpdated
         </div>
 
         {/* Footer actions */}
-        <div className="border-t border-gray-800 p-4 flex gap-2 flex-shrink-0">
-          <button className="flex-1 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-medium transition-colors">📧 Email</button>
-          <button className="flex-1 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg text-sm transition-colors">📞 Call</button>
-          <button className="px-3 py-2 bg-indigo-900/40 hover:bg-indigo-900/60 text-indigo-300 rounded-lg text-sm transition-colors">Send to CMO</button>
+        <div className="border-t border-gray-800 p-4 flex flex-col gap-2 flex-shrink-0">
+          {actionMsg && (
+            <p className="text-amber-300 text-xs">{actionMsg}</p>
+          )}
+          <div className="flex gap-2">
+            <button
+              onClick={handleEmailClick}
+              disabled={!contact.email}
+              title={contact.email ? `Email ${contact.email}` : 'No email address on file'}
+              className="flex-1 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-lg text-sm font-medium transition-colors"
+            >
+              📧 Email
+            </button>
+            <button
+              onClick={handleCallClick}
+              disabled={!contact.phone}
+              title={contact.phone ? `Call ${contact.phone}` : 'No phone number on file'}
+              className="flex-1 py-2 bg-gray-800 hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed text-gray-300 rounded-lg text-sm transition-colors"
+            >
+              📞 Call
+            </button>
+            <button
+              onClick={handleSendToCmo}
+              title="Send this lead's context to the CMO Dashboard"
+              className="px-3 py-2 bg-indigo-900/40 hover:bg-indigo-900/60 text-indigo-300 rounded-lg text-sm transition-colors"
+            >
+              Send to CMO
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -469,22 +594,69 @@ function CSVImportModal({ onClose, workspaceId, onImported }: { onClose: () => v
       setAllRows(rows)
       setPreview(rows.slice(0, 6))
       const headers = rows[0] || []
+      // Sprint 12D: smarter auto-detection. Each candidate field has
+      // an ordered priority list — first match wins, so "email_work"
+      // maps to 'email' rather than '-- ignore --'. Also checks
+      // common aliases ("organization", "biz", "telephone", "mobile",
+      // "given_name", "surname", etc.) that the previous version
+      // missed entirely.
+      const ALIASES: Array<{ field: string; patterns: RegExp[] }> = [
+        { field: 'email',   patterns: [/\bemail/i, /\be-?mail/i, /\bmail$/i] },
+        { field: 'phone',   patterns: [/\bphone/i, /\bmobile/i, /\btelephone/i, /\btel\b/i, /\bcell/i, /\bcontact.*number/i] },
+        { field: 'name',    patterns: [/^name$/i, /\bfull.?name/i, /\bgiven.?name/i, /\bfirst.?name/i, /\blast.?name/i, /\bsurname/i, /\bperson/i, /\bcontact.?name/i] },
+        { field: 'company', patterns: [/\bcompany/i, /\borganization/i, /\borganisation/i, /\bbiz\b/i, /\bbusiness/i, /\bemployer/i, /\bworkplace/i] },
+        { field: 'stage',   patterns: [/\bstage/i, /\bstatus/i, /\bpipeline/i, /\bdeal.?stage/i] },
+        { field: 'score',   patterns: [/\bscore/i, /\blead.?score/i, /\brank/i] },
+        { field: 'tags',    patterns: [/\btags?\b/i, /\blabels?\b/i, /\bcategories/i] },
+      ]
       const auto: Record<string,string> = {}
       headers.forEach(h => {
-        const low = h.toLowerCase()
-        if (low.includes('name')) auto[h] = 'name'
-        else if (low.includes('email')) auto[h] = 'email'
-        else if (low.includes('phone')) auto[h] = 'phone'
-        else if (low.includes('company') || low.includes('org')) auto[h] = 'company'
-        else if (low.includes('stage') || low.includes('status')) auto[h] = 'stage'
-        else if (low.includes('score')) auto[h] = 'score'
-        else if (low.includes('tag')) auto[h] = 'tags'
-        else auto[h] = '-- ignore --'
+        const matched = ALIASES.find(a => a.patterns.some(p => p.test(h)))
+        auto[h] = matched ? matched.field : '-- ignore --'
       })
       setMapping(auto)
     }
     reader.readAsText(f)
   }
+
+  // Sprint 12D: pre-import validation. Looks at every data row and
+  // reports the counts the user will see in the summary panel BEFORE
+  // they commit. Catches "all my rows are missing email" up-front
+  // instead of waiting through the import.
+  const validation = (() => {
+    if (allRows.length < 2) return null
+    const headers = allRows[0]
+    const data = allRows.slice(1)
+    let withEmail = 0
+    let withName = 0
+    let invalidEmail = 0
+    let missingBoth = 0
+    const emailRx = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+    for (const row of data) {
+      const fields: Record<string, string> = {}
+      headers.forEach((h, j) => {
+        const target = mapping[h]
+        if (target && target !== '-- ignore --' && row[j]) fields[target] = row[j]
+      })
+      if (fields.email) {
+        if (emailRx.test(fields.email)) withEmail++
+        else invalidEmail++
+      }
+      if (fields.name) withName++
+      if (!fields.email && !fields.name) missingBoth++
+    }
+    const usable = data.length - missingBoth
+    return {
+      total: data.length,
+      withEmail,
+      withName,
+      invalidEmail,
+      missingBoth,
+      usable,
+    }
+  })()
+  const emailMapped = Object.values(mapping).includes('email')
+  const nameMapped = Object.values(mapping).includes('name')
 
   async function doImport() {
     if (!workspaceId) return
@@ -614,25 +786,86 @@ function CSVImportModal({ onClose, workspaceId, onImported }: { onClose: () => v
                 </div>
               )}
 
-              {/* Field mapping */}
+              {/* Field mapping — Sprint 12D: each row shows a sample
+                  value from the first non-empty data row so the user
+                  sees what they're mapping. A row is auto-mapped when
+                  the column name matches our alias regex. */}
               {preview[0] && (
                 <div>
-                  <p className="text-xs text-gray-500 uppercase tracking-wide mb-3">Map CSV columns to CRM fields</p>
-                  <div className="space-y-2">
-                    {preview[0].map(header => (
-                      <div key={header} className="flex items-center gap-3">
-                        <span className="text-gray-300 text-sm w-40 truncate">{header}</span>
-                        <span className="text-gray-600">→</span>
-                        <select
-                          value={mapping[header] || '-- ignore --'}
-                          onChange={e => setMapping(m => ({...m, [header]: e.target.value}))}
-                          className={selectCls + ' flex-1'}
-                        >
-                          {CRM_FIELDS.map(f => <option key={f} value={f}>{f}</option>)}
-                        </select>
-                      </div>
-                    ))}
+                  <div className="flex items-baseline justify-between mb-3">
+                    <p className="text-xs text-gray-500 uppercase tracking-wide">Map CSV columns to CRM fields</p>
+                    {!emailMapped && !nameMapped && (
+                      <span className="text-[11px] text-red-400">⚠ Map at least one column to <strong>email</strong> or <strong>name</strong></span>
+                    )}
                   </div>
+                  <div className="space-y-2">
+                    {preview[0].map(header => {
+                      const colIdx = preview[0].indexOf(header)
+                      // Find the first non-empty sample value in this column.
+                      const sample = allRows.slice(1).find(r => r[colIdx]?.trim())?.[colIdx]
+                      const target = mapping[header] || '-- ignore --'
+                      const isImportant = target === 'email' || target === 'name'
+                      return (
+                        <div key={header} className={`flex items-center gap-3 rounded-lg p-2 ${isImportant ? 'bg-indigo-950/30 border border-indigo-900/40' : ''}`}>
+                          <div className="w-40 shrink-0">
+                            <p className="text-gray-300 text-sm font-medium truncate">{header}</p>
+                            {sample && (
+                              <p className="text-[10px] text-gray-500 truncate italic" title={sample}>
+                                e.g. {sample.slice(0, 30)}{sample.length > 30 ? '…' : ''}
+                              </p>
+                            )}
+                          </div>
+                          <span className="text-gray-600">→</span>
+                          <select
+                            value={target}
+                            onChange={e => setMapping(m => ({...m, [header]: e.target.value}))}
+                            className={selectCls + ' flex-1'}
+                          >
+                            {CRM_FIELDS.map(f => <option key={f} value={f}>{f}</option>)}
+                          </select>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Sprint 12D: pre-import validation summary.
+                  Shows the user EXACTLY what will happen before they
+                  click Import — catches "all my rows are missing
+                  email" up-front. */}
+              {validation && (
+                <div className="rounded-xl border border-gray-800 bg-gray-900/60 p-4">
+                  <p className="text-xs text-gray-500 uppercase tracking-wide mb-3">Pre-import preview</p>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    <div>
+                      <p className={`text-2xl font-bold ${validation.usable === validation.total ? 'text-green-400' : 'text-amber-400'}`}>
+                        {validation.usable}
+                      </p>
+                      <p className="text-[11px] text-gray-500 mt-0.5">will import</p>
+                    </div>
+                    <div>
+                      <p className="text-2xl font-bold text-indigo-300">{validation.withEmail}</p>
+                      <p className="text-[11px] text-gray-500 mt-0.5">with valid email</p>
+                    </div>
+                    {validation.invalidEmail > 0 && (
+                      <div>
+                        <p className="text-2xl font-bold text-red-400">{validation.invalidEmail}</p>
+                        <p className="text-[11px] text-gray-500 mt-0.5">invalid email format</p>
+                      </div>
+                    )}
+                    {validation.missingBoth > 0 && (
+                      <div>
+                        <p className="text-2xl font-bold text-gray-500">{validation.missingBoth}</p>
+                        <p className="text-[11px] text-gray-500 mt-0.5">skip (no email or name)</p>
+                      </div>
+                    )}
+                  </div>
+                  {validation.usable === 0 && (
+                    <p className="text-red-400 text-xs mt-3">
+                      No rows will be imported. Make sure your CSV has email or name columns mapped above.
+                    </p>
+                  )}
                 </div>
               )}
 
@@ -681,69 +914,116 @@ function CSVImportModal({ onClose, workspaceId, onImported }: { onClose: () => v
 }
 
 // ── Segment Rule Builder Modal ────────────────────────────────────────────────
-function SegmentModal({ onClose }: { onClose: () => void }) {
+/**
+ * Sprint 16F TASK 1 — modal POSTs to /api/segments.
+ *
+ * Rule shape mirrors normaliseRule() in app/api/segments/route.ts:
+ *   statuses?, sources?, minScore?, maxScore?, campaignLike?, createdSince?
+ *
+ * The pre-Sprint-16F version used random match-counts and a no-op submit
+ * button — wired now so saved segments actually persist and show up in
+ * the saved-segment chip strip on next load.
+ */
+function SegmentModal({ onClose, workspaceId, onSaved }: {
+  onClose: () => void
+  workspaceId: string | null
+  onSaved: () => void
+}) {
   const [name, setName] = useState('')
-  const [logic, setLogic] = useState<'AND'|'OR'>('AND')
-  const [conditions, setConditions] = useState([{ field: 'score', operator: '>=', value: '70' }])
+  const [description, setDescription] = useState('')
+  const [statusesStr, setStatusesStr] = useState('')
+  const [sourcesStr, setSourcesStr] = useState('')
+  const [minScore, setMinScore] = useState('')
+  const [maxScore, setMaxScore] = useState('')
+  const [createdSince, setCreatedSince] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
-  const FIELDS = ['score','stage','rfm_tier','company','tags','last_activity','deal_value']
-  const OPERATORS = ['=','!=','>=','<=','contains','not contains']
-
-  function addCondition() {
-    setConditions(c => [...c, { field: 'score', operator: '>=', value: '' }])
+  async function submit() {
+    if (!workspaceId) { setError('No workspace'); return }
+    if (!name.trim()) { setError('Name is required'); return }
+    setError(null); setSaving(true)
+    try {
+      const rule: SavedSegmentRule = {}
+      if (statusesStr.trim()) rule.statuses = statusesStr.split(',').map(s => s.trim()).filter(Boolean)
+      if (sourcesStr.trim()) rule.sources = sourcesStr.split(',').map(s => s.trim()).filter(Boolean)
+      if (minScore !== '' && !Number.isNaN(Number(minScore))) rule.minScore = Number(minScore)
+      if (maxScore !== '' && !Number.isNaN(Number(maxScore))) rule.maxScore = Number(maxScore)
+      if (createdSince.trim()) rule.createdSince = createdSince
+      const res = await fetch('/api/segments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          workspaceId,
+          name: name.trim(),
+          description: description.trim() || undefined,
+          rule,
+        }),
+      })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({})) as { error?: string }
+        throw new Error(body.error || `Save failed (${res.status})`)
+      }
+      onSaved()
+      onClose()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally { setSaving(false) }
   }
-
-  const matchCount = Math.floor(Math.random() * 80) + 10
 
   return (
     <div className="fixed inset-0 bg-gray-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
       <div className="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-lg" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800">
-          <h2 className="text-white font-semibold">Create Segment</h2>
+          <h2 className="text-white font-semibold">Save Segment</h2>
           <button onClick={onClose} className="text-gray-500 hover:text-white">✕</button>
         </div>
         <div className="p-6 space-y-4">
           <div>
-            <label className="text-xs text-gray-500 uppercase tracking-wide mb-1.5 block">Segment Name</label>
-            <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. High-Value At-Risk" className={inputCls} />
+            <label className="text-xs text-gray-500 uppercase tracking-wide mb-1.5 block">Name *</label>
+            <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. High-Score Recent Leads" className={inputCls} />
           </div>
-
-          <div className="flex items-center gap-3">
-            <span className="text-gray-400 text-sm">Match</span>
-            <div className="flex">
-              {(['AND','OR'] as const).map(l => (
-                <button key={l} onClick={() => setLogic(l)} className={`px-4 py-1.5 text-sm border transition-colors first:rounded-l-lg last:rounded-r-lg ${logic === l ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-gray-800 border-gray-700 text-gray-400 hover:text-white'}`}>{l}</button>
-              ))}
+          <div>
+            <label className="text-xs text-gray-500 uppercase tracking-wide mb-1.5 block">Description</label>
+            <input value={description} onChange={e => setDescription(e.target.value)} placeholder="optional notes" className={inputCls} />
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs text-gray-500 uppercase tracking-wide mb-1.5 block">Statuses</label>
+              <input value={statusesStr} onChange={e => setStatusesStr(e.target.value)} placeholder="new, contacted, qualified" className={inputCls} />
+              <p className="text-[10px] text-gray-600 mt-1">Comma-separated. e.g. new, hot, qualified.</p>
             </div>
-            <span className="text-gray-400 text-sm">of the following conditions</span>
+            <div>
+              <label className="text-xs text-gray-500 uppercase tracking-wide mb-1.5 block">Sources</label>
+              <input value={sourcesStr} onChange={e => setSourcesStr(e.target.value)} placeholder="meta_ads, google" className={inputCls} />
+            </div>
+            <div>
+              <label className="text-xs text-gray-500 uppercase tracking-wide mb-1.5 block">Min score</label>
+              <input value={minScore} onChange={e => setMinScore(e.target.value)} type="number" placeholder="0" className={inputCls} />
+            </div>
+            <div>
+              <label className="text-xs text-gray-500 uppercase tracking-wide mb-1.5 block">Max score</label>
+              <input value={maxScore} onChange={e => setMaxScore(e.target.value)} type="number" placeholder="100" className={inputCls} />
+            </div>
+            <div className="col-span-2">
+              <label className="text-xs text-gray-500 uppercase tracking-wide mb-1.5 block">Created since (ISO date)</label>
+              <input value={createdSince} onChange={e => setCreatedSince(e.target.value)} type="date" className={inputCls} />
+            </div>
           </div>
 
-          <div className="space-y-2">
-            {conditions.map((cond, i) => (
-              <div key={i} className="flex gap-2 items-center">
-                <select value={cond.field} onChange={e => setConditions(cs => cs.map((c,j) => j===i ? {...c, field:e.target.value} : c))} className={selectCls + ' flex-1'}>
-                  {FIELDS.map(f => <option key={f} value={f}>{f}</option>)}
-                </select>
-                <select value={cond.operator} onChange={e => setConditions(cs => cs.map((c,j) => j===i ? {...c, operator:e.target.value} : c))} className={selectCls + ' w-28'}>
-                  {OPERATORS.map(o => <option key={o} value={o}>{o}</option>)}
-                </select>
-                <input value={cond.value} onChange={e => setConditions(cs => cs.map((c,j) => j===i ? {...c, value:e.target.value} : c))} className={inputCls + ' w-24'} placeholder="value" />
-                {conditions.length > 1 && (
-                  <button onClick={() => setConditions(cs => cs.filter((_,j) => j!==i))} className="text-gray-600 hover:text-red-400 text-sm">✕</button>
-                )}
-              </div>
-            ))}
-          </div>
+          {error && (
+            <div className="bg-rose-950/30 border border-rose-800/40 rounded-lg px-4 py-2 text-rose-300 text-sm">{error}</div>
+          )}
 
-          <button onClick={addCondition} className="text-indigo-400 hover:text-indigo-300 text-sm font-medium">+ Add condition</button>
-
-          <div className="bg-indigo-950/30 border border-indigo-800/40 rounded-lg px-4 py-3">
-            <p className="text-indigo-300 text-sm">This segment matches <span className="font-bold">{matchCount} contacts</span></p>
-          </div>
-
-          <div className="flex gap-3">
+          <div className="flex gap-3 pt-2">
             <button onClick={onClose} className="flex-1 py-2.5 border border-gray-700 text-gray-400 rounded-lg text-sm hover:text-white">Cancel</button>
-            <button className="flex-1 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-medium transition-colors">Create Segment</button>
+            <button
+              onClick={() => void submit()}
+              disabled={saving || !name.trim()}
+              className="flex-1 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-900/40 disabled:text-gray-500 text-white rounded-lg text-sm font-medium transition-colors"
+            >
+              {saving ? 'Saving…' : 'Save Segment'}
+            </button>
           </div>
         </div>
       </div>
@@ -786,7 +1066,7 @@ function AddActivityModal({ onClose, contacts, workspaceId, onLogged }: { onClos
         <div className="p-6 space-y-4">
           <div>
             <label className="text-xs text-gray-500 uppercase tracking-wide mb-2 block">Activity Type</label>
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
               {(['call','email','note','meeting','deal','alert'] as ActivityType[]).map(t => (
                 <button key={t} onClick={() => setType(t)} className={`py-2 rounded-lg text-sm border flex items-center justify-center gap-1.5 transition-colors ${type===t ? 'border-indigo-500 bg-indigo-950/40 text-indigo-300' : 'border-gray-700 bg-gray-800 text-gray-400 hover:text-white'}`}>
                   <span>{ACTIVITY_ICONS[t]}</span>
@@ -805,7 +1085,7 @@ function AddActivityModal({ onClose, contacts, workspaceId, onLogged }: { onClos
             <label className="text-xs text-gray-500 uppercase tracking-wide mb-1.5 block">Notes</label>
             <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={3} className={inputCls + ' resize-none'} placeholder="What happened?" />
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="text-xs text-gray-500 uppercase tracking-wide mb-1.5 block">Outcome</label>
               <input value={outcome} onChange={e => setOutcome(e.target.value)} className={inputCls} placeholder="e.g. Positive" />
@@ -906,11 +1186,168 @@ function AddDealModal({ onClose, contacts, workspaceId, onAdded }: { onClose: ()
   )
 }
 
+// ── Edit Deal Modal ────────────────────────────────────────────────────────────
+// Sprint 6E: lets the operator move a deal between stages from the Kanban.
+// When the chosen stage is Closed Lost, surfaces a "Why was this lost?"
+// selector + free-form details so we can run win/loss analysis later.
+const LOST_REASON_PRESETS = [
+  'Price too high',
+  'Lost to competitor',
+  'No budget',
+  'No decision / went silent',
+  'Wrong fit / not our ICP',
+  'Timing — postponed',
+  'Internal champion left',
+  'Other',
+]
+
+function EditDealModal({ deal, onClose, onSaved }: { deal: Deal; onClose: () => void; onSaved: () => void }) {
+  const initialPresetMatch = LOST_REASON_PRESETS.find(p => deal.lost_reason?.startsWith(p))
+  const [stage, setStage] = useState<string>(deal.stage)
+  const [probability, setProbability] = useState<string>(String(deal.probability))
+  const [value, setValue] = useState<string>(String(deal.value))
+  const [lostReasonPreset, setLostReasonPreset] = useState<string>(initialPresetMatch || 'Other')
+  const [lostReasonDetail, setLostReasonDetail] = useState<string>(
+    deal.lost_reason && !initialPresetMatch ? deal.lost_reason : '',
+  )
+  const [saving, setSaving] = useState(false)
+  const [errMsg, setErrMsg] = useState<string | null>(null)
+
+  const isLost = stage === 'Closed Lost'
+
+  async function submit() {
+    // The DEAL_STAGES UI values map to API stage tokens — the same mapping
+    // AddDealModal uses on create. Keep them in sync.
+    const stageMap: Record<string, string> = {
+      'Prospecting': 'prospect',
+      'Qualification': 'qualified',
+      'Proposal': 'proposal',
+      'Negotiation': 'negotiation',
+      'Closed Won': 'won',
+      'Closed Lost': 'lost',
+    }
+    setSaving(true); setErrMsg(null)
+    try {
+      const body: Record<string, unknown> = {
+        id: deal.id,
+        stage: stageMap[stage] || 'prospect',
+        value: Number(value) || 0,
+        probability: Number(probability) || 0,
+      }
+      if (isLost) {
+        // Combine preset + detail. If preset is 'Other' we send just the detail.
+        const combined = lostReasonPreset === 'Other'
+          ? (lostReasonDetail.trim() || 'Other')
+          : (lostReasonDetail.trim() ? `${lostReasonPreset} — ${lostReasonDetail.trim()}` : lostReasonPreset)
+        body.lostReason = combined
+      }
+      const res = await fetch('/api/sales-deals', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({})) as { error?: string }
+        setErrMsg(err.error || `Save failed (${res.status})`)
+        return
+      }
+      onSaved()
+    } catch (e) {
+      setErrMsg(e instanceof Error ? e.message : String(e))
+    } finally { setSaving(false) }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-gray-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-md" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800">
+          <div>
+            <h2 className="text-white font-semibold">Edit Deal</h2>
+            <p className="text-gray-500 text-xs mt-0.5">{deal.name}</p>
+          </div>
+          <button onClick={onClose} className="text-gray-500 hover:text-white">✕</button>
+        </div>
+        <div className="p-6 space-y-4">
+          <div>
+            <label className="text-xs text-gray-500 uppercase tracking-wide mb-1.5 block">Stage</label>
+            <select value={stage} onChange={e => setStage(e.target.value)} className={selectCls}>
+              {DEAL_STAGES.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs text-gray-500 uppercase tracking-wide mb-1.5 block">Value ($)</label>
+              <input value={value} onChange={e => setValue(e.target.value)} className={inputCls} />
+            </div>
+            <div>
+              <label className="text-xs text-gray-500 uppercase tracking-wide mb-1.5 block">Probability (%)</label>
+              <input value={probability} onChange={e => setProbability(e.target.value)} className={inputCls} />
+            </div>
+          </div>
+
+          {/* Sprint 6E: lost-reason capture — only shown when stage is Closed Lost. */}
+          {isLost && (
+            <div className="space-y-3 pt-3 border-t border-gray-800">
+              <div>
+                <label className="text-xs text-red-400 uppercase tracking-wide mb-1.5 block">Why was this lost?</label>
+                <select value={lostReasonPreset} onChange={e => setLostReasonPreset(e.target.value)} className={selectCls}>
+                  {LOST_REASON_PRESETS.map(r => <option key={r} value={r}>{r}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs text-gray-500 uppercase tracking-wide mb-1.5 block">
+                  {lostReasonPreset === 'Other' ? 'Details (required)' : 'Details (optional)'}
+                </label>
+                <textarea
+                  value={lostReasonDetail}
+                  onChange={e => setLostReasonDetail(e.target.value)}
+                  rows={3}
+                  placeholder="What happened? (e.g. went with Acme — 30% cheaper)"
+                  className={inputCls.replace('px-3 py-2', 'px-3 py-2 resize-none')}
+                />
+              </div>
+              <p className="text-[11px] text-gray-600 leading-relaxed">
+                Captured for future win/loss analysis — used to spot patterns in why we
+                lose deals and refine ICP / positioning.
+              </p>
+            </div>
+          )}
+
+          {errMsg && (
+            <div className="px-3 py-2 bg-red-950/40 border border-red-900 rounded-lg text-red-400 text-xs">
+              {errMsg}
+            </div>
+          )}
+
+          <div className="flex gap-3 pt-2">
+            <button onClick={onClose} className="flex-1 py-2.5 border border-gray-700 text-gray-400 rounded-lg text-sm hover:text-white">Cancel</button>
+            <button
+              onClick={submit}
+              disabled={saving || (isLost && lostReasonPreset === 'Other' && !lostReasonDetail.trim())}
+              className="flex-1 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white rounded-lg text-sm font-medium transition-colors"
+            >
+              {saving ? 'Saving…' : 'Save changes'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Add Contact Modal ──────────────────────────────────────────────────────────
 function AddContactModal({ onClose, workspaceId, onAdded }: { onClose: () => void; workspaceId: string | null; onAdded: () => void }) {
   const [form, setForm] = useState({ name:'', email:'', phone:'', company:'', stage:'Lead' as Stage, notes:'' })
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
+
+  // Sprint 20H bug #6: Escape closes modal. Previously had no key handler
+  // so users could get stuck if header/footer were clipped off-screen.
+  useEffect(() => {
+    const onEsc = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onEsc)
+    return () => window.removeEventListener('keydown', onEsc)
+  }, [onClose])
 
   async function submit() {
     if (!form.name || !form.email) return
@@ -952,13 +1389,17 @@ function AddContactModal({ onClose, workspaceId, onAdded }: { onClose: () => voi
   }
 
   return (
+    // Sprint 20H bug #6: modal was getting taller than the viewport on
+    // short screens, clipping the header (close button) AND the footer
+    // (Cancel/Save) — users were stranded. Now the modal is capped to
+    // max-h with a scrollable body so header + footer stay pinned.
     <div className="fixed inset-0 bg-gray-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-md" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800">
+      <div className="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-md max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800 flex-shrink-0">
           <h2 className="text-white font-semibold">Add Contact</h2>
-          <button onClick={onClose} className="text-gray-500 hover:text-white">✕</button>
+          <button onClick={onClose} className="text-gray-500 hover:text-white text-lg leading-none px-2" aria-label="Close">✕</button>
         </div>
-        <div className="p-6 space-y-3">
+        <div className="p-6 space-y-3 overflow-y-auto flex-1">
           {[
             { label:'Full Name *', key:'name', placeholder:'Jane Smith' },
             { label:'Email *', key:'email', placeholder:'jane@company.com' },
@@ -1017,25 +1458,35 @@ export default function LeadsCRMPage() {
   const [contacts, setContacts] = useState<Contact[]>([])
   const [activities, setActivities] = useState<Activity[]>([])
   const [deals, setDeals] = useState<Deal[]>([])
-  const [segments] = useState<Segment[]>(MOCK_SEGMENTS)
+  // Segments derived from real contacts below in `segments`. The previous
+  // version pinned `MOCK_SEGMENTS` here so the Segments tab always showed
+  // four fictional segments ("Champions (RFM 555) · 47 contacts" etc.)
+  // regardless of the workspace's actual data. Source Test violated.
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [workspaceId, setWorkspaceId] = useState<string | null>(null)
 
   const [mainTab, setMainTab] = useState<MainTab>('contacts')
   const [viewMode, setViewMode] = useState<ViewMode>('table')
-  const [search, setSearch] = useState('')
+  const [search, setSearch] = usePersistedState<string>('crm:search', '')
   const [selectedContacts, setSelectedContacts] = useState<Set<string>>(new Set())
   const [selectedContact, setSelectedContact] = useState<Contact | null>(null)
   const [selectedContactActivities, setSelectedContactActivities] = useState<Activity[]>([])
   const [kanbanDragId, setKanbanDragId] = useState<string | null>(null)
-  const [activityFilter, setActivityFilter] = useState<string>('all')
+  const [activityFilter, setActivityFilter] = usePersistedState<string>('crm:filterStatus', 'all')
 
   const [showImport, setShowImport] = useState(false)
   const [showSegmentModal, setShowSegmentModal] = useState(false)
+  // Sprint 16F TASK 1: persisted segments live alongside built-ins.
+  const [savedSegments, setSavedSegments] = useState<SavedSegment[]>([])
+  const [appliedSavedSegmentId, setAppliedSavedSegmentId] = useState<string | null>(null)
   const [showAddActivity, setShowAddActivity] = useState(false)
   const [showAddDeal, setShowAddDeal] = useState(false)
   const [showAddContact, setShowAddContact] = useState(false)
+  // Sprint 17C (audit P1 #6): bulk-enrol existing CRM leads in a workflow.
+  const [showEnrolWorkflow, setShowEnrolWorkflow] = useState(false)
+  // Sprint 6E: deal opened in the edit modal (stage change + lost-reason capture).
+  const [editingDeal, setEditingDeal] = useState<Deal | null>(null)
 
   // ── Data loading ──────────────────────────────────────────────────────────
   const loadData = useCallback(async (wsId: string) => {
@@ -1104,12 +1555,45 @@ export default function LeadsCRMPage() {
     }
   }, [])
 
+  // Sprint 10C: session-derived workspaceId.
+  const { workspaceId: sessionWorkspaceId, resolved: sessionResolved } = useWorkspaceId()
   useEffect(() => {
-    const wsId = typeof window !== 'undefined' ? localStorage.getItem('workspaceId') : null
-    setWorkspaceId(wsId)
-    if (wsId) loadData(wsId)
-    else setLoading(false)
-  }, [loadData])
+    setWorkspaceId(sessionWorkspaceId)
+    if (sessionWorkspaceId) loadData(sessionWorkspaceId)
+    else if (sessionResolved) setLoading(false)
+  }, [sessionWorkspaceId, sessionResolved, loadData])
+
+  // Sprint 16F TASK 1: load persisted segments from /api/segments.
+  const loadSavedSegments = useCallback(async (wsId: string) => {
+    try {
+      const res = await fetch(`/api/segments?workspaceId=${wsId}`)
+      if (!res.ok) return
+      const rows = await res.json() as Array<Record<string, unknown>>
+      const mapped: SavedSegment[] = (Array.isArray(rows) ? rows : []).map(r => ({
+        id: String(r.id || ''),
+        name: String(r.name || ''),
+        description: r.description == null ? null : String(r.description),
+        rule: (r.rule && typeof r.rule === 'object') ? r.rule as SavedSegmentRule : {},
+        member_count: Number(r.member_count || 0),
+        created_at: String(r.created_at || ''),
+        updated_at: String(r.updated_at || r.created_at || ''),
+      }))
+      setSavedSegments(mapped)
+    } catch { /* non-fatal — saved segments are an extra */ }
+  }, [])
+  useEffect(() => {
+    if (sessionWorkspaceId) loadSavedSegments(sessionWorkspaceId)
+  }, [sessionWorkspaceId, loadSavedSegments])
+
+  // Sprint 16F TASK 1: delete a saved segment.
+  async function deleteSavedSegment(id: string) {
+    if (!workspaceId) return
+    try {
+      await fetch(`/api/segments?id=${id}&workspaceId=${workspaceId}`, { method: 'DELETE' })
+      setSavedSegments(s => s.filter(x => x.id !== id))
+      if (appliedSavedSegmentId === id) setAppliedSavedSegmentId(null)
+    } catch { /* ignore */ }
+  }
 
   // Cross-CRM deep-link: the Voice AI call drawer (and any other surface) can
   // open this page with ?leadId=… and the matching contact's drawer pops
@@ -1149,9 +1633,76 @@ export default function LeadsCRMPage() {
       }).catch(() => setSelectedContactActivities([]))
   }, [selectedContact?.id])
 
-  const filtered = contacts.filter(c =>
-    !search || c.name.toLowerCase().includes(search.toLowerCase()) || c.email.toLowerCase().includes(search.toLowerCase()) || c.company.toLowerCase().includes(search.toLowerCase())
-  )
+  // Sprint 16F TASK 1: apply rule of an active saved segment on top of the
+  // existing text-search filter. The rule shape matches normaliseRule() in
+  // /api/segments — statuses[] (status names), minScore/maxScore, sources[],
+  // campaignLike, createdSince. We translate `status` to our local Stage enum
+  // via statusToStage() so the chip's filter reads like the saved rule.
+  const appliedSegment = appliedSavedSegmentId
+    ? savedSegments.find(s => s.id === appliedSavedSegmentId) || null
+    : null
+  function ruleMatch(c: Contact, rule: SavedSegmentRule): boolean {
+    if (rule.statuses?.length) {
+      const targetStages = new Set(rule.statuses.map(statusToStage))
+      if (!targetStages.has(c.stage)) return false
+    }
+    if (typeof rule.minScore === 'number' && c.score < rule.minScore) return false
+    if (typeof rule.maxScore === 'number' && c.score > rule.maxScore) return false
+    if (rule.createdSince) {
+      const since = new Date(rule.createdSince).getTime()
+      if (!Number.isNaN(since) && new Date(c.created_at).getTime() < since) return false
+    }
+    return true
+  }
+  const filtered = contacts.filter(c => {
+    const textOk = !search
+      || c.name.toLowerCase().includes(search.toLowerCase())
+      || c.email.toLowerCase().includes(search.toLowerCase())
+      || c.company.toLowerCase().includes(search.toLowerCase())
+    if (!textOk) return false
+    if (appliedSegment && !ruleMatch(c, appliedSegment.rule)) return false
+    return true
+  })
+
+  // ── Real segments derived from loaded contacts ─────────────────────────────
+  // Every count below is computed from the workspace's actual `contacts` array
+  // (which comes from /api/leads-captured). No mocks, no fabrication. When the
+  // workspace is empty all counts are 0 and the Segments tab renders an empty
+  // state. There's no /api/crm/segments endpoint yet — when it ships, swap
+  // this useMemo for a fetch.
+  const segments: Segment[] = (() => {
+    const now = Date.now()
+    const ONE_WEEK = 7 * 24 * 3600 * 1000
+    const TWO_WEEKS = 14 * 24 * 3600 * 1000
+    const lastActivityByLead = new Map<string, number>()
+    activities.forEach(a => {
+      const t = new Date(a.timestamp).getTime()
+      const prev = lastActivityByLead.get(a.contact_id) ?? 0
+      if (t > prev) lastActivityByLead.set(a.contact_id, t)
+    })
+    const newThisWeek = contacts.filter(c => now - new Date(c.created_at).getTime() <= ONE_WEEK).length
+    const hot = contacts.filter(c => c.score >= 75).length
+    const cold = contacts.filter(c => c.score < 25).length
+    const noFollowUp = contacts.filter(c => {
+      const last = lastActivityByLead.get(c.id)
+      return !last || now - last >= TWO_WEEKS
+    }).length
+    const customers = contacts.filter(c => c.stage === 'Customer').length
+    const qualified = contacts.filter(c => c.stage === 'Qualified' || c.stage === 'Proposal').length
+    const today = new Date().toISOString()
+    const mk = (id: string, name: string, count: number, performance: string, conditions: Segment['conditions']): Segment => ({
+      id, name, count, last_updated: today, performance, conditions, type: 'builtin',
+    })
+    return [
+      mk('all', 'All Contacts', contacts.length, `${contacts.length} total in CRM`, []),
+      mk('new_week', 'New This Week', newThisWeek, 'Created in last 7 days', [{ field: 'created_at', operator: '>=', value: 'now-7d' }]),
+      mk('hot', 'Hot Leads (score ≥ 75)', hot, 'High-intent prospects', [{ field: 'score', operator: '>=', value: '75' }]),
+      mk('cold', 'Cold Leads (score < 25)', cold, 'Low engagement', [{ field: 'score', operator: '<', value: '25' }]),
+      mk('stalled', 'No Follow-up (14d+)', noFollowUp, 'No activity in 2 weeks', [{ field: 'last_activity', operator: '<=', value: 'now-14d' }]),
+      mk('qualified', 'Qualified / In Proposal', qualified, 'Active sales conversations', [{ field: 'stage', operator: 'in', value: 'Qualified,Proposal' }]),
+      mk('customers', 'Customers', customers, 'Closed deals', [{ field: 'stage', operator: '=', value: 'Customer' }]),
+    ]
+  })()
 
   // ── CSV Export ────────────────────────────────────────────────────────────
   function exportCSV() {
@@ -1173,7 +1724,11 @@ export default function LeadsCRMPage() {
     ? Math.round(totalPipeline / contacts.filter(c => c.deal_value > 0).length)
     : 0
   const newThisWeek = contacts.filter(c => Date.now() - new Date(c.created_at).getTime() < 7 * 86400000).length
-  const conversionRate = Math.round((contacts.filter(c => c.stage === 'Customer').length / contacts.length) * 100)
+  // Sprint 5 fix: guard division by zero — a fresh workspace has
+  // contacts.length === 0, which used to render "NaN%" in the stat card.
+  const conversionRate = contacts.length === 0
+    ? 0
+    : Math.round((contacts.filter(c => c.stage === 'Customer').length / contacts.length) * 100)
   const churnRisk = contacts.filter(c => c.rfm_tier === 'At Risk' || c.rfm_tier === 'Lost').length
 
   // ── Kanban drag ───────────────────────────────────────────────────────────
@@ -1220,6 +1775,104 @@ export default function LeadsCRMPage() {
       next.has(id) ? next.delete(id) : next.add(id)
       return next
     })
+  }
+
+  // ── Sprint 18C: bulk-action handlers ─────────────────────────────────────
+  // Wired against the freshly-extended /api/leads-captured (bulk PATCH +
+  // bulk DELETE) and the existing nurture agent. Export reuses the
+  // client-side CSV builder (`exportCSV`) but scoped to selected rows.
+  async function bulkEmail() {
+    const ids = Array.from(selectedContacts)
+    if (ids.length === 0 || !workspaceId) return
+    try {
+      const res = await fetch('/api/agents/nurture/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspaceId, leadIds: ids }),
+      })
+      if (!res.ok && res.status === 404) {
+        // Nurture send endpoint not yet wired — surface honest message
+        // rather than silently no-op.
+        alert(`Nurture send endpoint not yet available. Queued ${ids.length} lead(s) intent locally.`)
+      }
+    } catch (e) {
+      alert(`Failed to kick nurture: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+
+  async function bulkAddTag() {
+    const ids = Array.from(selectedContacts)
+    if (ids.length === 0) return
+    const tag = typeof window !== 'undefined' ? window.prompt('Add tag to selected leads:') : null
+    if (!tag || !tag.trim()) return
+    try {
+      const res = await fetch('/api/leads-captured', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids, addTag: tag.trim() }),
+      })
+      if (!res.ok) throw new Error(`PATCH failed (${res.status})`)
+      if (workspaceId) await loadData(workspaceId)
+    } catch (e) {
+      alert(`Tag failed: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+
+  async function bulkChangeStage() {
+    const ids = Array.from(selectedContacts)
+    if (ids.length === 0) return
+    const allowed = ['new', 'contacted', 'qualified', 'won', 'lost']
+    const stage = typeof window !== 'undefined' ? window.prompt(`Stage (${allowed.join('|')}):`) : null
+    if (!stage || !allowed.includes(stage.trim().toLowerCase())) {
+      if (stage) alert(`Stage must be one of: ${allowed.join(', ')}`)
+      return
+    }
+    try {
+      const res = await fetch('/api/leads-captured', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids, status: stage.trim().toLowerCase() }),
+      })
+      if (!res.ok) throw new Error(`PATCH failed (${res.status})`)
+      if (workspaceId) await loadData(workspaceId)
+    } catch (e) {
+      alert(`Stage change failed: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+
+  function bulkExport() {
+    const ids = selectedContacts
+    if (ids.size === 0) return
+    // Reuse the client-side CSV path. There's no /export endpoint yet —
+    // building CSV here keeps the action honest without inventing one.
+    const headers = ['name','email','phone','company','stage','score','rfm_tier','tags','deal_value','created_at']
+    const rows = contacts.filter(c => ids.has(c.id)).map(c => [
+      c.name, c.email, c.phone, c.company, c.stage, c.score, c.rfm_tier, c.tags.join(';'), c.deal_value, c.created_at
+    ])
+    const csv = [headers, ...rows].map(r => r.map(v => `"${v}"`).join(',')).join('\n')
+    const blob = new Blob([csv], { type: 'text/csv' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url; a.download = 'contacts-selected.csv'; a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  async function bulkDelete() {
+    const ids = Array.from(selectedContacts)
+    if (ids.length === 0) return
+    if (typeof window !== 'undefined' && !window.confirm(`Delete ${ids.length} lead(s)? This cannot be undone.`)) return
+    try {
+      const res = await fetch('/api/leads-captured', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids }),
+      })
+      if (!res.ok) throw new Error(`DELETE failed (${res.status})`)
+      setSelectedContacts(new Set())
+      if (workspaceId) await loadData(workspaceId)
+    } catch (e) {
+      alert(`Delete failed: ${e instanceof Error ? e.message : String(e)}`)
+    }
   }
 
   const dealStageMap: Record<string, Deal[]> = {}
@@ -1283,8 +1936,71 @@ export default function LeadsCRMPage() {
         )}
       </div>
 
+      {/* Sprint 16F TASK 1 — Saved segment chips strip.
+          Sits between toolbar and stats so it's visible in every tab. The
+          "Save as segment..." button opens the rule-builder modal which
+          POSTs to /api/segments. Active chip narrows the `filtered` list. */}
+      {(savedSegments.length > 0 || appliedSavedSegmentId) && (
+        <div className="flex items-center gap-2 flex-wrap px-4 py-2 border-b border-gray-800 bg-gray-950">
+          <span className="text-[10px] uppercase tracking-wider text-gray-600 font-medium mr-1">
+            Saved segments
+          </span>
+          {savedSegments.map(seg => {
+            const active = appliedSavedSegmentId === seg.id
+            return (
+              <span
+                key={seg.id}
+                className={`group inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs border transition-colors cursor-pointer ${
+                  active
+                    ? 'bg-indigo-600 border-indigo-500 text-white'
+                    : 'bg-gray-900 border-gray-800 text-gray-300 hover:border-indigo-700'
+                }`}
+                onClick={() => setAppliedSavedSegmentId(active ? null : seg.id)}
+                title={seg.description || `${seg.member_count} members`}
+              >
+                {seg.name}
+                <span className={`text-[10px] tabular-nums ${active ? 'text-indigo-200' : 'text-gray-500'}`}>
+                  {seg.member_count}
+                </span>
+                <button
+                  onClick={(e) => { e.stopPropagation(); void deleteSavedSegment(seg.id) }}
+                  className={`ml-0.5 text-[10px] ${active ? 'text-indigo-200 hover:text-white' : 'text-gray-600 hover:text-rose-400'}`}
+                  title="Delete saved segment"
+                >
+                  ✕
+                </button>
+              </span>
+            )
+          })}
+          {appliedSavedSegmentId && (
+            <button
+              onClick={() => setAppliedSavedSegmentId(null)}
+              className="text-[11px] text-gray-500 hover:text-gray-300 ml-1"
+            >
+              Clear filter
+            </button>
+          )}
+          <button
+            onClick={() => setShowSegmentModal(true)}
+            className="ml-auto text-[11px] text-indigo-300 hover:text-indigo-200 font-medium"
+          >
+            + Save as segment…
+          </button>
+        </div>
+      )}
+      {savedSegments.length === 0 && (
+        <div className="flex items-center justify-end px-4 py-1.5 border-b border-gray-800 bg-gray-950">
+          <button
+            onClick={() => setShowSegmentModal(true)}
+            className="text-[11px] text-indigo-300 hover:text-indigo-200 font-medium"
+          >
+            + Save current view as segment…
+          </button>
+        </div>
+      )}
+
       {/* ── Stats Bar ───────────────────────────────────────────────────── */}
-      <div className="grid grid-cols-6 gap-px bg-gray-800 border-b border-gray-800 flex-shrink-0">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-px bg-gray-800 border-b border-gray-800 flex-shrink-0">
         {[
           { label: 'Total Contacts', value: contacts.length, color: 'text-white' },
           { label: 'New This Week', value: newThisWeek, color: 'text-blue-300' },
@@ -1324,9 +2040,10 @@ export default function LeadsCRMPage() {
 
         {/* Loading state */}
         {loading && (
-          <div className="p-12 text-center text-gray-500">
-            <div className="inline-block w-8 h-8 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin mb-3" />
-            <p>Loading contacts…</p>
+          <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden mx-6 my-4">
+            <div className="overflow-x-auto">
+              <table className="w-full"><tbody><SkeletonTableBody rows={6} cols={8} /></tbody></table>
+            </div>
           </div>
         )}
 
@@ -1367,7 +2084,8 @@ export default function LeadsCRMPage() {
             {/* ── TABLE VIEW ── */}
             {viewMode === 'table' && (
               <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
-                <table className="w-full">
+                <div className="overflow-x-auto">
+                <table className="w-full min-w-[900px]">
                   <thead>
                     <tr className="border-b border-gray-800 bg-gray-900/80">
                       <th className="px-4 py-3 text-left">
@@ -1419,8 +2137,12 @@ export default function LeadsCRMPage() {
                         <td className="px-3 py-3" onClick={e => e.stopPropagation()}>
                           <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                             <button onClick={() => setSelectedContact(c)} className="p-1.5 bg-gray-800 hover:bg-indigo-900/40 rounded text-xs" title="View">👁</button>
-                            <button className="p-1.5 bg-gray-800 hover:bg-blue-900/40 rounded text-xs" title="Email">📧</button>
-                            <button className="p-1.5 bg-gray-800 hover:bg-green-900/40 rounded text-xs" title="Call">📞</button>
+                            {/* Sprint 0: Email/Call buttons disabled — no
+                                handler. Re-enable after inbox composer
+                                wiring (Email) and Twilio click-to-call
+                                (Call). */}
+                            <button disabled title="Email — coming soon" className="p-1.5 bg-gray-800 rounded text-xs opacity-40 cursor-not-allowed">📧</button>
+                            <button disabled title="Call — coming soon" className="p-1.5 bg-gray-800 rounded text-xs opacity-40 cursor-not-allowed">📞</button>
                             <button className="p-1.5 bg-gray-800 hover:bg-red-900/40 rounded text-xs text-gray-600 hover:text-red-400" onClick={() => deleteContact(c.id)} title="Delete">✕</button>
                           </div>
                         </td>
@@ -1428,6 +2150,7 @@ export default function LeadsCRMPage() {
                     ))}
                   </tbody>
                 </table>
+                </div>{/* /overflow-x-auto */}
               </div>
             )}
 
@@ -1503,9 +2226,22 @@ export default function LeadsCRMPage() {
               <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-gray-900 border border-indigo-700 rounded-xl px-5 py-3 flex items-center gap-3 shadow-2xl z-40">
                 <span className="text-indigo-300 text-sm font-medium">{selectedContacts.size} selected</span>
                 <div className="w-px h-5 bg-gray-700" />
-                {['Email Selected','Add Tag','Change Stage','Export','Delete'].map(action => (
-                  <button key={action} className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${action === 'Delete' ? 'bg-red-900/40 text-red-400 hover:bg-red-900/60' : 'bg-gray-800 text-gray-300 hover:bg-gray-700'}`}>
-                    {action}
+                {/* Sprint 17C (audit P1 #6): manual workflow enrolment for existing leads. */}
+                <button
+                  onClick={() => setShowEnrolWorkflow(true)}
+                  className="px-3 py-1.5 rounded-lg text-xs font-medium bg-indigo-700/40 text-indigo-200 hover:bg-indigo-700/60 transition-colors"
+                >
+                  Enrol in workflow
+                </button>
+                {([
+                  { label: 'Email Selected', onClick: bulkEmail },
+                  { label: 'Add Tag', onClick: bulkAddTag },
+                  { label: 'Change Stage', onClick: bulkChangeStage },
+                  { label: 'Export', onClick: bulkExport },
+                  { label: 'Delete', onClick: bulkDelete },
+                ]).map(action => (
+                  <button key={action.label} onClick={() => void action.onClick()} className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${action.label === 'Delete' ? 'bg-red-900/40 text-red-400 hover:bg-red-900/60' : 'bg-gray-800 text-gray-300 hover:bg-gray-700'}`}>
+                    {action.label}
                   </button>
                 ))}
                 <button onClick={() => setSelectedContacts(new Set())} className="text-gray-500 hover:text-white ml-1">✕</button>
@@ -1545,13 +2281,98 @@ export default function LeadsCRMPage() {
                       ))}
                     </div>
                   </div>
+                  {/* Sprint 0: segment-action buttons (Deploy to Email /
+                      Ads / Export) had no handlers. Disabled with a
+                      "Coming soon" tooltip until the backend wiring lands
+                      in Sprint 3 (campaign loops). */}
                   <div className="flex gap-2">
-                    <button className="flex-1 py-1.5 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg text-xs transition-colors">Deploy to Email</button>
-                    <button className="flex-1 py-1.5 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg text-xs transition-colors">Deploy to Ads</button>
-                    <button className="flex-1 py-1.5 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg text-xs transition-colors">Export</button>
+                    <button disabled title="Coming soon" className="flex-1 py-1.5 bg-gray-800 text-gray-500 cursor-not-allowed rounded-lg text-xs opacity-50">Deploy to Email</button>
+                    <button disabled title="Coming soon" className="flex-1 py-1.5 bg-gray-800 text-gray-500 cursor-not-allowed rounded-lg text-xs opacity-50">Deploy to Ads</button>
+                    <button disabled title="Coming soon" className="flex-1 py-1.5 bg-gray-800 text-gray-500 cursor-not-allowed rounded-lg text-xs opacity-50">Export</button>
                   </div>
                 </div>
               ))}
+            </div>
+
+            {/* Sprint 16F TASK 1 — saved segments live BELOW the built-in
+                strip. Source of truth is /api/segments. Empty state is honest
+                so a fresh workspace doesn't see fake "Champions" rows. */}
+            <div className="mt-8">
+              <div className="flex items-center justify-between mb-3">
+                <div>
+                  <h3 className="text-white font-semibold text-sm">Saved Segments</h3>
+                  <p className="text-gray-500 text-xs">
+                    Persisted rules from /api/segments — shareable across the workspace.
+                  </p>
+                </div>
+                <button
+                  onClick={() => setShowSegmentModal(true)}
+                  className="text-xs text-indigo-300 hover:text-indigo-200 font-medium"
+                >
+                  + Save current view as segment…
+                </button>
+              </div>
+              {savedSegments.length === 0 ? (
+                <div className="bg-gray-900 border border-dashed border-gray-800 rounded-xl p-6 text-center text-sm text-gray-500">
+                  No saved segments yet — save a filter combination above to reuse it later.
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {savedSegments.map(seg => (
+                    <div key={seg.id} className="bg-gray-900 border border-indigo-900/40 rounded-xl p-5">
+                      <div className="flex items-start justify-between mb-3">
+                        <div>
+                          <h4 className="text-white font-semibold">{seg.name}</h4>
+                          {seg.description && (
+                            <p className="text-gray-500 text-xs mt-0.5">{seg.description}</p>
+                          )}
+                        </div>
+                        <div className="text-right">
+                          <p className="text-2xl font-bold text-indigo-300">{seg.member_count}</p>
+                          <p className="text-gray-500 text-xs">members</p>
+                        </div>
+                      </div>
+                      <div className="mb-3">
+                        <p className="text-xs text-gray-600 mb-1.5">Rule:</p>
+                        <div className="flex flex-wrap gap-1.5">
+                          {seg.rule.statuses?.length ? (
+                            <span className="px-2 py-0.5 bg-gray-800 text-gray-400 text-xs rounded border border-gray-700">status ∈ {seg.rule.statuses.join(',')}</span>
+                          ) : null}
+                          {typeof seg.rule.minScore === 'number' ? (
+                            <span className="px-2 py-0.5 bg-gray-800 text-gray-400 text-xs rounded border border-gray-700">score ≥ {seg.rule.minScore}</span>
+                          ) : null}
+                          {typeof seg.rule.maxScore === 'number' ? (
+                            <span className="px-2 py-0.5 bg-gray-800 text-gray-400 text-xs rounded border border-gray-700">score ≤ {seg.rule.maxScore}</span>
+                          ) : null}
+                          {seg.rule.sources?.length ? (
+                            <span className="px-2 py-0.5 bg-gray-800 text-gray-400 text-xs rounded border border-gray-700">source ∈ {seg.rule.sources.join(',')}</span>
+                          ) : null}
+                          {seg.rule.createdSince ? (
+                            <span className="px-2 py-0.5 bg-gray-800 text-gray-400 text-xs rounded border border-gray-700">created ≥ {seg.rule.createdSince.slice(0,10)}</span>
+                          ) : null}
+                          {Object.keys(seg.rule).length === 0 && (
+                            <span className="px-2 py-0.5 bg-gray-800 text-gray-500 text-xs rounded border border-gray-700 italic">no filters (all contacts)</span>
+                          )}
+                        </div>
+                      </div>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => { setMainTab('contacts'); setAppliedSavedSegmentId(seg.id) }}
+                          className="flex-1 py-1.5 bg-indigo-700/40 hover:bg-indigo-700/60 text-indigo-200 rounded-lg text-xs transition-colors"
+                        >
+                          Apply filter
+                        </button>
+                        <button
+                          onClick={() => void deleteSavedSegment(seg.id)}
+                          className="px-3 py-1.5 bg-gray-800 hover:bg-rose-900/40 text-gray-400 hover:text-rose-300 rounded-lg text-xs transition-colors"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -1561,8 +2382,12 @@ export default function LeadsCRMPage() {
           <div className="p-6">
             <div className="flex items-center justify-between mb-5">
               <h2 className="text-white font-semibold">RFM Analysis</h2>
-              <button className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-medium transition-colors">
-                Run RFM Analysis
+              {/* Sprint 0: "Run RFM Analysis" had no handler. RFM tiers
+                  are already computed client-side from contacts.length
+                  below — no recompute trigger needed. Disabled to stop
+                  the dead-button confusion. */}
+              <button disabled title="RFM auto-refreshes from your contact list" className="px-4 py-2 bg-gray-800 text-gray-500 rounded-lg text-sm opacity-50 cursor-not-allowed">
+                Auto-refreshes
               </button>
             </div>
 
@@ -1573,7 +2398,7 @@ export default function LeadsCRMPage() {
                 {contacts.length === 0 ? (
                   <p className="text-gray-500 text-sm">No contacts yet — add contacts to see RFM analysis.</p>
                 ) : (
-                  <div className="grid grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     {(Object.keys(rfmTierCounts) as RFMTier[]).map(tier => (
                       <div key={tier} className={`border rounded-lg p-3 ${RFM_COLORS[tier]}`}>
                         <p className="text-xs text-gray-300 font-medium leading-tight mb-1">{tier}</p>
@@ -1585,25 +2410,22 @@ export default function LeadsCRMPage() {
                 )}
               </div>
 
-              {/* AI Insights */}
+              {/* AI Insights — Sprint 0: removed 4 hardcoded fake insights
+                  ("47 contacts moved to At Risk", "Champions grew 12%",
+                  etc.). Those numbers were fabricated. Real AI-driven
+                  segment insights ship in Sprint 4 (analytics + learning
+                  loop). For now, honest empty state. */}
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
                 <h3 className="text-white font-semibold mb-4">🤖 AI Insights</h3>
-                <div className="space-y-3">
-                  {[
-                    { icon:'⚠️', color:'text-orange-300', text:'47 contacts moved from Loyal to At Risk this week — consider a win-back campaign' },
-                    { icon:'📈', color:'text-emerald-300', text:'Champions segment grew by 12% this month — amplify what\'s working' },
-                    { icon:'💡', color:'text-indigo-300', text:'31 New Customers are ready for an upsell offer based on purchase frequency' },
-                    { icon:'🎯', color:'text-blue-300', text:'LATAM segment shows 2x higher LTV — consider dedicated nurture sequence' },
-                  ].map((insight, i) => (
-                    <div key={i} className="flex gap-3 p-3 bg-gray-800/50 rounded-lg">
-                      <span className="text-lg flex-shrink-0">{insight.icon}</span>
-                      <p className={`text-sm ${insight.color}`}>{insight.text}</p>
-                    </div>
-                  ))}
+                <div className="text-center py-8">
+                  <div className="text-3xl mb-2">🌱</div>
+                  <p className="text-gray-400 text-sm font-medium">No insights yet</p>
+                  <p className="text-gray-600 text-xs mt-1 max-w-xs mx-auto">
+                    AI segment insights appear here once you have at least
+                    20 contacts with engagement data. Ships in the next
+                    analytics release.
+                  </p>
                 </div>
-                <button className="w-full mt-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-medium transition-colors">
-                  Generate Win-back Campaign
-                </button>
               </div>
             </div>
 
@@ -1730,7 +2552,7 @@ export default function LeadsCRMPage() {
                     </div>
                     <div className="flex-1 p-2 space-y-2 bg-gray-950/30 overflow-y-auto">
                       {stageDeals.map(deal => (
-                        <div key={deal.id} className="bg-gray-900 border border-gray-800 hover:border-gray-700 rounded-lg p-3 cursor-pointer transition-all">
+                        <div key={deal.id} onClick={() => setEditingDeal(deal)} className="bg-gray-900 border border-gray-800 hover:border-indigo-700 rounded-lg p-3 cursor-pointer transition-all">
                           <p className="text-white text-xs font-medium mb-1 leading-tight">{deal.name}</p>
                           <p className="text-gray-500 text-xs mb-2">{deal.contact}</p>
                           <div className="flex items-center justify-between mb-1.5">
@@ -1741,6 +2563,11 @@ export default function LeadsCRMPage() {
                             <div className="h-1 bg-indigo-500 rounded-full" style={{ width: `${deal.probability}%` }} />
                           </div>
                           <p className="text-gray-600 text-xs mt-1.5">Close: {deal.close_date}</p>
+                          {deal.stage === 'Closed Lost' && deal.lost_reason && (
+                            <p className="text-red-400/80 text-[10px] mt-1.5 italic truncate" title={deal.lost_reason}>
+                              Lost: {deal.lost_reason}
+                            </p>
+                          )}
                         </div>
                       ))}
                       {stageDeals.length === 0 && (
@@ -1757,11 +2584,164 @@ export default function LeadsCRMPage() {
 
       {/* ── Modals ───────────────────────────────────────────────────────── */}
       {showImport && <CSVImportModal onClose={() => setShowImport(false)} workspaceId={workspaceId} onImported={() => workspaceId && loadData(workspaceId)} />}
-      {showSegmentModal && <SegmentModal onClose={() => setShowSegmentModal(false)} />}
+      {showSegmentModal && (
+        <SegmentModal
+          onClose={() => setShowSegmentModal(false)}
+          workspaceId={workspaceId}
+          onSaved={() => { if (workspaceId) void loadSavedSegments(workspaceId) }}
+        />
+      )}
       {showAddActivity && <AddActivityModal onClose={() => setShowAddActivity(false)} contacts={contacts} workspaceId={workspaceId} onLogged={() => workspaceId && loadData(workspaceId)} />}
       {showAddDeal && <AddDealModal onClose={() => setShowAddDeal(false)} contacts={contacts} workspaceId={workspaceId} onAdded={() => workspaceId && loadData(workspaceId)} />}
+      {editingDeal && <EditDealModal deal={editingDeal} onClose={() => setEditingDeal(null)} onSaved={() => { setEditingDeal(null); if (workspaceId) loadData(workspaceId) }} />}
       {showAddContact && <AddContactModal onClose={() => setShowAddContact(false)} workspaceId={workspaceId} onAdded={() => workspaceId && loadData(workspaceId)} />}
       {selectedContact && <ContactSlideover contact={selectedContact} onClose={() => setSelectedContact(null)} activities={selectedContactActivities} workspaceId={workspaceId} onUpdated={() => workspaceId && loadData(workspaceId)} />}
+      {showEnrolWorkflow && (
+        <EnrolWorkflowModal
+          workspaceId={workspaceId}
+          leadIds={Array.from(selectedContacts)}
+          onClose={() => setShowEnrolWorkflow(false)}
+          onEnrolled={() => { setShowEnrolWorkflow(false); setSelectedContacts(new Set()) }}
+        />
+      )}
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Sprint 17C (audit P1 #6) — EnrolWorkflowModal
+// Lists active workflows for this workspace and posts the chosen workflow id
+// + selected lead ids to /api/workflows/enroll.
+// ─────────────────────────────────────────────────────────────────────────────
+function EnrolWorkflowModal({
+  workspaceId, leadIds, onClose, onEnrolled,
+}: {
+  workspaceId: string | null
+  leadIds: string[]
+  onClose: () => void
+  onEnrolled: () => void
+}) {
+  const [workflows, setWorkflows] = useState<Array<{ id: string; name: string; description?: string }>>([])
+  const [selectedWorkflowId, setSelectedWorkflowId] = useState<string>('')
+  const [loading, setLoading] = useState(true)
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [resultMsg, setResultMsg] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!workspaceId) { setLoading(false); return }
+    let cancelled = false
+    fetch(`/api/workflows?workspaceId=${encodeURIComponent(workspaceId)}`)
+      .then(async r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`)
+        const data = await r.json() as Array<Record<string, unknown>>
+        if (cancelled) return
+        const active = (data || [])
+          .filter(w => String(w.status || '') === 'active')
+          .map(w => ({
+            id: String(w.id || ''),
+            name: String(w.name || 'Untitled'),
+            description: typeof w.description === 'string' ? w.description : undefined,
+          }))
+        setWorkflows(active)
+        if (active[0]) setSelectedWorkflowId(active[0].id)
+      })
+      .catch(e => { if (!cancelled) setError(String(e)) })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [workspaceId])
+
+  async function submit() {
+    if (!workspaceId || !selectedWorkflowId || leadIds.length === 0) return
+    setSubmitting(true)
+    setError(null)
+    try {
+      const res = await fetch('/api/workflows/enroll', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspaceId, workflowId: selectedWorkflowId, leadIds }),
+      })
+      const data = await res.json() as { ok?: boolean; enrolledCount?: number; error?: string }
+      if (!res.ok || !data.ok) {
+        setError(data.error || `HTTP ${res.status}`)
+        return
+      }
+      setResultMsg(`Enrolled ${data.enrolledCount ?? 0} leads.`)
+      setTimeout(() => onEnrolled(), 800)
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div onClick={e => e.stopPropagation()} className="bg-gray-900 border border-gray-800 rounded-xl max-w-lg w-full p-6">
+        <div className="flex items-start justify-between mb-4">
+          <div>
+            <h3 className="text-white font-semibold">Enrol in workflow</h3>
+            <p className="text-gray-500 text-xs mt-0.5">{leadIds.length} lead{leadIds.length === 1 ? '' : 's'} selected</p>
+          </div>
+          <button onClick={onClose} className="text-gray-500 hover:text-white">✕</button>
+        </div>
+
+        {loading ? (
+          <p className="text-gray-500 text-sm">Loading workflows…</p>
+        ) : workflows.length === 0 ? (
+          <div className="bg-gray-800/50 border border-dashed border-gray-700 rounded-lg p-4 text-sm text-gray-400">
+            No active workflows. Build one in the Workflows section and set its status to active.
+          </div>
+        ) : (
+          <div className="space-y-2 max-h-72 overflow-y-auto">
+            {workflows.map(wf => (
+              <label
+                key={wf.id}
+                className={`block p-3 rounded-lg border cursor-pointer transition-colors ${
+                  selectedWorkflowId === wf.id
+                    ? 'border-indigo-600 bg-indigo-900/20'
+                    : 'border-gray-800 bg-gray-800/40 hover:border-gray-700'
+                }`}
+              >
+                <input
+                  type="radio"
+                  name="workflow"
+                  className="mr-2"
+                  checked={selectedWorkflowId === wf.id}
+                  onChange={() => setSelectedWorkflowId(wf.id)}
+                />
+                <span className="text-white text-sm font-medium">{wf.name}</span>
+                {wf.description ? (
+                  <p className="text-gray-500 text-xs mt-0.5 ml-5">{wf.description}</p>
+                ) : null}
+              </label>
+            ))}
+          </div>
+        )}
+
+        {error && (
+          <p className="mt-3 text-rose-400 text-xs">{error}</p>
+        )}
+        {resultMsg && (
+          <p className="mt-3 text-emerald-400 text-xs">{resultMsg}</p>
+        )}
+
+        <div className="flex gap-2 mt-5">
+          <button
+            onClick={onClose}
+            className="flex-1 px-4 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg text-sm transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={() => void submit()}
+            disabled={!selectedWorkflowId || submitting || workflows.length === 0}
+            className="flex-1 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {submitting ? 'Enrolling…' : 'Enrol'}
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

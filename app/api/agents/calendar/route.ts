@@ -13,6 +13,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { runAgent } from '@/lib/claude'
 import { Resend } from 'resend'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 
 const SYSTEM = `You are the Calendar Agent for Ooumph AI Marketing OS.
 You manage appointment scheduling, reminders, no-show recovery, and post-meeting follow-ups.
@@ -31,6 +32,8 @@ export async function POST(req: NextRequest) {
     const { workspaceId, mode, bookingId, contactEmail, context } = body
 
     if (!workspaceId) return NextResponse.json({ error: 'workspaceId required' }, { status: 400 })
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     const brandResult = await sql`SELECT * FROM brand_profiles WHERE workspace_id = ${workspaceId} LIMIT 1`
     const wsResult = await sql`SELECT name, owner_email FROM workspaces WHERE id = ${workspaceId} LIMIT 1`
@@ -64,6 +67,7 @@ Recent bookings: ${JSON.stringify(recentBookings.rows.map(b => ({ title: b.title
 ${context ? `Additional context: ${context}` : ''}
 
 Respond with JSON: { "summary": "...", "insights": ["...", "..."], "recommendations": ["...", "..."], "conversionRate": "X%" }`,
+        workspaceId,
       )
       return NextResponse.json({ ok: true, pipeline: result })
     }
@@ -86,6 +90,7 @@ Contact: ${contactEmail || 'not specified'}
 Today is ${new Date().toDateString()}.
 
 Respond with JSON: { "suggestedDates": ["YYYY-MM-DD", "YYYY-MM-DD", "YYYY-MM-DD"], "reasoning": "why these dates", "bookingUrl": "${process.env.NEXT_PUBLIC_BASE_URL || 'https://ooumph-mvp.vercel.app'}/book/${workspaceId}" }`,
+        workspaceId,
       )
       return NextResponse.json({ ok: true, ...result })
     }
@@ -124,6 +129,7 @@ Write a warm, non-judgmental email that:
 Booking link: ${process.env.NEXT_PUBLIC_BASE_URL || 'https://ooumph-mvp.vercel.app'}/book/${workspaceId}
 
 Respond with JSON: { "subject": "...", "body": "...", "reschedulePrompt": "one-liner CTA", "reasoning": "..." }`,
+        workspaceId,
       )
 
       // Send the recovery email
@@ -184,6 +190,7 @@ Write a personalised follow-up that:
 4. Is warm and professional
 
 Respond with JSON: { "subject": "...", "body": "...", "nextStep": "specific next action e.g. send proposal, schedule demo" }`,
+        workspaceId,
       )
 
       if (booking.contact_email) {
@@ -225,6 +232,7 @@ Booking link for new time: ${bookingLink}
 
 Write a brief, friendly email to reschedule.
 Respond with JSON: { "subject": "...", "body": "..." }`,
+        workspaceId,
       )
 
       if (booking.contact_email) {

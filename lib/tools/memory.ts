@@ -140,3 +140,69 @@ export async function getMemoryContext(
     return ''
   }
 }
+
+/**
+ * Sprint 15A — Unified prompt-injection helper for content generators.
+ *
+ * The original `getMemoryContext` above only reads from `brand_memory`. The
+ * `/dashboard/memory` upload pipeline (PDF/DOCX/URL → /api/learning/ingest)
+ * actually writes to `learning_notes`, so the half of brand memory the user
+ * just spent time curating was invisible to most generators. This helper
+ * concatenates both sources and returns a single prompt block ready to drop
+ * into any content/strategy/blog/email generator prompt.
+ *
+ * Returns '' when there's nothing useful — callers can string-template it
+ * into a prompt unconditionally (`${memoryBlock}`) and pay nothing when the
+ * workspace has no curated memory yet.
+ */
+export async function getMemoryPromptBlock(
+  workspaceId: string,
+  options?: { query?: string; maxNotes?: number; maxVoiceExamples?: number }
+): Promise<string> {
+  const maxNotes = options?.maxNotes ?? 8
+  const maxVoice = options?.maxVoiceExamples ?? 4
+  const parts: string[] = []
+
+  // 1) learning_notes — knowledge extracted from uploaded brand docs
+  try {
+    let notes: { note?: string; category?: string }[] = []
+    if (options?.query) {
+      const r = await sql`
+        SELECT note, category FROM learning_notes
+        WHERE workspace_id = ${workspaceId}
+          AND (note LIKE ${'%' + options.query + '%'})
+        ORDER BY created_at DESC LIMIT ${maxNotes}
+      `
+      notes = (r.rows || []) as typeof notes
+    }
+    if (!notes.length) {
+      const r = await sql`
+        SELECT note, category FROM learning_notes
+        WHERE workspace_id = ${workspaceId}
+        ORDER BY created_at DESC LIMIT ${maxNotes}
+      `
+      notes = (r.rows || []) as typeof notes
+    }
+    if (notes.length) {
+      const lines = notes
+        .filter(n => n.note)
+        .map((n, i) => `[${i + 1}] ${n.category ? `(${n.category}) ` : ''}${n.note}`)
+      if (lines.length) {
+        parts.push(`BRAND KNOWLEDGE (from uploaded docs):\n${lines.join('\n')}`)
+      }
+    }
+  } catch { /* table may not exist on a brand-new workspace — non-fatal */ }
+
+  // 2) brand_memory — approved + top-performing examples
+  try {
+    const examples = options?.query
+      ? await searchMemory(workspaceId, options.query, maxVoice)
+      : await getRecentMemory(workspaceId, undefined, maxVoice)
+    if (examples.length) {
+      const lines = examples.map((e, i) => `[${i + 1}] (${e.content_type}) ${e.content}`)
+      parts.push(`BRAND VOICE EXAMPLES (approved):\n${lines.join('\n')}`)
+    }
+  } catch { /* non-fatal */ }
+
+  return parts.join('\n\n')
+}

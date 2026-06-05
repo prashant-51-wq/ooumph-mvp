@@ -47,6 +47,8 @@ interface AdCampaignRow {
   status: string
   error_log: string | null
   utm_override: string | null
+  objective: string | null
+  targeting_json: string | null
 }
 
 interface AdCreativeRow {
@@ -114,9 +116,16 @@ async function dispatchToProvider(
     if (hasRealIntegration && ['meta_ads', 'google_ads', 'dv360'].includes(platform)) {
       // Lazy import so we don't pay the cost in mock-only paths.
       const { publishCampaignToPlatform } = await import('@/lib/ad-platforms/index')
+      // Parse stored targeting_json (best-effort — corrupt JSON falls back to {})
+      let targeting: Record<string, unknown> = {}
+      if (campaign.targeting_json) {
+        try { targeting = JSON.parse(campaign.targeting_json) as Record<string, unknown> }
+        catch (e) { console.warn(`[ads/deploy] targeting_json parse failed for ${campaign.id}, using defaults`, e) }
+      }
       const brief: Record<string, unknown> = {
         campaignName: campaign.name,
-        campaignObjective: 'leads',
+        campaignObjective: campaign.objective || 'leads',
+        targeting,
         duration: '30 days',
         adSets: creatives.map(c => ({
           name: c.headline.slice(0, 60) || 'Ad Set',
@@ -228,12 +237,17 @@ async function notifyAlertThresholdCrossed(
 ): Promise<void> {
   try {
     const { newId } = await import('@/lib/db')
+    // Sprint 17E (audit P2 #36): include link so clicking the bell row
+    // navigates straight to the campaign that crossed the alert threshold
+    // — previously the toast was informational-only with no path forward.
+    const link = `/dashboard/ads?campaign=${campaign.id}`
     await sql`
-      INSERT INTO notifications (id, workspace_id, type, title, body, severity, created_at)
+      INSERT INTO notifications (id, workspace_id, type, title, body, link, severity, created_at)
       VALUES (
         ${newId()}, ${workspaceId}, 'budget_alert',
         ${'Ad spend approaching cap'},
         ${`Activating "${campaign.name}" brings active daily spend to ${outcome.currentActiveSpend + outcome.proposed} cents, crossing your alert threshold of ${outcome.alertThreshold}. Workspace hard cap is ${outcome.hardCap}.`},
+        ${link},
         'warning', CURRENT_TIMESTAMP
       )
     `
@@ -279,7 +293,8 @@ export async function POST(req: NextRequest, ctx: RouteCtx) {
   `
   const campaignRes = await sql`
     SELECT id, workspace_id, platform, native_campaign_id, name,
-           daily_budget, status, error_log, utm_override
+           daily_budget, status, error_log, utm_override,
+           objective, targeting_json
     FROM ad_campaigns
     WHERE id = ${campaignId} AND workspace_id = ${workspaceId}
     LIMIT 1

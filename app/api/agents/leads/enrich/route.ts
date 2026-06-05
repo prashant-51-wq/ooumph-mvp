@@ -6,6 +6,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
 import { enrichPerson, enrichCompany, searchPeople, isApolloAvailable } from '@/lib/tools/apollo'
 import { findEmail, verifyEmail, domainSearch, isHunterAvailable } from '@/lib/tools/hunter'
+import { withCredentials } from '@/lib/credential-context'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 
 interface LeadInput {
   email?: string
@@ -47,15 +49,17 @@ export async function POST(req: NextRequest) {
     const { workspaceId, action, email, domain, firstName, lastName, leads } = body
 
     if (!workspaceId) return NextResponse.json({ error: 'Missing workspaceId' }, { status: 400 })
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
     if (!action) return NextResponse.json({ error: 'Missing action' }, { status: 400 })
 
     const settings = await getSettings(workspaceId)
     if (!settings) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 })
 
-    // Inject API keys into env
-    if (settings.apolloApiKey) process.env.APOLLO_API_KEY = settings.apolloApiKey as string
-    if (settings.hunterApiKey) process.env.HUNTER_API_KEY = settings.hunterApiKey as string
-
+    return await withCredentials({
+      APOLLO_API_KEY: settings.apolloApiKey as string | undefined,
+      HUNTER_API_KEY: settings.hunterApiKey as string | undefined,
+    }, async () => {
     // ── Enrich Person ────────────────────────────────────────────────────────
     if (action === 'enrich_person') {
       if (!email && !domain) {
@@ -225,6 +229,7 @@ export async function POST(req: NextRequest) {
     }
 
     return NextResponse.json({ error: 'Unknown action' }, { status: 400 })
+    })
   } catch (error) {
     console.error('Lead enrich route error:', error)
     return NextResponse.json({ ok: false, error: String(error) }, { status: 500 })

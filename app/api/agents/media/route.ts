@@ -5,6 +5,8 @@
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
+import { withCredentials } from '@/lib/credential-context'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 import {
   uploadImageUrl,
   listCloudinaryImages,
@@ -26,10 +28,12 @@ async function getSettings(workspaceId: string) {
   }
 }
 
-function injectCloudinaryEnv(settings: Record<string, unknown>) {
-  if (settings.cloudinaryCloudName) process.env.CLOUDINARY_CLOUD_NAME = settings.cloudinaryCloudName as string
-  if (settings.cloudinaryApiKey) process.env.CLOUDINARY_API_KEY = settings.cloudinaryApiKey as string
-  if (settings.cloudinaryApiSecret) process.env.CLOUDINARY_API_SECRET = settings.cloudinaryApiSecret as string
+function cloudinaryCreds(settings: Record<string, unknown>) {
+  return {
+    CLOUDINARY_CLOUD_NAME: settings.cloudinaryCloudName as string | undefined,
+    CLOUDINARY_API_KEY: settings.cloudinaryApiKey as string | undefined,
+    CLOUDINARY_API_SECRET: settings.cloudinaryApiSecret as string | undefined,
+  }
 }
 
 // ── GET: List media ──────────────────────────────────────────────────────────
@@ -41,28 +45,30 @@ export async function GET(req: NextRequest) {
     const limit = parseInt(searchParams.get('limit') || '30', 10)
 
     if (!workspaceId) return NextResponse.json({ error: 'Missing workspaceId' }, { status: 400 })
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     const settings = await getSettings(workspaceId)
     if (!settings) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 })
 
-    injectCloudinaryEnv(settings)
+    return await withCredentials(cloudinaryCreds(settings), async () => {
+      if (!isCloudinaryAvailable()) {
+        return NextResponse.json({
+          ok: false,
+          requiresSetup: true,
+          error: 'Cloudinary not configured. Add credentials in Settings → Media Library.',
+          assets: [],
+          totalCount: 0,
+        })
+      }
 
-    if (!isCloudinaryAvailable()) {
+      const cloudinaryAssets = await listCloudinaryImages(folder, limit)
+
       return NextResponse.json({
-        ok: false,
-        requiresSetup: true,
-        error: 'Cloudinary not configured. Add credentials in Settings → Media Library.',
-        assets: [],
-        totalCount: 0,
+        ok: true,
+        assets: cloudinaryAssets,
+        totalCount: cloudinaryAssets.length,
       })
-    }
-
-    const cloudinaryAssets = await listCloudinaryImages(folder, limit)
-
-    return NextResponse.json({
-      ok: true,
-      assets: cloudinaryAssets,
-      totalCount: cloudinaryAssets.length,
     })
   } catch (error) {
     console.error('Media GET error:', error)
@@ -77,13 +83,14 @@ export async function POST(req: NextRequest) {
     const { workspaceId, action, imageUrl, folder, publicId, key, source } = body
 
     if (!workspaceId) return NextResponse.json({ error: 'Missing workspaceId' }, { status: 400 })
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
     if (!action) return NextResponse.json({ error: 'Missing action' }, { status: 400 })
 
     const settings = await getSettings(workspaceId)
     if (!settings) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 })
 
-    injectCloudinaryEnv(settings)
-
+    return await withCredentials(cloudinaryCreds(settings), async () => {
     // ── List ─────────────────────────────────────────────────────────────────
     if (action === 'list') {
       if (!isCloudinaryAvailable()) {
@@ -154,6 +161,7 @@ export async function POST(req: NextRequest) {
     }
 
     return NextResponse.json({ error: 'Unknown action' }, { status: 400 })
+    })
   } catch (error) {
     console.error('Media POST error:', error)
     return NextResponse.json({ ok: false, error: String(error) }, { status: 500 })

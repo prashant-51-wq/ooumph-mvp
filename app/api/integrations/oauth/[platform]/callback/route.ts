@@ -233,6 +233,52 @@ export async function GET(req: NextRequest, ctx: RouteCtx) {
     `
   }
 
-  // 5. Bounce back to where we came from with success flag.
+  // 5. Sprint 8G: also UPSERT into the integrations table so the
+  //    /dashboard/integrations page (which reads from `integrations`,
+  //    not `oauth_tokens`) immediately shows the platform as connected.
+  //    /api/publish/direct + /api/publish read access_token from this
+  //    row to fire the actual API calls. The encrypted copy in
+  //    oauth_tokens remains the source of truth for refresh.
+  //
+  //    Sprint 9B: ALSO write encrypted_access_token (AES-256-GCM via
+  //    lib/secrets.ts — same encryption already applied to the
+  //    oauth_tokens row above). Plaintext still populated for the
+  //    migration window.
+  try {
+    await sql`
+      DELETE FROM integrations
+      WHERE workspace_id = ${state.workspaceId} AND platform = ${state.platform}
+    `
+    const intMetadata: Record<string, unknown> = {
+      oauth_managed: true,
+      scope: tokens.scope || null,
+      expires_at: expiresAt,
+      account_label: tokens.account_label || null,
+    }
+    try {
+      await sql`
+        INSERT INTO integrations (id, workspace_id, platform, access_token, encrypted_access_token, account_id, status, metadata)
+        VALUES (${newId()}, ${state.workspaceId}, ${state.platform},
+                ${tokens.access_token}, ${encryptedAccess},
+                ${tokens.account_id || ''},
+                'active', ${JSON.stringify(intMetadata)})
+      `
+    } catch {
+      // metadata column may not exist on older deployments.
+      await sql`
+        INSERT INTO integrations (id, workspace_id, platform, access_token, encrypted_access_token, account_id, status)
+        VALUES (${newId()}, ${state.workspaceId}, ${state.platform},
+                ${tokens.access_token}, ${encryptedAccess},
+                ${tokens.account_id || ''}, 'active')
+      `
+    }
+  } catch (err) {
+    // Non-fatal — the oauth_tokens row succeeded, refresh path still works.
+    // The user just won't see the row in /dashboard/integrations until
+    // they manually save it. Log so we can spot drift.
+    console.error('[oauth-callback] integrations mirror write failed (non-fatal):', err)
+  }
+
+  // 6. Bounce back to where we came from with success flag.
   return success(state.returnUrl || FAILURE_REDIRECT_BASE, platform.toLowerCase())
 }

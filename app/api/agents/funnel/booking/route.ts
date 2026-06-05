@@ -6,12 +6,15 @@ import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
 import { runAgent } from '@/lib/claude'
 import { getCalEventTypes, getBookingLink, getUpcomingBookings, generateBookingWidget } from '@/lib/tools/calcom'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 import type { BrandProfile } from '@/types'
 
 export async function POST(req: NextRequest) {
   try {
     const { workspaceId, context, generateEmail } = await req.json()
     if (!workspaceId) return NextResponse.json({ error: 'workspaceId required' }, { status: 400 })
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     // Load workspace settings and brand profile
     const [wsResult, brandResult] = await Promise.all([

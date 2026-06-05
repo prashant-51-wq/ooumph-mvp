@@ -1,6 +1,13 @@
 'use client'
 
 import { useState, useRef, useEffect, useCallback } from 'react'
+import {
+  WORKFLOW_TRIGGERS,
+  WORKFLOW_TEMPLATES,
+  templateToWorkflowNodes,
+  type WorkflowTemplate,
+  type TriggerOption,
+} from '@/lib/workflow-templates'
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 type NodeType = 'trigger' | 'email' | 'sms' | 'wait' | 'condition' | 'tag' | 'update_contact' | 'ai_action' | 'notification'
@@ -72,59 +79,11 @@ function makeNode(type: NodeType, config: Record<string,string> = {}): WorkflowN
   return { id: nid(), type, label: NODE_META[type].label, config: { ...defaults[type], ...config } }
 }
 
-// ── Mock workflows ─────────────────────────────────────────────────────────────
-const INITIAL_WORKFLOWS: WorkflowDef[] = [
-  {
-    id:'wf1', name:'Lead Nurture — 7-Step', triggerIcon:'🌱', status:'Active', enrolled:247, lastRun:'2m ago',
-    stats:{ enrolled:247, completed:89, convRate:36, emailsSent:1438, avgTime:'8 days' },
-    nodes:[
-      makeNode('trigger', { event:'Lead Captured' }),
-      makeNode('email', { subject:'Welcome! Here\'s what Ooumph can do for you', template:'Welcome Email' }),
-      makeNode('wait', { duration:'1', unit:'days' }),
-      makeNode('condition', { field:'email_opened', operator:'=', value:'true', branch_a:'Opened', branch_b:'Not Opened' }),
-      makeNode('email', { subject:'Quick follow-up — did you get my last email?', template:'Follow-up Email' }),
-      makeNode('wait', { duration:'3', unit:'days' }),
-      makeNode('ai_action', { action:'Generate personalized email', prompt:'Personalize based on signup source and behavior' }),
-    ],
-  },
-  {
-    id:'wf2', name:'New Customer Onboarding', triggerIcon:'🎉', status:'Active', enrolled:58, lastRun:'15m ago',
-    stats:{ enrolled:58, completed:41, convRate:71, emailsSent:312, avgTime:'14 days' },
-    nodes:[
-      makeNode('trigger', { event:'Deal Closed Won' }),
-      makeNode('tag', { action:'Add', tag:'Customer' }),
-      makeNode('update_contact', { field:'stage', value:'Customer' }),
-      makeNode('email', { subject:'🎉 Welcome aboard! Your account is ready', template:'Onboarding Welcome' }),
-      makeNode('notification', { message:'New customer: {{contact_name}} ({{deal_value}})', channel:'Slack #sales' }),
-      makeNode('wait', { duration:'3', unit:'days' }),
-      makeNode('email', { subject:'Getting started — 3 things to do first', template:'Day 3 Onboarding' }),
-      makeNode('wait', { duration:'7', unit:'days' }),
-      makeNode('ai_action', { action:'Score contact with AI', prompt:'Analyze onboarding engagement and risk' }),
-    ],
-  },
-  {
-    id:'wf3', name:'Win-back Campaign', triggerIcon:'🔄', status:'Paused', enrolled:31, lastRun:'2 days ago',
-    stats:{ enrolled:31, completed:6, convRate:19, emailsSent:87, avgTime:'21 days' },
-    nodes:[
-      makeNode('trigger', { event:'Tag Added: At Risk' }),
-      makeNode('wait', { duration:'1', unit:'days' }),
-      makeNode('email', { subject:'We miss you — here\'s 20% off', template:'Win-back Offer' }),
-      makeNode('wait', { duration:'5', unit:'days' }),
-      makeNode('condition', { field:'email_clicked', operator:'=', value:'true', branch_a:'Clicked', branch_b:'Ignored' }),
-      makeNode('ai_action', { action:'Generate personalized email', prompt:'Last-chance personalized win-back message' }),
-    ],
-  },
-  {
-    id:'wf4', name:'Appointment Reminder', triggerIcon:'📅', status:'Draft', enrolled:0, lastRun:'Never',
-    stats:{ enrolled:0, completed:0, convRate:0, emailsSent:0, avgTime:'—' },
-    nodes:[
-      makeNode('trigger', { event:'Meeting Booked' }),
-      makeNode('email', { subject:'Reminder: Your call is in 24 hours', template:'Reminder Email' }),
-      makeNode('wait', { duration:'23', unit:'hours' }),
-      makeNode('sms', { message:'Reminder: Your call with {{rep_name}} is in 1 hour. Join: {{meeting_link}}' }),
-    ],
-  },
-]
+// Sprint 16E (audit P2 #30): INITIAL_WORKFLOWS_REFERENCE removed. Real
+// guided templates now live in lib/workflow-templates.ts (added in
+// Sprint 16I) and are consumed by TemplateWizard below. The page state
+// starts [] and hydrates from /api/workflows so users never see fake
+// demo workflows that were never executable.
 
 const TEMPLATES: Template[] = [
   { id:'t1', name:'Lead Nurture (7-step email)', stepCount:7, category:'Nurture', description:'Automated 7-email sequence for new leads over 21 days', nodes:[makeNode('trigger',{event:'Lead Captured'}),makeNode('email'),makeNode('wait',{duration:'1',unit:'days'}),makeNode('condition'),makeNode('email'),makeNode('wait',{duration:'3',unit:'days'}),makeNode('email')] },
@@ -504,13 +463,18 @@ function nodeToPayload(n: WorkflowNode): Record<string, unknown> {
 
 // ── Main Page ──────────────────────────────────────────────────────────────────
 export default function WorkflowsPage() {
-  const [workflows, setWorkflows] = useState<WorkflowDef[]>(INITIAL_WORKFLOWS)
-  const [selectedId, setSelectedId] = useState<string>(INITIAL_WORKFLOWS[0]?.id || '')
+  // Sprint 15F (P2 #19): start empty instead of with INITIAL_WORKFLOWS demo
+  // seed. The /api/workflows fetch effect hydrates real rows; showing fake
+  // workflows before then was misleading users into thinking demos were live.
+  const [workflows, setWorkflows] = useState<WorkflowDef[]>([])
+  const [selectedId, setSelectedId] = useState<string>('')
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>('workflows')
   const [filterStatus, setFilterStatus] = useState<string>('All')
   const [editingNode, setEditingNode] = useState<WorkflowNode | null>(null)
   const [addBelowId, setAddBelowId] = useState<string | null>(null)
   const [showAIGenerate, setShowAIGenerate] = useState(false)
+  // Sprint 16I (P1 #23): guided nurture-template wizard.
+  const [showTemplateWizard, setShowTemplateWizard] = useState(false)
   const [editingName, setEditingName] = useState(false)
   const [nameVal, setNameVal] = useState('')
   const [loadingFromApi, setLoadingFromApi] = useState(true)
@@ -672,6 +636,71 @@ export default function WorkflowsPage() {
     setSelectedId(newWf.id)
   }
 
+  /** Sprint 16I (P1 #23): create a workflow from a guided template +
+   *  trigger, POST to /api/workflows so it appears in the list
+   *  immediately, then select it. */
+  async function createFromGuidedTemplate(opts: {
+    template: WorkflowTemplate
+    trigger: TriggerOption
+    customized: Record<number, { subject: string; body: string }>
+  }) {
+    const wid = localStorage.getItem('workspaceId')
+    if (!wid) { setSaveError('No workspace'); return }
+    setSaving(true); setSaveError(''); setSaveSuccess('')
+    try {
+      const nodes = templateToWorkflowNodes(opts.template, opts.customized)
+      const res = await fetch('/api/workflows', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          workspaceId: wid,
+          name: opts.template.name,
+          triggerType: opts.trigger.id,
+          triggerConfig: opts.trigger.defaultConfig || {},
+          nodes,
+          status: 'draft',
+        }),
+      })
+      const data = await res.json() as { id?: string; error?: string }
+      if (!data.id) throw new Error(data.error || 'Save failed')
+
+      // Build the UI representation so the new workflow appears in the
+      // sidebar without a full refetch. The shape mirrors the loader.
+      const REVERSE_MAP: Record<string, NodeType> = {
+        trigger: 'trigger', send_email: 'email', send_sms: 'sms', wait: 'wait',
+        condition: 'condition', add_tag: 'tag', update_contact: 'update_contact',
+        ai_action: 'ai_action', notify: 'notification',
+      }
+      const uiNodes: WorkflowNode[] = nodes.map(n => {
+        const uiType = REVERSE_MAP[n.type as string] || 'trigger'
+        const config: Record<string, string> = {}
+        for (const [k, v] of Object.entries(n)) {
+          if (k !== 'id' && k !== 'type' && v != null) config[k] = String(v)
+        }
+        return { id: (n.id as string) || nid(), type: uiType, label: NODE_META[uiType].label, config }
+      })
+      const newWf: WorkflowDef = {
+        id: data.id,
+        name: opts.template.name,
+        triggerIcon: '✨',
+        status: 'Draft',
+        enrolled: 0,
+        lastRun: 'Never',
+        nodes: uiNodes,
+        stats: { enrolled: 0, completed: 0, convRate: 0, emailsSent: 0, avgTime: '—' },
+      }
+      setWorkflows(ws => [newWf, ...ws])
+      setSelectedId(newWf.id)
+      setSidebarTab('workflows')
+      setSaveSuccess('✓ Created from template')
+      setTimeout(() => setSaveSuccess(''), 2500)
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : 'Save failed')
+    } finally {
+      setSaving(false)
+    }
+  }
+
   function generateFromAI(name: string, nodes: WorkflowNode[]) {
     const newWf: WorkflowDef = {
       id: `wf${Date.now()}`,
@@ -702,8 +731,15 @@ export default function WorkflowsPage() {
       <div className="w-72 flex-shrink-0 bg-gray-900 border-r border-gray-800 flex flex-col overflow-hidden">
         {/* Sidebar header */}
         <div className="px-4 py-4 border-b border-gray-800">
-          <button onClick={createBlank} className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-medium transition-colors mb-3">
+          <button onClick={createBlank} className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-medium transition-colors mb-2">
             + New Workflow
+          </button>
+          {/* Sprint 16I (P1 #23): guided nurture-template wizard.
+              Wraps lib/workflow-templates.ts → backend node array → POST
+              /api/workflows. The new workflow shows up in this same
+              sidebar list as soon as the wizard completes. */}
+          <button onClick={() => setShowTemplateWizard(true)} className="w-full py-2 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-200 rounded-lg text-xs font-medium transition-colors mb-3">
+            ✨ Create from template
           </button>
           {/* Tabs */}
           <div className="flex rounded-lg border border-gray-700 overflow-hidden">
@@ -963,6 +999,238 @@ export default function WorkflowsPage() {
           onGenerate={generateFromAI}
         />
       )}
+
+      {/* ── Guided template wizard (Sprint 16I P1 #23) ── */}
+      {showTemplateWizard && (
+        <TemplateWizard
+          onClose={() => setShowTemplateWizard(false)}
+          onCreate={async (opts) => {
+            await createFromGuidedTemplate(opts)
+            setShowTemplateWizard(false)
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+// ─── Guided Template Wizard (Sprint 16I P1 #23) ────────────────────────────
+
+function TemplateWizard({
+  onClose, onCreate,
+}: {
+  onClose: () => void
+  onCreate: (opts: {
+    template: WorkflowTemplate
+    trigger: TriggerOption
+    customized: Record<number, { subject: string; body: string }>
+  }) => Promise<void>
+}) {
+  const [step, setStep] = useState<1 | 2 | 3 | 4>(1)
+  const [trigger, setTrigger] = useState<TriggerOption | null>(null)
+  const [template, setTemplate] = useState<WorkflowTemplate | null>(null)
+  const [customized, setCustomized] = useState<Record<number, { subject: string; body: string }>>({})
+  const [submitting, setSubmitting] = useState(false)
+
+  // Re-seed customizations when a different template is picked.
+  useEffect(() => {
+    if (!template) return
+    const seed: Record<number, { subject: string; body: string }> = {}
+    template.steps.forEach((s, idx) => {
+      if (s.kind === 'email') seed[idx] = { subject: s.subject, body: s.body }
+    })
+    setCustomized(seed)
+  }, [template])
+
+  const emailSteps = template
+    ? template.steps.map((s, idx) => ({ s, idx })).filter(x => x.s.kind === 'email')
+    : []
+
+  const submit = async () => {
+    if (!trigger || !template) return
+    setSubmitting(true)
+    try {
+      await onCreate({ trigger, template, customized })
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-gray-950/80 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-2xl max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
+        {/* Header + steps indicator */}
+        <div className="flex items-center justify-between px-5 py-3 border-b border-gray-800">
+          <div>
+            <h2 className="text-white font-semibold text-sm">Create from template</h2>
+            <p className="text-gray-500 text-xs mt-0.5">Step {step} of 4 — {step === 1 ? 'choose a trigger' : step === 2 ? 'pick a template' : step === 3 ? 'customize emails' : 'review & create'}</p>
+          </div>
+          <button onClick={onClose} className="text-gray-500 hover:text-white text-lg leading-none">×</button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-5 space-y-3">
+          {step === 1 && (
+            <div className="space-y-2">
+              {WORKFLOW_TRIGGERS.map(t => {
+                const selected = trigger?.id === t.id
+                return (
+                  <button
+                    key={t.id}
+                    onClick={() => setTrigger(t)}
+                    className={`w-full text-left p-3 rounded-xl border transition-colors ${
+                      selected ? 'border-indigo-500 bg-indigo-950/40' : 'border-gray-700 bg-gray-800/50 hover:border-gray-600'
+                    }`}
+                  >
+                    <p className="text-white text-sm font-medium">{t.label}</p>
+                    <p className="text-gray-500 text-xs mt-1">{t.description}</p>
+                  </button>
+                )
+              })}
+            </div>
+          )}
+
+          {step === 2 && (
+            <div className="space-y-2">
+              {WORKFLOW_TEMPLATES.map(t => {
+                const selected = template?.id === t.id
+                return (
+                  <button
+                    key={t.id}
+                    onClick={() => setTemplate(t)}
+                    className={`w-full text-left p-3 rounded-xl border transition-colors ${
+                      selected ? 'border-indigo-500 bg-indigo-950/40' : 'border-gray-700 bg-gray-800/50 hover:border-gray-600'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <p className="text-white text-sm font-medium">{t.name}</p>
+                      <span className="text-[10px] text-gray-500">{t.steps.length} steps</span>
+                    </div>
+                    <p className="text-gray-500 text-xs leading-relaxed">{t.description}</p>
+                  </button>
+                )
+              })}
+            </div>
+          )}
+
+          {step === 3 && template && (
+            <div className="space-y-4">
+              <p className="text-gray-400 text-xs">Edit subject + body for each email. Wait/tag/notify steps run on the schedule shown.</p>
+              {template.steps.map((s, idx) => {
+                if (s.kind === 'tag') {
+                  return (
+                    <div key={idx} className="bg-gray-800/40 border border-gray-700/60 rounded-lg px-3 py-2 text-xs text-gray-400">
+                      <span className="text-indigo-300">Tag</span> — applies <code className="text-white">{s.tag}</code>
+                    </div>
+                  )
+                }
+                if (s.kind === 'notify') {
+                  return (
+                    <div key={idx} className="bg-gray-800/40 border border-gray-700/60 rounded-lg px-3 py-2 text-xs text-gray-400">
+                      <span className="text-indigo-300">Notify</span> ({s.channel}) — {s.body}
+                    </div>
+                  )
+                }
+                const cur = customized[idx] || { subject: s.subject, body: s.body }
+                return (
+                  <div key={idx} className="bg-gray-800/40 border border-gray-700/60 rounded-xl p-3 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <p className="text-xs text-indigo-300 font-medium">Email — day {s.dayOffset}</p>
+                    </div>
+                    <input
+                      value={cur.subject}
+                      onChange={e => setCustomized(prev => ({ ...prev, [idx]: { ...cur, subject: e.target.value } }))}
+                      placeholder="Subject"
+                      className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-indigo-500"
+                    />
+                    <textarea
+                      value={cur.body}
+                      onChange={e => setCustomized(prev => ({ ...prev, [idx]: { ...cur, body: e.target.value } }))}
+                      rows={5}
+                      placeholder="Body"
+                      className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-indigo-500 resize-none"
+                    />
+                  </div>
+                )
+              })}
+            </div>
+          )}
+
+          {step === 4 && template && trigger && (
+            <div className="space-y-3">
+              <div className="bg-gray-800/40 border border-gray-700 rounded-xl p-3">
+                <p className="text-xs text-gray-500 uppercase tracking-wide mb-1">Trigger</p>
+                <p className="text-white text-sm">{trigger.label}</p>
+              </div>
+              <div className="bg-gray-800/40 border border-gray-700 rounded-xl p-3">
+                <p className="text-xs text-gray-500 uppercase tracking-wide mb-1">Template</p>
+                <p className="text-white text-sm">{template.name}</p>
+                <p className="text-gray-500 text-xs mt-1">{template.description}</p>
+              </div>
+              <div className="bg-gray-800/40 border border-gray-700 rounded-xl p-3">
+                <p className="text-xs text-gray-500 uppercase tracking-wide mb-2">Sequence ({emailSteps.length} emails)</p>
+                <div className="space-y-1.5">
+                  {template.steps.map((s, idx) => {
+                    if (s.kind === 'email') {
+                      const cur = customized[idx] || { subject: s.subject, body: s.body }
+                      return (
+                        <div key={idx} className="flex items-start gap-2 text-xs">
+                          <span className="text-gray-500 w-12 flex-shrink-0">Day {s.dayOffset}</span>
+                          <span className="text-gray-200 truncate">{cur.subject}</span>
+                        </div>
+                      )
+                    }
+                    if (s.kind === 'tag') {
+                      return (
+                        <div key={idx} className="flex items-start gap-2 text-xs">
+                          <span className="text-gray-500 w-12 flex-shrink-0">Tag</span>
+                          <span className="text-gray-400">Add {s.tag}</span>
+                        </div>
+                      )
+                    }
+                    return (
+                      <div key={idx} className="flex items-start gap-2 text-xs">
+                        <span className="text-gray-500 w-12 flex-shrink-0">Notify</span>
+                        <span className="text-gray-400 truncate">{s.body}</span>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+              <p className="text-gray-500 text-xs">
+                The new workflow will be created as a <span className="text-amber-300">Draft</span>. Activate it from the toolbar after a final review.
+              </p>
+            </div>
+          )}
+        </div>
+
+        {/* Footer nav */}
+        <div className="flex items-center justify-between px-5 py-3 border-t border-gray-800">
+          <button
+            onClick={() => setStep(s => (s === 1 ? 1 : ((s - 1) as 1 | 2 | 3 | 4)))}
+            disabled={step === 1}
+            className="px-3 py-1.5 text-xs bg-gray-800 hover:bg-gray-700 disabled:opacity-40 text-gray-200 rounded-lg"
+          >
+            ← Back
+          </button>
+          {step < 4 ? (
+            <button
+              onClick={() => setStep(s => ((s + 1) as 1 | 2 | 3 | 4))}
+              disabled={(step === 1 && !trigger) || (step === 2 && !template)}
+              className="px-3 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white rounded-lg"
+            >
+              Next →
+            </button>
+          ) : (
+            <button
+              onClick={submit}
+              disabled={submitting || !trigger || !template}
+              className="px-3 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white rounded-lg"
+            >
+              {submitting ? 'Creating…' : 'Create workflow'}
+            </button>
+          )}
+        </div>
+      </div>
     </div>
   )
 }

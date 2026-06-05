@@ -10,6 +10,7 @@ import {
   getRecentMemory,
   type MemoryContentType,
 } from '@/lib/tools/memory'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 
 export async function POST(req: NextRequest) {
   try {
@@ -30,6 +31,8 @@ export async function POST(req: NextRequest) {
     }
 
     if (!workspaceId) return NextResponse.json({ error: 'workspaceId required' }, { status: 400 })
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
     if (!action) return NextResponse.json({ error: 'action required' }, { status: 400 })
 
     if (action === 'save') {
@@ -70,6 +73,8 @@ export async function GET(req: NextRequest) {
     const query = searchParams.get('query')
 
     if (!workspaceId) return NextResponse.json({ error: 'workspaceId required' }, { status: 400 })
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     if (query) {
       const results = await searchMemory(workspaceId, query, 20, type || undefined)

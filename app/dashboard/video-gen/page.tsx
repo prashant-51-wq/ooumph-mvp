@@ -1,6 +1,8 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
+import { ProviderConnectBanner } from '@/components/dashboard/ProviderConnectBanner'
+import { usePersistedState } from '@/lib/hooks/use-persisted-state'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -156,6 +158,21 @@ export default function VideoGenPage() {
   const [selectedProject, setSelectedProject] = useState<string | null>(null)
   const [apiPanelOpen, setApiPanelOpen] = useState(false)
 
+  // Sprint 12E: real per-model status from /api/agents/video/models.
+  // Replaces the static VIDEO_MODELS constant for picker UX. Each entry
+  // includes whether the workspace has the right keys to use it.
+  interface ModelStatus {
+    id: string
+    name: string
+    whatFor: string
+    status: 'ready' | 'needs_key' | 'beta_access'
+    setupHint: string
+    byokFields: string[]
+    byokAnchor: string
+    missingFields: string[]
+  }
+  const [modelStatus, setModelStatus] = useState<ModelStatus[]>([])
+
   // Past projects
   const [projects, setProjects] = useState<VideoProject[]>([])
   const [projectsLoading, setProjectsLoading] = useState(false)
@@ -165,11 +182,11 @@ export default function VideoGenPage() {
   const [stats, setStats] = useState({ videos: 0, durationSec: 0, cost: 0 })
 
   // Generate tab state
-  const [prompt, setPrompt] = useState('')
-  const [selectedModel, setSelectedModel] = useState('runway')
-  const [selectedStyle, setSelectedStyle] = useState('Cinematic')
-  const [duration, setDuration] = useState<5 | 10>(5)
-  const [aspectRatio, setAspectRatio] = useState('16:9')
+  const [prompt, setPrompt] = usePersistedState<string>('video-gen:prompt', '')
+  const [selectedModel, setSelectedModel] = usePersistedState<string>('video-gen:model', 'runway')
+  const [selectedStyle, setSelectedStyle] = usePersistedState<string>('video-gen:style', 'Cinematic')
+  const [duration, setDuration] = usePersistedState<5 | 10>('video-gen:duration', 5)
+  const [aspectRatio, setAspectRatio] = usePersistedState<string>('video-gen:aspectRatio', '16:9')
   const [resolution, setResolution] = useState('1080p')
   const [fps, setFps] = useState('24')
   const [scriptMode, setScriptMode] = useState(false)
@@ -203,6 +220,126 @@ export default function VideoGenPage() {
   const [charLock, setCharLock] = useState(false)
   const [applyBrand, setApplyBrand] = useState(true)
 
+  // Sprint 19A: prompt-driven editor + multi-clip assembly state.
+  // The editor sits where the old "Editing disabled" timeline used to be.
+  // Each instruction the user types is parsed by Claude into a VideoEditSpec
+  // (a JSON shape Cloudinary's transformation URL grammar can render) and
+  // the result URL replaces the preview. The "additional clips" tray below
+  // lets the user merge other generated clips (Runway / Pika / Luma / etc.)
+  // into the base video via Cloudinary's fl_splice transform.
+  interface EditTurn { instruction: string; resultUrl: string; spec: Record<string, unknown>; ok: boolean; error?: string }
+  // Sprint 19B / 19C: Cloudinary configured-ness — gates the editor UI behind
+  // a 'Get Cloudinary free' CTA when keys are missing. Sprint 19C added the
+  // inline paste-and-test form right in the banner so the user never leaves
+  // /dashboard/video-gen to connect Cloudinary.
+  const [cloudinaryReady, setCloudinaryReady] = useState<boolean | null>(null)
+  const refreshCloudinaryStatus = useCallback(async () => {
+    if (!workspaceId) return
+    try {
+      const r = await fetch(`/api/workspaces?id=${workspaceId}`, { credentials: 'include' })
+      if (!r.ok) { setCloudinaryReady(false); return }
+      const data = await r.json() as { model_settings?: Record<string, string> }
+      const ms = data.model_settings || {}
+      setCloudinaryReady(Boolean(ms.cloudinaryCloudName && ms.cloudinaryApiKey && ms.cloudinaryApiSecret))
+    } catch {
+      setCloudinaryReady(false)
+    }
+  }, [workspaceId])
+  useEffect(() => { void refreshCloudinaryStatus() }, [refreshCloudinaryStatus])
+
+  const [editorInstruction, setEditorInstruction] = useState('')
+  const [editorBusy, setEditorBusy] = useState(false)
+  const [editorTurns, setEditorTurns] = usePersistedState<EditTurn[]>('video-gen:editHistory', [])
+  const [editorSpec, setEditorSpec] = useState<Record<string, unknown> | undefined>(undefined)
+  const [extraClipUrls, setExtraClipUrls] = usePersistedState<string[]>('video-gen:extraClips', [])
+  const [extraClipInput, setExtraClipInput] = useState('')
+  const [assembleBusy, setAssembleBusy] = useState(false)
+  const [assembledUrl, setAssembledUrl] = usePersistedState<string | null>('video-gen:assembledUrl', null)
+  const [assembleError, setAssembleError] = useState<string | null>(null)
+
+  const editorBaseUrl: string | null = assembledUrl || latestVideoUrl
+  const editorLatestUrl: string | null =
+    editorTurns.length > 0 ? editorTurns[editorTurns.length - 1].resultUrl : editorBaseUrl
+
+  async function runEditorPrompt() {
+    if (!workspaceId || !editorBaseUrl || !editorInstruction.trim()) return
+    setEditorBusy(true)
+    try {
+      const res = await fetch('/api/agents/video/edit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          workspaceId,
+          videoUrl: editorLatestUrl || editorBaseUrl,
+          instruction: editorInstruction.trim(),
+          currentSpec: editorSpec,
+        }),
+      })
+      const data = await res.json() as { ok: boolean; editedUrl?: string; spec?: Record<string, unknown>; error?: string }
+      const turn: EditTurn = {
+        instruction: editorInstruction.trim(),
+        resultUrl: data.editedUrl || (editorLatestUrl || editorBaseUrl || ''),
+        spec: data.spec || {},
+        ok: Boolean(data.ok),
+        error: data.error,
+      }
+      setEditorTurns(prev => [...prev, turn])
+      if (data.ok && data.spec) setEditorSpec(data.spec)
+      setEditorInstruction('')
+    } catch (err) {
+      setEditorTurns(prev => [...prev, {
+        instruction: editorInstruction.trim(),
+        resultUrl: editorLatestUrl || editorBaseUrl || '',
+        spec: editorSpec || {},
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      }])
+    } finally {
+      setEditorBusy(false)
+    }
+  }
+
+  async function runAssemble() {
+    if (!workspaceId || !latestVideoUrl) return
+    if (extraClipUrls.length === 0) return
+    setAssembleBusy(true); setAssembleError(null)
+    try {
+      const res = await fetch('/api/agents/video/assemble', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          workspaceId,
+          videoUrls: [latestVideoUrl, ...extraClipUrls],
+        }),
+      })
+      const data = await res.json() as { ok: boolean; mergedUrl?: string; error?: string }
+      if (data.ok && data.mergedUrl) {
+        setAssembledUrl(data.mergedUrl)
+        setEditorTurns([])           // reset edit history when base changes
+        setEditorSpec(undefined)
+      } else {
+        setAssembleError(data.error || 'Assembly failed')
+      }
+    } catch (err) {
+      setAssembleError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setAssembleBusy(false)
+    }
+  }
+
+  function addExtraClip() {
+    const trimmed = extraClipInput.trim()
+    if (!trimmed) return
+    if (!/^https?:\/\//.test(trimmed)) { setAssembleError('Clip must be an http(s) URL'); return }
+    setExtraClipUrls(prev => [...prev, trimmed])
+    setExtraClipInput('')
+    setAssembleError(null)
+  }
+
+  function removeExtraClip(idx: number) {
+    setExtraClipUrls(prev => prev.filter((_, i) => i !== idx))
+  }
+
   useEffect(() => {
     if (typeof window !== 'undefined') {
       setWorkspaceId(localStorage.getItem('workspaceId'))
@@ -216,8 +353,26 @@ export default function VideoGenPage() {
     if (workspaceId) {
       void fetchProjects()
       void fetchStats()
+      void fetchModelStatus()
     }
   }, [workspaceId])
+
+  // Sprint 12E: load real per-model availability so the picker shows
+  // "✓ Ready" / "⚠ Needs key" / "🔒 Beta" instead of guessing.
+  async function fetchModelStatus() {
+    if (!workspaceId) return
+    try {
+      const res = await fetch(`/api/agents/video/models?workspaceId=${encodeURIComponent(workspaceId)}`)
+      if (!res.ok) return
+      const data = await res.json() as { models: ModelStatus[]; defaultModel: string }
+      setModelStatus(data.models)
+      // If the user hasn't manually picked a model yet, default to the
+      // first 'ready' one so they don't start with a broken selection.
+      setSelectedModel(prev => data.models.find(m => m.id === prev) ? prev : data.defaultModel)
+    } catch {
+      // Non-fatal — fall back to the static VIDEO_MODELS list.
+    }
+  }
 
   async function fetchProjects() {
     if (!workspaceId) return
@@ -355,19 +510,48 @@ export default function VideoGenPage() {
     const avgSec = VIDEO_MODELS.find(m => m.id === selectedModel)?.avgSec || 30
     setGenerationStatus(`Submitting to ${VIDEO_MODELS.find(m => m.id === selectedModel)?.name}... est ~${avgSec}s`)
 
+    // Sprint 12E: dispatch to the right provider backend based on
+    // selectedModel. Each provider has its own /api/agents/video/{id}
+    // route built in Sprint 12A and 12E. Body shape differs slightly
+    // per provider (ratio formats, model variants) so we build it
+    // per-branch rather than one giant fetch.
     try {
-      const res = await fetch('/api/agents/video/runway', {
+      let endpoint = '/api/agents/video/runway'
+      let body: Record<string, unknown> = {
+        workspaceId,
+        action: 'text_to_video',
+        prompt,
+      }
+
+      if (selectedModel === 'runway') {
+        body = { ...body, duration, ratio:
+          aspectRatio === '16:9' ? '1280:768' :
+          aspectRatio === '9:16' ? '768:1280' :
+          aspectRatio === '1:1' ? '960:960' : '1280:768' }
+      } else if (selectedModel === 'luma') {
+        endpoint = '/api/agents/video/luma'
+        body = { ...body, aspectRatio, loop: false }
+      } else if (selectedModel === 'kling') {
+        endpoint = '/api/agents/video/kling'
+        body = { ...body, duration, aspectRatio, model: 'kling-v2' }
+      } else if (selectedModel === 'sora') {
+        endpoint = '/api/agents/video/sora'
+        body = { ...body, model: 'sora-2', aspectRatio:
+          aspectRatio === '16:9' ? 'landscape' :
+          aspectRatio === '9:16' ? 'portrait' : 'square',
+          durationSeconds: duration < 10 ? 5 : 10 }
+      } else if (selectedModel === 'pika') {
+        endpoint = '/api/agents/video/pika'
+        body = { ...body, aspectRatio: aspectRatio as '16:9' | '9:16' | '1:1' }
+      } else {
+        // Fallback (e.g. HeyGen) — Runway is the safest assume-anything.
+        endpoint = '/api/agents/video/runway'
+      }
+
+      const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          workspaceId,
-          action: 'text_to_video',
-          prompt,
-          duration,
-          ratio: aspectRatio === '16:9' ? '1280:768' :
-                 aspectRatio === '9:16' ? '768:1280' :
-                 aspectRatio === '1:1' ? '960:960' : '1280:768',
-        }),
+        body: JSON.stringify(body),
       })
       const data = await res.json() as {
         ok?: boolean
@@ -375,9 +559,18 @@ export default function VideoGenPage() {
         artifactId?: string
         error?: string
         requiresSetup?: boolean
+        requiresProviderAccess?: boolean
+        provider?: string
       }
       if (!data.ok || !data.taskId) {
-        setGenerationError(data.error || 'Failed to start video generation')
+        // Surface the specific error: missing key vs missing provider
+        // access vs generic failure. The UI distinguishes them so users
+        // know the right remediation.
+        const hint =
+          data.requiresSetup ? ' — Go to Settings → API Keys to paste the key.'
+          : data.requiresProviderAccess ? ' — Your key works but the provider hasn\'t enabled API access. Try a different model.'
+          : ''
+        setGenerationError((data.error || 'Failed to start video generation') + hint)
         setGenerating(false)
         return
       }
@@ -560,16 +753,136 @@ export default function VideoGenPage() {
                 )}
               </div>
 
-              {/* Visual timeline (preview only) */}
+              {/* Sprint 19A: prompt-driven Cloudinary editor + multi-clip
+                  assembly. Replaces the "Editing disabled" placeholder.
+                  Powered by /api/agents/video/edit (Claude parses the
+                  instruction → VideoEditSpec → Cloudinary URL) and
+                  /api/agents/video/assemble (fl_splice multi-clip merge). */}
               <div className="mx-4 mb-4 mt-3">
                 <div className="flex items-center justify-between mb-2">
-                  <span className="text-gray-500 text-xs font-medium">Timeline (visual preview only)</span>
-                  <span className="text-amber-400 text-[10px] bg-amber-900/20 px-2 py-0.5 rounded">Editing coming soon</span>
+                  <span className="text-gray-500 text-xs font-medium">AI Editor</span>
+                  <span className={`text-[10px] px-2 py-0.5 rounded ${cloudinaryReady === false ? 'text-amber-400 bg-amber-900/20' : 'text-emerald-400 bg-emerald-900/20'}`}>
+                    {cloudinaryReady === false ? 'Cloudinary not connected' : editorBaseUrl ? 'Ready' : 'Generate or select a video first'}
+                  </span>
                 </div>
-                <div className="bg-gray-900 rounded-xl border border-gray-800 overflow-hidden p-4 text-center">
-                  <p className="text-gray-600 text-xs">
-                    Video generation is single-clip only today. Multi-clip editing, captions, and BGM mixing are not yet wired to a real engine.
-                  </p>
+
+                {/* Sprint 19D: refactored to use the shared
+                    ProviderConnectBanner component. Pattern is now reused
+                    on /image-gen, /voiceover, /voice-ai, /email-marketing. */}
+                <ProviderConnectBanner
+                  ready={cloudinaryReady}
+                  workspaceId={workspaceId}
+                  providerId="cloudinary"
+                  providerName="Cloudinary"
+                  icon="📼"
+                  description="The prompt-driven editor + multi-clip assembly runs on Cloudinary's video transformation API."
+                  signupUrl="https://cloudinary.com/users/register/free"
+                  keysHelpUrl="https://console.cloudinary.com/settings/api-keys"
+                  freeTierNote="Free tier — 25 GB delivery + 25 transformation credits per month. No card required."
+                  fields={[
+                    { label: 'Cloud Name', placeholder: 'mycloud', payloadKey: 'cloudName' },
+                    { label: 'API Key', placeholder: 'Cloudinary API Key', payloadKey: 'apiKey' },
+                    { label: 'API Secret', placeholder: 'Cloudinary API Secret', payloadKey: 'apiSecret', password: true },
+                  ]}
+                  testMode="cloudinary-dedicated"
+                  onConnected={() => void refreshCloudinaryStatus()}
+                />
+
+                <div className={`bg-gray-900 rounded-xl border border-gray-800 overflow-hidden ${cloudinaryReady === false ? 'opacity-50 pointer-events-none' : ''}`}>
+                  {/* Assembly tray — merge other clips into the base */}
+                  <div className="p-3 border-b border-gray-800">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-gray-400 text-[11px] font-medium">Merge other clips (Runway / Pika / Luma / etc.)</span>
+                      {extraClipUrls.length > 0 && (
+                        <button
+                          onClick={() => void runAssemble()}
+                          disabled={assembleBusy || !latestVideoUrl}
+                          className="px-3 py-1 rounded bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-[11px] font-medium">
+                          {assembleBusy ? 'Merging…' : `Merge ${extraClipUrls.length} clip${extraClipUrls.length === 1 ? '' : 's'}`}
+                        </button>
+                      )}
+                    </div>
+                    <div className="flex gap-2">
+                      <input
+                        type="url"
+                        value={extraClipInput}
+                        onChange={e => setExtraClipInput(e.target.value)}
+                        placeholder="Paste an MP4 URL (e.g. from a previous Kling generation)"
+                        className="flex-1 px-2 py-1.5 rounded bg-gray-950 border border-gray-800 text-white text-[11px] placeholder-gray-600 focus:outline-none focus:border-indigo-500"
+                      />
+                      <button
+                        onClick={addExtraClip}
+                        disabled={!extraClipInput.trim()}
+                        className="px-3 py-1.5 rounded bg-gray-800 hover:bg-gray-700 disabled:opacity-50 text-white text-[11px]">
+                        Add
+                      </button>
+                    </div>
+                    {extraClipUrls.length > 0 && (
+                      <ul className="mt-2 space-y-1">
+                        {extraClipUrls.map((u, i) => (
+                          <li key={i} className="flex items-center justify-between text-[10px] text-gray-400 bg-gray-950 rounded px-2 py-1">
+                            <span className="truncate">#{i + 2} · {u.length > 60 ? u.slice(0, 60) + '…' : u}</span>
+                            <button onClick={() => removeExtraClip(i)} className="text-gray-500 hover:text-rose-400 ml-2">✕</button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    {assembleError && (
+                      <p className="text-rose-400 text-[10px] mt-1.5">{assembleError}</p>
+                    )}
+                    {assembledUrl && (
+                      <p className="text-emerald-400 text-[10px] mt-1.5">
+                        Merged. Editing now applies to the merged video.
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Edit history */}
+                  {editorTurns.length > 0 && (
+                    <div className="p-3 border-b border-gray-800 max-h-48 overflow-y-auto space-y-1.5">
+                      {editorTurns.map((t, i) => (
+                        <div key={i} className={`text-[11px] rounded px-2 py-1.5 ${t.ok ? 'bg-gray-950 border border-gray-800' : 'bg-rose-950/30 border border-rose-900/50'}`}>
+                          <div className="flex items-start gap-2">
+                            <span className={t.ok ? 'text-emerald-400' : 'text-rose-400'}>{t.ok ? '✓' : '✕'}</span>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-white truncate">{t.instruction}</p>
+                              {t.error && <p className="text-rose-300 mt-0.5">{t.error}</p>}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Prompt input */}
+                  <div className="p-3 flex gap-2">
+                    <input
+                      type="text"
+                      value={editorInstruction}
+                      onChange={e => setEditorInstruction(e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void runEditorPrompt() } }}
+                      placeholder='e.g. "trim to first 5 seconds, add fade in, overlay logo bottom-right"'
+                      disabled={!editorBaseUrl || editorBusy}
+                      className="flex-1 px-3 py-2 rounded-lg bg-gray-950 border border-gray-800 text-white text-xs placeholder-gray-600 focus:outline-none focus:border-indigo-500 disabled:opacity-50"
+                    />
+                    <button
+                      onClick={() => void runEditorPrompt()}
+                      disabled={!editorBaseUrl || !editorInstruction.trim() || editorBusy}
+                      className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-medium">
+                      {editorBusy ? 'Editing…' : 'Apply'}
+                    </button>
+                  </div>
+
+                  {/* Result preview */}
+                  {editorLatestUrl && editorLatestUrl !== latestVideoUrl && (
+                    <div className="p-3 border-t border-gray-800">
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="text-gray-500 text-[10px] uppercase tracking-wider">Edited result</span>
+                        <a href={editorLatestUrl} target="_blank" rel="noopener noreferrer" className="text-indigo-400 hover:text-indigo-300 text-[10px]">Open ↗</a>
+                      </div>
+                      <video src={editorLatestUrl} controls className="w-full rounded-lg bg-black aspect-video" />
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
@@ -592,27 +905,71 @@ export default function VideoGenPage() {
                 {/* Model Selector */}
                 <div>
                   <label className="text-gray-400 text-xs mb-2 block">AI Model</label>
+                  {/* Sprint 12E: real per-model status from /api/agents/video/models.
+                      Buttons show: name, status badge (✓ Ready / ⚠ Needs key / 🔒 Beta),
+                      and tooltip with the exact setup hint. Picker prefers modelStatus
+                      when loaded, falls back to VIDEO_MODELS for visual continuity. */}
                   <div className="flex flex-wrap gap-2">
-                    {VIDEO_MODELS.map(model => (
-                      <button
-                        key={model.id}
-                        onClick={() => setSelectedModel(model.id)}
-                        className={`relative px-3 py-2 rounded-xl border text-left transition-all ${selectedModel === model.id ? 'border-indigo-500 bg-indigo-900/30' : 'border-gray-700 bg-gray-900 hover:border-gray-600'}`}
-                      >
-                        <div className="flex items-center gap-2">
-                          <span className={`text-sm font-medium ${selectedModel === model.id ? 'text-white' : 'text-gray-300'}`}>{model.name}</span>
-                        </div>
-                        <div className="flex gap-1.5 mt-1">
-                          <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${model.speed === 'Fast' ? 'bg-emerald-900/50 text-emerald-400' : 'bg-amber-900/50 text-amber-400'}`}>{model.speed}</span>
-                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-900/50 text-indigo-400 font-medium">{model.quality}</span>
-                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-700 text-gray-400">~{model.avgSec}s</span>
-                        </div>
-                      </button>
-                    ))}
+                    {(modelStatus.length > 0 ? modelStatus : VIDEO_MODELS.map(m => ({
+                      id: m.id, name: m.name, whatFor: '',
+                      status: m.id === 'runway' ? ('ready' as const) : ('needs_key' as const),
+                      setupHint: '', byokFields: [], byokAnchor: '#uc-video-gen', missingFields: [],
+                    }))).map(model => {
+                      const isSelected = selectedModel === model.id
+                      const staticInfo = VIDEO_MODELS.find(v => v.id === model.id)
+                      const statusBadge =
+                        model.status === 'ready' ? { label: '✓ Ready', cls: 'bg-emerald-900/50 text-emerald-400 border-emerald-800/50' }
+                        : model.status === 'beta_access' ? { label: '🔒 Beta', cls: 'bg-amber-900/50 text-amber-400 border-amber-800/50' }
+                        : { label: '⚠ Needs key', cls: 'bg-gray-800 text-gray-500 border-gray-700' }
+                      return (
+                        <button
+                          key={model.id}
+                          onClick={() => setSelectedModel(model.id)}
+                          title={model.setupHint || undefined}
+                          className={`relative px-3 py-2 rounded-xl border text-left transition-all ${isSelected ? 'border-indigo-500 bg-indigo-900/30' : 'border-gray-700 bg-gray-900 hover:border-gray-600'} ${model.status === 'needs_key' ? 'opacity-75' : ''}`}
+                        >
+                          <div className="flex items-center gap-2">
+                            <span className={`text-sm font-medium ${isSelected ? 'text-white' : 'text-gray-300'}`}>{model.name}</span>
+                          </div>
+                          <div className="flex gap-1.5 mt-1 flex-wrap">
+                            <span className={`text-[10px] px-1.5 py-0.5 rounded border font-medium ${statusBadge.cls}`}>{statusBadge.label}</span>
+                            {staticInfo && (
+                              <>
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-900/50 text-indigo-400 font-medium">{staticInfo.quality}</span>
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-700 text-gray-400">~{staticInfo.avgSec}s</span>
+                              </>
+                            )}
+                          </div>
+                        </button>
+                      )
+                    })}
                   </div>
-                  {selectedModel !== 'runway' && (
-                    <p className="text-amber-400 text-[10px] mt-2">Note: only Runway Gen-3 is wired to a live API. Other models will route through Runway.</p>
-                  )}
+                  {(() => {
+                    // Contextual help row UNDER the picker, based on the
+                    // currently-selected model's status. This is where the
+                    // smart UX lives — link straight to the BYOK section
+                    // for the missing key.
+                    const cur = modelStatus.find(m => m.id === selectedModel)
+                    if (!cur) return null
+                    if (cur.status === 'ready') {
+                      return <p className="text-emerald-400 text-[11px] mt-2">{cur.setupHint}</p>
+                    }
+                    if (cur.status === 'beta_access') {
+                      return (
+                        <p className="text-amber-400 text-[11px] mt-2">
+                          {cur.setupHint}{' '}
+                          <a href={`/dashboard/settings${cur.byokAnchor}`} className="underline">Open API Keys →</a>
+                        </p>
+                      )
+                    }
+                    // needs_key
+                    return (
+                      <p className="text-gray-400 text-[11px] mt-2">
+                        {cur.setupHint}{' '}
+                        <a href={`/dashboard/settings${cur.byokAnchor}`} className="text-indigo-400 underline">Add key →</a>
+                      </p>
+                    )
+                  })()}
                 </div>
 
                 {/* Style Presets */}

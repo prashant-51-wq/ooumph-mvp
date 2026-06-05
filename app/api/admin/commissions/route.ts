@@ -3,14 +3,14 @@
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
-
-function requireAdmin(req: NextRequest): boolean {
-  const secret = req.headers.get('x-admin-secret') || new URL(req.url).searchParams.get('adminSecret')
-  return secret === process.env.ADMIN_SECRET
-}
+import { assertSuperAdmin } from '@/lib/guards'
 
 export async function GET(req: NextRequest) {
-  if (!requireAdmin(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  // Sprint 18T: accept BOTH x-admin-secret (CI/cron) AND session-cookie
+  // super-admin via assertSuperAdmin. Replaces the header-only requireAdmin
+  // so the browser-side Revenue page can authenticate via its session cookie.
+  const denied = await assertSuperAdmin(req)
+  if (denied) return denied
 
   const { searchParams } = new URL(req.url)
   const vendorWorkspaceId = searchParams.get('vendorWorkspaceId')

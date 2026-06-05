@@ -21,7 +21,8 @@
  * exceeded, artifact not approved, provider rejection) are surfaced inline.
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Suspense, useCallback, useEffect, useMemo, useState } from 'react'
+import { useSearchParams } from 'next/navigation'
 import {
   Megaphone, Plus, RefreshCw, Rocket, Pause, Archive, AlertCircle,
   Loader2, ShieldCheck, ExternalLink, X, Edit3, CheckCircle2,
@@ -112,12 +113,32 @@ const PLATFORM_OPTIONS = [
 
 // ─── Page ──────────────────────────────────────────────────────────────────
 
+// Sprint 18M: wrap the page body in <Suspense> so the prerender doesn't bail
+// on useSearchParams(). The boundary is at the page level (not deeper)
+// because the entire page depends on the linkedCampaignId param at first
+// render.
 export default function AdsPage() {
+  return (
+    <Suspense fallback={null}>
+      <AdsPageInner />
+    </Suspense>
+  )
+}
+
+function AdsPageInner() {
+  // Sprint 18A (audit pass #5 P0 #5 — Sprint 17 self-regression):
+  // /api/ads/[id]/deploy writes budget_alert notifications with
+  // link=`/dashboard/ads?campaign=<id>`. Without this, the bell click
+  // landed on the page but didn't auto-select. Reading ?campaign= here
+  // closes the click loop.
+  const searchParams = useSearchParams()
+  const linkedCampaignId = searchParams?.get('campaign') || null
+
   const [workspaceId, setWorkspaceId] = useState<string | null>(null)
   const [campaigns, setCampaigns] = useState<AdCampaign[]>([])
   const [budget, setBudget] = useState<BudgetSnapshot | null>(null)
   const [loading, setLoading] = useState(true)
-  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [selectedId, setSelectedId] = useState<string | null>(linkedCampaignId)
   const [creatives, setCreatives] = useState<AdCreative[]>([])
   const [loadingCreatives, setLoadingCreatives] = useState(false)
   const [showNew, setShowNew] = useState(false)
@@ -172,6 +193,18 @@ export default function AdsPage() {
     const t = setInterval(fetchAll, 3_000)
     return () => clearInterval(t)
   }, [workspaceId, campaigns, fetchAll])
+
+  // Sprint 18A (audit pass #5 P0 #5): once campaigns have loaded, if the
+  // URL had ?campaign=… and that id exists in the list, select it. Handles
+  // the race where the page mounts with an id we haven't fetched yet.
+  useEffect(() => {
+    if (!linkedCampaignId) return
+    if (campaigns.length === 0) return
+    if (selectedId === linkedCampaignId) return
+    if (campaigns.find(c => c.id === linkedCampaignId)) {
+      setSelectedId(linkedCampaignId)
+    }
+  }, [linkedCampaignId, campaigns, selectedId])
 
   // Fetch creatives for selected campaign
   useEffect(() => {
@@ -256,6 +289,29 @@ export default function AdsPage() {
         throw new Error(data.error || 'Archive failed')
       }
       if (selectedId === id) setSelectedId(null)
+      fetchAll()
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  // Sprint 17A (audit pass #3 P0 #3): re-activate a paused campaign.
+  // The backend now forwards the status flip to setPlatformCampaignStatus
+  // so Meta/Google actually resume serving — not just the local row.
+  const resume = async (id: string) => {
+    if (!workspaceId) return
+    setActionError(null); setActionSuccess(null)
+    try {
+      const res = await fetch('/api/ad-campaigns', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, workspaceId, status: 'active' }),
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({})) as { error?: string }
+        throw new Error(data.error || `Resume failed (${res.status})`)
+      }
+      setActionSuccess('Campaign resumed — platform delivery is active.')
       fetchAll()
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err))
@@ -354,6 +410,9 @@ export default function AdsPage() {
                       const isDeploying = deployingId === c.id || c.status === 'deploying'
                       const canDeploy = c.status === 'draft'
                       const canPause = c.status === 'active'
+                      // Sprint 17A (P0 #3): paused → active via PATCH now
+                      // forwards to setPlatformCampaignStatus.
+                      const canResume = c.status === 'paused'
                       const canArchive = c.status !== 'deploying' && c.status !== 'archived'
                       return (
                         <tr
@@ -392,8 +451,18 @@ export default function AdsPage() {
                               <button
                                 onClick={() => pause(c.id)}
                                 className="px-3 py-1 text-xs bg-amber-900/40 hover:bg-amber-900/60 border border-amber-800 text-amber-200 rounded inline-flex items-center gap-1.5"
+                                title="Pauses both the local row AND the live platform delivery."
                               >
                                 <Pause className="w-3 h-3" /> Pause
+                              </button>
+                            )}
+                            {canResume && (
+                              <button
+                                onClick={() => resume(c.id)}
+                                className="px-3 py-1 text-xs bg-emerald-900/40 hover:bg-emerald-900/60 border border-emerald-800 text-emerald-200 rounded inline-flex items-center gap-1.5"
+                                title="Resumes platform delivery — Meta/Google starts serving again."
+                              >
+                                <Rocket className="w-3 h-3" /> Resume
                               </button>
                             )}
                             {canArchive && c.status !== 'active' && (
@@ -475,7 +544,7 @@ function BudgetMeter({ snapshot }: { snapshot: BudgetSnapshot }) {
             </span>
           </p>
         </div>
-        <div className="grid grid-cols-3 gap-3 text-xs">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 text-xs">
           <Metric label="Active" value={centsToCurrency(currentActiveSpend)} tone="emerald" />
           <Metric label="Deploying" value={centsToCurrency(currentDeployingSpend)} tone="blue" />
           <Metric label="Headroom" value={centsToCurrency(remaining)} tone={remaining > 0 ? 'gray' : 'rose'} />
@@ -647,12 +716,28 @@ function CampaignDetail({
 
 // ─── Modals ────────────────────────────────────────────────────────────────
 
+const OBJECTIVE_OPTIONS: Array<{ id: string; label: string }> = [
+  { id: 'leads',       label: 'Leads (default)' },
+  { id: 'page_likes',  label: 'Page likes / followers' },
+  { id: 'awareness',   label: 'Brand awareness' },
+  { id: 'conversions', label: 'Conversions' },
+  { id: 'sales',       label: 'Sales' },
+  { id: 'traffic',     label: 'Traffic' },
+  { id: 'video_views', label: 'Video views' },
+]
+
 function NewCampaignModal({
   workspaceId, onClose, onCreated,
 }: { workspaceId: string; onClose: () => void; onCreated: () => void }) {
   const [name, setName] = useState('')
   const [platform, setPlatform] = useState('meta_ads')
   const [dailyBudgetDollars, setDailyBudgetDollars] = useState('25')
+  const [objective, setObjective] = useState('leads')
+  const [showTargeting, setShowTargeting] = useState(false)
+  const [geos, setGeos] = useState('IN')
+  const [ageMin, setAgeMin] = useState('18')
+  const [ageMax, setAgeMax] = useState('65')
+  const [interests, setInterests] = useState('')
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
@@ -660,13 +745,27 @@ function NewCampaignModal({
     if (!name.trim()) { setErr('Name is required'); return }
     const dollars = Number(dailyBudgetDollars)
     if (!Number.isFinite(dollars) || dollars < 1) { setErr('Daily budget must be at least $1'); return }
+    const ageMinN = parseInt(ageMin, 10)
+    const ageMaxN = parseInt(ageMax, 10)
+    if (!Number.isFinite(ageMinN) || !Number.isFinite(ageMaxN) || ageMinN < 13 || ageMaxN > 65 || ageMinN > ageMaxN) {
+      setErr('Age range must be 13-65 with min ≤ max'); return
+    }
     setSaving(true); setErr(null)
     try {
       const cents = Math.floor(dollars * 100)
+      const targeting = {
+        geos: geos.split(',').map(s => s.trim().toUpperCase()).filter(Boolean),
+        ageMin: ageMinN,
+        ageMax: ageMaxN,
+        interests: interests.split(',').map(s => s.trim()).filter(Boolean),
+      }
       const res = await fetch('/api/ad-campaigns', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspaceId, name: name.trim(), platform, dailyBudget: cents }),
+        body: JSON.stringify({
+          workspaceId, name: name.trim(), platform, dailyBudget: cents,
+          objective, targeting,
+        }),
       })
       const data = await res.json() as { ok?: boolean; error?: string }
       if (!res.ok || !data.ok) throw new Error(data.error || 'Create failed')
@@ -692,7 +791,7 @@ function NewCampaignModal({
               className="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:border-indigo-600 focus:outline-none"
             />
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="block text-xs uppercase text-gray-500 mb-1.5">Platform *</label>
               <select
@@ -714,6 +813,71 @@ function NewCampaignModal({
               </div>
             </div>
           </div>
+          <div>
+            <label className="block text-xs uppercase text-gray-500 mb-1.5">Objective</label>
+            <select
+              value={objective} onChange={e => setObjective(e.target.value)}
+              className="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-white focus:border-indigo-600 focus:outline-none"
+            >
+              {OBJECTIVE_OPTIONS.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
+            </select>
+            <p className="text-[11px] text-gray-600 mt-1">
+              Drives Meta optimization goal + billing event. Page likes uses the Engagement objective.
+            </p>
+          </div>
+
+          <div className="border border-gray-800 rounded-lg">
+            <button
+              type="button"
+              onClick={() => setShowTargeting(v => !v)}
+              className="w-full flex items-center justify-between px-3 py-2 text-sm text-gray-300 hover:bg-gray-950"
+            >
+              <span>Audience targeting</span>
+              <span className="text-gray-500 text-xs">{showTargeting ? 'Hide' : 'Show'}</span>
+            </button>
+            {showTargeting && (
+              <div className="px-3 pb-3 space-y-3 border-t border-gray-800">
+                <div>
+                  <label className="block text-xs uppercase text-gray-500 mb-1.5 mt-2">Geos (ISO codes, comma-separated)</label>
+                  <input
+                    value={geos} onChange={e => setGeos(e.target.value)}
+                    placeholder="IN, US, GB"
+                    className="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-white font-mono uppercase focus:border-indigo-600 focus:outline-none"
+                  />
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs uppercase text-gray-500 mb-1.5">Age min</label>
+                    <input
+                      type="number" min="13" max="65"
+                      value={ageMin} onChange={e => setAgeMin(e.target.value)}
+                      className="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-white focus:border-indigo-600 focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs uppercase text-gray-500 mb-1.5">Age max</label>
+                    <input
+                      type="number" min="13" max="65"
+                      value={ageMax} onChange={e => setAgeMax(e.target.value)}
+                      className="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-white focus:border-indigo-600 focus:outline-none"
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-xs uppercase text-gray-500 mb-1.5">Interests (comma-separated)</label>
+                  <input
+                    value={interests} onChange={e => setInterests(e.target.value)}
+                    placeholder="fitness, yoga, mindfulness"
+                    className="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-white focus:border-indigo-600 focus:outline-none"
+                  />
+                  <p className="text-[11px] text-gray-600 mt-1">
+                    Free-text interest names. Meta resolves them at deploy; unmatched names will surface an error then.
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
+
           <p className="text-[11px] text-gray-600">
             Status starts as <span className="text-gray-400">draft</span>. Deploy through the campaign list once you've attached approved creatives.
           </p>
@@ -805,7 +969,7 @@ function AddCreativeModal({
               UTM params are auto-injected at deploy. Don't add them here.
             </p>
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="block text-xs uppercase text-gray-500 mb-1.5">Artifact ID (HITL gate)</label>
               <input

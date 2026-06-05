@@ -381,9 +381,26 @@ function AgenciesTab({ data, onRefresh }: { data: Agency[] | null; onRefresh: ()
               rows={4}
               className="w-full px-3 py-2.5 rounded-lg bg-gray-800 border border-gray-700 text-white placeholder-gray-500 text-sm resize-none focus:outline-none focus:border-indigo-500 mb-3"
             />
+            {/* Sprint 7D: "Send Message" requires verified-domain Resend
+                + an /api/admin/super { action:'message_agency' } handler
+                that wraps sendEmail with audit logging. Until both ship
+                we keep the modal open (the platform owner can copy the
+                draft + the owner email) and remove the misleading demo
+                alert. */}
+            <div className="rounded-lg border border-amber-900/40 bg-amber-950/30 px-3 py-2 text-[11px] text-amber-300 mb-3">
+              ⚠ Direct-message send is not yet wired. Copy the message and
+              email it manually to {messageTarget.ownerEmail} — the rest of
+              the agency console is fully active.
+            </div>
             <div className="flex gap-2">
-              <button onClick={() => setMessageTarget(null)} className="flex-1 py-2.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm font-medium transition-colors">Cancel</button>
-              <button onClick={() => { alert('Message sent (demo)'); setMessageTarget(null); setMessageText('') }} className="flex-1 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium transition-colors">Send Message</button>
+              <button onClick={() => setMessageTarget(null)} className="flex-1 py-2.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm font-medium transition-colors">Close</button>
+              <a
+                href={`mailto:${encodeURIComponent(messageTarget.ownerEmail)}?subject=${encodeURIComponent('Message from Ooumph platform admin')}&body=${encodeURIComponent(messageText)}`}
+                onClick={() => { setMessageTarget(null); setMessageText('') }}
+                className="flex-1 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium transition-colors text-center"
+              >
+                Open in Email App
+              </a>
             </div>
           </div>
         </div>
@@ -395,8 +412,14 @@ function AgenciesTab({ data, onRefresh }: { data: Agency[] | null; onRefresh: ()
 // ─── Commissions Tab ──────────────────────────────────────────────────────────
 
 function CommissionsTab({ data }: { data: CommissionsData | null }) {
-  // TODO: payout system not wired yet — Mark Paid is client-side optimistic only.
+  // Sprint 7D: payout marking is real now — POSTs to /api/admin/super
+  // { action: 'mark_paid' }, which records a row in commission_payouts.
+  // The next data refresh recomputes balance = earned - sum(payouts).
+  // Stripe Connect transfers will land later; manual ledger entries are
+  // the source of truth until then.
   const [localAffiliates, setLocalAffiliates] = useState<Affiliate[] | null>(null)
+  const [marking, setMarking] = useState<string | null>(null)
+  const [payoutError, setPayoutError] = useState<string | null>(null)
 
   useEffect(() => {
     if (data) setLocalAffiliates(data.affiliates)
@@ -420,9 +443,28 @@ function CommissionsTab({ data }: { data: CommissionsData | null }) {
   const paidThisMonth = affiliates.reduce((s, a) => s + a.earnedThisMonth, 0)
   const topAffiliate = affiliates.reduce<Affiliate | null>((top, a) => (!top || a.balance > top.balance ? a : top), null)
 
-  const markPaid = (id: string) => {
-    // TODO: when payout system is implemented, POST to /api/admin/super with action='mark_paid'
-    setLocalAffiliates(prev => (prev ?? affiliates).map(a => a.id === id ? { ...a, paidOut: a.paidOut + a.balance, balance: 0 } : a))
+  async function markPaid(id: string) {
+    setMarking(id); setPayoutError(null)
+    try {
+      const res = await fetch('/api/admin/super', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'mark_paid',
+          vendorWorkspaceId: id,
+          notes: 'Marked paid manually from /super-admin Commissions tab',
+        }),
+      })
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({})) as { error?: string }
+        setPayoutError(j.error || `Mark paid failed (${res.status})`)
+        return
+      }
+      // Optimistic update — the next /api/admin/super GET will reconcile.
+      setLocalAffiliates(prev => (prev ?? affiliates).map(a => a.id === id ? { ...a, paidOut: a.paidOut + a.balance, balance: 0 } : a))
+    } catch (e) {
+      setPayoutError(e instanceof Error ? e.message : String(e))
+    } finally { setMarking(null) }
   }
 
   return (
@@ -482,11 +524,13 @@ function CommissionsTab({ data }: { data: CommissionsData | null }) {
                   <td className="px-5 py-4">
                     <button
                       onClick={() => markPaid(aff.id)}
-                      disabled={aff.balance === 0}
+                      disabled={aff.balance === 0 || marking === aff.id}
                       className="px-3 py-1.5 rounded-lg bg-green-900/40 hover:bg-green-900 border border-green-800 text-green-300 text-xs font-medium transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-                      title="Note: payout system not yet wired — this only updates the UI for now."
+                      title="Records a manual payout in commission_payouts. Use this when you've paid the affiliate out-of-band (bank transfer, Wise, etc.)."
                     >
-                      {aff.balance === 0 ? '✓ Paid' : 'Mark Paid'}
+                      {marking === aff.id
+                        ? 'Marking…'
+                        : aff.balance === 0 ? '✓ Paid' : 'Mark Paid'}
                     </button>
                   </td>
                 </tr>
@@ -495,8 +539,15 @@ function CommissionsTab({ data }: { data: CommissionsData | null }) {
           </table>
         </div>
       </div>
-      <p className="text-xs text-gray-600 italic">
-        Note: &ldquo;Mark Paid&rdquo; currently updates the UI only. Payouts via Stripe Connect are not yet implemented.
+      {payoutError && (
+        <p className="text-xs text-red-400">{payoutError}</p>
+      )}
+      <p className="text-xs text-gray-500 italic">
+        &ldquo;Mark Paid&rdquo; records the full outstanding balance as a manual payout in
+        the <code className="text-gray-400">commission_payouts</code> ledger and decrements
+        the displayed balance immediately. Stripe Connect transfers are not yet
+        wired — pay the affiliate out-of-band (bank transfer / Wise / etc.) and use
+        this button to keep the ledger accurate.
       </p>
     </div>
   )

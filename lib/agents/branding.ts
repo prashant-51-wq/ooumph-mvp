@@ -169,6 +169,7 @@ Prohibited Claims: ${brand.prohibited_claims || 'none'}`
 export async function generateFullBrandIdentity(
   brand: BrandProfile,
   style: 'corporate' | 'startup' | 'luxury' | 'playful' | 'minimal' | 'bold' = 'startup',
+  workspaceId: string = '',
 ): Promise<BrandIdentity> {
   return runAgent<BrandIdentity>(
     BRAND_STRATEGIST_SYSTEM,
@@ -211,12 +212,13 @@ Return a JSON object with EXACTLY this structure. All hex codes must be real, sp
   },
   "brandSummary": "One paragraph (4-6 sentences) describing the brand's identity, positioning, and essence"
 }`,
+    workspaceId,
   )
 }
 
 // ─── 2. generateBrandVoiceGuide ───────────────────────────────────────────────
 
-export async function generateBrandVoiceGuide(brand: BrandProfile): Promise<BrandVoiceGuide> {
+export async function generateBrandVoiceGuide(brand: BrandProfile, workspaceId: string = ''): Promise<BrandVoiceGuide> {
   return runAgent<BrandVoiceGuide>(
     BRAND_COPYWRITER_SYSTEM,
     `Create a comprehensive brand voice guide for this business. The guide must be specific enough for any copywriter to use without a briefing.
@@ -260,6 +262,7 @@ Return JSON with EXACTLY this structure. The "examples" array must contain AT LE
   "signaturePhrase": "a unique phrase, sign-off, or opener that is distinctly this brand",
   "emojiPolicy": "specific guidance: which emojis to use, how many per post, when to use them, when not to"
 }`,
+    workspaceId,
   )
 }
 
@@ -268,6 +271,7 @@ Return JSON with EXACTLY this structure. The "examples" array must contain AT LE
 export async function generateVisualGuide(
   brand: BrandProfile,
   identity?: BrandIdentity,
+  workspaceId: string = '',
 ): Promise<VisualGuide> {
   const identityContext = identity
     ? `Established brand colors: Primary ${identity.colorPalette.primary.hex} (${identity.colorPalette.primary.name}), Secondary ${identity.colorPalette.secondary.hex}, Accent ${identity.colorPalette.accent.hex}. Typography: Heading font: ${identity.typography.heading.font}, Body: ${identity.typography.body.font}. Brand archetype: ${identity.brandArchetype}. Logo style: ${identity.logoDirection.style}.`
@@ -328,6 +332,7 @@ Return JSON with EXACTLY this structure:
     "storiesTemplateNote": "1080×1920px stories: safe zones, interactive element placement, text rules"
   }
 }`,
+    workspaceId,
   )
 }
 
@@ -336,6 +341,7 @@ Return JSON with EXACTLY this structure:
 export async function checkBrandConsistency(
   brand: BrandProfile,
   contentToCheck: string,
+  workspaceId: string = '',
 ): Promise<BrandConsistencyReport> {
   return runAgent<BrandConsistencyReport>(
     BRAND_COPYWRITER_SYSTEM,
@@ -371,12 +377,13 @@ Return JSON:
     "email": "platform-specific note if relevant"
   }
 }`,
+    workspaceId,
   )
 }
 
 // ─── 5. generateBrandStory ────────────────────────────────────────────────────
 
-export async function generateBrandStory(brand: BrandProfile): Promise<BrandStory> {
+export async function generateBrandStory(brand: BrandProfile, workspaceId: string = ''): Promise<BrandStory> {
   return runAgent<BrandStory>(
     STORYTELLING_SYSTEM,
     `Write all brand story formats for this business. Each format serves a different context — make each one feel native to its medium.
@@ -397,6 +404,7 @@ Return JSON with ALL of these formats. The heroNarrative must be approximately 5
   "pressParagraph": "3rd person, 3-4 sentences, as written for a media profile or press release",
   "heroNarrative": "Approximately 500-word brand story in brand voice — origin, problem, solution, transformation, invitation"
 }`,
+    workspaceId,
   )
 }
 
@@ -405,6 +413,7 @@ Return JSON with ALL of these formats. The heroNarrative must be approximately 5
 export async function generateTaglines(
   brand: BrandProfile,
   count: number = 10,
+  workspaceId: string = '',
 ): Promise<TaglineOptions> {
   return runAgent<TaglineOptions>(
     BRAND_COPYWRITER_SYSTEM,
@@ -438,12 +447,13 @@ Return JSON:
   "seoVersion": "a slightly longer version optimised for SEO search intent",
   "shortForm": "1-3 words only — for app icon, sticker, badge"
 }`,
+    workspaceId,
   )
 }
 
 // ─── 7. generateMVV ───────────────────────────────────────────────────────────
 
-export async function generateMVV(brand: BrandProfile): Promise<{
+export async function generateMVV(brand: BrandProfile, workspaceId: string = ''): Promise<{
   mission:  string
   vision:   string
   values:   Array<{ name: string; description: string; behaviors: string[] }>
@@ -478,6 +488,7 @@ Return JSON:
   ],
   "purpose": "One sentence: the deeper reason this company exists beyond making money"
 }`,
+    workspaceId,
   )
 }
 
@@ -486,6 +497,7 @@ Return JSON:
 export async function generateColorPalette(
   brand: BrandProfile,
   style?: string,
+  workspaceId: string = '',
 ): Promise<{
   primary:    { hex: string; name: string; psychology: string }
   secondary:  { hex: string; name: string; psychology: string }
@@ -529,6 +541,7 @@ Return JSON:
   "gradient": "linear-gradient(135deg, #RRGGBB 0%, #RRGGBB 100%)",
   "cssVariables": ":root {\\n  --color-primary: #RRGGBB;\\n  --color-secondary: #RRGGBB;\\n  --color-accent: #RRGGBB;\\n  --color-neutral-900: #RRGGBB;\\n  --color-neutral-600: #RRGGBB;\\n  --color-neutral-200: #RRGGBB;\\n  --color-neutral-50: #RRGGBB;\\n}\\n\\n/* Tailwind config:\\nextend: {\\n  colors: {\\n    brand: {\\n      primary: '#RRGGBB',\\n      secondary: '#RRGGBB',\\n      accent: '#RRGGBB',\\n    }\\n  }\\n} */"
 }`,
+    workspaceId,
   )
 }
 
@@ -537,6 +550,7 @@ Return JSON:
 export async function generateTypographySystem(
   brand: BrandProfile,
   colorPalette?: { primary: { hex: string }; neutrals?: Array<{ hex: string; name: string }> },
+  workspaceId: string = '',
 ): Promise<{
   heading:  { font: string; weight: string; size: string; googleUrl: string }
   body:     { font: string; weight: string; size: string; googleUrl: string }
@@ -591,5 +605,6 @@ Return JSON:
   "cssCode": "/* Complete CSS typography system — copy paste ready */\\n@import url('...');\\n\\n:root {\\n  --font-heading: 'Font Name', sans-serif;\\n  --font-body: 'Font Name', sans-serif;\\n  --font-accent: 'Font Name', sans-serif;\\n}\\n\\nh1 { font-family: var(--font-heading); font-size: clamp(2rem, 4vw, 3.5rem); font-weight: 700; line-height: 1.15; letter-spacing: -0.02em; }\\nh2 { ... }\\nh3 { ... }\\nh4 { ... }\\np { font-family: var(--font-body); font-size: 1rem; line-height: 1.7; }\\nsmall { font-size: 0.875rem; }\\n.caption { font-size: 0.75rem; letter-spacing: 0.04em; }",
   "rationale": "2-3 sentences explaining why these fonts work together for this brand and audience"
 }`,
+    workspaceId,
   )
 }

@@ -62,6 +62,58 @@ interface WorkflowTriggerConfig {
   status?: string
   source?: string
   campaign?: string
+  // Sprint 17C (audit P1 #7): segment-membership trigger.
+  segmentId?: string
+}
+
+// Sprint 17C (audit P1 #7): match a lead row against a persisted segment's
+// rule_json. Used by the segmentId trigger path so 'lead_captured' workflows
+// can be filtered by segment as well as by raw status/source/campaign.
+interface SegmentRule {
+  statuses?: string[]
+  sources?: string[]
+  minScore?: number
+  maxScore?: number
+  createdSince?: string
+  campaignLike?: string
+}
+
+export async function leadMatchesSegment(
+  leadId: string,
+  segmentId: string,
+): Promise<boolean> {
+  try {
+    const segRes = await sql`
+      SELECT rule_json FROM lead_segments WHERE id = ${segmentId} LIMIT 1
+    `
+    const seg = segRes.rows[0] as { rule_json?: string } | undefined
+    if (!seg) return false
+    let rule: SegmentRule = {}
+    try { rule = JSON.parse(String(seg.rule_json || '{}')) as SegmentRule } catch { rule = {} }
+
+    const lr = await sql`
+      SELECT status, source, campaign, score, created_at
+      FROM leads_captured WHERE id = ${leadId} LIMIT 1
+    `
+    const lead = lr.rows[0] as
+      | { status?: string; source?: string; campaign?: string; score?: number; created_at?: string }
+      | undefined
+    if (!lead) return false
+
+    if (rule.statuses?.length && !rule.statuses.includes(String(lead.status || ''))) return false
+    if (rule.sources?.length && !rule.sources.includes(String(lead.source || ''))) return false
+    if (typeof rule.minScore === 'number' && Number(lead.score || 0) < rule.minScore) return false
+    if (typeof rule.maxScore === 'number' && Number(lead.score || 0) > rule.maxScore) return false
+    if (rule.campaignLike && !String(lead.campaign || '').toLowerCase().includes(rule.campaignLike.toLowerCase())) return false
+    if (rule.createdSince) {
+      const since = new Date(rule.createdSince).getTime()
+      const created = new Date(String(lead.created_at || '')).getTime()
+      if (!Number.isFinite(created) || created < since) return false
+    }
+    return true
+  } catch {
+    return false
+  }
 }
 
 // ── Personalize templates ──────────────────────────────────────────────────────
@@ -284,12 +336,37 @@ function evaluateCondition(node: WorkflowNode, lead: Record<string, unknown>, da
 }
 
 // ── Check trigger conditions ───────────────────────────────────────────────────
-function matchesTriggerConditions(config: WorkflowTriggerConfig, lead: Record<string, unknown>): boolean {
+async function matchesTriggerConditions(
+  config: WorkflowTriggerConfig,
+  lead: Record<string, unknown>,
+  triggerType: string,
+): Promise<boolean> {
   if (config.score_min !== undefined && Number(lead.score || 0) < config.score_min) return false
   if (config.score_max !== undefined && Number(lead.score || 0) > config.score_max) return false
   if (config.status && String(lead.status || '') !== config.status) return false
   if (config.source && String(lead.source || '') !== config.source) return false
   if (config.campaign && !String(lead.campaign || '').toLowerCase().includes(config.campaign.toLowerCase())) return false
+
+  // Sprint 17C (audit P1 #7): segmentId-scoped triggers.
+  //   - 'lead_added_to_segment': caller already verified the lead just landed
+  //      in this segment, so the segment filter is satisfied by the trigger
+  //      type itself — no extra check needed.
+  //   - 'lead_captured': we re-check segment membership against the live row
+  //      so the same workflow can be reused as a "captured-AND-in-segment"
+  //      gate without splitting it into two workflows.
+  if (config.segmentId) {
+    const leadId = String(lead.id || '')
+    if (triggerType === 'lead_added_to_segment') {
+      // trust the caller's event; nothing more to check
+    } else if (triggerType === 'lead_captured') {
+      if (!leadId) return false
+      const matches = await leadMatchesSegment(leadId, config.segmentId)
+      if (!matches) return false
+    } else {
+      // Unknown trigger type with segmentId — be conservative and skip.
+      return false
+    }
+  }
   return true
 }
 
@@ -348,7 +425,7 @@ export async function POST(req: NextRequest) {
         catch { return {} }
       })()
 
-      if (!matchesTriggerConditions(triggerConfig, lead)) continue
+      if (!(await matchesTriggerConditions(triggerConfig, lead, triggerType))) continue
 
       const nodes: WorkflowNode[] = (() => {
         try { return JSON.parse(String(wf.nodes || '[]')) as WorkflowNode[] }

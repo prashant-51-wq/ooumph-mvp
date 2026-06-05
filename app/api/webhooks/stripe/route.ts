@@ -22,21 +22,89 @@ export async function POST(req: NextRequest) {
   const body = await req.text()
   const signature = req.headers.get('stripe-signature') || ''
 
+  // Sprint 11D: fail-closed signature verification.
+  //
+  // Previous logic had a dangerous fallback: when `signature` was missing
+  // OR `webhookSecret` was unset, the code accepted ANY JSON body as a
+  // Stripe event. In production with STRIPE_WEBHOOK_SECRET configured but
+  // an attacker simply omitting the stripe-signature header, that meant
+  // they could fake checkout.session.completed events and activate paid
+  // subscriptions, fake commissions, or flip Connect-account statuses.
+  //
+  // Correct rules:
+  //   - If STRIPE_WEBHOOK_SECRET is set (production / staging):
+  //     require BOTH a signature header AND successful verification.
+  //     Reject everything else with 400.
+  //   - If STRIPE_WEBHOOK_SECRET is unset (local dev only):
+  //     skip verification and parse JSON — never run on a deployed
+  //     environment without the secret set.
   let event: import('stripe').Stripe.Event
-  try {
-    if (webhookSecret && signature) {
-      event = stripe.webhooks.constructEvent(body, signature, webhookSecret)
-    } else {
-      // Dev mode: parse without verification
-      event = JSON.parse(body) as import('stripe').Stripe.Event
+  if (webhookSecret) {
+    if (!signature) {
+      console.error('Stripe webhook rejected: STRIPE_WEBHOOK_SECRET set but stripe-signature header missing')
+      return NextResponse.json({ error: 'Missing stripe-signature header' }, { status: 400 })
     }
-  } catch (err) {
-    console.error('Stripe webhook signature failed:', err)
-    return NextResponse.json({ error: 'Invalid signature' }, { status: 400 })
+    try {
+      event = stripe.webhooks.constructEvent(body, signature, webhookSecret)
+    } catch (err) {
+      console.error('Stripe webhook signature verification failed:', err)
+      return NextResponse.json({ error: 'Invalid signature' }, { status: 400 })
+    }
+  } else {
+    // Sprint 18Z (audit pass #8 P1 #8): fail-closed in production when
+    // STRIPE_WEBHOOK_SECRET is unset. Previously this path accepted any
+    // JSON body with only a console.error — attacker could fake
+    // checkout.session.completed to activate paid subscriptions on any
+    // misconfigured prod deploy.
+    if (process.env.NODE_ENV === 'production') {
+      console.error('[stripe-webhook] STRIPE_WEBHOOK_SECRET is unset in production — refusing webhook. Set the env var to enable Stripe webhooks.')
+      return NextResponse.json(
+        { error: 'Stripe webhook secret not configured — webhook refused' },
+        { status: 503 },
+      )
+    }
+    try {
+      event = JSON.parse(body) as import('stripe').Stripe.Event
+    } catch (err) {
+      return NextResponse.json({ error: `Invalid JSON: ${String(err)}` }, { status: 400 })
+    }
   }
 
   const appUrl = process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000'
   const internalSecret = process.env.ADMIN_SECRET || process.env.CRON_SECRET || ''
+
+  // Sprint 18E (P0): Stripe event idempotency. Stripe retries webhooks
+  // aggressively (on 5xx, timeout, network jitter) and may also replay
+  // historic events from the dashboard. Without dedup we'd double-credit
+  // commissions, activate the same subscription twice, or re-flip Connect
+  // status repeatedly. We insert event.id into a dedicated table with a
+  // UNIQUE constraint; the INSERT itself is the lock. If it conflicts we
+  // return 200 (success) so Stripe stops retrying — the original request
+  // already processed this event.
+  try {
+    await sql`
+      CREATE TABLE IF NOT EXISTS stripe_webhook_events (
+        event_id TEXT PRIMARY KEY,
+        event_type TEXT,
+        processed_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+      )
+    `
+  } catch (err) {
+    // Non-fatal on create. The INSERT below will surface real errors.
+    console.error('[stripe-webhook] ensure idempotency table failed:', err)
+  }
+
+  try {
+    await sql`
+      INSERT INTO stripe_webhook_events (event_id, event_type)
+      VALUES (${event.id}, ${event.type})
+    `
+  } catch {
+    // PRIMARY KEY collision → already processed. Return 200 so Stripe
+    // doesn't retry. We do NOT re-run the handler logic.
+    console.log(`[stripe-webhook] duplicate event ${event.id} (${event.type}) — skipped`)
+    return NextResponse.json({ received: true, duplicate: true })
+  }
 
   try {
     // ── checkout.session.completed ───────────────────────────────────────────

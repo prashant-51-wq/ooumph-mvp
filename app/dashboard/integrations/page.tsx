@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
+import { useWorkspaceId } from '@/lib/hooks/use-workspace-id'
 
 interface Integration {
   id: string
@@ -9,6 +10,12 @@ interface Integration {
   token_preview: string
   status: string
   connected_at: string
+}
+
+interface ExpiryInfo {
+  platform: string
+  expires_at: string | null
+  daysLeft: number
 }
 
 const PLATFORMS = [
@@ -97,6 +104,11 @@ const PLATFORMS = [
     icon: '💼',
     color: 'from-blue-700 to-blue-500',
     badge: 'Social',
+    // Sprint 8G: backed by /api/integrations/oauth/linkedin/connect.
+    // When the LINKEDIN_CLIENT_ID env var is set on the deployment, the
+    // "Connect with LinkedIn" button on this card kicks off the real
+    // OAuth dance and the user never sees a paste-token field.
+    oauthPlatform: 'linkedin',
     fields: [
       { key: 'accountId', label: 'LinkedIn Person URN', placeholder: 'urn:li:person:AbCdEfGhIj', hint: 'LinkedIn Developer Portal → Auth → Person URN (or just your person ID)' },
       { key: 'accessToken', label: 'Access Token', placeholder: 'AQV...', hint: 'LinkedIn Developer Portal → OAuth 2.0 → Generate token with w_member_social scope' },
@@ -110,12 +122,27 @@ const PLATFORMS = [
     icon: '🐦',
     color: 'from-gray-700 to-gray-500',
     badge: 'Social',
+    oauthPlatform: 'twitter',
     fields: [
       { key: 'accountId', label: 'Twitter Username', placeholder: '@yourbrand', hint: 'Your Twitter/X handle (used for display only — posting uses the Bearer Token)' },
       { key: 'accessToken', label: 'Bearer Token', placeholder: 'AAAAAAAAAA...', hint: 'Twitter Developer Portal → Your App → Keys and Tokens → Bearer Token' },
     ],
     publishSupports: 'Tweets from any text artifact (280 char limit auto-applied)',
     docsUrl: 'https://developer.twitter.com/en/portal',
+  },
+  {
+    id: 'wordpress',
+    name: 'WordPress',
+    icon: '📝',
+    color: 'from-blue-800 to-cyan-600',
+    badge: 'Social',
+    oauthPlatform: 'wordpress',
+    fields: [
+      { key: 'accountId', label: 'Blog ID or URL', placeholder: 'myblog.wordpress.com', hint: 'Your WordPress.com blog identifier — captured automatically by the OAuth flow' },
+      { key: 'accessToken', label: 'Access Token', placeholder: '...', hint: 'Use the Connect button above for the OAuth flow, or paste a manually generated token here' },
+    ],
+    publishSupports: 'Long-form blog posts. Direct publish from approved blog artifacts.',
+    docsUrl: 'https://developer.wordpress.com/docs/oauth2/',
   },
   {
     id: 'whatsapp',
@@ -136,25 +163,77 @@ const PLATFORMS = [
 ]
 
 export default function IntegrationsPage() {
+  // Sprint 9E: session-derived workspaceId. The hook caches /api/auth/me
+  // (1-minute TTL) and mirrors back to localStorage for legacy code paths.
+  const { workspaceId: sessionWorkspaceId } = useWorkspaceId()
   const [workspaceId, setWorkspaceId] = useState('')
   const [connected, setConnected] = useState<Integration[]>([])
+  // Sprint 17E (audit P1 #19): token expiry per platform, surfaced as a
+  // badge on each connected card so users don't have to wait for the
+  // bell sweep to discover an imminent reconnect.
+  const [expiries, setExpiries] = useState<Record<string, ExpiryInfo>>({})
   const [form, setForm] = useState<Record<string, Record<string, string>>>({})
   const [saving, setSaving] = useState<string | null>(null)
   const [disconnecting, setDisconnecting] = useState<string | null>(null)
   const [error, setError] = useState<Record<string, string>>({})
   const [success, setSuccess] = useState<Record<string, boolean>>({})
+  // Sprint 8G: OAuth callback toast — driven by ?oauth_connected= or
+  // ?oauth_error= query params the callback redirects to.
+  const [oauthBanner, setOauthBanner] = useState<{ kind: 'success' | 'error'; platform: string; reason?: string } | null>(null)
 
   const load = useCallback(async (wid: string) => {
     const res = await fetch(`/api/integrations?workspaceId=${wid}`)
     const data = await res.json()
     if (Array.isArray(data)) setConnected(data)
+    // Sprint 17E: pull expiry info alongside. Failure is non-fatal — the
+    // page just renders without expiry badges.
+    try {
+      const eRes = await fetch(`/api/integrations/expiry?workspaceId=${wid}`)
+      const eData = await eRes.json()
+      if (Array.isArray(eData)) {
+        const map: Record<string, ExpiryInfo> = {}
+        for (const row of eData as ExpiryInfo[]) map[row.platform] = row
+        setExpiries(map)
+      }
+    } catch { /* non-fatal */ }
   }, [])
 
+  // Sprint 9E: when the session-derived workspaceId resolves, adopt it.
+  // We keep the local state because deep call sites (connect/disconnect)
+  // still read `workspaceId`, but the value now reflects whatever the
+  // server's signed cookie says — not a stale localStorage entry.
   useEffect(() => {
-    const wid = localStorage.getItem('workspaceId') || ''
-    setWorkspaceId(wid)
-    if (wid) load(wid)
-  }, [load])
+    if (!sessionWorkspaceId) return
+    setWorkspaceId(sessionWorkspaceId)
+    load(sessionWorkspaceId)
+  }, [sessionWorkspaceId, load])
+
+  // Sprint 8G: catch the OAuth callback bounce-back. Pulls the
+  // success/error query param, shows a banner, then scrubs the URL
+  // so refresh doesn't re-show it.
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const url = new URL(window.location.href)
+    const connectedPlatform = url.searchParams.get('oauth_connected')
+    const errorReason = url.searchParams.get('oauth_error')
+    if (connectedPlatform) {
+      setOauthBanner({ kind: 'success', platform: connectedPlatform })
+      url.searchParams.delete('oauth_connected')
+      window.history.replaceState({}, '', url.toString())
+    } else if (errorReason) {
+      setOauthBanner({ kind: 'error', platform: '', reason: errorReason })
+      url.searchParams.delete('oauth_error')
+      window.history.replaceState({}, '', url.toString())
+    }
+  }, [])
+
+  /** Kick off the OAuth dance — full-page redirect. The callback at
+   *  /api/integrations/oauth/[platform]/callback bounces back here
+   *  with ?oauth_connected= or ?oauth_error=. */
+  function startOAuth(platform: string) {
+    const returnUrl = encodeURIComponent('/dashboard/integrations')
+    window.location.href = `/api/integrations/oauth/${platform}/connect?returnUrl=${returnUrl}`
+  }
 
   function setField(platform: string, key: string, value: string) {
     setForm(f => ({ ...f, [platform]: { ...(f[platform] || {}), [key]: value } }))
@@ -226,6 +305,34 @@ export default function IntegrationsPage() {
         </div>
       </div>
 
+      {/* Sprint 8G: OAuth callback banner. */}
+      {oauthBanner && (
+        <div className={`mb-8 rounded-xl p-4 flex items-center justify-between gap-3 border ${oauthBanner.kind === 'success' ? 'bg-green-900/20 border-green-800/50' : 'bg-red-900/20 border-red-800/50'}`}>
+          <div className="flex items-center gap-3">
+            <span className="text-lg">{oauthBanner.kind === 'success' ? '✅' : '⚠️'}</span>
+            <div>
+              {oauthBanner.kind === 'success'
+                ? (
+                  <>
+                    <p className="text-green-300 text-sm font-medium">Connected {oauthBanner.platform}</p>
+                    <p className="text-green-600 text-xs">You can now publish to {oauthBanner.platform} from /dashboard/publishing.</p>
+                  </>
+                ) : (
+                  <>
+                    <p className="text-red-300 text-sm font-medium">OAuth connection failed</p>
+                    <p className="text-red-600 text-xs">{oauthBanner.reason === 'token_exchange_failed'
+                      ? 'The provider rejected the token exchange. Try again, or use the manual token form below.'
+                      : oauthBanner.reason === 'invalid_state'
+                        ? 'Sign-in state expired. Click Connect again.'
+                        : `Reason: ${oauthBanner.reason}.`}</p>
+                  </>
+                )}
+            </div>
+          </div>
+          <button onClick={() => setOauthBanner(null)} className="text-gray-500 hover:text-white">✕</button>
+        </div>
+      )}
+
       {/* Ad / DSP Platforms */}
       <div className="mb-3">
         <h2 className="text-gray-500 text-xs font-semibold uppercase tracking-wider">Ad Platforms & DSPs</h2>
@@ -274,6 +381,13 @@ export default function IntegrationsPage() {
                       {'badge' in platform && platform.badge === 'Messaging' && (
                         <span className="text-xs bg-green-900/40 text-green-400 px-2 py-0.5 rounded-full font-medium">Messaging</span>
                       )}
+                      {/* Sprint 15F (P1 #12): badge so users know which flow
+                          is one-click vs which still needs manual paste. */}
+                      {'oauthPlatform' in platform ? (
+                        <span className="text-[10px] bg-indigo-900/40 text-indigo-300 px-2 py-0.5 rounded-full font-medium border border-indigo-800/50">OAuth</span>
+                      ) : (
+                        <span className="text-[10px] bg-gray-800 text-gray-400 px-2 py-0.5 rounded-full font-medium border border-gray-700" title="Manual API-key paste only. OAuth flow planned for a future release.">Manual key</span>
+                      )}
                     </div>
                     <p className="text-gray-500 text-xs mt-0.5">{platform.publishSupports}</p>
                   </div>
@@ -285,6 +399,37 @@ export default function IntegrationsPage() {
                       Connected
                     </span>
                   )}
+                  {/* Sprint 17E (audit P1 #19): expiry badge — green >30d,
+                      amber when expiring, red when <=2d. Click reconnects. */}
+                  {isConnected && expiries[platform.id] && (() => {
+                    const ex = expiries[platform.id]
+                    const d = ex.daysLeft
+                    const reconnect = () => {
+                      const oauthPlat = ('oauthPlatform' in platform ? (platform.oauthPlatform as string) : null) || platform.id
+                      if (confirm(`Reconnect ${platform.name}? You'll be redirected to sign in again.`)) {
+                        startOAuth(oauthPlat)
+                      }
+                    }
+                    if (d > 30) {
+                      return (
+                        <span className="text-[10px] bg-green-900/40 text-green-300 border border-green-800/50 px-2 py-0.5 rounded-full font-medium" title={`Expires ${ex.expires_at}`}>
+                          Valid ({d}d)
+                        </span>
+                      )
+                    }
+                    if (d > 2) {
+                      return (
+                        <button onClick={reconnect} className="text-[10px] bg-amber-900/40 text-amber-300 border border-amber-800/50 hover:border-amber-600 px-2 py-0.5 rounded-full font-medium" title={`Expires ${ex.expires_at}`}>
+                          Expires in {d}d
+                        </button>
+                      )
+                    }
+                    return (
+                      <button onClick={reconnect} className="text-[10px] bg-red-900/40 text-red-300 border border-red-800/50 hover:border-red-600 px-2 py-0.5 rounded-full font-medium animate-pulse" title={`Expires ${ex.expires_at}`}>
+                        Expires in {Math.max(0, d)}d — reconnect now
+                      </button>
+                    )
+                  })()}
                   {isConnected && (
                     <button
                       onClick={() => disconnect(platform.id)}
@@ -314,6 +459,30 @@ export default function IntegrationsPage() {
                   </div>
                 ) : (
                   <div className="space-y-4">
+                    {/* Sprint 8G: one-click OAuth for platforms that support it.
+                        Falls back to manual paste below if the user already
+                        has a token. The /connect endpoint returns 501 if the
+                        deployment doesn't have the provider's CLIENT_ID
+                        configured — we still render the button so admins
+                        see the right next step. */}
+                    {'oauthPlatform' in platform && (
+                      <div className="rounded-lg border border-indigo-900/40 bg-indigo-950/30 p-4">
+                        <p className="text-indigo-300 text-sm font-medium mb-1">Recommended: Sign in with {platform.name}</p>
+                        <p className="text-indigo-400/80 text-xs mb-3">
+                          One click. We&apos;ll take you to {platform.name}&apos;s sign-in page and bring you back when done.
+                          No need to find tokens or URNs manually.
+                        </p>
+                        <button
+                          onClick={() => startOAuth(platform.oauthPlatform as string)}
+                          className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
+                        >
+                          {platform.icon} Connect with {platform.name}
+                        </button>
+                        <p className="text-gray-500 text-[11px] mt-2">
+                          Or paste a token manually below if you&apos;ve already generated one.
+                        </p>
+                      </div>
+                    )}
                     {platform.fields.map(field => (
                       <div key={field.key}>
                         <label className="block text-gray-400 text-xs font-medium mb-1.5">{field.label}</label>
@@ -376,21 +545,32 @@ export default function IntegrationsPage() {
         })}
       </div>
 
-      {/* Coming soon */}
+      {/* Roadmap — honest TBD list. WhatsApp Business already shipped above
+          (it was duplicated here by mistake). The remaining entries each
+          need a dedicated OAuth client registration with the vendor and
+          a server-side ads-API wrapper before they can connect — none of
+          that infrastructure exists yet. Listing them keeps the roadmap
+          transparent without pretending the buttons are wired. */}
       <div className="mt-8">
-        <h2 className="text-gray-500 text-xs font-semibold uppercase tracking-wider mb-4">Coming Soon</h2>
+        <h2 className="text-gray-500 text-xs font-semibold uppercase tracking-wider mb-1">Roadmap</h2>
+        <p className="text-gray-600 text-xs mb-4">
+          Each platform below needs a dedicated OAuth app + ads/marketing API wrapper.
+          We&apos;ll surface a Connect button as each one ships. No keys are accepted today.
+        </p>
         <div className="grid grid-cols-3 gap-3">
           {[
-            { icon: '📧', name: 'Klaviyo' },
-            { icon: '📱', name: 'WhatsApp Business' },
-            { icon: '📊', name: 'TikTok Ads' },
-            { icon: '📺', name: 'YouTube Ads (direct)' },
-            { icon: '🛒', name: 'Amazon DSP' },
-            { icon: '🏷️', name: 'Snapchat Ads' },
+            { icon: '📧', name: 'Klaviyo', note: 'Email/SMS marketing — needs Klaviyo API key flow' },
+            { icon: '📊', name: 'TikTok Ads', note: 'Marketing API — needs TikTok for Business OAuth app' },
+            { icon: '📺', name: 'YouTube Ads (direct)', note: 'Routes via Google Ads today; direct YT integration planned' },
+            { icon: '🛒', name: 'Amazon DSP', note: 'Amazon Advertising API — approval-gated by Amazon' },
+            { icon: '🏷️', name: 'Snapchat Ads', note: 'Marketing API — needs Snap Kit app registration' },
           ].map(p => (
-            <div key={p.name} className="border border-gray-800 rounded-xl p-4 opacity-40 flex items-center gap-3">
+            <div key={p.name} className="border border-gray-800 rounded-xl p-4 opacity-50 flex items-start gap-3" title={p.note}>
               <span className="text-xl">{p.icon}</span>
-              <span className="text-gray-400 text-sm">{p.name}</span>
+              <div>
+                <p className="text-gray-300 text-sm">{p.name}</p>
+                <p className="text-gray-600 text-[10px] mt-0.5 leading-snug">{p.note}</p>
+              </div>
             </div>
           ))}
         </div>

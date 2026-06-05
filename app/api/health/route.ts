@@ -11,6 +11,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
 import { resolveProviderKey } from '@/lib/secrets'
+import { assertSuperAdmin } from '@/lib/guards'
 
 interface CheckResult {
   name: string
@@ -41,6 +42,18 @@ async function check(name: string, category: CheckResult['category'], fn: () => 
 }
 
 export async function GET(req: NextRequest) {
+  // Sprint 18A (audit pass #5 P0 #3): close the public info-disclosure path.
+  // Previously unauthenticated callers could enumerate workspace counts,
+  // super-admin counts, BYOK key counts, and env config status. Now requires
+  // super-admin. Surface a tiny anonymous "alive" probe for load-balancer
+  // health checks that doesn't reveal anything sensitive.
+  const isAlivePing = req.nextUrl.searchParams.get('alive') === '1'
+  if (isAlivePing) {
+    return NextResponse.json({ alive: true, ts: new Date().toISOString() })
+  }
+  const sadminGate = await assertSuperAdmin(req)
+  if (sadminGate) return sadminGate
+
   const workspaceId = req.nextUrl.searchParams.get('workspaceId')
   const live = req.nextUrl.searchParams.get('live') === '1'
 
@@ -169,9 +182,16 @@ export async function GET(req: NextRequest) {
   if (workspaceId) {
     checks.push(await check('Your workspace exists', 'data', async () => {
       const r = await sql`SELECT id, name, created_at FROM workspaces WHERE id = ${workspaceId} LIMIT 1`
-      const row = r.rows[0] as { id?: string; name?: string; created_at?: string } | undefined
+      // Sprint 20H bug #2: created_at comes back as a Date object from
+      // node-postgres on the timestamp column, not a string. Calling
+      // .slice() on it threw "created_at?.slice is not a function".
+      // Coerce to a string first.
+      const row = r.rows[0] as { id?: string; name?: string; created_at?: string | Date } | undefined
       if (!row?.id) return { status: 'fail', message: 'Workspace not found' }
-      return { status: 'ok', message: `${row.name} (created ${row.created_at?.slice(0, 10)})` }
+      const createdAtStr = row.created_at instanceof Date
+        ? row.created_at.toISOString()
+        : (row.created_at ? String(row.created_at) : '')
+      return { status: 'ok', message: `${row.name} (created ${createdAtStr.slice(0, 10)})` }
     }))
 
     checks.push(await check('Brand profile saved', 'data', async () => {

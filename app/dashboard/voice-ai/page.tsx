@@ -36,6 +36,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
+import { ProviderConnectBanner } from '@/components/dashboard/ProviderConnectBanner'
 import {
   Phone, PhoneIncoming, PhoneOutgoing, PhoneMissed, RefreshCw, AlertCircle,
   Plus, Loader2, X, Pause, Play, Trash2,
@@ -276,6 +277,20 @@ export default function VoiceAiPage() {
   const [callsLoading, setCallsLoading] = useState(true)
   const [openCallId, setOpenCallId] = useState<string | null>(null)
 
+  // Sprint 19D: ElevenLabs readiness for the in-product connect banner.
+  const [elevenReady, setElevenReady] = useState<boolean | null>(null)
+  const refreshElevenReady = useCallback(async () => {
+    if (!workspaceId) return
+    try {
+      const r = await fetch(`/api/workspaces?id=${workspaceId}`, { credentials: 'include' })
+      if (!r.ok) { setElevenReady(false); return }
+      const data = await r.json() as { secrets?: Record<string, boolean> }
+      setElevenReady(Boolean(data.secrets?.elevenlabs))
+    } catch { setElevenReady(false) }
+  }, [workspaceId])
+
+  useEffect(() => { void refreshElevenReady() }, [refreshElevenReady])
+
   // ── Session ──────────────────────────────────────────────────────────────
   useEffect(() => {
     let cancelled = false
@@ -443,6 +458,24 @@ export default function VoiceAiPage() {
   return (
     <div className="min-h-screen bg-gray-950 text-gray-100">
       <div className="max-w-7xl mx-auto px-6 py-8">
+
+        {/* Sprint 19D: ElevenLabs connect banner. Voice agents synthesise
+            replies via ElevenLabs; without a key the synthesis falls back
+            to error states. */}
+        <ProviderConnectBanner
+          ready={elevenReady}
+          workspaceId={workspaceId}
+          providerId="elevenlabs"
+          providerName="ElevenLabs"
+          icon="🎙️"
+          description="Voice synthesis for your AI voice agents. Replies, prompts, and call-back greetings are all generated through ElevenLabs."
+          signupUrl="https://elevenlabs.io/sign-up"
+          keysHelpUrl="https://elevenlabs.io/app/settings/api-keys"
+          freeTierNote="Free tier — 10,000 characters/month. No card required."
+          fields={[{ label: 'API Key', placeholder: 'sk_…', payloadKey: 'key', password: true }]}
+          testMode="workspace-secrets"
+          onConnected={() => void refreshElevenReady()}
+        />
 
         {/* ── Header ──────────────────────────────────────────────────── */}
         <div className="flex items-start justify-between gap-4 mb-6">

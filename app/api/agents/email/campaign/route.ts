@@ -5,6 +5,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { claude, getModel } from '@/lib/claude'
+import { withCredentials } from '@/lib/credential-context'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 import {
   getLists as getMCLists,
   addSubscriber,
@@ -47,13 +49,17 @@ function loadSettings(ws: Record<string, unknown>): Record<string, string> {
   return (typeof raw === 'string' ? JSON.parse(raw || '{}') : (raw ?? {})) as Record<string, string>
 }
 
-function injectMailchimpEnv(settings: Record<string, string>) {
-  if (settings.mailchimpApiKey) process.env.MAILCHIMP_API_KEY = settings.mailchimpApiKey
-  if (settings.mailchimpServer) process.env.MAILCHIMP_SERVER = settings.mailchimpServer
+function mailchimpCreds(settings: Record<string, string>) {
+  return {
+    MAILCHIMP_API_KEY: settings.mailchimpApiKey,
+    MAILCHIMP_SERVER: settings.mailchimpServer,
+  }
 }
 
-function injectBrevoEnv(settings: Record<string, string>) {
-  if (settings.brevoApiKey) process.env.BREVO_API_KEY = settings.brevoApiKey
+function brevoCreds(settings: Record<string, string>) {
+  return {
+    BREVO_API_KEY: settings.brevoApiKey,
+  }
 }
 
 function detectProvider(settings: Record<string, string>, preferred: Provider = 'auto'): 'mailchimp' | 'brevo' | null {
@@ -75,6 +81,8 @@ export async function POST(req: NextRequest) {
     const { workspaceId, action } = body
 
     if (!workspaceId) return NextResponse.json({ error: 'workspaceId is required' }, { status: 400 })
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
     if (!action) return NextResponse.json({ error: 'action is required' }, { status: 400 })
 
     // Load workspace + settings
@@ -172,11 +180,13 @@ Respond with ONLY the JSON object, no markdown fences.`
       let campaignId: string | null = null
 
       if (provider === 'mailchimp') {
-        injectMailchimpEnv(settings)
-        campaignId = await createMCCampaign(listId, subject, htmlContent)
+        campaignId = await withCredentials(mailchimpCreds(settings), () =>
+          createMCCampaign(listId, subject, htmlContent)
+        )
       } else {
-        injectBrevoEnv(settings)
-        const result = await createBrevoCampaign(campaignName, subject, htmlContent, [parseInt(listId, 10)])
+        const result = await withCredentials(brevoCreds(settings), () =>
+          createBrevoCampaign(campaignName, subject, htmlContent, [parseInt(listId, 10)])
+        )
         if (result) campaignId = String(result.id)
       }
 
@@ -196,8 +206,7 @@ Respond with ONLY the JSON object, no markdown fences.`
 
       let campaigns: unknown[] = []
       if (provider === 'mailchimp') {
-        injectMailchimpEnv(settings)
-        campaigns = await getMCCampaigns(20)
+        campaigns = await withCredentials(mailchimpCreds(settings), () => getMCCampaigns(20))
       }
       // Brevo does not expose a simple campaign-list endpoint in the current tool wrapper
 
@@ -213,11 +222,9 @@ Respond with ONLY the JSON object, no markdown fences.`
 
       let lists: unknown[] = []
       if (provider === 'mailchimp') {
-        injectMailchimpEnv(settings)
-        lists = await getMCLists()
+        lists = await withCredentials(mailchimpCreds(settings), () => getMCLists())
       } else {
-        injectBrevoEnv(settings)
-        lists = await getBrevoLists()
+        lists = await withCredentials(brevoCreds(settings), () => getBrevoLists())
       }
 
       return NextResponse.json({ ok: true, lists, provider })
@@ -230,8 +237,9 @@ Respond with ONLY the JSON object, no markdown fences.`
 
       const provider = detectProvider(settings, body.provider ?? 'auto')
       if (provider === 'mailchimp') {
-        injectMailchimpEnv(settings)
-        const report = await getCampaignReport(campaignId)
+        const report = await withCredentials(mailchimpCreds(settings), () =>
+          getCampaignReport(campaignId)
+        )
         if (!report) return NextResponse.json({ error: 'Report not found or API error' }, { status: 404 })
         return NextResponse.json({ ok: true, report, provider })
       }

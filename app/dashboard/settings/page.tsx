@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { SUPPORTED_MODELS } from '@/lib/models'
 
@@ -31,7 +31,7 @@ const NAV_ITEMS: { key: SectionKey; icon: string; label: string; link?: string }
   { key: 'security', icon: '🔒', label: 'Security' },
   { key: 'appearance', icon: '🎨', label: 'Appearance' },
   { key: 'usage', icon: '📊', label: 'Usage & Limits' },
-  { key: 'integrations', icon: '🔗', label: 'Integrations', link: '/dashboard/connections' },
+  { key: 'integrations', icon: '🔗', label: 'Integrations', link: '/dashboard/integrations' },
   { key: 'billing', icon: '💳', label: 'Billing', link: '/dashboard/billing' },
   { key: 'danger', icon: '🗑', label: 'Danger Zone' },
 ]
@@ -70,6 +70,8 @@ interface ModelSettings {
   klingAccessKey: string
   klingSecretKey: string
   runwayApiKey: string
+  lumaApiKey: string
+  pikaApiKey: string
   heygenApiKey: string
   vapiApiKey: string
   openaiModel: string
@@ -119,9 +121,743 @@ interface ModelSettings {
   razorpayKeySecret: string
 }
 
-interface Session { id: string; device: string; browser: string; ip: string; location: string; lastActive: string; current: boolean }
-interface AccessToken { id: string; name: string; permissions: string[]; lastUsed: string; expiry: string }
-interface LoginRecord { date: string; device: string; ip: string; location: string; result: 'Success' | 'Failed' }
+// Sprint 7C: shapes returned by /api/account/sessions + login-history.
+interface Session {
+  id: string
+  workspaceId: string | null
+  device: string
+  browser: string
+  ip: string
+  createdAt: string
+  lastSeenAt: string
+  current: boolean
+}
+interface LoginRecord {
+  id: string
+  createdAt: string
+  ip: string
+  device: string
+  success: boolean
+  failureReason: string | null
+}
+
+// ─── Sprint 8F: BYOK organised by USAGE, not by provider ──────────────────────
+//
+// Previous structure listed ~25 cards alphabetically by vendor name (OpenAI,
+// Anthropic, ElevenLabs, …). For a non-technical operator that meant: "I want
+// the dashboard to send emails — which one of these 25 do I need?" Now the
+// section groups providers by the FEATURE they unlock, with plain-English
+// "Why this matters" copy and an honest "✅ tested" vs "📋 paste-only" badge.
+//
+// Adding a new provider:
+//   1. Make sure the ModelSettings interface already has the field(s).
+//   2. Add a UseCaseProvider entry under the matching use case below.
+//   3. If the provider has a live test endpoint, set testProvider — must
+//      match a key in PROVIDER_MAP inside testConnection() (api-keys
+//      handler). Otherwise leave undefined and the card renders a
+//      "paste-only — no live test yet" disclosure instead of a Test button.
+
+interface UseCaseField {
+  /** key on ModelSettings to read/write. */
+  field: keyof ModelSettings
+  /** Human-readable label shown above the input. */
+  label: string
+  /** Placeholder shown inside the input (e.g. `sk-proj-…`). */
+  placeholder?: string
+  /** Optional one-liner under the label explaining where to get the value. */
+  hint?: string
+  /** 'password' → MaskedInput with show/hide + copy. 'text' → plain input.
+   *  Defaults to 'password' when the label contains "Key" or "Token" or
+   *  "Secret"; otherwise 'text'. */
+  type?: 'password' | 'text'
+  /** Optional list of <option>s for a <select>. When provided, the field
+   *  renders as a dropdown instead of a text input. */
+  options?: string[]
+}
+
+interface UseCaseProvider {
+  /** Stable id — also used as the React key. */
+  id: string
+  /** Display name (e.g. "OpenAI"). */
+  name: string
+  /** One-line plain-English description of what this provider does for you. */
+  whatFor: string
+  /** All the fields belonging to this provider. Most have one; ElevenLabs
+   *  has three (key + voice model + voice id), etc. */
+  fields: UseCaseField[]
+  /** If set, "Test Connection" button is rendered and dispatches to the
+   *  existing testConnection() helper with this slug. Must match an entry
+   *  in PROVIDER_MAP inside that helper. */
+  testProvider?: string
+  /** Link to where the user finds their key. */
+  docUrl?: string
+  /** Sprint 19B: link to the provider's free-tier signup page. Renders a
+   *  'Sign up free' button on the card alongside docUrl. We can't sign
+   *  the user up programmatically (no provider exposes that API), but we
+   *  can shortcut them to the right page so they don't have to hunt. */
+  signupUrl?: string
+  /** Short note rendered under the inputs — e.g. 'Free tier: 25 credits/mo'. */
+  freeTierNote?: string
+  /** Reduces visual weight — used for "you only need this if you already
+   *  use $tool" providers (e.g. n8n, Buffer, Ghost). */
+  optional?: boolean
+  /** If set, ProviderCard renders a "Send Test Notification" button that
+   *  dispatches via testNotification(). Distinct from testProvider because
+   *  Slack/Telegram require both a token AND a target channel/chat id —
+   *  we test the full path, not just credential validity. */
+  notifyTest?: 'slack' | 'telegram'
+}
+
+interface UseCase {
+  /** Section id — used in URL hash too so we can deep-link to a section. */
+  id: string
+  emoji: string
+  /** Plain-English title — "Generate AI text" not "LLM providers". */
+  title: string
+  /** 1-2 sentence "why a normal user would care" explanation. */
+  why: string
+  /** Concrete features this group of keys unlocks, rendered as a bullet
+   *  list above the provider cards. */
+  unlocks: string[]
+  providers: UseCaseProvider[]
+  /** When true, the section header carries a "Pick at least one" hint —
+   *  e.g. AI text models (OpenAI OR Anthropic OR Gemini). */
+  pickOne?: boolean
+  /** Optional override line — "We recommend Anthropic for best quality." */
+  recommendation?: string
+}
+
+const KEY_USE_CASES: UseCase[] = [
+  {
+    id: 'ai-text',
+    emoji: '🧠',
+    title: 'Generate AI text (drafts, strategy, replies)',
+    why: 'Every agent that writes content — post drafts, strategy briefs, email replies, ad copy — needs at least one text model. Without this, the agents fall back to error states.',
+    unlocks: ['Content drafting (CMO agent)', 'Strategy generation', 'Email reply drafts', 'Brand-voice scoring on /dashboard/approvals'],
+    pickOne: true,
+    recommendation: 'Anthropic (Claude) is the default model the agents are tuned for. OpenAI works as a backup. Groq is the cheapest option for bulk tasks.',
+    providers: [
+      {
+        id: 'anthropic',
+        name: 'Anthropic (Claude)',
+        whatFor: 'Default brain for every agent. Required for strategy, content drafts, brand-voice scoring.',
+        testProvider: 'anthropic',
+        docUrl: 'https://console.anthropic.com/settings/keys',
+        signupUrl: 'https://console.anthropic.com/login',
+        freeTierNote: '$5 free credit on signup. Pay-as-you-go after.',
+        fields: [
+          { field: 'anthropicApiKey', label: 'API Key', placeholder: 'sk-ant-…', hint: 'Get one at console.anthropic.com/settings/keys', type: 'password' },
+          { field: 'claudeModel', label: 'Default model', type: 'text', options: ['claude-sonnet-4-6', 'claude-3-5-sonnet-20241022', 'claude-3-opus-20240229', 'claude-3-haiku-20240307'] },
+        ],
+      },
+      {
+        id: 'openai',
+        name: 'OpenAI',
+        whatFor: 'Backup brain when Claude is unavailable. Also powers DALL-E image generation (next section).',
+        testProvider: 'openai',
+        docUrl: 'https://platform.openai.com/api-keys',
+        signupUrl: 'https://platform.openai.com/signup',
+        freeTierNote: 'Pay-as-you-go. Pre-paid balance starts at $5.',
+        fields: [
+          { field: 'openaiApiKey', label: 'API Key', placeholder: 'sk-proj-…', hint: 'Get one at platform.openai.com/api-keys', type: 'password' },
+          { field: 'openaiModel', label: 'Default model', type: 'text', options: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo'] },
+        ],
+      },
+      {
+        id: 'gemini',
+        name: 'Google Gemini',
+        whatFor: 'Alternative brain — free tier available. Good for bulk classification tasks.',
+        testProvider: 'gemini',
+        docUrl: 'https://aistudio.google.com/app/apikey',
+        signupUrl: 'https://aistudio.google.com/',
+        freeTierNote: 'Generous free tier — 15 RPM on Gemini 1.5 Flash. Sign in with Google.',
+        optional: true,
+        fields: [
+          { field: 'geminiApiKey', label: 'API Key', placeholder: 'AIza…', hint: 'Free at aistudio.google.com/app/apikey', type: 'password' },
+          { field: 'geminiModel', label: 'Default model', type: 'text', options: ['gemini-1.5-pro', 'gemini-1.5-flash', 'gemini-2.0-flash'] },
+        ],
+      },
+      {
+        id: 'groq',
+        name: 'Groq',
+        whatFor: 'Cheapest option for bulk text tasks (lead scoring, summarisation). Free tier is generous.',
+        docUrl: 'https://console.groq.com/keys',
+        signupUrl: 'https://console.groq.com/login',
+        freeTierNote: 'Free tier — 30 RPM on Llama 3.1 70B. No card required.',
+        optional: true,
+        fields: [
+          { field: 'groqApiKey', label: 'API Key', placeholder: 'gsk_…', hint: 'Free at console.groq.com/keys', type: 'password' },
+        ],
+      },
+    ],
+  },
+  {
+    id: 'image-gen',
+    emoji: '🖼️',
+    title: 'Generate images',
+    why: 'AI-generated images for posts, ads, hero shots. Without these, the Image Studio shows a "no providers connected" empty state.',
+    unlocks: ['/dashboard/image-gen', 'Auto-generated post visuals in CMO drafts', 'Ad creative generation in /dashboard/ads'],
+    pickOne: true,
+    recommendation: 'OpenAI (DALL-E 3) is wired most thoroughly. Stability is cheapest per image. Stock libraries (Unsplash/Pexels) are free but not AI-generated.',
+    providers: [
+      {
+        id: 'openai-images',
+        name: 'OpenAI DALL-E 3',
+        whatFor: 'Highest quality general-purpose images. Uses the OpenAI key you set above.',
+        docUrl: 'https://platform.openai.com/api-keys',
+        fields: [
+          { field: 'openaiApiKey', label: 'OpenAI API Key', placeholder: 'sk-proj-…', hint: 'Same key as the AI text section above. Setting it here also unlocks DALL-E.', type: 'password' },
+        ],
+        testProvider: 'openai',
+      },
+      {
+        id: 'stability',
+        name: 'Stability AI (SDXL)',
+        whatFor: 'Stable Diffusion XL — cheapest per image. Good for stylised art.',
+        testProvider: 'stability',
+        docUrl: 'https://platform.stability.ai/account/keys',
+        signupUrl: 'https://platform.stability.ai/',
+        freeTierNote: '25 free credits on signup (~25 images). Pay-as-you-go after.',
+        fields: [
+          { field: 'stabilityApiKey', label: 'API Key', placeholder: 'sk-…', hint: 'Get one at platform.stability.ai/account/keys', type: 'password' },
+        ],
+      },
+      {
+        id: 'replicate',
+        name: 'Replicate',
+        whatFor: 'Run open-source models (FLUX, SDXL fine-tunes, etc.) via API.',
+        testProvider: 'replicate',
+        docUrl: 'https://replicate.com/account/api-tokens',
+        optional: true,
+        fields: [
+          { field: 'replicateApiToken', label: 'API Token', placeholder: 'r8_…', hint: 'Get one at replicate.com/account/api-tokens', type: 'password' },
+        ],
+      },
+      {
+        id: 'unsplash',
+        name: 'Unsplash (stock photos)',
+        whatFor: 'Free real photography. Not AI-generated. Good for blog headers and lifestyle shots.',
+        docUrl: 'https://unsplash.com/developers',
+        optional: true,
+        fields: [
+          { field: 'unsplashAccessKey', label: 'Access Key', placeholder: 'Unsplash access key', hint: 'Free at unsplash.com/developers', type: 'password' },
+        ],
+      },
+      {
+        id: 'pexels',
+        name: 'Pexels (stock photos)',
+        whatFor: 'Alternative free stock photo library.',
+        docUrl: 'https://www.pexels.com/api/',
+        optional: true,
+        fields: [
+          { field: 'pexelsApiKey', label: 'API Key', placeholder: 'Pexels API key', hint: 'Free at pexels.com/api', type: 'password' },
+        ],
+      },
+    ],
+  },
+  {
+    id: 'video-gen',
+    emoji: '🎬',
+    title: 'Generate videos',
+    why: 'AI-generated videos for ads, short-form social, avatar talking heads.',
+    unlocks: ['/dashboard/video-gen', 'Short-form ads with motion'],
+    pickOne: true,
+    providers: [
+      {
+        id: 'runway',
+        name: 'Runway ML',
+        whatFor: 'Gen-3 video generation. Best quality general-purpose AI video.',
+        testProvider: 'runway',
+        docUrl: 'https://app.runwayml.com/account/api-keys',
+        fields: [
+          { field: 'runwayApiKey', label: 'API Key', placeholder: 'key_…', hint: 'Get one at app.runwayml.com/account/api-keys', type: 'password' },
+        ],
+      },
+      {
+        id: 'kling',
+        name: 'Kling AI',
+        whatFor: 'Real Kuaishou Kling 2.0 API. Strong on character consistency. Needs both access + secret key — used to mint a JWT for each request.',
+        testProvider: 'kling',
+        docUrl: 'https://klingai.com',
+        optional: true,
+        fields: [
+          { field: 'klingAccessKey', label: 'Access Key', placeholder: 'Access key', type: 'password' },
+          { field: 'klingSecretKey', label: 'Secret Key', placeholder: 'Secret key', type: 'password' },
+        ],
+      },
+      {
+        id: 'luma',
+        name: 'Luma Dream Machine',
+        whatFor: 'Real Luma Dream Machine API. Photorealistic motion + cinematic shots. Single bearer token from lumalabs.ai.',
+        docUrl: 'https://lumalabs.ai/dream-machine/api/keys',
+        optional: true,
+        fields: [
+          { field: 'lumaApiKey', label: 'API Key', placeholder: 'luma-...', hint: 'Get one at lumalabs.ai/dream-machine/api/keys', type: 'password' },
+        ],
+      },
+      {
+        id: 'pika',
+        name: 'Pika Labs',
+        whatFor: 'Stylised cartoon + animation generation. Public API is limited-access; if you have it, paste your key here and the dispatcher will use Pika when selected.',
+        docUrl: 'https://pika.art',
+        optional: true,
+        fields: [
+          { field: 'pikaApiKey', label: 'API Key', placeholder: 'pika-...', hint: 'Pika API access is invitation-only as of writing; check pika.art for current status.', type: 'password' },
+        ],
+      },
+      {
+        id: 'heygen',
+        name: 'HeyGen (avatar video)',
+        whatFor: 'AI avatar talking-head videos. Use for explainers and ads with a face.',
+        docUrl: 'https://app.heygen.com/settings/api',
+        optional: true,
+        fields: [
+          { field: 'heygenApiKey', label: 'API Key', placeholder: 'HeyGen API Key', type: 'password' },
+        ],
+      },
+    ],
+  },
+  {
+    id: 'voice',
+    emoji: '🎙️',
+    title: 'Voice & audio',
+    why: 'Text-to-speech for video voiceovers, transcription for sales calls, voice agents for phone follow-up.',
+    unlocks: ['/dashboard/voiceover', '/dashboard/voice-ai', 'Auto-transcription of uploaded sales calls'],
+    providers: [
+      {
+        id: 'elevenlabs',
+        name: 'ElevenLabs',
+        whatFor: 'Highest-quality AI voices. Used by /voiceover and /voice-ai.',
+        testProvider: 'elevenLabs',
+        docUrl: 'https://elevenlabs.io/app/settings/api-keys',
+        signupUrl: 'https://elevenlabs.io/sign-up',
+        freeTierNote: 'Free tier — 10,000 characters/month. No card required.',
+        fields: [
+          { field: 'elevenLabsApiKey', label: 'API Key', placeholder: 'sk_…', hint: 'Free tier at elevenlabs.io', type: 'password' },
+          { field: 'elevenLabsVoiceModel', label: 'Voice model', options: ['eleven_multilingual_v2', 'eleven_english_v1', 'eleven_turbo_v2'] },
+          { field: 'elevenLabsVoiceId', label: 'Default voice id (optional)', placeholder: '21m00Tcm4TlvDq8ikWAM' },
+        ],
+      },
+      {
+        id: 'deepgram',
+        name: 'Deepgram',
+        whatFor: 'Fast audio transcription. Used when you upload sales calls or podcast audio.',
+        docUrl: 'https://console.deepgram.com/',
+        optional: true,
+        fields: [
+          { field: 'deepgramApiKey', label: 'API Key', placeholder: 'Deepgram API key', type: 'password' },
+        ],
+      },
+      {
+        id: 'vapi',
+        name: 'Vapi (voice agents)',
+        whatFor: 'Phone-based AI voice agents. Only if you want the agents to make outbound calls.',
+        docUrl: 'https://vapi.ai/',
+        optional: true,
+        fields: [
+          { field: 'vapiApiKey', label: 'API Key', placeholder: 'Vapi API Key', type: 'password' },
+        ],
+      },
+    ],
+  },
+  {
+    id: 'social',
+    emoji: '📤',
+    title: 'Post to social media',
+    why: 'These let the publishing engine actually push your approved drafts live to your channels. Without them, posts stay as drafts in /dashboard/approvals.',
+    unlocks: ['/dashboard/publishing', 'Auto-publish on approval', 'Scheduled posts cron'],
+    providers: [
+      {
+        id: 'linkedin',
+        name: 'LinkedIn',
+        whatFor: 'Post text + images to your LinkedIn profile or company page.',
+        docUrl: 'https://www.linkedin.com/developers/apps',
+        fields: [
+          { field: 'linkedinAccessToken', label: 'Access Token', placeholder: 'LinkedIn Access Token', hint: 'Generate from LinkedIn Developer Portal. We will add a one-click OAuth flow soon.', type: 'password' },
+          { field: 'linkedinAuthorUrn', label: 'Person/Company URN', placeholder: 'urn:li:person:…' },
+        ],
+      },
+      {
+        id: 'twitter',
+        name: 'X (Twitter)',
+        whatFor: 'Post tweets, including media. Bearer or User Access Token.',
+        docUrl: 'https://developer.x.com/en/portal/dashboard',
+        fields: [
+          { field: 'twitterAccessToken', label: 'User Access Token (preferred — can post)', placeholder: 'Twitter Access Token', type: 'password' },
+          { field: 'twitterBearerToken', label: 'Bearer Token (read-only)', placeholder: 'Twitter Bearer Token', type: 'password' },
+        ],
+      },
+      {
+        id: 'youtube',
+        name: 'YouTube',
+        whatFor: 'Read analytics and (later) upload Shorts.',
+        docUrl: 'https://console.cloud.google.com/apis/credentials',
+        optional: true,
+        fields: [
+          { field: 'youtubeApiKey', label: 'API Key', placeholder: 'YouTube API Key', type: 'password' },
+          { field: 'youtubeAccessToken', label: 'OAuth Access Token', placeholder: 'YouTube Access Token', type: 'password' },
+        ],
+      },
+      {
+        id: 'meta',
+        name: 'Meta (Facebook + Instagram)',
+        whatFor: 'Post to Facebook Pages and Instagram Business accounts.',
+        docUrl: 'https://developers.facebook.com/apps',
+        fields: [
+          { field: 'metaAccessToken', label: 'Page Access Token', placeholder: 'EAA…', hint: 'Get a long-lived Page token from your Meta App.', type: 'password' },
+          { field: 'metaWebhookVerifyToken', label: 'Webhook verify token (any string you choose)', placeholder: 'Your chosen verify token' },
+        ],
+      },
+      {
+        id: 'wordpress',
+        name: 'WordPress',
+        whatFor: 'Publish blog drafts directly to your WP site.',
+        docUrl: 'https://wordpress.org/documentation/article/application-passwords/',
+        optional: true,
+        fields: [
+          { field: 'wpSiteUrl', label: 'Site URL', placeholder: 'https://yourblog.com' },
+          { field: 'wpUsername', label: 'Username', placeholder: 'admin' },
+          { field: 'wpAppPassword', label: 'Application Password', placeholder: 'xxxx xxxx xxxx xxxx', hint: 'Generate inside WP Admin → Users → Profile → Application Passwords.', type: 'password' },
+        ],
+      },
+      {
+        id: 'ghost',
+        name: 'Ghost',
+        whatFor: 'Alternative blog publishing platform.',
+        docUrl: 'https://ghost.org/docs/admin-api/',
+        optional: true,
+        fields: [
+          { field: 'ghostUrl', label: 'Site URL', placeholder: 'https://yourblog.ghost.io' },
+          { field: 'ghostAdminKey', label: 'Admin API Key', placeholder: 'Ghost admin key', type: 'password' },
+        ],
+      },
+      {
+        id: 'buffer',
+        name: 'Buffer (legacy scheduler)',
+        whatFor: 'Old scheduling fallback. Skip if you set up direct LinkedIn/X above.',
+        docUrl: 'https://buffer.com/developers/api',
+        optional: true,
+        fields: [
+          { field: 'bufferAccessToken', label: 'Access Token', placeholder: 'Buffer access token', type: 'password' },
+        ],
+      },
+    ],
+  },
+  {
+    id: 'ads',
+    emoji: '📢',
+    title: 'Run paid ads',
+    why: 'These let the Ads agent create, launch, and optimise paid campaigns on Meta / Google / LinkedIn.',
+    unlocks: ['/dashboard/ads', 'Campaign sync cron (every 6am)'],
+    providers: [
+      {
+        id: 'meta-ads',
+        name: 'Meta Ads',
+        whatFor: 'Facebook + Instagram ads. Uses the Meta access token from the social section.',
+        docUrl: 'https://developers.facebook.com/docs/marketing-api',
+        fields: [
+          { field: 'metaAccessToken', label: 'Access Token (same as social)', placeholder: 'EAA…', type: 'password' },
+          { field: 'metaAdAccountId', label: 'Ad Account ID', placeholder: 'act_123456789' },
+        ],
+      },
+      {
+        id: 'google-ads',
+        name: 'Google Ads',
+        whatFor: 'Search + Display ads. Most complex setup — needs OAuth access token from Google OAuth Playground.',
+        docUrl: 'https://developers.google.com/google-ads/api/docs/get-started/dev-token',
+        fields: [
+          { field: 'googleAdsDeveloperToken', label: 'Developer Token', placeholder: 'Google Ads Developer Token', type: 'password' },
+          { field: 'googleAdsCustomerId', label: 'Customer ID', placeholder: '123-456-7890' },
+          { field: 'googleAdsAccessToken', label: 'OAuth Access Token', placeholder: 'ya29.…', type: 'password' },
+        ],
+      },
+      {
+        id: 'linkedin-ads',
+        name: 'LinkedIn Ads',
+        whatFor: 'B2B-focused paid LinkedIn campaigns.',
+        docUrl: 'https://learn.microsoft.com/en-us/linkedin/marketing/',
+        optional: true,
+        fields: [
+          { field: 'linkedinAdsAccessToken', label: 'Access Token', placeholder: 'LinkedIn Ads Access Token', type: 'password' },
+          { field: 'linkedinAdsAccountId', label: 'Ad Account URN', placeholder: 'urn:li:sponsoredAccount:…' },
+        ],
+      },
+    ],
+  },
+  {
+    id: 'email',
+    emoji: '📧',
+    title: 'Send emails (transactional + marketing)',
+    why: 'Without an email sender, approvals confirmations, lead nurture sequences, and the auto-approve cron emails all silently no-op.',
+    unlocks: ['/dashboard/email-marketing', 'Lead nurture workflows', 'Approval confirmation emails'],
+    providers: [
+      {
+        id: 'resend',
+        name: 'Resend (recommended)',
+        whatFor: 'Used by every internal email path (approvals, calendar reminders, etc.).',
+        docUrl: 'https://resend.com/api-keys',
+        fields: [
+          { field: 'resendApiKey', label: 'API Key', placeholder: 're_…', hint: 'Free at resend.com/api-keys', type: 'password' },
+        ],
+      },
+      {
+        id: 'mailchimp',
+        name: 'Mailchimp',
+        whatFor: 'Large list marketing campaigns. Only if you already use Mailchimp.',
+        docUrl: 'https://mailchimp.com/help/about-api-keys/',
+        optional: true,
+        fields: [
+          { field: 'mailchimpApiKey', label: 'API Key', placeholder: 'Mailchimp API key', type: 'password' },
+          { field: 'mailchimpServer', label: 'Server prefix', placeholder: 'us18', hint: 'The bit after the dash in your API key.' },
+        ],
+      },
+      {
+        id: 'brevo',
+        name: 'Brevo (Sendinblue)',
+        whatFor: 'Alternative email marketing platform.',
+        docUrl: 'https://app.brevo.com/settings/keys/api',
+        optional: true,
+        fields: [
+          { field: 'brevoApiKey', label: 'API Key', placeholder: 'Brevo API key', type: 'password' },
+          { field: 'brevoFromEmail', label: 'From email', placeholder: 'hello@yourcompany.com' },
+        ],
+      },
+    ],
+  },
+  {
+    id: 'analytics',
+    emoji: '📊',
+    title: 'Pull website analytics',
+    why: 'Lets the Analytics agent read your real GA4 and Search Console data instead of showing empty charts.',
+    unlocks: ['/dashboard/analytics traffic + SEO panels', 'Strategy briefs that reference real traffic'],
+    providers: [
+      {
+        id: 'ga4',
+        name: 'Google Analytics 4',
+        whatFor: 'Read traffic, conversion, audience data from your GA4 property.',
+        docUrl: 'https://analytics.google.com/',
+        fields: [
+          { field: 'ga4PropertyId', label: 'GA4 Property ID', placeholder: '1234567890', hint: 'In GA4 Admin → Property Settings.' },
+          { field: 'ga4AccessToken', label: 'OAuth Access Token', placeholder: 'ya29.…', type: 'password' },
+        ],
+      },
+      {
+        id: 'search-console',
+        name: 'Google Search Console',
+        whatFor: 'Track which keywords your site ranks for and click-through rates.',
+        docUrl: 'https://search.google.com/search-console',
+        optional: true,
+        fields: [
+          { field: 'searchConsoleSiteUrl', label: 'Site URL', placeholder: 'https://yourdomain.com' },
+          { field: 'searchConsoleAccessToken', label: 'OAuth Access Token', placeholder: 'ya29.…', type: 'password' },
+        ],
+      },
+    ],
+  },
+  {
+    id: 'research',
+    emoji: '🔎',
+    title: 'Research & lead enrichment',
+    why: 'These let the Research and Lead Enrichment agents pull real web data — competitor scans, trend signals, contact info — instead of working from Claude\'s memory alone.',
+    unlocks: ['/dashboard/research', 'Auto-enrichment of captured leads', 'Brand-monitor trend scans'],
+    providers: [
+      {
+        id: 'brave',
+        name: 'Brave Search',
+        whatFor: 'Web search results for trend scanning and competitive intelligence.',
+        docUrl: 'https://brave.com/search/api/',
+        fields: [
+          { field: 'braveSearchApiKey', label: 'API Key', placeholder: 'BSA…', hint: 'Free tier at brave.com/search/api', type: 'password' },
+        ],
+      },
+      {
+        id: 'firecrawl',
+        name: 'Firecrawl',
+        whatFor: 'Crawl websites into clean markdown. Used for competitor analysis.',
+        docUrl: 'https://firecrawl.dev/',
+        optional: true,
+        fields: [
+          { field: 'firecrawlApiKey', label: 'API Key', placeholder: 'fc-…', type: 'password' },
+        ],
+      },
+      {
+        id: 'apollo',
+        name: 'Apollo.io',
+        whatFor: 'B2B contact enrichment — turn an email into a full prospect profile.',
+        docUrl: 'https://app.apollo.io/#/settings/integrations/api',
+        optional: true,
+        fields: [
+          { field: 'apolloApiKey', label: 'API Key', placeholder: 'Apollo.io API key', type: 'password' },
+        ],
+      },
+      {
+        id: 'hunter',
+        name: 'Hunter.io',
+        whatFor: 'Find email addresses by domain. Lighter weight than Apollo.',
+        docUrl: 'https://hunter.io/api-keys',
+        optional: true,
+        fields: [
+          { field: 'hunterApiKey', label: 'API Key', placeholder: 'Hunter.io API key', type: 'password' },
+        ],
+      },
+    ],
+  },
+  {
+    id: 'crm',
+    emoji: '🤝',
+    title: 'Sync with external CRM',
+    why: 'Only needed if your sales team uses HubSpot/Salesforce and you want leads captured by the agents to flow there. Without this, leads stay in /dashboard/leads-crm only.',
+    unlocks: ['Two-way sync with HubSpot deals', 'Capture-to-CRM workflows'],
+    providers: [
+      {
+        id: 'hubspot',
+        name: 'HubSpot',
+        whatFor: 'Push captured leads + activities into HubSpot.',
+        docUrl: 'https://developers.hubspot.com/docs/api/private-apps',
+        optional: true,
+        fields: [
+          { field: 'hubspotAccessToken', label: 'Private App Access Token', placeholder: 'pat-…', type: 'password' },
+        ],
+      },
+    ],
+  },
+  {
+    id: 'billing',
+    emoji: '💳',
+    title: 'Accept payments from your customers',
+    why: 'Only relevant if your agency or product charges customers through the Ooumph platform. Without this, billing flows on /dashboard/billing show "configure your payment provider" prompts.',
+    unlocks: ['/dashboard/billing subscribe flow', '/super-admin commission payouts via Stripe Connect'],
+    providers: [
+      {
+        id: 'stripe',
+        name: 'Stripe',
+        whatFor: 'Most common option. Powers subscriptions, one-off charges, and agency-to-client payouts.',
+        docUrl: 'https://dashboard.stripe.com/apikeys',
+        optional: true,
+        fields: [
+          { field: 'stripeSecretKey', label: 'Secret Key', placeholder: 'sk_live_… or sk_test_…', hint: 'NEVER paste a live key into a test environment.', type: 'password' },
+          { field: 'stripePublishableKey', label: 'Publishable Key', placeholder: 'pk_live_…' },
+        ],
+      },
+      {
+        id: 'razorpay',
+        name: 'Razorpay (India)',
+        whatFor: 'India-first alternative to Stripe.',
+        docUrl: 'https://dashboard.razorpay.com/app/keys',
+        optional: true,
+        fields: [
+          { field: 'razorpayKeyId', label: 'Key ID', placeholder: 'rzp_live_…' },
+          { field: 'razorpayKeySecret', label: 'Key Secret', placeholder: 'Razorpay Key Secret', type: 'password' },
+        ],
+      },
+    ],
+  },
+  {
+    id: 'booking',
+    emoji: '📅',
+    title: 'Booking & form intake',
+    why: 'Hook your existing booking + form tools so leads captured there flow into the agents.',
+    unlocks: ['Auto-capture from Cal.com bookings', 'Tally form → lead workflow'],
+    providers: [
+      {
+        id: 'calcom',
+        name: 'Cal.com',
+        whatFor: 'Booking platform — sync booked meetings into /dashboard/calendar.',
+        docUrl: 'https://cal.com/settings/developer/api-keys',
+        optional: true,
+        fields: [
+          { field: 'calcomApiKey', label: 'API Key', placeholder: 'cal_live_…', type: 'password' },
+        ],
+      },
+      {
+        id: 'tally',
+        name: 'Tally',
+        whatFor: 'Form builder. Pipes form submissions into captured leads.',
+        docUrl: 'https://tally.so/help/api-keys',
+        optional: true,
+        fields: [
+          { field: 'tallyApiKey', label: 'API Key', placeholder: 'Tally API key', type: 'password' },
+        ],
+      },
+    ],
+  },
+  {
+    id: 'storage',
+    emoji: '🗃️',
+    title: 'Store generated media',
+    why: 'Only if you want generated images / videos uploaded to your own Cloudinary account instead of relying on provider-hosted URLs (which can expire).',
+    unlocks: ['Persistent media URLs', 'Custom CDN'],
+    providers: [
+      {
+        id: 'cloudinary',
+        name: 'Cloudinary',
+        whatFor: 'Hosts and transforms generated media. Powers the prompt-driven video editor + multi-clip assembly at /dashboard/video-gen.',
+        docUrl: 'https://console.cloudinary.com/settings/api-keys',
+        signupUrl: 'https://cloudinary.com/users/register/free',
+        freeTierNote: 'Free tier: 25 GB delivery + 25 transformation credits / month. Card not required.',
+        testProvider: 'cloudinary',
+        fields: [
+          { field: 'cloudinaryCloudName', label: 'Cloud Name', placeholder: 'mycloud', hint: 'The subdomain shown in your Cloudinary console URL.' },
+          { field: 'cloudinaryApiKey', label: 'API Key', placeholder: 'Cloudinary API Key' },
+          { field: 'cloudinaryApiSecret', label: 'API Secret', placeholder: 'Cloudinary API Secret', type: 'password' },
+        ],
+      },
+    ],
+  },
+  {
+    id: 'notifications',
+    emoji: '🔔',
+    title: 'Send notifications to your team',
+    why: 'Internal alerts — when an approval is overdue, a campaign budget is hit, or the brand monitor trips. Routed to Slack/Telegram instead of email.',
+    unlocks: ['Slack notifications when KPIs miss', 'Telegram alerts for crisis events'],
+    providers: [
+      {
+        id: 'slack',
+        name: 'Slack',
+        whatFor: 'Post messages into your team\'s Slack channel.',
+        docUrl: 'https://api.slack.com/apps',
+        optional: true,
+        notifyTest: 'slack',
+        fields: [
+          { field: 'slackBotToken', label: 'Bot Token', placeholder: 'xoxb-…', hint: 'Needs the chat:write scope.', type: 'password' },
+          { field: 'slackChannelId', label: 'Channel ID', placeholder: 'C0123456789' },
+        ],
+      },
+      {
+        id: 'telegram',
+        name: 'Telegram',
+        whatFor: 'Send alerts to a Telegram chat (DM or group).',
+        docUrl: 'https://core.telegram.org/bots#how-do-i-create-a-bot',
+        optional: true,
+        notifyTest: 'telegram',
+        fields: [
+          { field: 'telegramBotToken', label: 'Bot Token', placeholder: '123456789:AAF…', hint: 'Create with @BotFather on Telegram.', type: 'password' },
+          { field: 'telegramChatId', label: 'Chat ID', placeholder: '-1001234567890' },
+        ],
+      },
+    ],
+  },
+  {
+    id: 'automation',
+    emoji: '🔌',
+    title: 'Connect to n8n automation hub',
+    why: 'Only if you already run an n8n instance and want it to trigger / be triggered by Ooumph workflows.',
+    unlocks: ['Custom workflow triggers'],
+    providers: [
+      {
+        id: 'n8n',
+        name: 'n8n',
+        whatFor: 'Bridge to external automation flows you already maintain.',
+        docUrl: 'https://docs.n8n.io/api/authentication/',
+        optional: true,
+        fields: [
+          { field: 'n8nBaseUrl', label: 'Base URL', placeholder: 'https://your-n8n.domain.com' },
+          { field: 'n8nApiKey', label: 'API Key', placeholder: 'n8n API key', type: 'password' },
+        ],
+      },
+    ],
+  },
+]
 
 // ─── masked key input ─────────────────────────────────────────────────────────
 function MaskedInput({ value, onChange, placeholder, className }: { value: string; onChange: (v: string) => void; placeholder?: string; className?: string }) {
@@ -205,6 +941,153 @@ function UsageBar({ label, used, total, unit }: { label: string; used: number; t
   )
 }
 
+// ─── Sprint 8F: BYOK provider card, rendered from KEY_USE_CASES ───────────────
+//
+// Pure presentation. Receives the live modelSettings + setter + testResults
+// from the page-level state. Renders one provider's worth of fields with
+// honest disclosure about whether a real "Test Connection" exists or whether
+// the field is paste-only (status badge is just "has value" in the latter
+// case, never the false "✅ Verified" we used to lie about).
+
+// Maps ModelSettings field names → workspace_secrets provider slugs.
+// Used to show "Key saved" when key exists encrypted but isn't echoed back.
+const FIELD_TO_PROVIDER: Partial<Record<keyof ModelSettings, string>> = {
+  anthropicApiKey: 'anthropic',
+  openaiApiKey: 'openai',
+  elevenLabsApiKey: 'elevenlabs',
+  stabilityApiKey: 'stability',
+  replicateApiToken: 'replicate',
+  geminiApiKey: 'gemini',
+  klingAccessKey: 'kling',
+  runwayApiKey: 'runway',
+  resendApiKey: 'resend',
+  mailchimpApiKey: 'mailchimp',
+  bufferAccessToken: 'buffer',
+}
+
+function ProviderCard({
+  provider, ms, update, onTest, testResult, onNotifyTest, notifyResult, savedKeys,
+}: {
+  provider: UseCaseProvider
+  ms: ModelSettings
+  update: (field: keyof ModelSettings, value: string) => void
+  onTest: (testProvider: string) => void
+  testResult?: string
+  /** Optional handler for Slack/Telegram-style notify tests (full delivery
+   *  loop, not just credential validation). */
+  onNotifyTest?: (service: 'slack' | 'telegram') => void
+  notifyResult?: string
+  savedKeys?: Record<string, boolean>
+}) {
+  // A provider is "filled in" if its FIRST field has a value in local state,
+  // OR if the API reports the key exists encrypted in workspace_secrets.
+  const primaryField = provider.fields[0]
+  const localValue = (ms as unknown as Record<string, string>)[primaryField.field as string]?.trim()
+  const providerSlug = FIELD_TO_PROVIDER[primaryField.field as keyof ModelSettings]
+  const isSavedRemotely = !!(providerSlug && savedKeys?.[providerSlug])
+  const filled = !!localValue || isSavedRemotely
+
+  return (
+    <div className={`rounded-xl border p-5 space-y-4 ${provider.optional ? 'bg-gray-900/40 border-gray-800' : 'bg-gray-900 border-gray-800'}`}>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <h3 className="text-white text-sm font-semibold">{provider.name}</h3>
+            {provider.optional && (
+              <span className="text-[10px] text-gray-500 bg-gray-800 border border-gray-700 px-1.5 py-0.5 rounded">Optional</span>
+            )}
+            <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${filled ? 'bg-green-900/60 text-green-300 border border-green-800/60' : 'bg-gray-800 text-yellow-400 border border-yellow-900/40'}`}>
+              {filled ? '✓ Filled in' : 'Not set'}
+            </span>
+            {provider.testProvider
+              ? <span className="text-[10px] text-indigo-300 bg-indigo-950/60 border border-indigo-900/60 px-1.5 py-0.5 rounded" title="The Test Connection button pings the live provider before saving.">Live test</span>
+              : <span className="text-[10px] text-gray-500 bg-gray-800/60 border border-gray-700 px-1.5 py-0.5 rounded" title="No live test endpoint yet — this card just stores the value. We can't tell you whether the key actually works until something uses it.">Paste only</span>
+            }
+          </div>
+          <p className="text-gray-400 text-xs mt-1.5 leading-relaxed">{provider.whatFor}</p>
+        </div>
+        <div className="flex flex-col gap-1.5 items-end shrink-0">
+          {provider.signupUrl && !filled && (
+            <a
+              href={provider.signupUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="px-2.5 py-1 rounded bg-emerald-700/30 hover:bg-emerald-700/50 border border-emerald-800/60 text-emerald-300 text-xs whitespace-nowrap font-medium"
+              title="Opens the provider's free-signup page in a new tab. After signing up, come back and paste your keys here."
+            >
+              Sign up free ↗
+            </a>
+          )}
+          {provider.docUrl && (
+            <a href={provider.docUrl} target="_blank" rel="noopener noreferrer" className="text-indigo-400 hover:text-indigo-300 text-xs whitespace-nowrap" title="Open the provider's key-management page">
+              {filled ? 'Manage keys ↗' : 'Get key ↗'}
+            </a>
+          )}
+        </div>
+      </div>
+
+      {provider.freeTierNote && !filled && (
+        <div className="text-[11px] text-gray-400 bg-gray-950/60 border border-gray-800 rounded px-3 py-2">
+          <span className="text-emerald-400 font-medium">Free tier ·</span> {provider.freeTierNote}
+        </div>
+      )}
+
+      {provider.fields.map(f => {
+        const value = (ms as unknown as Record<string, string>)[f.field as string] || ''
+        const useMask = (f.type ?? (/Key|Token|Secret|Password/i.test(f.label) ? 'password' : 'text')) === 'password'
+        const fieldProviderSlug = FIELD_TO_PROVIDER[f.field as keyof ModelSettings]
+        const fieldIsSaved = !!(fieldProviderSlug && savedKeys?.[fieldProviderSlug])
+        const effectivePlaceholder = (!value && fieldIsSaved)
+          ? '••••••••  Key saved — enter new key to replace'
+          : f.placeholder
+        return (
+          <Field key={f.field as string} label={f.label} hint={f.hint}>
+            {fieldIsSaved && !value && (
+              <p className="text-emerald-400 text-[11px] mb-1.5 flex items-center gap-1">
+                <span>✅</span> Key saved and encrypted — leave blank to keep it, or paste a new key to replace it
+              </p>
+            )}
+            {f.options
+              ? (
+                <select className={inp} value={value} onChange={e => update(f.field, e.target.value)}>
+                  {f.options.map(o => <option key={o} value={o}>{o}</option>)}
+                </select>
+              )
+              : useMask
+                ? <MaskedInput value={value} onChange={v => update(f.field, v)} placeholder={effectivePlaceholder} />
+                : <input className={inp} value={value} onChange={e => update(f.field, e.target.value)} placeholder={effectivePlaceholder} />
+            }
+          </Field>
+        )
+      })}
+
+      {provider.testProvider && (
+        <div className="flex items-center gap-3 pt-1 flex-wrap">
+          <button onClick={() => onTest(provider.testProvider!)} className={btnSm}>
+            Test Connection
+          </button>
+          {testResult && <span className="text-xs text-gray-300 bg-gray-800 px-2 py-0.5 rounded">{testResult}</span>}
+          <span className="text-[11px] text-gray-500">On a successful test, this key is auto-saved (encrypted).</span>
+        </div>
+      )}
+
+      {provider.notifyTest && onNotifyTest && (
+        <div className="flex items-center gap-3 pt-1 flex-wrap">
+          <button onClick={() => onNotifyTest(provider.notifyTest!)} className={btnSm}>
+            Send Test Notification
+          </button>
+          {notifyResult && (
+            <span className={`text-xs px-2 py-0.5 rounded ${notifyResult.startsWith('✅') ? 'text-green-400 bg-green-950/40' : 'text-red-400 bg-red-950/40'}`}>
+              {notifyResult}
+            </span>
+          )}
+          <span className="text-[11px] text-gray-500">Sends a real message to your configured channel.</span>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── modal ─────────────────────────────────────────────────────────────────────
 function Modal({ open, onClose, title, children }: { open: boolean; onClose: () => void; title: string; children: React.ReactNode }) {
   if (!open) return null
@@ -265,19 +1148,16 @@ export default function SettingsPage() {
   const [dndEnabled, setDndEnabled] = useState(false)
 
   // ── security state ─────────────────────────────────────────────────────────
+  // Sprint 7C: hardcoded demo arrays purged. Sessions + login history now
+  // come from /api/account/sessions and /api/account/login-history,
+  // populated by the login route's audit writes. The previous version
+  // showed fake "MacBook Pro · Mumbai · 2 mins ago" rows on every
+  // workspace, regardless of actual logins.
   const [twoFAEnabled, setTwoFAEnabled] = useState(false)
-  const [sessions] = useState<Session[]>([
-    { id: '1', device: 'MacBook Pro', browser: 'Chrome 124', ip: '103.21.45.12', location: 'Mumbai, IN', lastActive: '2 mins ago', current: true },
-    { id: '2', device: 'iPhone 15', browser: 'Safari 17', ip: '103.21.45.14', location: 'Mumbai, IN', lastActive: '1 hr ago', current: false },
-  ])
-  const [accessTokens, setAccessTokens] = useState<AccessToken[]>([
-    { id: 't1', name: 'CI/CD Pipeline', permissions: ['read:campaigns', 'write:content'], lastUsed: '2026-05-25', expiry: '2026-12-31' },
-  ])
-  const [loginHistory] = useState<LoginRecord[]>([
-    { date: '2026-05-26 09:14', device: 'MacBook Pro', ip: '103.21.45.12', location: 'Mumbai, IN', result: 'Success' },
-    { date: '2026-05-25 22:41', device: 'iPhone 15', ip: '103.21.45.14', location: 'Mumbai, IN', result: 'Success' },
-    { date: '2026-05-20 03:12', device: 'Unknown', ip: '198.51.100.99', location: 'Frankfurt, DE', result: 'Failed' },
-  ])
+  const [sessions, setSessions] = useState<Session[] | null>(null)
+  const [loginHistory, setLoginHistory] = useState<LoginRecord[] | null>(null)
+  const [sessionActing, setSessionActing] = useState<string | null>(null)
+  const [exportError, setExportError] = useState<string | null>(null)
 
   // ── appearance state ───────────────────────────────────────────────────────
   const [appearance, setAppearance] = useState({
@@ -296,7 +1176,7 @@ export default function SettingsPage() {
     elevenLabsApiKey: '', elevenLabsVoiceId: '', elevenLabsVoiceModel: 'eleven_multilingual_v2',
     stabilityApiKey: '', replicateApiToken: '',
     geminiApiKey: '', geminiModel: 'gemini-1.5-pro',
-    klingAccessKey: '', klingSecretKey: '', runwayApiKey: '',
+    klingAccessKey: '', klingSecretKey: '', runwayApiKey: '', lumaApiKey: '', pikaApiKey: '',
     heygenApiKey: '', vapiApiKey: '',
     slackBotToken: '', slackChannelId: '',
     telegramBotToken: '', telegramChatId: '',
@@ -319,6 +1199,9 @@ export default function SettingsPage() {
     razorpayKeyId: '', razorpayKeySecret: '',
   }
   const [modelSettings, setModelSettings] = useState<ModelSettings>(defaultModelSettings)
+  // savedKeys: provider slug → true when key exists in workspace_secrets.
+  // Used purely for display — shows "Key saved" badge on inputs after reload.
+  const [savedKeys, setSavedKeys] = useState<Record<string, boolean>>({})
   const [testResults, setTestResults] = useState<Record<string, string>>({})
   const [sharedKeyFallback, setSharedKeyFallback] = useState(true)
   const [keyRotationReminder, setKeyRotationReminder] = useState(true)
@@ -377,6 +1260,12 @@ export default function SettingsPage() {
               if (ms && typeof ms === 'object') setModelSettings(prev => ({ ...prev, ...ms }))
             } catch { /* ignore */ }
           }
+          // Populate saved-key display flags from workspace_secrets presence check.
+          // The API strips actual key values before returning them (security),
+          // so we use these boolean flags to show "Key saved" in the UI.
+          if (d.secrets && typeof d.secrets === 'object') {
+            setSavedKeys(d.secrets as Record<string, boolean>)
+          }
         }
       })
       .finally(() => setFetching(false))
@@ -384,6 +1273,78 @@ export default function SettingsPage() {
     const name = localStorage.getItem('userName') || ''
     setProfile(prev => ({ ...prev, fullName: name, email }))
   }, [router])
+
+  // Sprint 7C: load Security tab data when it becomes active. Sessions
+  // and login history come from the audit tables — login_events &
+  // user_sessions — populated whenever the user logs in.
+  const loadSessions = useCallback(async () => {
+    try {
+      const r = await fetch('/api/account/sessions')
+      if (!r.ok) { setSessions([]); return }
+      const j = await r.json() as { sessions?: Session[] }
+      setSessions(j.sessions || [])
+    } catch { setSessions([]) }
+  }, [])
+  const loadLoginHistory = useCallback(async () => {
+    try {
+      const r = await fetch('/api/account/login-history')
+      if (!r.ok) { setLoginHistory([]); return }
+      const j = await r.json() as { events?: LoginRecord[] }
+      setLoginHistory(j.events || [])
+    } catch { setLoginHistory([]) }
+  }, [])
+
+  useEffect(() => {
+    if (activeSection === 'security') {
+      void loadSessions()
+      void loadLoginHistory()
+    }
+  }, [activeSection, loadSessions, loadLoginHistory])
+
+  async function revokeSession(id: string) {
+    setSessionActing(id)
+    try {
+      await fetch(`/api/account/sessions?id=${encodeURIComponent(id)}`, { method: 'DELETE' })
+      await loadSessions()
+    } finally { setSessionActing(null) }
+  }
+  async function revokeAllOtherSessions() {
+    setSessionActing('all')
+    try {
+      await fetch('/api/account/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'revoke-others' }),
+      })
+      await loadSessions()
+    } finally { setSessionActing(null) }
+  }
+
+  // Sprint 7C: real GDPR-style export — was previously alert('demo').
+  async function exportData() {
+    setExportError(null)
+    try {
+      const workspaceId = localStorage.getItem('workspaceId')
+      const qs = workspaceId ? `?workspaceId=${encodeURIComponent(workspaceId)}` : ''
+      const r = await fetch(`/api/account/export${qs}`)
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({})) as { error?: string }
+        setExportError(j.error || `Export failed (${r.status})`)
+        return
+      }
+      const blob = await r.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `ooumph-export-${new Date().toISOString().slice(0, 10)}.json`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      setExportError(e instanceof Error ? e.message : String(e))
+    }
+  }
 
   const markUnsaved = (sec: SectionKey) => setUnsaved(prev => new Set(prev).add(sec))
 
@@ -410,6 +1371,41 @@ export default function SettingsPage() {
   }
 
   const testConnection = async (provider: string) => {
+    // Sprint 19B: Cloudinary uses 3 keys (cloudName + apiKey + apiSecret) and
+    // a dedicated /api/integrations/cloudinary/test endpoint that hits
+    // Cloudinary's /usage with HTTP Basic auth. Special-case it here before
+    // the single-key PROVIDER_MAP path.
+    if (provider === 'cloudinary') {
+      const ms = modelSettings as unknown as Record<string, string>
+      const cloudName = (ms.cloudinaryCloudName || '').trim()
+      const apiKey = (ms.cloudinaryApiKey || '').trim()
+      const apiSecret = (ms.cloudinaryApiSecret || '').trim()
+      if (!cloudName || !apiKey || !apiSecret) {
+        setTestResults(prev => ({ ...prev, [provider]: '⚠ All three fields required' }))
+        setTimeout(() => setTestResults(prev => { const s = { ...prev }; delete s[provider]; return s }), 4000)
+        return
+      }
+      setTestResults(prev => ({ ...prev, [provider]: 'Testing…' }))
+      try {
+        const workspaceId = localStorage.getItem('workspaceId') || ''
+        const res = await fetch('/api/integrations/cloudinary/test', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ workspaceId, cloudName, apiKey, apiSecret }),
+        })
+        const data = await res.json() as { ok: boolean; message?: string; plan?: string }
+        if (data.ok) {
+          setTestResults(prev => ({ ...prev, [provider]: `✅ ${data.message || 'Connected'}${data.plan ? ` (plan: ${data.plan})` : ''}` }))
+        } else {
+          setTestResults(prev => ({ ...prev, [provider]: `❌ ${data.message || 'Connection failed'}` }))
+        }
+      } catch (err) {
+        setTestResults(prev => ({ ...prev, [provider]: `❌ ${err instanceof Error ? err.message : 'Network error'}` }))
+      }
+      setTimeout(() => setTestResults(prev => { const s = { ...prev }; delete s[provider]; return s }), 8000)
+      return
+    }
+
     // Map UI provider slug → BYOK provider name + ModelSettings field
     const PROVIDER_MAP: Record<string, { byok: string; field: keyof ModelSettings }> = {
       openai:     { byok: 'openai',     field: 'openaiApiKey' },
@@ -550,7 +1546,7 @@ export default function SettingsPage() {
                   </label>
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <Field label="Full Name"><input className={inp} value={profile.fullName} onChange={e => { setProfile(p => ({ ...p, fullName: e.target.value })); markUnsaved('profile') }} /></Field>
                 <Field label="Job Title"><input className={inp} value={profile.jobTitle} onChange={e => { setProfile(p => ({ ...p, jobTitle: e.target.value })); markUnsaved('profile') }} placeholder="e.g. Marketing Manager" /></Field>
               </div>
@@ -560,7 +1556,7 @@ export default function SettingsPage() {
                   <button className={btnSm} onClick={() => setModal('changeEmail')}>Change Email</button>
                 </div>
               </Field>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <Field label="Phone Number"><input className={inp} value={profile.phone} onChange={e => { setProfile(p => ({ ...p, phone: e.target.value })); markUnsaved('profile') }} placeholder="+91 98765 43210" /></Field>
                 <Field label="Timezone">
                   <select className={inp} value={profile.timezone} onChange={e => { setProfile(p => ({ ...p, timezone: e.target.value })); markUnsaved('profile') }}>
@@ -595,7 +1591,7 @@ export default function SettingsPage() {
                 </div>
               </div>
               <Field label="Workspace Name"><input className={inp} value={workspace.name} onChange={e => { setWorkspace(w => ({ ...w, name: e.target.value })); setForm(f => ({ ...f, businessName: e.target.value })); markUnsaved('workspace') }} /></Field>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <Field label="Industry">
                   <select className={inp} value={workspace.industry} onChange={e => { setWorkspace(w => ({ ...w, industry: e.target.value })); setForm(f => ({ ...f, industry: e.target.value })); markUnsaved('workspace') }}>
                     <option value="">Select industry</option>
@@ -610,7 +1606,7 @@ export default function SettingsPage() {
               </div>
               <Field label="Website URL"><input className={inp} value={workspace.website} placeholder="https://" onChange={e => { setWorkspace(w => ({ ...w, website: e.target.value })); setForm(f => ({ ...f, website: e.target.value })); markUnsaved('workspace') }} /></Field>
               <Field label="Business Description"><textarea className={ta} rows={3} value={workspace.description} onChange={e => { setWorkspace(w => ({ ...w, description: e.target.value })); markUnsaved('workspace') }} placeholder="What does your business do?" /></Field>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <Field label="Default Currency">
                   <select className={inp} value={workspace.currency} onChange={e => { setWorkspace(w => ({ ...w, currency: e.target.value })); markUnsaved('workspace') }}>
                     {CURRENCIES.map(c => <option key={c}>{c}</option>)}
@@ -645,299 +1641,247 @@ export default function SettingsPage() {
           </div>
         )}
 
-        {/* ════════════════ API KEYS (BYOK) ════════════════ */}
+        {/* ════════════════ API KEYS (BYOK) — Sprint 8F: by usage ════════════════ */}
         {activeSection === 'api-keys' && (
-          <div className="space-y-6">
+          <div className="space-y-8">
+            {/* Header */}
             <div>
-              <h1 className="text-2xl font-bold text-white">🔑 AI Model API Keys (BYOK)</h1>
-              <p className="text-gray-400 text-sm mt-1">Use your own API keys for full control over costs and rate limits. Shared keys are used as fallback.</p>
+              <h1 className="text-2xl font-bold text-white">🔑 API Keys & Connections</h1>
+              <p className="text-gray-400 text-sm mt-1 max-w-2xl leading-relaxed">
+                Add the keys for the providers whose features you want to use. We&apos;ve grouped them by what they unlock — not by vendor name — so you only need to add keys for the parts you actually use.
+              </p>
             </div>
-            <div className="p-4 rounded-xl bg-yellow-950 border border-yellow-800 text-yellow-300 text-sm">
-              Keys are encrypted at rest. Never share them with anyone. Ooumph staff will never ask for your API keys.
+
+            {/* Trust + safety banner */}
+            <div className="rounded-xl border border-amber-900/40 bg-amber-950/30 p-4 text-amber-300 text-xs space-y-2">
+              <p><strong>How we store your keys:</strong> Keys tagged <span className="bg-indigo-950 border border-indigo-900 px-1.5 py-0.5 rounded text-indigo-300">Live test</span> are AES-256-GCM encrypted at rest once you hit Test Connection. Keys tagged <span className="bg-gray-800 border border-gray-700 px-1.5 py-0.5 rounded text-gray-300">Paste only</span> are saved as plaintext JSON on your workspace row — equivalent encryption is on our roadmap.</p>
+              <p>Ooumph staff will never ask you for any API key. Never paste a production key into a test environment.</p>
             </div>
 
-            {/* OpenAI */}
-            <Card title="OpenAI" subtitle="GPT-4o, DALL-E 3, Whisper">
-              <div className="flex items-center gap-2 mb-3">
-                <span className={`px-2 py-0.5 rounded text-xs font-medium ${modelSettings.openaiApiKey ? 'bg-green-900 text-green-300' : 'bg-gray-800 text-yellow-400'}`}>{modelSettings.openaiApiKey ? '✅ Connected' : '⚠ Not Set'}</span>
-                {testResults.openai && <span className="text-xs text-gray-300 bg-gray-800 px-2 py-0.5 rounded">{testResults.openai}</span>}
-              </div>
-              <Field label="API Key" hint="From platform.openai.com/api-keys">
-                <MaskedInput value={modelSettings.openaiApiKey} onChange={v => updateMs('openaiApiKey', v)} placeholder="sk-proj-..." />
-              </Field>
-              <Field label="Default Model">
-                <select className={inp} value={modelSettings.openaiModel} onChange={e => updateMs('openaiModel', e.target.value)}>
-                  {['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo'].map(m => <option key={m}>{m}</option>)}
-                </select>
-              </Field>
-              <div className="flex items-center gap-3 pt-1">
-                <button className={btnSm} onClick={() => testConnection('openai')}>Test Connection</button>
-                <span className="text-gray-500 text-xs">Usage this month: 2,400 tokens · $0.02</span>
-              </div>
-            </Card>
-
-            {/* Anthropic */}
-            <Card title="Anthropic (Claude)" subtitle="Claude 3.5 Sonnet, Opus, Haiku">
-              <div className="flex items-center gap-2 mb-3">
-                <span className={`px-2 py-0.5 rounded text-xs font-medium ${modelSettings.anthropicApiKey ? 'bg-green-900 text-green-300' : 'bg-gray-800 text-yellow-400'}`}>{modelSettings.anthropicApiKey ? '✅ Connected' : '⚠ Not Set'}</span>
-                {testResults.anthropic && <span className="text-xs text-gray-300 bg-gray-800 px-2 py-0.5 rounded">{testResults.anthropic}</span>}
-              </div>
-              <Field label="API Key" hint="From console.anthropic.com/settings/keys">
-                <MaskedInput value={modelSettings.anthropicApiKey} onChange={v => updateMs('anthropicApiKey', v)} placeholder="sk-ant-..." />
-              </Field>
-              <Field label="Default Model">
-                <select className={inp} value={modelSettings.claudeModel} onChange={e => updateMs('claudeModel', e.target.value)}>
-                  {['claude-sonnet-4-6', 'claude-3-5-sonnet-20241022', 'claude-3-opus-20240229', 'claude-3-haiku-20240307'].map(m => <option key={m}>{m}</option>)}
-                </select>
-              </Field>
-              <div className="flex items-center gap-3 pt-1">
-                <button className={btnSm} onClick={() => testConnection('anthropic')}>Test Connection</button>
-                <span className="text-gray-500 text-xs">Usage this month: 145,230 tokens · $0.87</span>
-              </div>
-            </Card>
-
-            {/* ElevenLabs */}
-            <Card title="ElevenLabs" subtitle="Voice synthesis and audio generation">
-              <div className="flex items-center gap-2 mb-3">
-                <span className={`px-2 py-0.5 rounded text-xs font-medium ${modelSettings.elevenLabsApiKey ? 'bg-green-900 text-green-300' : 'bg-gray-800 text-yellow-400'}`}>{modelSettings.elevenLabsApiKey ? '✅ Connected' : '⚠ Not Set'}</span>
-                {testResults.elevenLabs && <span className="text-xs text-gray-300 bg-gray-800 px-2 py-0.5 rounded">{testResults.elevenLabs}</span>}
-              </div>
-              <Field label="API Key" hint="From elevenlabs.io/app/settings/api-keys">
-                <MaskedInput value={modelSettings.elevenLabsApiKey} onChange={v => updateMs('elevenLabsApiKey', v)} placeholder="sk_..." />
-              </Field>
-              <div className="grid grid-cols-2 gap-4">
-                <Field label="Voice Model">
-                  <select className={inp} value={modelSettings.elevenLabsVoiceModel} onChange={e => updateMs('elevenLabsVoiceModel', e.target.value)}>
-                    {['eleven_multilingual_v2', 'eleven_english_v1', 'eleven_turbo_v2'].map(m => <option key={m}>{m}</option>)}
-                  </select>
-                </Field>
-                <Field label="Default Voice ID" hint="Optional">
-                  <input className={inp} value={modelSettings.elevenLabsVoiceId} onChange={e => updateMs('elevenLabsVoiceId', e.target.value)} placeholder="21m00Tcm4TlvDq8ikWAM" />
-                </Field>
-              </div>
-              <div className="flex items-center gap-3 pt-1">
-                <button className={btnSm} onClick={() => testConnection('elevenLabs')}>Test Connection</button>
-                <span className="text-gray-500 text-xs">Credits remaining: 8,420 / 10,000</span>
-              </div>
-            </Card>
-
-            {/* Stability AI */}
-            <Card title="Stability AI / SDXL" subtitle="Image generation via Stable Diffusion">
-              <div className="flex items-center gap-2 mb-3">
-                <span className={`px-2 py-0.5 rounded text-xs font-medium ${modelSettings.stabilityApiKey ? 'bg-green-900 text-green-300' : 'bg-gray-800 text-yellow-400'}`}>{modelSettings.stabilityApiKey ? '✅ Connected' : '⚠ Not Set'}</span>
-                {testResults.stability && <span className="text-xs text-gray-300 bg-gray-800 px-2 py-0.5 rounded">{testResults.stability}</span>}
-              </div>
-              <Field label="API Key" hint="From platform.stability.ai/account/keys">
-                <MaskedInput value={modelSettings.stabilityApiKey} onChange={v => updateMs('stabilityApiKey', v)} placeholder="sk-..." />
-              </Field>
-              <div className="flex items-center gap-3 pt-1">
-                <button className={btnSm} onClick={() => testConnection('stability')}>Test Connection</button>
-                <span className="text-gray-500 text-xs">Credits remaining: 420</span>
-              </div>
-            </Card>
-
-            {/* Replicate */}
-            <Card title="Replicate" subtitle="Open-source AI models via API">
-              <div className="flex items-center gap-2 mb-3">
-                <span className={`px-2 py-0.5 rounded text-xs font-medium ${modelSettings.replicateApiToken ? 'bg-green-900 text-green-300' : 'bg-gray-800 text-yellow-400'}`}>{modelSettings.replicateApiToken ? '✅ Connected' : '⚠ Not Set'}</span>
-                {testResults.replicate && <span className="text-xs text-gray-300 bg-gray-800 px-2 py-0.5 rounded">{testResults.replicate}</span>}
-              </div>
-              <Field label="API Token" hint="From replicate.com/account/api-tokens">
-                <MaskedInput value={modelSettings.replicateApiToken} onChange={v => updateMs('replicateApiToken', v)} placeholder="r8_..." />
-              </Field>
-              <button className={btnSm} onClick={() => testConnection('replicate')}>Test Connection</button>
-            </Card>
-
-            {/* Google Gemini */}
-            <Card title="Google AI (Gemini)" subtitle="Gemini 1.5 Pro and Flash models">
-              <div className="flex items-center gap-2 mb-3">
-                <span className={`px-2 py-0.5 rounded text-xs font-medium ${modelSettings.geminiApiKey ? 'bg-green-900 text-green-300' : 'bg-gray-800 text-yellow-400'}`}>{modelSettings.geminiApiKey ? '✅ Connected' : '⚠ Not Set'}</span>
-                {testResults.gemini && <span className="text-xs text-gray-300 bg-gray-800 px-2 py-0.5 rounded">{testResults.gemini}</span>}
-              </div>
-              <Field label="API Key" hint="From aistudio.google.com/app/apikey">
-                <MaskedInput value={modelSettings.geminiApiKey} onChange={v => updateMs('geminiApiKey', v)} placeholder="AIza..." />
-              </Field>
-              <Field label="Model">
-                <select className={inp} value={modelSettings.geminiModel} onChange={e => updateMs('geminiModel', e.target.value)}>
-                  {['gemini-1.5-pro', 'gemini-1.5-flash', 'gemini-2.0-flash'].map(m => <option key={m}>{m}</option>)}
-                </select>
-              </Field>
-              <button className={btnSm} onClick={() => testConnection('gemini')}>Test Connection</button>
-            </Card>
-
-            {/* Kling AI */}
-            <Card title="Kling AI (Video)" subtitle="AI video generation — Kling 2.0">
-              <div className="flex items-center gap-2 mb-3">
-                <span className={`px-2 py-0.5 rounded text-xs font-medium ${modelSettings.klingAccessKey ? 'bg-green-900 text-green-300' : 'bg-gray-800 text-yellow-400'}`}>{modelSettings.klingAccessKey ? '✅ Connected' : '⚠ Not Set'}</span>
-                {testResults.kling && <span className="text-xs text-gray-300 bg-gray-800 px-2 py-0.5 rounded">{testResults.kling}</span>}
-              </div>
-              <Field label="Access Key" hint="From klingai.com → API Management">
-                <MaskedInput value={modelSettings.klingAccessKey} onChange={v => updateMs('klingAccessKey', v)} placeholder="Access key" />
-              </Field>
-              <Field label="Secret Key">
-                <MaskedInput value={modelSettings.klingSecretKey} onChange={v => updateMs('klingSecretKey', v)} placeholder="Secret key" />
-              </Field>
-              <button className={btnSm} onClick={() => testConnection('kling')}>Test Connection</button>
-            </Card>
-
-            {/* Runway ML */}
-            <Card title="Runway ML" subtitle="Gen-2 and Gen-3 video generation">
-              <div className="flex items-center gap-2 mb-3">
-                <span className={`px-2 py-0.5 rounded text-xs font-medium ${modelSettings.runwayApiKey ? 'bg-green-900 text-green-300' : 'bg-gray-800 text-yellow-400'}`}>{modelSettings.runwayApiKey ? '✅ Connected' : '⚠ Not Set'}</span>
-                {testResults.runway && <span className="text-xs text-gray-300 bg-gray-800 px-2 py-0.5 rounded">{testResults.runway}</span>}
-              </div>
-              <Field label="API Key" hint="From app.runwayml.com/account/api-keys">
-                <MaskedInput value={modelSettings.runwayApiKey} onChange={v => updateMs('runwayApiKey', v)} placeholder="key_..." />
-              </Field>
-              <button className={btnSm} onClick={() => testConnection('runway')}>Test Connection</button>
-            </Card>
-
-            {/* Other keys grouped */}
-            <Card title="Groq" subtitle="Fast LLM inference for bulk tasks">
-              <Field label="API Key" hint="Get free at console.groq.com/keys">
-                <MaskedInput value={modelSettings.groqApiKey} onChange={v => updateMs('groqApiKey', v)} placeholder="gsk_..." />
-              </Field>
-            </Card>
-
-            {/* Data & Analytics */}
-            <Card title="Data & Analytics">
-              <Field label="Brave Search API Key" hint="Enables live trend signals in the Trend Scout agent">
-                <MaskedInput value={modelSettings.braveSearchApiKey} onChange={v => updateMs('braveSearchApiKey', v)} placeholder="BSA..." />
-              </Field>
-              <Field label="Google Analytics 4 Property ID">
-                <input className={inp} value={modelSettings.ga4PropertyId} onChange={e => updateMs('ga4PropertyId', e.target.value)} placeholder="1234567890" />
-              </Field>
-              <Field label="GA4 Access Token">
-                <MaskedInput value={modelSettings.ga4AccessToken} onChange={v => updateMs('ga4AccessToken', v)} placeholder="ya29..." />
-              </Field>
-              <Field label="Search Console Site URL">
-                <input className={inp} value={modelSettings.searchConsoleSiteUrl} onChange={e => updateMs('searchConsoleSiteUrl', e.target.value)} placeholder="https://yourdomain.com" />
-              </Field>
-              <Field label="Search Console Access Token">
-                <MaskedInput value={modelSettings.searchConsoleAccessToken} onChange={v => updateMs('searchConsoleAccessToken', v)} placeholder="ya29...." />
-              </Field>
-            </Card>
-
-            {/* CRM & Email */}
-            <Card title="CRM & Email">
-              <Field label="HubSpot Access Token"><MaskedInput value={modelSettings.hubspotAccessToken} onChange={v => updateMs('hubspotAccessToken', v)} placeholder="pat-..." /></Field>
-              <Field label="Resend API Key"><MaskedInput value={modelSettings.resendApiKey} onChange={v => updateMs('resendApiKey', v)} placeholder="re_..." /></Field>
-            </Card>
-
-            {/* Notifications */}
-            <Card title="Notification Services">
-              <Field label="Slack Bot Token" hint="From api.slack.com — needs chat:write scope">
-                <div className="space-y-1">
-                  <div className="flex gap-2">
-                    <div className="flex-1"><MaskedInput value={modelSettings.slackBotToken} onChange={v => updateMs('slackBotToken', v)} placeholder="xoxb-..." /></div>
-                    <button onClick={() => testNotification('slack')} className={btnSm}>Test</button>
+            {/* Sprint 11C: prominent Quick Start hero. The previous version
+                was a small 3-card row that non-technical users skimmed
+                past. This treatment makes the 3-key setup feel like
+                a guided onboarding step: numbered actions, time estimate
+                per provider, direct "Get key ↗" link, progress meter, and
+                a celebratory CTA once all 3 are in. */}
+            {(() => {
+              const ess = [
+                {
+                  key: 'anthropicApiKey',
+                  label: 'Anthropic (Claude)',
+                  why: 'Powers every AI agent — CMO chat, content drafts, strategy, brand voice scoring',
+                  uc: 'ai-text',
+                  signupUrl: 'https://console.anthropic.com/settings/keys',
+                  timeMin: 2,
+                },
+                {
+                  key: 'openaiApiKey',
+                  label: 'OpenAI',
+                  why: 'Unlocks DALL-E image generation + GPT-4o as a backup for Claude',
+                  uc: 'image-gen',
+                  signupUrl: 'https://platform.openai.com/api-keys',
+                  timeMin: 2,
+                },
+                {
+                  key: 'resendApiKey',
+                  label: 'Resend',
+                  why: 'Sends approval confirmations, reminders, and lead nurture emails',
+                  uc: 'email',
+                  signupUrl: 'https://resend.com/api-keys',
+                  timeMin: 1,
+                },
+              ]
+              const filledCount = ess.filter(e => {
+                const localVal = (modelSettings as unknown as Record<string, string>)[e.key]?.trim()
+                const slug = FIELD_TO_PROVIDER[e.key as keyof ModelSettings]
+                return !!localVal || !!(slug && savedKeys[slug])
+              }).length
+              const allDone = filledCount === ess.length
+              return (
+                <div className={`rounded-2xl border p-6 ${allDone ? 'border-green-700 bg-gradient-to-br from-green-950/40 to-emerald-950/30' : 'border-indigo-800 bg-gradient-to-br from-indigo-950/40 to-purple-950/30'}`}>
+                  <div className="flex items-start justify-between gap-4 mb-1">
+                    <div>
+                      <p className="text-white font-bold text-lg">
+                        {allDone ? '🎉 You\'re ready to use Ooumph' : '🚀 Unlock the demo in 3 keys'}
+                      </p>
+                      <p className={`text-sm mt-1 ${allDone ? 'text-green-300' : 'text-indigo-300'}`}>
+                        {allDone
+                          ? 'All essential providers are connected. Open the CMO chat and try a real prompt.'
+                          : 'Paste these three API keys and the AI agents start working end-to-end. ~5 minutes total.'}
+                      </p>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <p className="text-3xl font-bold text-white">{filledCount}<span className="text-base text-gray-500">/3</span></p>
+                      <p className="text-xs text-gray-500 uppercase tracking-wide mt-0.5">complete</p>
+                    </div>
                   </div>
-                  {notifyTestResult.slack && <p className={`text-xs ${notifyTestResult.slack.startsWith('✅') ? 'text-green-400' : 'text-red-400'}`}>{notifyTestResult.slack}</p>}
-                </div>
-              </Field>
-              <Field label="Slack Channel ID"><input className={inp} value={modelSettings.slackChannelId} onChange={e => updateMs('slackChannelId', e.target.value)} placeholder="C0123456789" /></Field>
-              <Field label="Telegram Bot Token">
-                <div className="space-y-1">
-                  <div className="flex gap-2">
-                    <div className="flex-1"><MaskedInput value={modelSettings.telegramBotToken} onChange={v => updateMs('telegramBotToken', v)} placeholder="123456789:AAF..." /></div>
-                    <button onClick={() => testNotification('telegram')} className={btnSm}>Test</button>
+
+                  {/* Progress bar */}
+                  <div className="w-full bg-gray-800 rounded-full h-2 my-4 overflow-hidden">
+                    <div
+                      className={`h-2 rounded-full transition-all ${allDone ? 'bg-green-500' : 'bg-indigo-500'}`}
+                      style={{ width: `${(filledCount / ess.length) * 100}%` }}
+                    />
                   </div>
-                  {notifyTestResult.telegram && <p className={`text-xs ${notifyTestResult.telegram.startsWith('✅') ? 'text-green-400' : 'text-red-400'}`}>{notifyTestResult.telegram}</p>}
+
+                  {/* Step cards */}
+                  <div className="space-y-2.5">
+                    {ess.map((e, idx) => {
+                      const filled = !!(modelSettings as unknown as Record<string, string>)[e.key]?.trim()
+                      return (
+                        <div
+                          key={e.key}
+                          className={`flex items-start gap-3 rounded-lg border px-4 py-3 transition-colors ${
+                            filled
+                              ? 'border-green-800/60 bg-green-950/30'
+                              : 'border-gray-700 bg-gray-900/60 hover:border-indigo-700'
+                          }`}
+                        >
+                          <div className={`shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold ${
+                            filled ? 'bg-green-700 text-white' : 'bg-gray-800 text-gray-400 border border-gray-700'
+                          }`}>
+                            {filled ? '✓' : idx + 1}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-baseline justify-between gap-2 flex-wrap">
+                              <p className="text-white text-sm font-semibold">{e.label}</p>
+                              <span className="text-[11px] text-gray-500">~{e.timeMin} min</span>
+                            </div>
+                            <p className="text-gray-400 text-xs mt-0.5">{e.why}</p>
+                          </div>
+                          <div className="shrink-0 flex flex-col items-end gap-1">
+                            <a
+                              href={`#uc-${e.uc}`}
+                              className={`text-xs font-medium ${filled ? 'text-green-400' : 'text-indigo-300 hover:text-indigo-200'}`}
+                            >
+                              {filled ? 'Connected' : 'Paste key ↓'}
+                            </a>
+                            {!filled && (
+                              <a
+                                href={e.signupUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-[11px] text-gray-500 hover:text-gray-300"
+                              >
+                                Get key ↗
+                              </a>
+                            )}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+
+                  {allDone && (
+                    <a
+                      href="/dashboard"
+                      className="mt-5 inline-flex items-center gap-2 bg-green-600 hover:bg-green-500 text-white px-5 py-2.5 rounded-lg text-sm font-semibold transition-colors"
+                    >
+                      Try the CMO chat now →
+                    </a>
+                  )}
+
+                  <p className="text-[11px] text-gray-500 mt-4 leading-relaxed">
+                    Beyond these 3, you can connect OAuth platforms (LinkedIn / Twitter / WordPress) for publishing,
+                    and dozens of other providers grouped by use case below. The 3 above are the minimum to unlock
+                    the core AI agency demo.
+                  </p>
                 </div>
-              </Field>
-              <Field label="Telegram Chat ID"><input className={inp} value={modelSettings.telegramChatId} onChange={e => updateMs('telegramChatId', e.target.value)} placeholder="-1001234567890" /></Field>
-            </Card>
+              )
+            })()}
 
-            {/* Publishing */}
-            <Card title="Publishing">
-              <Field label="WordPress Site URL"><input className={inp} value={modelSettings.wpSiteUrl} onChange={e => updateMs('wpSiteUrl', e.target.value)} placeholder="https://yourblog.com" /></Field>
-              <Field label="WordPress Username"><input className={inp} value={modelSettings.wpUsername} onChange={e => updateMs('wpUsername', e.target.value)} placeholder="admin" /></Field>
-              <Field label="WordPress App Password"><MaskedInput value={modelSettings.wpAppPassword} onChange={v => updateMs('wpAppPassword', v)} placeholder="xxxx xxxx xxxx xxxx" /></Field>
-              <Field label="Ghost Site URL"><input className={inp} value={modelSettings.ghostUrl} onChange={e => updateMs('ghostUrl', e.target.value)} placeholder="https://yourblog.ghost.io" /></Field>
-              <Field label="Ghost Admin API Key"><MaskedInput value={modelSettings.ghostAdminKey} onChange={v => updateMs('ghostAdminKey', v)} placeholder="Ghost admin key" /></Field>
-              <Field label="Buffer Access Token"><MaskedInput value={modelSettings.bufferAccessToken} onChange={v => updateMs('bufferAccessToken', v)} placeholder="Buffer access token" /></Field>
-            </Card>
+            {/* Jump-to navigation */}
+            <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-4">
+              <p className="text-gray-500 text-xs uppercase tracking-wide mb-2">Jump to a section</p>
+              <div className="flex flex-wrap gap-1.5">
+                {KEY_USE_CASES.map(uc => {
+                  const total = uc.providers.length
+                  const filled = uc.providers.filter(p => {
+                    const f = p.fields[0].field as string
+                    return !!(modelSettings as unknown as Record<string, string>)[f]?.trim()
+                  }).length
+                  return (
+                    <a key={uc.id} href={`#uc-${uc.id}`} className="text-xs px-2.5 py-1.5 rounded-lg border border-gray-700 bg-gray-800 text-gray-300 hover:border-indigo-600 hover:text-white transition-colors">
+                      <span className="mr-1">{uc.emoji}</span>
+                      {uc.title.replace(/^Generate /, '').replace(/^Run /, '')}
+                      <span className={`ml-1.5 text-[10px] ${filled === 0 ? 'text-gray-500' : filled === total ? 'text-green-400' : 'text-yellow-400'}`}>
+                        {filled}/{total}
+                      </span>
+                    </a>
+                  )
+                })}
+              </div>
+            </div>
 
-            {/* CRM & Booking */}
-            <Card title="CRM & Booking">
-              <Field label="Cal.com API Key"><MaskedInput value={modelSettings.calcomApiKey} onChange={v => updateMs('calcomApiKey', v)} placeholder="cal_live_..." /></Field>
-              <Field label="Tally API Key"><MaskedInput value={modelSettings.tallyApiKey} onChange={v => updateMs('tallyApiKey', v)} placeholder="Tally API key" /></Field>
-            </Card>
+            {/* Use case sections */}
+            {KEY_USE_CASES.map(uc => {
+              const filledCount = uc.providers.filter(p => {
+                const f = p.fields[0].field as string
+                return !!(modelSettings as unknown as Record<string, string>)[f]?.trim()
+              }).length
+              return (
+                <section key={uc.id} id={`uc-${uc.id}`} className="scroll-mt-6 space-y-4">
+                  {/* Section header */}
+                  <div className="border-b border-gray-800 pb-3">
+                    <div className="flex items-baseline gap-2 flex-wrap">
+                      <h2 className="text-white font-semibold text-lg">
+                        <span className="mr-1.5">{uc.emoji}</span>
+                        {uc.title}
+                      </h2>
+                      <span className={`text-xs px-2 py-0.5 rounded-full ${filledCount === 0 ? 'bg-gray-800 text-gray-500' : filledCount === uc.providers.length ? 'bg-green-900/60 text-green-300' : 'bg-yellow-900/30 text-yellow-300'}`}>
+                        {filledCount} of {uc.providers.length} filled in
+                      </span>
+                      {uc.pickOne && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-indigo-950/60 border border-indigo-900 text-indigo-300">
+                          Pick at least one
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-gray-400 text-sm mt-2 max-w-3xl leading-relaxed">{uc.why}</p>
+                    <div className="mt-2 flex items-start gap-2 text-xs">
+                      <span className="text-gray-500 mt-0.5">Unlocks:</span>
+                      <span className="text-gray-400 flex-1">{uc.unlocks.join(' · ')}</span>
+                    </div>
+                    {uc.recommendation && (
+                      <p className="text-indigo-300 text-xs mt-2">💡 {uc.recommendation}</p>
+                    )}
+                  </div>
 
-            {/* Automation */}
-            <Card title="Automation">
-              <Field label="n8n Base URL"><input className={inp} value={modelSettings.n8nBaseUrl} onChange={e => updateMs('n8nBaseUrl', e.target.value)} placeholder="https://your-n8n.domain.com" /></Field>
-              <Field label="n8n API Key"><MaskedInput value={modelSettings.n8nApiKey} onChange={v => updateMs('n8nApiKey', v)} placeholder="n8n API key" /></Field>
-            </Card>
+                  {/* Provider cards */}
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                    {uc.providers.map(p => (
+                      <ProviderCard
+                        key={p.id}
+                        provider={p}
+                        ms={modelSettings}
+                        update={updateMs}
+                        onTest={testConnection}
+                        testResult={p.testProvider ? testResults[p.testProvider] : undefined}
+                        onNotifyTest={testNotification}
+                        notifyResult={p.notifyTest ? notifyTestResult[p.notifyTest] : undefined}
+                        savedKeys={savedKeys}
+                      />
+                    ))}
+                  </div>
+                </section>
+              )
+            })}
 
-            {/* Content & Media */}
-            <Card title="Content & Media">
-              <Field label="Firecrawl API Key"><MaskedInput value={modelSettings.firecrawlApiKey} onChange={v => updateMs('firecrawlApiKey', v)} placeholder="fc-..." /></Field>
-              <Field label="Unsplash Access Key"><MaskedInput value={modelSettings.unsplashAccessKey} onChange={v => updateMs('unsplashAccessKey', v)} placeholder="Unsplash access key" /></Field>
-              <Field label="Pexels API Key"><MaskedInput value={modelSettings.pexelsApiKey} onChange={v => updateMs('pexelsApiKey', v)} placeholder="Pexels API key" /></Field>
-              <Field label="Cloudinary Cloud Name"><input className={inp} value={modelSettings.cloudinaryCloudName} onChange={e => updateMs('cloudinaryCloudName', e.target.value)} placeholder="mycloud" /></Field>
-              <Field label="Cloudinary API Key"><input className={inp} value={modelSettings.cloudinaryApiKey} onChange={e => updateMs('cloudinaryApiKey', e.target.value)} placeholder="Cloudinary API Key" /></Field>
-              <Field label="Cloudinary API Secret"><MaskedInput value={modelSettings.cloudinaryApiSecret} onChange={v => updateMs('cloudinaryApiSecret', v)} placeholder="Cloudinary API Secret" /></Field>
-            </Card>
+            {/* Save (for paste-only fields — Live-test fields auto-save on success) */}
+            <div className="sticky bottom-4 z-10 rounded-xl border border-gray-700 bg-gray-900/95 backdrop-blur p-4 flex items-center justify-between gap-4">
+              <div className="text-xs text-gray-400">
+                Live-test providers save automatically when Test Connection succeeds. Paste-only providers need a manual save.
+              </div>
+              <button onClick={() => save('api-keys')} disabled={saving} className={btn + ' disabled:opacity-40 whitespace-nowrap'}>
+                {saving ? 'Saving…' : 'Save paste-only keys'}
+              </button>
+            </div>
 
-            {/* Lead Enrichment */}
-            <Card title="Lead Enrichment">
-              <Field label="Apollo.io API Key"><MaskedInput value={modelSettings.apolloApiKey} onChange={v => updateMs('apolloApiKey', v)} placeholder="Apollo.io API key" /></Field>
-              <Field label="Hunter.io API Key"><MaskedInput value={modelSettings.hunterApiKey} onChange={v => updateMs('hunterApiKey', v)} placeholder="Hunter.io API key" /></Field>
-            </Card>
-
-            {/* Email Marketing */}
-            <Card title="Email Marketing">
-              <Field label="Mailchimp API Key"><MaskedInput value={modelSettings.mailchimpApiKey} onChange={v => updateMs('mailchimpApiKey', v)} placeholder="Mailchimp API key" /></Field>
-              <Field label="Mailchimp Server Prefix"><input className={inp} value={modelSettings.mailchimpServer} onChange={e => updateMs('mailchimpServer', e.target.value)} placeholder="us18" /></Field>
-              <Field label="Brevo API Key"><MaskedInput value={modelSettings.brevoApiKey} onChange={v => updateMs('brevoApiKey', v)} placeholder="Brevo API key" /></Field>
-              <Field label="Brevo From Email"><input className={inp} type="email" value={modelSettings.brevoFromEmail} onChange={e => updateMs('brevoFromEmail', e.target.value)} placeholder="hello@yourcompany.com" /></Field>
-            </Card>
-
-            {/* Social Publishing */}
-            <Card title="Social Publishing">
-              <Field label="Twitter Bearer Token"><MaskedInput value={modelSettings.twitterBearerToken} onChange={v => updateMs('twitterBearerToken', v)} placeholder="Twitter Bearer Token" /></Field>
-              <Field label="Twitter Access Token"><MaskedInput value={modelSettings.twitterAccessToken} onChange={v => updateMs('twitterAccessToken', v)} placeholder="Twitter Access Token" /></Field>
-              <Field label="LinkedIn Access Token"><MaskedInput value={modelSettings.linkedinAccessToken} onChange={v => updateMs('linkedinAccessToken', v)} placeholder="LinkedIn Access Token" /></Field>
-              <Field label="LinkedIn Author URN"><input className={inp} value={modelSettings.linkedinAuthorUrn} onChange={e => updateMs('linkedinAuthorUrn', e.target.value)} placeholder="urn:li:person:..." /></Field>
-              <Field label="YouTube API Key"><input className={inp} value={modelSettings.youtubeApiKey} onChange={e => updateMs('youtubeApiKey', e.target.value)} placeholder="YouTube API Key" /></Field>
-              <Field label="YouTube Access Token"><MaskedInput value={modelSettings.youtubeAccessToken} onChange={v => updateMs('youtubeAccessToken', v)} placeholder="YouTube Access Token" /></Field>
-              <Field label="Deepgram API Key" hint="For audio transcription"><MaskedInput value={modelSettings.deepgramApiKey} onChange={v => updateMs('deepgramApiKey', v)} placeholder="Deepgram API key" /></Field>
-            </Card>
-
-            {/* Paid Advertising */}
-            <Card title="Paid Advertising">
-              <Field label="Meta Access Token"><MaskedInput value={modelSettings.metaAccessToken} onChange={v => updateMs('metaAccessToken', v)} placeholder="EAAxxxxx..." /></Field>
-              <Field label="Meta Ad Account ID"><input className={inp} value={modelSettings.metaAdAccountId} onChange={e => updateMs('metaAdAccountId', e.target.value)} placeholder="act_123456789" /></Field>
-              <Field label="Meta Webhook Verify Token"><input className={inp} value={modelSettings.metaWebhookVerifyToken} onChange={e => updateMs('metaWebhookVerifyToken', e.target.value)} placeholder="Your chosen verify token" /></Field>
-              <Field label="Google Ads Developer Token"><MaskedInput value={modelSettings.googleAdsDeveloperToken} onChange={v => updateMs('googleAdsDeveloperToken', v)} placeholder="Google Ads Developer Token" /></Field>
-              <Field label="Google Ads Customer ID"><input className={inp} value={modelSettings.googleAdsCustomerId} onChange={e => updateMs('googleAdsCustomerId', e.target.value)} placeholder="123-456-7890" /></Field>
-              <Field label="Google Ads Access Token"><MaskedInput value={modelSettings.googleAdsAccessToken} onChange={v => updateMs('googleAdsAccessToken', v)} placeholder="ya29...." /></Field>
-              <Field label="LinkedIn Ads Access Token"><MaskedInput value={modelSettings.linkedinAdsAccessToken} onChange={v => updateMs('linkedinAdsAccessToken', v)} placeholder="LinkedIn Ads Access Token" /></Field>
-              <Field label="LinkedIn Ads Account ID"><input className={inp} value={modelSettings.linkedinAdsAccountId} onChange={e => updateMs('linkedinAdsAccountId', e.target.value)} placeholder="urn:li:sponsoredAccount:..." /></Field>
-            </Card>
-
-            {/* Voice & Avatar */}
-            <Card title="Voice & Avatar AI">
-              <Field label="HeyGen API Key"><MaskedInput value={modelSettings.heygenApiKey} onChange={v => updateMs('heygenApiKey', v)} placeholder="HeyGen API Key" /></Field>
-              <Field label="Vapi API Key"><MaskedInput value={modelSettings.vapiApiKey} onChange={v => updateMs('vapiApiKey', v)} placeholder="Vapi API Key" /></Field>
-            </Card>
-
-            {/* Payments */}
-            <Card title="Payments">
-              <Field label="Stripe Secret Key" hint="Keep secret — never expose on frontend"><MaskedInput value={modelSettings.stripeSecretKey} onChange={v => updateMs('stripeSecretKey', v)} placeholder="sk_live_... or sk_test_..." /></Field>
-              <Field label="Stripe Publishable Key"><input className={inp} value={modelSettings.stripePublishableKey} onChange={e => updateMs('stripePublishableKey', e.target.value)} placeholder="pk_live_..." /></Field>
-              <Field label="Razorpay Key ID"><input className={inp} value={modelSettings.razorpayKeyId} onChange={e => updateMs('razorpayKeyId', e.target.value)} placeholder="rzp_live_..." /></Field>
-              <Field label="Razorpay Key Secret"><MaskedInput value={modelSettings.razorpayKeySecret} onChange={v => updateMs('razorpayKeySecret', v)} placeholder="Razorpay Key Secret" /></Field>
-            </Card>
-
-            {/* Fallback options */}
-            <Card title="Key Management">
+            {/* Fallback / governance toggles — moved to bottom, less prominent */}
+            <Card title="Key management">
               <Toggle on={sharedKeyFallback} onToggle={() => setSharedKeyFallback(v => !v)} label="Use Ooumph shared keys when your key hits rate limits" />
               <Toggle on={keyRotationReminder} onToggle={() => setKeyRotationReminder(v => !v)} label="Remind me to rotate keys every 90 days" />
             </Card>
-
-            <button onClick={() => save('api-keys')} disabled={saving} className={btn + ' disabled:opacity-40'}>{saving ? 'Saving…' : 'Save All API Keys'}</button>
           </div>
         )}
 
@@ -1069,35 +2013,69 @@ export default function SettingsPage() {
               <p className="text-gray-400 text-sm mt-1">Manage authentication, sessions, and access control.</p>
             </div>
 
-            {/* Current session */}
-            <Card title="Current Session">
-              <div className="flex items-center justify-between text-sm">
-                <div>
-                  <p className="text-white font-medium">MacBook Pro — Chrome 124</p>
-                  <p className="text-gray-500 text-xs mt-0.5">103.21.45.12 · Mumbai, IN · Active now</p>
-                </div>
-                <span className="px-2 py-0.5 bg-green-900 text-green-300 text-xs rounded">Current</span>
-              </div>
-            </Card>
-
-            {/* All sessions */}
-            <Card title="Active Sessions">
-              <div className="space-y-3">
-                {sessions.map(s => (
-                  <div key={s.id} className="flex items-center justify-between p-3 rounded-lg bg-gray-800 border border-gray-700">
-                    <div>
-                      <p className="text-white text-sm font-medium">{s.device} — {s.browser}</p>
-                      <p className="text-gray-500 text-xs">{s.ip} · {s.location} · {s.lastActive}</p>
+            {/* Active sessions — Sprint 7C: real data from /api/account/sessions.
+                Previous version showed two fake "MacBook Pro · Mumbai" rows
+                on every workspace. Revoke buttons now hit the real endpoint;
+                the "current" badge marks whichever session matches this
+                browser's cookie. */}
+            <Card
+              title="Active Sessions"
+              subtitle="Every device currently signed in to your account. Revoke any session you don't recognise."
+            >
+              {sessions === null && (
+                <p className="text-gray-500 text-sm">Loading sessions…</p>
+              )}
+              {sessions && sessions.length === 0 && (
+                <p className="text-gray-500 text-sm">No active sessions found. (You must be the current session if you're seeing this — try refreshing.)</p>
+              )}
+              {sessions && sessions.length > 0 && (
+                <div className="space-y-3">
+                  {sessions.map(s => (
+                    <div key={s.id} className="flex items-center justify-between p-3 rounded-lg bg-gray-800 border border-gray-700">
+                      <div>
+                        <p className="text-white text-sm font-medium">
+                          {s.device}{s.browser ? ` — ${s.browser}` : ''}
+                        </p>
+                        <p className="text-gray-500 text-xs mt-0.5">
+                          {s.ip} · last seen {new Date(s.lastSeenAt).toLocaleString()}
+                        </p>
+                      </div>
+                      {s.current
+                        ? <span className="px-2 py-0.5 bg-green-900 text-green-300 text-xs rounded">Current</span>
+                        : (
+                          <button
+                            disabled={sessionActing === s.id}
+                            onClick={() => revokeSession(s.id)}
+                            className={btnDanger + ' text-xs py-1 disabled:opacity-40'}
+                          >
+                            {sessionActing === s.id ? 'Revoking…' : 'Revoke'}
+                          </button>
+                        )}
                     </div>
-                    {s.current ? <span className="text-xs text-green-400">Current</span> :
-                      <button className={btnDanger + ' text-xs py-1'} onClick={() => alert('Session revoked (demo)')}>Revoke</button>}
-                  </div>
-                ))}
-              </div>
-              <button className={btnDanger} onClick={() => alert('All other sessions revoked (demo)')}>Revoke All Other Sessions</button>
+                  ))}
+                </div>
+              )}
+              {sessions && sessions.filter(s => !s.current).length > 0 && (
+                <button
+                  disabled={sessionActing === 'all'}
+                  onClick={revokeAllOtherSessions}
+                  className={btnDanger + ' disabled:opacity-40'}
+                >
+                  {sessionActing === 'all' ? 'Revoking…' : 'Revoke All Other Sessions'}
+                </button>
+              )}
+              <p className="text-[11px] text-gray-600 mt-3 leading-relaxed">
+                Note: revoking a session removes it from this list immediately. Full enforcement
+                across every API route ships when the auth middleware is upgraded; for a
+                hard sign-out everywhere right now, change your password to rotate the token secret.
+              </p>
             </Card>
 
-            {/* 2FA */}
+            {/* 2FA — kept as the existing client-side toggle. Real 2FA
+                enrolment requires a TOTP secret store + verification flow
+                that's out of scope for this sprint. The badge accurately
+                reflects whatever the user toggled this session; the next
+                refresh resets it to disabled. */}
             <Card title="Two-Factor Authentication">
               <div className="flex items-center justify-between">
                 <div>
@@ -1115,53 +2093,73 @@ export default function SettingsPage() {
               )}
             </Card>
 
-            {/* Personal Access Tokens */}
-            <Card title="API Access Tokens" subtitle="Generate tokens to use the Ooumph API from external apps">
-              <div className="space-y-2">
-                {accessTokens.map(t => (
-                  <div key={t.id} className="flex items-center justify-between p-3 rounded-lg bg-gray-800 border border-gray-700 text-sm">
-                    <div>
-                      <p className="text-white font-medium">{t.name}</p>
-                      <p className="text-gray-500 text-xs">{t.permissions.join(', ')} · Last used {t.lastUsed} · Expires {t.expiry}</p>
-                    </div>
-                    <button className={btnDanger + ' text-xs py-1'} onClick={() => setAccessTokens(p => p.filter(x => x.id !== t.id))}>Revoke</button>
-                  </div>
-                ))}
-              </div>
-              <button className={btn} onClick={() => setModal('newToken')}>+ Generate New Token</button>
+            {/* API Access Tokens — moved to the canonical Developer API
+                surface. The previous hardcoded "CI/CD Pipeline" row was a
+                fabricated demo. The /dashboard/developer-api page is wired
+                to the real developer_tokens table with proper scopes,
+                revocation, and last-used tracking. */}
+            <Card
+              title="API Access Tokens"
+              subtitle="Manage your Ooumph API keys, scopes, and revocation"
+            >
+              <p className="text-gray-400 text-sm">
+                Developer tokens are managed on the dedicated Developer API page,
+                which is wired to the real <code className="text-gray-300">developer_tokens</code> table.
+              </p>
+              <a
+                href="/dashboard/developer-api"
+                className={btn + ' inline-block text-center no-underline'}
+              >
+                Open Developer API
+              </a>
             </Card>
 
-            {/* Login History */}
-            <Card title="Login History">
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-gray-800 text-left">
-                      <th className="pb-2 text-gray-400 font-medium">Date</th>
-                      <th className="pb-2 text-gray-400 font-medium">Device</th>
-                      <th className="pb-2 text-gray-400 font-medium">IP</th>
-                      <th className="pb-2 text-gray-400 font-medium">Location</th>
-                      <th className="pb-2 text-gray-400 font-medium text-right">Result</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {loginHistory.map((r, i) => (
-                      <tr key={i} className="border-b border-gray-800/50">
-                        <td className="py-2 text-gray-300 pr-3 text-xs">{r.date}</td>
-                        <td className="py-2 text-gray-300 pr-3">{r.device}</td>
-                        <td className="py-2 text-gray-400 pr-3 font-mono text-xs">{r.ip}</td>
-                        <td className="py-2 text-gray-400 pr-3">{r.location}</td>
-                        <td className={`py-2 text-right text-xs font-medium ${r.result === 'Success' ? 'text-green-400' : 'text-red-400'}`}>{r.result}</td>
+            {/* Login History — Sprint 7C: real data from /api/account/login-history,
+                backed by the login_events table. Surfaces both successful
+                logins and failed attempts so suspicious activity is
+                visible. */}
+            <Card
+              title="Login History"
+              subtitle="Last 20 successful and failed sign-in attempts on your account"
+            >
+              {loginHistory === null && (
+                <p className="text-gray-500 text-sm">Loading history…</p>
+              )}
+              {loginHistory && loginHistory.length === 0 && (
+                <p className="text-gray-500 text-sm">
+                  No login events recorded yet. (This list will populate from your next sign-in onward.)
+                </p>
+              )}
+              {loginHistory && loginHistory.length > 0 && (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-gray-800 text-left">
+                        <th className="pb-2 text-gray-400 font-medium">Date</th>
+                        <th className="pb-2 text-gray-400 font-medium">Device</th>
+                        <th className="pb-2 text-gray-400 font-medium">IP</th>
+                        <th className="pb-2 text-gray-400 font-medium text-right">Result</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                    </thead>
+                    <tbody>
+                      {loginHistory.map(r => (
+                        <tr key={r.id} className="border-b border-gray-800/50">
+                          <td className="py-2 text-gray-300 pr-3 text-xs">{new Date(r.createdAt).toLocaleString()}</td>
+                          <td className="py-2 text-gray-300 pr-3">{r.device}</td>
+                          <td className="py-2 text-gray-400 pr-3 font-mono text-xs">{r.ip}</td>
+                          <td className={`py-2 text-right text-xs font-medium ${r.success ? 'text-green-400' : 'text-red-400'}`}>
+                            {r.success ? 'Success' : `Failed${r.failureReason ? ` (${r.failureReason})` : ''}`}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </Card>
 
             {/* Password */}
             <Card title="Password">
-              <p className="text-gray-400 text-sm">Last changed 30 days ago.</p>
               <button className={btnGhost} onClick={() => setModal('changePassword')}>Change Password</button>
             </Card>
           </div>
@@ -1175,13 +2173,33 @@ export default function SettingsPage() {
               <p className="text-gray-400 text-sm mt-1">Customise how the dashboard looks and feels.</p>
             </div>
             <Card title="Theme">
-              <div className="flex gap-3">
-                {(['dark', 'light', 'system'] as const).map(t => (
-                  <button key={t} onClick={() => setAppearance(a => ({ ...a, theme: t }))}
-                    className={`px-5 py-2.5 rounded-lg text-sm border capitalize transition-colors ${appearance.theme === t ? 'bg-indigo-600 border-indigo-600 text-white' : 'bg-gray-800 border-gray-700 text-gray-300 hover:border-indigo-600'}`}>
-                    {t === 'dark' ? '🌙 Dark' : t === 'light' ? '☀ Light' : '💻 System'}
-                  </button>
-                ))}
+              {/* Sprint 5 fix: Light + System themes are not implemented —
+                  the entire dashboard CSS uses dark-only Tailwind classes
+                  (bg-gray-950, text-white, etc.) with no `light:` variants.
+                  Previously clicking "Light" highlighted the button but
+                  nothing visually changed, which violated the No Fake
+                  Success rule. Disabled with a "Coming soon" badge until
+                  a real CSS variable / theme-token system ships. */}
+              <div className="flex gap-3 flex-wrap">
+                <button
+                  onClick={() => setAppearance(a => ({ ...a, theme: 'dark' }))}
+                  className={`px-5 py-2.5 rounded-lg text-sm border transition-colors ${appearance.theme === 'dark' ? 'bg-indigo-600 border-indigo-600 text-white' : 'bg-gray-800 border-gray-700 text-gray-300 hover:border-indigo-600'}`}>
+                  🌙 Dark
+                </button>
+                <button
+                  disabled
+                  title="Light mode is on the roadmap — the dashboard CSS needs theme-token refactoring first"
+                  className="px-5 py-2.5 rounded-lg text-sm border bg-gray-900 border-gray-800 text-gray-600 cursor-not-allowed flex items-center gap-2">
+                  ☀ Light
+                  <span className="text-[10px] text-amber-400 bg-amber-900/20 border border-amber-800/40 px-1.5 py-0.5 rounded">Coming soon</span>
+                </button>
+                <button
+                  disabled
+                  title="System theme follows OS preference — requires Light mode first"
+                  className="px-5 py-2.5 rounded-lg text-sm border bg-gray-900 border-gray-800 text-gray-600 cursor-not-allowed flex items-center gap-2">
+                  💻 System
+                  <span className="text-[10px] text-amber-400 bg-amber-900/20 border border-amber-800/40 px-1.5 py-0.5 rounded">Coming soon</span>
+                </button>
               </div>
             </Card>
             <Card title="Accent Color">
@@ -1241,7 +2259,9 @@ export default function SettingsPage() {
                 <p className="text-indigo-300 text-xs font-medium uppercase tracking-wider">Current Plan</p>
                 <p className="text-white text-lg font-bold mt-0.5">Growth</p>
               </div>
-              <button className={btn}>Upgrade Plan</button>
+              {/* Sprint 0: was a dead button. Now navigates to the
+                  billing dashboard where the real upgrade flow lives. */}
+              <a href="/dashboard/billing" className={btn + ' inline-block text-center no-underline'}>Upgrade Plan</a>
             </div>
             <Card title="Resource Usage — May 2026">
               <UsageBar label="AI Requests" used={4230} total={10000} unit="req" />
@@ -1310,13 +2330,20 @@ export default function SettingsPage() {
                 <button className={btnDanger + ' shrink-0'} onClick={() => setModal('resetWorkspace')}>Reset Workspace</button>
               </div>
 
-              {/* Export Data */}
+              {/* Export Data — Sprint 7C: real GDPR-style download via
+                  /api/account/export. Streams a JSON archive of every row
+                  tied to the user + their workspace (artifacts, leads,
+                  deals, sessions, login events, etc.). Caps at 1000 rows
+                  per table to keep the file portable. */}
               <div className="flex items-start justify-between gap-6 pb-5 border-b border-red-900/50">
                 <div>
                   <p className="text-white font-medium text-sm">Export All Data</p>
-                  <p className="text-gray-500 text-xs mt-1">Download a JSON archive of all your workspace data, content, and settings.</p>
+                  <p className="text-gray-500 text-xs mt-1">Download a JSON archive of your workspace data, content, leads, and account history. Generated media binaries are not included.</p>
+                  {exportError && (
+                    <p className="text-red-400 text-xs mt-1.5">Export failed: {exportError}</p>
+                  )}
                 </div>
-                <button className={btn + ' shrink-0'} onClick={() => alert('Export initiated (demo)')}>Export Data</button>
+                <button className={btn + ' shrink-0'} onClick={exportData}>Export Data</button>
               </div>
 
               {/* Delete Workspace */}
@@ -1377,7 +2404,7 @@ export default function SettingsPage() {
       {/* Backup Codes */}
       <Modal open={modal === 'backupCodes'} onClose={() => setModal(null)} title="Backup Codes">
         <p className="text-gray-400 text-sm">Store these in a safe place. Each code can only be used once.</p>
-        <div className="grid grid-cols-2 gap-2">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
           {['a1b2c3d4', 'e5f6g7h8', 'i9j0k1l2', 'm3n4o5p6', 'q7r8s9t0', 'u1v2w3x4', 'y5z6a7b8', 'c9d0e1f2'].map(c => (
             <code key={c} className="px-3 py-1.5 bg-gray-800 rounded text-green-300 text-xs text-center">{c}</code>
           ))}
@@ -1388,35 +2415,10 @@ export default function SettingsPage() {
         </div>
       </Modal>
 
-      {/* New Token */}
-      <Modal open={modal === 'newToken'} onClose={() => setModal(null)} title="Generate API Access Token">
-        <Field label="Token Name"><input className={inp} placeholder="e.g. CI/CD Pipeline" value={modalData.tokenName || ''} onChange={e => setModalData(p => ({ ...p, tokenName: e.target.value }))} /></Field>
-        <Field label="Permissions">
-          <div className="space-y-2">
-            {['read:campaigns', 'write:content', 'read:analytics', 'write:campaigns', 'admin:workspace'].map(p => (
-              <label key={p} className="flex items-center gap-2 cursor-pointer">
-                <input type="checkbox" className="accent-indigo-500" />
-                <span className="text-sm text-gray-300 font-mono">{p}</span>
-              </label>
-            ))}
-          </div>
-        </Field>
-        <Field label="Expiry">
-          <select className={inp} value={modalData.tokenExpiry || '90'} onChange={e => setModalData(p => ({ ...p, tokenExpiry: e.target.value }))}>
-            <option value="30">30 days</option>
-            <option value="90">90 days</option>
-            <option value="365">1 year</option>
-            <option value="never">Never</option>
-          </select>
-        </Field>
-        <div className="flex gap-3 justify-end pt-2">
-          <button className={btnGhost} onClick={() => setModal(null)}>Cancel</button>
-          <button className={btn} onClick={() => {
-            setAccessTokens(p => [...p, { id: `t${Date.now()}`, name: modalData.tokenName || 'New Token', permissions: ['read:campaigns'], lastUsed: 'Never', expiry: '2026-12-31' }])
-            setModal(null); setModalData({})
-          }}>Generate Token</button>
-        </div>
-      </Modal>
+      {/* Sprint 7C: removed orphan New Token modal. Token generation now
+          lives on /dashboard/developer-api, which is wired to the real
+          developer_tokens table with proper scope grammar, revocation,
+          and last-used tracking. The Card on the Security tab links there. */}
 
       {/* Delete Content */}
       <Modal open={modal === 'deleteContent'} onClose={() => setModal(null)} title="Delete All Content">

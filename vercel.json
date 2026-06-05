@@ -1,28 +1,18 @@
 {
   "crons": [
-    {
-      "path": "/api/cron/publish-scheduled",
-      "schedule": "0 9 * * *"
-    },
-    {
-      "path": "/api/cron/campaign-sync",
-      "schedule": "0 6 * * *"
-    },
-    {
-      "path": "/api/cron/kpi-alert",
-      "schedule": "0 8 * * 1"
-    },
-    {
-      "path": "/api/cron/calendar-reminders",
-      "schedule": "0 8 * * *"
-    },
-    {
-      "path": "/api/cron/workflow-steps",
-      "schedule": "0 10 * * *"
-    },
-    {
-      "path": "/api/cron/reputation-monitor",
-      "schedule": "0 11 * * *"
-    }
+    { "path": "/api/cron/publish-scheduled", "schedule": "*/15 * * * *" },
+    { "path": "/api/cron/campaign-sync", "schedule": "0 6 * * *" },
+    { "path": "/api/cron/kpi-alert", "schedule": "0 8 * * 1" },
+    { "path": "/api/cron/calendar-reminders", "schedule": "0 8 * * *" },
+    { "path": "/api/cron/workflow-steps", "schedule": "*/15 * * * *" },
+    { "path": "/api/cron/reputation-monitor", "schedule": "0 11 * * *" },
+    { "path": "/api/cron/daily-brief", "schedule": "0 7 * * *" },
+    { "path": "/api/cron/extract-knowledge", "schedule": "0 */6 * * *" },
+    { "path": "/api/cron/auto-approve", "schedule": "0 * * * *" },
+    { "path": "/api/cron/follower-sync", "schedule": "0 0,6,12,18 * * *" },
+    { "path": "/api/cron/agent-run-watchdog", "schedule": "*/15 * * * *" },
+    { "path": "/api/cron/oauth-health-check", "schedule": "0 */6 * * *" },
+    { "path": "/api/cron/experiment-significance", "schedule": "0 */2 * * *" },
+    { "path": "/api/cron/inject-winners", "schedule": "0 */6 * * *" }
   ]
 }

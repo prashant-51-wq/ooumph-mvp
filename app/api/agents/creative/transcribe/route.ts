@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
+import { assertWorkspaceOwnership } from '@/lib/guards'
+import { assertAgentRunQuota } from '@/lib/quota'
+import { withCredentials } from '@/lib/credential-context'
+
+export const runtime = 'nodejs'
 
 export async function POST(req: NextRequest) {
   try {
@@ -19,6 +24,11 @@ export async function POST(req: NextRequest) {
     if (!workspaceId || !audioUrl) {
       return NextResponse.json({ error: 'workspaceId and audioUrl are required' }, { status: 400 })
     }
+    // Sprint 15D (P2 #21): ownership + quota gate.
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
+    const overQuota = await assertAgentRunQuota(req, workspaceId)
+    if (overQuota) return overQuota
 
     // 1. Fetch workspace model_settings and inject API key
     const ws = await sql`SELECT model_settings FROM workspaces WHERE id=${workspaceId}`
@@ -32,20 +42,16 @@ export async function POST(req: NextRequest) {
       })
     }
 
-    process.env.DEEPGRAM_API_KEY = settings.deepgramApiKey
-
-    // 2. Transcribe audio
+    // 2. Transcribe audio with request-scoped credentials (no env mutation).
     const { transcribeUrl, isDeepgramAvailable } = await import('@/lib/tools/deepgram')
 
-    if (!isDeepgramAvailable()) {
-      return NextResponse.json({
-        ok: false,
-        error: 'Deepgram API key not configured. Add it in Settings → AI Assistants.',
-        requiresSetup: true,
-      })
-    }
-
-    const result = await transcribeUrl(audioUrl, { language, model })
+    const result = await withCredentials(
+      { DEEPGRAM_API_KEY: settings.deepgramApiKey },
+      async () => {
+        if (!isDeepgramAvailable()) return null
+        return transcribeUrl(audioUrl, { language, model })
+      }
+    )
     if (!result) {
       return NextResponse.json({ ok: false, error: 'Transcription failed. Check your Deepgram API key and audio URL.' }, { status: 500 })
     }

@@ -10,6 +10,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
 import { runAgent } from '@/lib/claude'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 
 const SYSTEM = `You are the Workflow Design Agent for Ooumph AI Marketing OS.
 You design marketing automation workflows that convert leads into customers.
@@ -55,6 +56,8 @@ export async function POST(req: NextRequest) {
     }
     const { workspaceId, mode, description, workflowId } = body
     if (!workspaceId) return NextResponse.json({ error: 'workspaceId required' }, { status: 400 })
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     const brandResult = await sql`SELECT * FROM brand_profiles WHERE workspace_id = ${workspaceId} LIMIT 1`
     const brand = brandResult.rows[0] || {}
@@ -104,6 +107,7 @@ Respond with JSON:
   "explanation": "step-by-step explanation of what this does",
   "expectedOutcome": "what result this workflow achieves"
 }`,
+        workspaceId,
       )
 
       return NextResponse.json({ ok: true, workflow: result })
@@ -146,6 +150,7 @@ Respond with JSON:
     }
   ]
 }`,
+        workspaceId,
       )
 
       return NextResponse.json({ ok: true, ...result })
@@ -186,6 +191,7 @@ Respond with JSON:
   "issues": ["issue1", "issue2"],
   "improvements": ["specific improvement 1", "specific improvement 2"]
 }`,
+        workspaceId,
       )
 
       return NextResponse.json({ ok: true, analysis: result, stats: { ...runStats, pending: Number(pendingResult.rows[0]?.c || 0) } })

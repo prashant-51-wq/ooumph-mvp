@@ -2,6 +2,8 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useRouter } from 'next/navigation'
+import { useWorkspaceId } from '@/lib/hooks/use-workspace-id'
+import { readJsonArray } from '@/lib/hooks/fetch-array'
 
 interface ApprovalItem {
   id: string
@@ -14,6 +16,23 @@ interface ApprovalItem {
   created_at: string
   brand_voice_score?: number | null
   brand_voice_reasoning?: string | null
+  /** Sprint 13A: present on landing_page artifacts when a custom slug
+   *  has been set. UI uses it to render the friendly /lp/<slug> URL
+   *  instead of /lp/<uuid>. NULL otherwise. */
+  lp_slug?: string | null
+  /** Sprint 16J: audit trail. Joined from approvals table — populated by
+   *  the PATCH handler when an approver acts. */
+  approved_by?: string | null
+  approved_at?: string | null
+}
+
+interface ApprovalEvent {
+  id: string
+  actor_id: string | null
+  actor_email: string | null
+  action: string
+  notes: string | null
+  created_at: string
 }
 
 const TYPE_LABELS: Record<string, string> = {
@@ -125,6 +144,11 @@ function buildCreativeUrl(content: Record<string, unknown>, type: string): strin
 
 export default function ApprovalsPage() {
   const router = useRouter()
+  // Sprint 10C: single canonical source for workspaceId. The three
+  // useCallback / useEffect sites below now read this instead of
+  // localStorage. The hook itself still hydrates from localStorage
+  // optimistically so first-paint isn't blank.
+  const { workspaceId: sessionWorkspaceId } = useWorkspaceId()
   const [items, setItems] = useState<ApprovalItem[]>([])
   const [loading, setLoading] = useState(true)
   const [selected, setSelected] = useState<ApprovalItem | null>(null)
@@ -144,22 +168,41 @@ export default function ApprovalsPage() {
   const [bulkProgress, setBulkProgress] = useState<{ done: number; total: number } | null>(null)
 
   // ── Auto-approve settings ────────────────────────────────────────────────────
-  const [autoApproveDelay, setAutoApproveDelay] = useState<AutoApproveDelay>(() => {
-    if (typeof window === 'undefined') return 'off'
+  // Sprint 20D: was using a lazy useState initializer that read localStorage,
+  // causing the same hydration-mismatch / error #418 that blew up the entire
+  // dashboard when this page rendered. Now starts 'off' and hydrates in a
+  // useEffect after mount.
+  const [autoApproveDelay, setAutoApproveDelay] = useState<AutoApproveDelay>('off')
+  useEffect(() => {
+    if (typeof window === 'undefined') return
     const stored = localStorage.getItem('approvals_auto_approve_delay')
-    if (stored === '24h' || stored === '48h' || stored === '72h' || stored === 'off') return stored
-    return 'off'
-  })
+    if (stored === '24h' || stored === '48h' || stored === '72h' || stored === 'off') {
+      setAutoApproveDelay(stored)
+    }
+  }, [])
   const [autoSettingsOpen, setAutoSettingsOpen] = useState(false)
   const autoSettingsRef = useRef<HTMLDivElement>(null)
 
   // ── Brand voice scores: id → { score, reasoning[] } ──────────────────────────
   const [bvScores, setBvScores] = useState<Record<string, { score: number; reasoning: string[] }>>({})
 
-  // Persist auto-approve delay
+  // Persist auto-approve delay. Sprint 6H: also push to workspaces
+  // .extra_settings via /api/workspaces/settings so the server-side
+  // auto-approve cron can read it. Without this the cron has no
+  // signal and the autonomy story falls apart when no one's on the page.
   useEffect(() => {
-    if (typeof window !== 'undefined') localStorage.setItem('approvals_auto_approve_delay', autoApproveDelay)
-  }, [autoApproveDelay])
+    if (typeof window === 'undefined') return
+    localStorage.setItem('approvals_auto_approve_delay', autoApproveDelay)
+    if (!sessionWorkspaceId) return
+    fetch('/api/workspaces/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        workspaceId: sessionWorkspaceId,
+        settings: { auto_approve_delay: autoApproveDelay },
+      }),
+    }).catch(() => { /* best-effort — UI still works via localStorage */ })
+  }, [autoApproveDelay, sessionWorkspaceId])
 
   // ── Inline edit ───────────────────────────────────────────────────────────────
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -188,11 +231,19 @@ export default function ApprovalsPage() {
   }, [])
 
   const load = useCallback(async () => {
-    const workspaceId = localStorage.getItem('workspaceId')
-    if (!workspaceId) { router.push('/dashboard/onboarding'); return }
+    const workspaceId = sessionWorkspaceId
+    // Sprint 20H bug #1: was unconditionally redirecting to /dashboard/
+    // onboarding whenever workspaceId was falsy. But sessionWorkspaceId
+    // is null on the very first render — before useWorkspaceId resolves
+    // via /api/auth/me. The redirect kept firing INSTANTLY on page mount
+    // before the hook ever caught up, so every visit to /dashboard/
+    // approvals went straight to onboarding. Just return without
+    // redirecting; the load will fire again when the hook resolves.
+    if (!workspaceId) return
     try {
       const res = await fetch(`/api/approvals?workspaceId=${workspaceId}`)
-      const data = await res.json() as ApprovalItem[]
+      // Sprint 19T: array-safe — endpoint returns array OR {rows} OR {error}
+      const data = await readJsonArray<ApprovalItem>(res)
       setItems(data)
       // Seed brand-voice scores from cached column values
       const seeded: Record<string, { score: number; reasoning: string[] }> = {}
@@ -211,13 +262,13 @@ export default function ApprovalsPage() {
     } finally {
       setLoading(false)
     }
-  }, [router])
+  }, [router, sessionWorkspaceId])
 
   useEffect(() => { load() }, [load])
 
   // ── Fetch real brand-voice scores for visible items (one at a time, lazily) ─
   useEffect(() => {
-    const workspaceId = typeof window !== 'undefined' ? localStorage.getItem('workspaceId') : null
+    const workspaceId = sessionWorkspaceId
     if (!workspaceId) return
     const itemsNeedingScore = items.filter(i => !(i.id in bvScores)).slice(0, 5)
     if (itemsNeedingScore.length === 0) return
@@ -245,7 +296,7 @@ export default function ApprovalsPage() {
   // ── Auto-approve client-side: every minute, approve items past threshold ───
   useEffect(() => {
     if (autoApproveDelay === 'off') return
-    const workspaceId = typeof window !== 'undefined' ? localStorage.getItem('workspaceId') : null
+    const workspaceId = sessionWorkspaceId  // Sprint 10C
     if (!workspaceId) return
     let cancelled = false
 
@@ -283,21 +334,33 @@ export default function ApprovalsPage() {
     setSelectedIds(new Set())
   }, [filter])
 
-  const act = async (action: 'approve' | 'reject') => {
+  // Sprint 18A (audit pass #5 P0 #6 — Sprint 17 self-regression):
+  // Reject+Regenerate previously did:
+  //   setNotes(feedbackText); await act('reject'); await regenerate(...)
+  // The `act('reject')` then read `notes` via stale closure → empty value
+  // → backend at /api/approvals route.ts:113 skipped the learning_notes
+  // insert (requires non-empty notes). The rejection feedback never
+  // reached the learning loop.
+  //
+  // Fix: accept an explicit `notesOverride` argument so callers like the
+  // combined Reject+Regen path can pass the feedback text directly without
+  // relying on state propagation.
+  const act = async (action: 'approve' | 'reject', notesOverride?: string) => {
     if (!selected) return
-    const workspaceId = localStorage.getItem('workspaceId')
+    const workspaceId = sessionWorkspaceId  // Sprint 10C
+    const effectiveNotes = notesOverride !== undefined ? notesOverride : notes
     setActing(true)
     await fetch('/api/approvals', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ approvalId: selected.id, action, notes, workspaceId }),
+      body: JSON.stringify({ approvalId: selected.id, action, notes: effectiveNotes, workspaceId }),
     })
     setActing(false); setSelected(null); setNotes('')
     load()
   }
 
   const bulkAct = async (action: 'approve' | 'reject') => {
-    const workspaceId = localStorage.getItem('workspaceId')
+    const workspaceId = sessionWorkspaceId  // Sprint 10C
     const ids = Array.from(selectedIds)
     setBulkActing(true)
     setBulkProgress({ done: 0, total: ids.length })
@@ -353,6 +416,22 @@ export default function ApprovalsPage() {
         delete next[item.id]
         return next
       })
+      // Sprint 18A (audit pass #5 P0): proactively recompute the
+      // brand-voice score after an edit. Without this, the
+      // /api/cron/auto-approve cron reads stale approvals.brand_voice_score
+      // and may auto-approve content the user just edited off-brand.
+      try {
+        await fetch('/api/agents/brand-voice-score', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            workspaceId: sessionWorkspaceId,
+            approvalId: item.id,
+            artifactId: item.artifact_id,
+            forceRefresh: true,
+          }),
+        })
+      } catch { /* non-fatal — next page load will recompute */ }
       setEditingId(null)
       load()
     } finally {
@@ -361,7 +440,7 @@ export default function ApprovalsPage() {
   }
 
   const regenerate = async (item: ApprovalItem, feedback?: string) => {
-    const workspaceId = localStorage.getItem('workspaceId')
+    const workspaceId = sessionWorkspaceId  // Sprint 10C
     if (!workspaceId) return
     setRegenerating(item.id); setRegenResult(null)
     try {
@@ -377,7 +456,7 @@ export default function ApprovalsPage() {
   }
 
   const publish = async (item: ApprovalItem, platform: string) => {
-    const workspaceId = localStorage.getItem('workspaceId')
+    const workspaceId = sessionWorkspaceId  // Sprint 10C
     if (!workspaceId) return
     setPublishing(item.id + platform)
     try {
@@ -431,7 +510,7 @@ export default function ApprovalsPage() {
                 ⚙ Auto-Approve{autoApproveDelay !== 'off' ? `: ${autoApproveDelay}` : ''}
               </button>
               {autoSettingsOpen && (
-                <div className="absolute right-0 top-10 bg-gray-900 border border-gray-700 rounded-xl shadow-xl py-1 min-w-[140px] z-20">
+                <div className="absolute right-0 top-10 bg-gray-900 border border-gray-700 rounded-xl shadow-xl py-1 min-w-[200px] z-20">
                   {(['off', '24h', '48h', '72h'] as AutoApproveDelay[]).map(opt => (
                     <button
                       key={opt}
@@ -441,6 +520,12 @@ export default function ApprovalsPage() {
                       {opt === 'off' ? 'Off' : opt}
                     </button>
                   ))}
+                  {/* Sprint 6H: clarify that auto-approve runs server-side. */}
+                  <div className="border-t border-gray-800 mt-1 px-4 py-2">
+                    <p className="text-gray-500 text-[10px] leading-relaxed">
+                      Runs hourly on the server — approvals fire even while you&apos;re away. Only items with brand voice score ≥ 80 are eligible.
+                    </p>
+                  </div>
                 </div>
               )}
             </div>
@@ -500,11 +585,29 @@ export default function ApprovalsPage() {
       )}
 
       {!loading && filtered.length === 0 && (
-        <div className="bg-gray-900 border border-gray-800 rounded-xl p-12 text-center">
-          <div className="text-5xl mb-4">📥</div>
-          <p className="text-white font-medium mb-2">No {filter === 'all' ? '' : filter} items</p>
-          <p className="text-gray-500 text-sm">Generate content first, then come back to review and approve.</p>
-        </div>
+        // Sprint 17E (audit P1 #21): polished empty state for the most-
+        // visited filter (pending). "All caught up" tells the user the
+        // queue actually drained — not that the page broke. CTA routes
+        // to /strategy where they can kick off a new generation.
+        filter === 'pending' ? (
+          <div className="bg-gray-900 border border-gray-800 rounded-2xl p-12 text-center">
+            <div className="text-6xl mb-4">🌿</div>
+            <p className="text-white text-lg font-semibold mb-1">All caught up</p>
+            <p className="text-gray-500 text-sm mb-6">Generate new content to populate the queue.</p>
+            <button
+              onClick={() => router.push('/dashboard/strategy')}
+              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium transition-colors"
+            >
+              ✨ Generate content →
+            </button>
+          </div>
+        ) : (
+          <div className="bg-gray-900 border border-gray-800 rounded-xl p-12 text-center">
+            <div className="text-5xl mb-4">📥</div>
+            <p className="text-white font-medium mb-2">No {filter === 'all' ? '' : filter} items</p>
+            <p className="text-gray-500 text-sm">Generate content first, then come back to review and approve.</p>
+          </div>
+        )
       )}
 
       <div className="grid grid-cols-1 gap-4">
@@ -692,12 +795,38 @@ export default function ApprovalsPage() {
                         value={feedbackText} onChange={e => setFeedbackText(e.target.value)} rows={2}
                         onClick={e => e.stopPropagation()}
                       />
-                      <button
-                        onClick={e => { e.stopPropagation(); regenerate(item, feedbackText) }}
-                        disabled={regenerating === item.id}
-                        className="w-full mt-2 py-2 rounded-lg border border-indigo-700 text-indigo-400 hover:bg-indigo-950 text-sm font-medium transition-colors disabled:opacity-50">
-                        {regenerating === item.id ? '⏳ Regenerating...' : '↻ Regenerate with This Feedback'}
-                      </button>
+                      <div className="flex gap-2 mt-2">
+                        <button
+                          onClick={e => { e.stopPropagation(); regenerate(item, feedbackText) }}
+                          disabled={regenerating === item.id}
+                          className="flex-1 py-2 rounded-lg border border-indigo-700 text-indigo-400 hover:bg-indigo-950 text-sm font-medium transition-colors disabled:opacity-50">
+                          {regenerating === item.id ? '⏳ Regenerating...' : '↻ Regenerate'}
+                        </button>
+                        {/* Sprint 17G (audit pass #3 P2 #23): combined
+                            "Reject + Regenerate" — reject the current draft
+                            AND immediately spawn a fresh version using the
+                            feedback as the reject note + regen prompt. Two
+                            clicks compressed to one. Only enabled when
+                            feedback is non-empty since reject requires a note. */}
+                        <button
+                          onClick={async e => {
+                            e.stopPropagation()
+                            const fb = feedbackText.trim()
+                            if (!fb) return
+                            // Sprint 18A (audit pass #5 P0): pass `fb` directly
+                            // as notesOverride to act() — bypasses the stale
+                            // closure on `notes` that was discarding the
+                            // rejection feedback before learning_notes write.
+                            await act('reject', fb)
+                            await regenerate(item, fb)
+                          }}
+                          disabled={regenerating === item.id || acting || !feedbackText.trim()}
+                          className="flex-1 py-2 rounded-lg border border-rose-700 text-rose-300 hover:bg-rose-950/40 text-sm font-medium transition-colors disabled:opacity-50"
+                          title="Reject this draft with the feedback above + generate a fresh version in one click."
+                        >
+                          ✕ Reject + Regenerate
+                        </button>
+                      </div>
                       <p className="text-xs text-gray-600 mt-1 text-center">New version will appear below immediately after generation</p>
                     </div>
                   )}
@@ -719,6 +848,24 @@ export default function ApprovalsPage() {
                     <div className="mt-4 p-3 rounded-lg bg-gray-800 text-sm text-gray-300">
                       <span className="text-gray-500 text-xs">Notes: </span>{item.notes}
                     </div>
+                  )}
+
+                  {/* Sprint 17F (audit pass #3 P1 #10): compact audit-trail
+                      footer for approved/rejected rows. The data was being
+                      written to approvals.approved_by/approved_at and the
+                      approval_events table since Sprint 16J but no UI ever
+                      surfaced it — compliance value was zero. */}
+                  {(item.status === 'approved' || item.status === 'rejected') && (item.approved_by || item.approved_at) && sessionWorkspaceId && (
+                    <ApprovalAuditFooter item={item} workspaceId={sessionWorkspaceId} />
+                  )}
+
+                  {/* Sprint 13A: public URL panel for landing_page artifacts.
+                      Shows the live URL with copy-link, lets the operator
+                      set a custom slug (e.g. "acme-launch") instead of
+                      the UUID. Only visible once the LP is approved —
+                      the renderer enforces that anyway. */}
+                  {item.status === 'approved' && item.artifact_type === 'landing_page' && (
+                    <LpSlugWidget item={item} onUpdated={load} />
                   )}
 
                   {item.status === 'approved' && PUBLISHABLE[item.artifact_type] && (
@@ -801,6 +948,82 @@ function StatusBadge({ status }: { status: string }) {
     <span className={`px-2.5 py-1 rounded-full text-xs font-medium border capitalize ${colors[status] || 'bg-gray-800 text-gray-400'}`}>
       {status}
     </span>
+  )
+}
+
+/**
+ * Sprint 17F (audit pass #3 P1 #10) — surfaces the approval audit trail
+ * recorded by Sprint 16J. Shows the most-recent approver inline and
+ * lazy-loads the full event history when the user expands it.
+ */
+function ApprovalAuditFooter({ item, workspaceId }: { item: ApprovalItem; workspaceId: string }) {
+  const [expanded, setExpanded] = useState(false)
+  const [events, setEvents] = useState<ApprovalEvent[] | null>(null)
+  const [loading, setLoading] = useState(false)
+
+  const loadEvents = async () => {
+    if (events !== null) return
+    setLoading(true)
+    try {
+      // Sprint 17H (audit pass #3 P2 #46): pagination shape. Response is
+      // { events, nextBefore, hasMore } — also tolerate legacy array
+      // shape in case the cached endpoint hasn't redeployed yet.
+      const res = await fetch(`/api/approvals/events?approvalId=${item.id}&workspaceId=${workspaceId}`)
+      const data = await res.json()
+      if (Array.isArray(data)) {
+        setEvents(data)
+      } else if (data && Array.isArray(data.events)) {
+        setEvents(data.events)
+      } else {
+        setEvents([])
+      }
+    } catch {
+      setEvents([])
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const whenISO = item.approved_at
+  const whenLabel = whenISO ? new Date(whenISO).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : '—'
+  const actor = item.approved_by || 'unknown'
+
+  return (
+    <div className="mt-4 px-3 py-2 rounded-lg bg-gray-950 border border-gray-800 text-xs">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-gray-500">
+          {item.status === 'approved' ? '✓ Approved' : '✕ Rejected'} by <span className="text-gray-300">{actor}</span> · {whenLabel}
+        </span>
+        <button
+          onClick={() => { setExpanded(v => !v); if (!expanded) loadEvents() }}
+          className="text-indigo-400 hover:text-indigo-300 text-[11px]"
+        >
+          {expanded ? 'Hide history' : 'View history'}
+        </button>
+      </div>
+      {expanded && (
+        <div className="mt-2 pt-2 border-t border-gray-800">
+          {loading && <p className="text-gray-600">Loading…</p>}
+          {!loading && events && events.length === 0 && (
+            <p className="text-gray-600">No additional events recorded.</p>
+          )}
+          {!loading && events && events.length > 0 && (
+            <ul className="space-y-1.5">
+              {events.map(e => (
+                <li key={e.id} className="text-gray-400">
+                  <span className={`font-medium ${e.action === 'approve' ? 'text-emerald-400' : e.action === 'reject' ? 'text-rose-400' : 'text-gray-300'}`}>
+                    {e.action}
+                  </span>
+                  {' '}by {e.actor_email || e.actor_id || 'unknown'} ·{' '}
+                  {new Date(e.created_at).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' })}
+                  {e.notes && <span className="text-gray-500"> — {e.notes}</span>}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -920,7 +1143,7 @@ function TextPreview({ item }: { item: ApprovalItem }) {
       return (
         <div className="space-y-3 text-sm">
           <p className="text-white font-bold">{c.coverText as string}</p>
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
             {slides?.slice(0, 4).map((slide, i) => (
               <div key={i} className="p-3 rounded-lg bg-gray-700">
                 <p className="text-xs text-gray-400 mb-1">Slide {i + 1}</p>
@@ -977,6 +1200,179 @@ function TextPreview({ item }: { item: ApprovalItem }) {
         </div>
       )
     default:
-      return <pre className="text-gray-400 text-xs whitespace-pre-wrap overflow-auto max-h-48">{JSON.stringify(c, null, 2)}</pre>
+      // Sprint 5 fix: previously dumped raw JSON for any artifact type
+      // that didn't match a case above ("{copy: '...', platform: 'linkedin',
+      // is_demo: true}"). That looks broken to users. The fallback now
+      // pulls common content fields (copy, body, content, text, headline,
+      // subject, hook, cta, message, description, title) and renders them
+      // as a readable preview. If literally nothing recognizable is in
+      // the payload, falls back to a collapsible Raw JSON view.
+      return <DefaultPreview content={c} />
   }
+}
+
+/**
+ * Best-effort renderer for approval artifacts with no dedicated case in
+ * TextPreview. Extracts whichever common content fields exist, in priority
+ * order. Hides anything that's clearly metadata (is_demo, platform_id, etc.).
+ * Used for sample-seeded approvals and any new artifact_type that ships
+ * before its preview case is written.
+ */
+function DefaultPreview({ content }: { content: Record<string, unknown> }) {
+  const get = (k: string): string | null => {
+    const v = content[k]
+    return typeof v === 'string' && v.trim() ? v : null
+  }
+  const title    = get('title') || get('headline') || get('subject') || get('name')
+  const lead     = get('hook') || get('subtext') || get('preview')
+  const body     = get('body') || get('copy') || get('content') || get('text') || get('message') || get('description')
+  const cta      = get('cta') || get('callToAction') || get('action')
+  const platform = get('platform') || get('channel')
+  const hashtags = Array.isArray(content.hashtags)
+    ? (content.hashtags as unknown[]).filter((h): h is string => typeof h === 'string')
+    : null
+  const isDemo   = content.is_demo === true || content.is_sample === true
+
+  const hasReadable = title || lead || body || cta
+  if (!hasReadable) {
+    // Truly nothing parseable — give the user a collapsible JSON view
+    // so the page doesn't appear blank.
+    return (
+      <details className="text-sm">
+        <summary className="cursor-pointer text-gray-400 hover:text-white">
+          Raw artifact content (no preview template registered)
+        </summary>
+        <pre className="text-gray-400 text-xs whitespace-pre-wrap overflow-auto max-h-48 mt-2 p-2 rounded bg-gray-800/50">
+          {JSON.stringify(content, null, 2)}
+        </pre>
+      </details>
+    )
+  }
+
+  return (
+    <div className="space-y-2 text-sm">
+      {isDemo && (
+        <span className="inline-block text-[10px] text-amber-400 bg-amber-900/20 border border-amber-800/40 px-1.5 py-0.5 rounded">Sample</span>
+      )}
+      {platform && (
+        <p className="text-gray-500 text-xs">Channel: <span className="text-gray-300 capitalize">{platform}</span></p>
+      )}
+      {title && <p className="text-white font-semibold">{title}</p>}
+      {lead && <p className="text-gray-400">{lead}</p>}
+      {body && <p className="text-gray-300 whitespace-pre-wrap">{body}</p>}
+      {cta && <p className="text-indigo-400 font-medium">{cta}</p>}
+      {hashtags && hashtags.length > 0 && (
+        <div className="flex flex-wrap gap-1 pt-1">
+          {hashtags.map(h => <span key={h} className="text-gray-500 text-xs">#{h.replace(/^#/, '')}</span>)}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Sprint 13A: Public URL + custom slug widget for landing_page items ──────
+function LpSlugWidget({ item, onUpdated }: { item: ApprovalItem; onUpdated: () => void }) {
+  const [slugInput, setSlugInput] = useState(item.lp_slug || '')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [copied, setCopied] = useState(false)
+  const [editing, setEditing] = useState(!item.lp_slug)
+
+  const origin = typeof window !== 'undefined' ? window.location.origin : ''
+  const currentPath = item.lp_slug ? `/lp/${item.lp_slug}` : `/lp/${item.artifact_id}`
+  const currentUrl = `${origin}${currentPath}`
+
+  async function save() {
+    setError(null); setSaving(true)
+    try {
+      const res = await fetch(`/api/artifacts/${item.artifact_id}/lp-slug`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug: slugInput.trim().toLowerCase() || null }),
+      })
+      const data = await res.json() as { error?: string; ok?: boolean; slug?: string | null; publicUrl?: string }
+      if (!res.ok || !data.ok) {
+        setError(data.error || `Save failed (${res.status})`)
+        return
+      }
+      setEditing(false)
+      onUpdated()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Network error')
+    } finally { setSaving(false) }
+  }
+
+  async function copyUrl() {
+    try {
+      await navigator.clipboard.writeText(currentUrl)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch { /* clipboard blocked — silently no-op */ }
+  }
+
+  return (
+    <div className="mt-4 p-4 rounded-lg bg-gray-900 border border-gray-700">
+      <p className="text-gray-400 text-xs font-semibold uppercase tracking-wider mb-3">Public URL</p>
+
+      {!editing && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            <a
+              href={currentPath}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-indigo-300 hover:text-indigo-200 text-sm font-mono break-all"
+            >
+              {currentUrl}
+            </a>
+            <button onClick={copyUrl} className="px-2 py-1 text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 rounded border border-gray-700">
+              {copied ? '✓ Copied' : 'Copy'}
+            </button>
+            <button onClick={() => setEditing(true)} className="px-2 py-1 text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 rounded border border-gray-700">
+              {item.lp_slug ? 'Change slug' : 'Add custom slug'}
+            </button>
+          </div>
+          {!item.lp_slug && (
+            <p className="text-gray-600 text-[11px]">
+              Using the artifact UUID. Add a custom slug to get a shareable URL like {origin}/lp/acme-launch.
+            </p>
+          )}
+        </div>
+      )}
+
+      {editing && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <span className="text-gray-500 text-sm font-mono whitespace-nowrap">{origin}/lp/</span>
+            <input
+              value={slugInput}
+              onChange={e => setSlugInput(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ''))}
+              placeholder="acme-launch"
+              className="flex-1 bg-gray-800 border border-gray-700 text-white text-sm rounded px-2 py-1 font-mono"
+              autoFocus
+            />
+          </div>
+          <p className="text-gray-600 text-[11px]">
+            3-64 chars, lowercase letters / digits / hyphens, must start with a letter. Leave blank to clear and fall back to the UUID URL.
+          </p>
+          {error && <p className="text-red-400 text-xs">{error}</p>}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={save}
+              disabled={saving}
+              className="px-3 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 text-white rounded font-medium disabled:opacity-40"
+            >
+              {saving ? 'Saving…' : 'Save'}
+            </button>
+            <button
+              onClick={() => { setEditing(false); setSlugInput(item.lp_slug || ''); setError(null) }}
+              className="px-3 py-1.5 text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 rounded border border-gray-700"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
 }

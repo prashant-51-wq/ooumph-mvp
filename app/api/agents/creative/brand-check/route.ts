@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
 import { runAgent } from '@/lib/claude'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 import type { BrandProfile } from '@/types'
 
 const SYSTEM = `You are a Brand Guardian AI. You review marketing copy and creative content to ensure
@@ -23,6 +24,8 @@ export async function POST(req: NextRequest) {
     if (!workspaceId || !artifactId) {
       return NextResponse.json({ error: 'Missing workspaceId or artifactId' }, { status: 400 })
     }
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     const [brandResult, artifactResult] = await Promise.all([
       sql`SELECT * FROM brand_profiles WHERE workspace_id = ${workspaceId} LIMIT 1`,
@@ -71,7 +74,7 @@ Return JSON only:
   "summary": "2-3 sentence overall assessment"
 }`
 
-    const result = await runAgent<BrandCheckResult>(SYSTEM, prompt)
+    const result = await runAgent<BrandCheckResult>(SYSTEM, prompt, workspaceId)
 
     // Store the check result in the artifact's approval notes if it failed
     if (!result.passed) {

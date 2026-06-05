@@ -32,6 +32,7 @@ import { after } from 'next/server'
 import { sql } from '@/lib/db'
 import { streamAgent } from '@/lib/claude'
 import { assertWorkspaceOwnership } from '@/lib/guards'
+import { assertAgentRunQuota } from '@/lib/quota'
 import {
   createAgentEventStream,
   streamingResponse,
@@ -104,6 +105,9 @@ export async function POST(req: NextRequest) {
   }
   const denied = assertWorkspaceOwnership(req, workspaceId)
   if (denied) return denied
+    // Sprint 13B: plan-tier quota.
+    const overQuota = await assertAgentRunQuota(req, workspaceId)
+    if (overQuota) return overQuota
 
   // Load artifact + brand context up front so we know the request is valid
   const [artRes, brandRes] = await Promise.all([
@@ -181,7 +185,8 @@ export async function POST(req: NextRequest) {
       await streamAgent(
         REFINE_SYSTEM_PROMPT,
         buildUserPrompt(originalText, feedback, artifact.type || 'content', brandContext),
-        (delta) => {
+        workspaceId,
+        (delta: string) => {
           revisedText += delta
           void handle.send({ t: 'token', text: delta, agent: 'refine' })
         },

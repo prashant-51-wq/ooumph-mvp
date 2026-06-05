@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
-import { runAgent } from '@/lib/claude'
+import { runAgentWithTools } from '@/lib/agents/tool-calling'
+import { buildMemoryMatrix, logMemoryInjection } from '@/lib/agents/memory-retrieval'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 
 interface BlogPost {
   title: string
@@ -57,6 +59,8 @@ export async function POST(req: NextRequest) {
     if (!workspaceId || !topic) {
       return NextResponse.json({ error: 'workspaceId and topic are required' }, { status: 400 })
     }
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     // 1. Load brand profile
     const brandResult = await sql`
@@ -69,21 +73,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Brand profile not found. Complete onboarding first.' }, { status: 400 })
     }
 
-    // 2. Try Brave Search for research context
-    let researchContext = ''
-    try {
-      const { braveSearch, formatSearchResults } = await import('@/lib/tools/brave-search')
-      const [seoResults, strategyResults] = await Promise.all([
-        braveSearch(`${topic} SEO best practices 2025`, 5),
-        keywords ? braveSearch(`${keywords} content strategy`, 5) : Promise.resolve([]),
-      ])
-      const combined = [...seoResults, ...strategyResults]
-      if (combined.length) {
-        researchContext = `\n\nREAL-TIME RESEARCH CONTEXT:\n${formatSearchResults(combined)}`
-      }
-    } catch {
-      // Brave search unavailable — continue without it
-    }
+    // Sprint 2: research is now done via the native search tool during the
+    // agent's tool-use loop — no manual pre-fetch needed here.
 
     // 3. Log agent run
     runId = newId()
@@ -93,7 +84,27 @@ export async function POST(req: NextRequest) {
     `
 
     // 4. Call runAgent
-    const systemPrompt = `You are an expert SEO content writer and digital marketer. You write comprehensive, engaging blog posts that rank on Google. You follow E-E-A-T principles, use natural keyword integration, and always write in the brand's voice. You structure content for both readers and search engines.`
+    // Sprint 15E (P0 #6): inject brand memory so the blog reflects the
+    // user's uploaded brand docs (positioning, tone examples).
+    const { getMemoryPromptBlock } = await import('@/lib/tools/memory')
+    const memoryBlock = await getMemoryPromptBlock(workspaceId, { query: topic, maxNotes: 6, maxVoiceExamples: 2 })
+
+    // Sprint 1: Postgres memory matrix on top of the existing memory tool.
+    // The two blocks are complementary — getMemoryPromptBlock is keyword-
+    // search-tuned (topic-relevant notes), buildMemoryMatrix is
+    // deterministic top-N (winners, voice rules, live campaigns).
+    const memoryMatrix = await buildMemoryMatrix(workspaceId)
+    await logMemoryInjection({ workspaceId, agentRunId: runId, agent: 'blog_writer', matrix: memoryMatrix })
+
+    const systemPrompt = `You are an expert SEO content writer and digital marketer. You write comprehensive, engaging blog posts that rank on Google. You follow E-E-A-T principles, use natural keyword integration, and always write in the brand's voice. You structure content for both readers and search engines.
+
+You have tools available:
+- search: research SEO best practices, trending angles, or competitor content for this topic
+- query_brand_memory: fetch approved brand voice examples (call this first)
+- scrape: read a competitor or reference URL if needed
+- persist_artifact: save the finished blog post as a workspace artifact
+
+Always call query_brand_memory first, then optionally search for research context, then write the post.`
 
     const userPrompt = `Write a complete, publication-ready blog post for ${brand.business_name || 'the brand'}.
 
@@ -103,6 +114,9 @@ BRAND DETAILS:
 - Target audience: ${brand.target_audience || targetAudience || 'general audience'}
 - Industry: ${brand.industry || ''}
 - Brand values: ${brand.brand_values || brand.values || ''}
+${memoryBlock ? `\n${memoryBlock}\n` : ''}
+### SYSTEM MEMORY & PAST WORKSPACE LEARNINGS
+${memoryMatrix.matrix}
 
 CONTENT BRIEF:
 - Topic: ${topic}
@@ -110,7 +124,6 @@ CONTENT BRIEF:
 - Target word count: ${targetWordCount} words
 - Style: ${style}
 - Target audience: ${targetAudience || brand.target_audience || 'general audience'}
-${researchContext}
 
 REQUIREMENTS:
 - Write a full ${targetWordCount}-word blog post in HTML (use <h2>, <p>, <ul>, <li>, <strong>, <em> tags)
@@ -126,7 +139,7 @@ Respond with valid JSON only.`
 
     let blog: BlogPost
     try {
-      blog = await runAgent<BlogPost>(systemPrompt, userPrompt, BLOG_SCHEMA)
+      blog = await runAgentWithTools<BlogPost>(systemPrompt, userPrompt, workspaceId)
     } catch (agentError) {
       await sql`UPDATE agent_runs SET status = 'failed', completed_at = CURRENT_TIMESTAMP WHERE id = ${runId}`
       throw agentError

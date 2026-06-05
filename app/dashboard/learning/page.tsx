@@ -54,75 +54,56 @@ interface LearningSettings {
   agents: Record<string, boolean>
 }
 
-// ─── Demo data ────────────────────────────────────────────────────────────────
+// Sprint 3C: removed DEMO_NODES — a 37-line array of fake knowledge graph
+// rows. The `nodes` state below now starts empty; when the page is wired
+// to /api/learning (the GET endpoint returning learning_notes rows already
+// exists) the demo seed can be deleted entirely. For now empty is honest:
+// no nodes means the workspace genuinely has no ingested brand memory yet.
 
-const DEMO_NODES: KnowledgeNode[] = [
-  {
-    id: 'n1', type: 'brand_voice',
-    content: 'Our tone is confident but approachable — never corporate or stiff. Use contractions freely. Short paragraphs, punchy sentences. Avoid passive voice and buzzwords like "leverage" or "synergy".',
-    confidence: 0.94, tags: ['tone', 'writing-style', 'copy'], source_doc: 'Brand Guidelines v3.pdf', source_id: 's1',
-    created_at: new Date(Date.now() - 86400000 * 2).toISOString(),
-  },
-  {
-    id: 'n2', type: 'strategy',
-    content: 'Primary growth channel for Q3 is LinkedIn organic. Decision-makers in our ICP engage most with data-backed posts between 7–9 AM on weekdays. Case study carousels outperform plain text 3:1.',
-    confidence: 0.88, tags: ['linkedin', 'growth', 'Q3', 'ICP'], source_doc: 'Q3 Strategy Brief.docx', source_id: 's2',
-    created_at: new Date(Date.now() - 86400000 * 4).toISOString(),
-  },
-  {
-    id: 'n3', type: 'market_intel',
-    content: 'Market is shifting toward outcome-based pricing in SaaS. Buyers are fatigued by feature-list comparisons and respond better to ROI calculators and proof-of-concept demos within 14 days.',
-    confidence: 0.81, tags: ['pricing', 'SaaS', 'buyer-behavior'], source_doc: 'Market Research Oct 2025.pdf', source_id: 's3',
-    created_at: new Date(Date.now() - 86400000 * 7).toISOString(),
-  },
-  {
-    id: 'n4', type: 'competitor',
-    content: 'Competitor A positions on price — they cannot compete on depth. Their churn is high after 90 days because onboarding is self-serve. Our differentiator is the dedicated onboarding call + 30-day activation plan.',
-    confidence: 0.76, tags: ['competitive', 'positioning', 'onboarding'], source_doc: 'Competitive Analysis.pdf', source_id: 's3',
-    created_at: new Date(Date.now() - 86400000 * 10).toISOString(),
-  },
-  {
-    id: 'n5', type: 'performance',
-    content: 'Email subject lines with a number and a power word (e.g. "7 ways to..." or "Stop wasting your...") achieve 28% higher open rates vs. generic subject lines across 6 months of A/B data.',
-    confidence: 0.92, tags: ['email', 'subject-lines', 'A/B-test'], source_doc: 'Email Performance Report.pdf', source_id: 's1',
-    created_at: new Date(Date.now() - 86400000 * 1).toISOString(),
-  },
-  {
-    id: 'n6', type: 'brand_voice',
-    content: 'Always lead with the customer outcome, not the feature. "You will close deals 40% faster" beats "Our CRM has pipeline automation". Benefit-first framing in every piece of copy.',
-    confidence: 0.97, tags: ['copywriting', 'messaging', 'benefit-first'], source_doc: 'Brand Guidelines v3.pdf', source_id: 's1',
-    created_at: new Date(Date.now() - 86400000 * 3).toISOString(),
-  },
-]
 
-const DEMO_INSIGHTS: Insight[] = [
-  {
-    id: 'i1', title: 'LinkedIn engagement window identified',
-    body: 'Data from your strategy brief shows decision-makers engage most between 7–9 AM on weekdays. Schedule high-priority LinkedIn posts in this window to maximise reach.',
-    source: 'Q3 Strategy Brief.docx', category: 'Scheduling',
-    created_at: new Date(Date.now() - 86400000 * 4).toISOString(),
-  },
-  {
-    id: 'i2', title: 'Email subject line formula extracted',
-    body: 'Number + power word subject lines outperform generic ones by 28%. Apply this formula to all email campaigns: "[Number] ways to [desired outcome]" or "Stop [pain point]".',
-    source: 'Email Performance Report.pdf', category: 'Email',
-    created_at: new Date(Date.now() - 86400000 * 1).toISOString(),
-  },
-  {
-    id: 'i3', title: 'Competitor weakness — onboarding gap',
-    body: 'Competitor A has high 90-day churn due to self-serve onboarding. Lean into your dedicated onboarding + 30-day activation plan in all competitive scenarios and battle cards.',
-    source: 'Competitive Analysis.pdf', category: 'Competitive',
-    created_at: new Date(Date.now() - 86400000 * 10).toISOString(),
-  },
-]
+// Sprint 6B: DEMO_INSIGHTS and DEMO_SOURCES deleted.
+// Previously seeded 3 fake "LinkedIn engagement window identified" / "Email
+// subject line formula" insights and 5 fake source documents ("Brand
+// Guidelines v3.pdf", "Q3 Strategy Brief.docx", etc.) into local state.
+// This is exactly what the user saw in their walkthrough as Bug #8 — the
+// "5 documents / 0 nodes" mismatch, because nothing was actually
+// processed; the docs were fake and the extraction pipeline was missing.
+//
+// Now the page hydrates from real /api/learning GET (returns learning_notes
+// rows). When the workspace genuinely has no nodes/sources, the empty
+// states render — no lies.
 
-const DEMO_SOURCES: SourceDoc[] = [
-  { id: 's1', filename: 'Brand Guidelines v3.pdf', type: 'pdf', status: 'indexed', node_count: 14, created_at: new Date(Date.now() - 86400000 * 2).toISOString() },
-  { id: 's2', filename: 'Q3 Strategy Brief.docx', type: 'docx', status: 'indexed', node_count: 8, created_at: new Date(Date.now() - 86400000 * 4).toISOString() },
-  { id: 's3', filename: 'Market Research Oct 2025.pdf', type: 'pdf', status: 'indexed', node_count: 22, created_at: new Date(Date.now() - 86400000 * 7).toISOString() },
-  { id: 's4', filename: 'Competitive Analysis.pdf', type: 'pdf', status: 'processing', node_count: 0, created_at: new Date(Date.now() - 86400000 * 10).toISOString() },
-  { id: 's5', filename: 'Email Performance Report.pdf', type: 'pdf', status: 'indexed', node_count: 6, created_at: new Date(Date.now() - 86400000 * 1).toISOString() },
-]
+/** Map a learning_notes row from the API into the KnowledgeNode UI shape.
+ *  Best-effort — the API doesn't yet distinguish node types, so we infer
+ *  from source_type prefix and treat everything else as 'market_intel'. */
+function rowToKnowledgeNode(row: {
+  id: string
+  source_type?: string | null
+  source_id?: string | null
+  note: string
+  confidence?: number | null
+  created_at: string
+  artifact_title?: string | null
+  artifact_type?: string | null
+}): KnowledgeNode {
+  const src = (row.source_type || '').toLowerCase()
+  const inferredType: KnowledgeType =
+    src.includes('brand_voice')  ? 'brand_voice'
+    : src.includes('strategy')   ? 'strategy'
+    : src.includes('competitor') ? 'competitor'
+    : src.includes('performance')? 'performance'
+                                 : 'market_intel'
+  return {
+    id: row.id,
+    type: inferredType,
+    content: row.note || '',
+    confidence: typeof row.confidence === 'number' ? row.confidence : 0.8,
+    tags: [],
+    source_doc: row.artifact_title || row.source_type || 'Workspace',
+    source_id: row.source_id || '',
+    created_at: row.created_at,
+  }
+}
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -152,9 +133,16 @@ export default function LearningHubPage() {
   const [activeTab, setActiveTab] = useState<Tab>('Knowledge Base')
   const [search, setSearch] = useState('')
   const [typeFilter, setTypeFilter] = useState<string>('all')
-  const [nodes, setNodes] = useState<KnowledgeNode[]>(DEMO_NODES)
-  const [insights] = useState<Insight[]>(DEMO_INSIGHTS)
-  const [sources, setSources] = useState<SourceDoc[]>(DEMO_SOURCES)
+  // Sprint 6B: all three lists now start empty + hydrate from real APIs.
+  // - nodes hydrates from /api/learning GET (learning_notes table)
+  //   via rowToKnowledgeNode mapper defined above.
+  // - insights starts empty until a real "AI extraction" pipeline exists
+  //   (there's no /api/insights endpoint yet). Empty state is honest.
+  // - sources hydrates from artifacts table (type='document' or 'ingest')
+  //   via the existing /api/artifacts endpoint; falls back to empty.
+  const [nodes, setNodes] = useState<KnowledgeNode[]>([])
+  const [insights, setInsights] = useState<Insight[]>([])
+  const [sources, setSources] = useState<SourceDoc[]>([])
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [workspaceId, setWorkspaceId] = useState<string | null>(null)
 
@@ -172,17 +160,68 @@ export default function LearningHubPage() {
   const [settings, setSettings] = useState<LearningSettings>({
     autoLearn: true,
     confidenceThreshold: 70,
-    agents: { CMO: true, Strategy: true, 'Brand Monitor': true, Content: true, Email: false, Social: false },
+    agents: { CMO: true, Strategy: true, 'Brand Snapshot': true, Content: true, Email: false, Social: false },
   })
   const [settingsSaved, setSettingsSaved] = useState(false)
 
+  // Sprint 6B: real hydration from /api/learning + /api/artifacts.
+  // Nodes come from the learning_notes table (extraction output).
+  // Sources come from artifacts table filtered to document-like types.
+  // Both fail silently to empty arrays so a fresh workspace renders
+  // honest empty states instead of hanging or showing fake data.
   useEffect(() => {
     const wid = localStorage.getItem('workspaceId')
     if (!wid) { router.push('/dashboard/onboarding'); return }
     setWorkspaceId(wid)
-    // In production, fetch real data here
-    // fetch(`/api/learning?workspaceId=${wid}&tab=knowledge_base`)
+
+    // Nodes: GET /api/learning?workspaceId=…
+    fetch(`/api/learning?workspaceId=${wid}`)
+      .then(r => r.ok ? r.json() : [])
+      .then((rows: Array<{
+        id: string; source_type?: string | null; source_id?: string | null
+        note: string; confidence?: number | null; created_at: string
+        artifact_title?: string | null; artifact_type?: string | null
+      }>) => {
+        if (Array.isArray(rows)) setNodes(rows.map(rowToKnowledgeNode))
+      })
+      .catch(() => { /* honest empty state — already the default */ })
+
+    // Sources: pull document/upload artifacts. The `node_count` field is
+    // joined client-side from the nodes array — every node with a
+    // matching source_id contributes +1 to its source's node_count.
+    fetch(`/api/artifacts?workspaceId=${wid}&type=document&limit=200`)
+      .then(r => r.ok ? r.json() : [])
+      .then((rows: Array<{ id: string; title?: string; type?: string; created_at: string; status?: string }>) => {
+        if (!Array.isArray(rows)) return
+        setSources(rows.map(r => {
+          const filename = r.title || `Document ${r.id.slice(0, 8)}`
+          const ext = (filename.split('.').pop() || 'txt').toLowerCase() as IngestType
+          return {
+            id: r.id,
+            filename,
+            type: ['pdf', 'docx', 'url', 'text', 'audio', 'video'].includes(ext) ? ext as IngestType : 'text' as IngestType,
+            status: (r.status === 'failed' ? 'failed' : r.status === 'processing' ? 'processing' : 'indexed') as SourceStatus,
+            node_count: 0,    // recomputed below once nodes load
+            created_at: r.created_at,
+          }
+        }))
+      })
+      .catch(() => { /* empty state */ })
   }, [router])
+
+  // Compute node_count per source after both arrays settle.
+  useEffect(() => {
+    if (sources.length === 0 || nodes.length === 0) return
+    const counts = new Map<string, number>()
+    for (const n of nodes) {
+      if (n.source_id) counts.set(n.source_id, (counts.get(n.source_id) ?? 0) + 1)
+    }
+    setSources(prev => prev.map(s => ({ ...s, node_count: counts.get(s.id) ?? 0 })))
+    // We intentionally omit `sources` from deps to avoid loop — this
+    // effect runs when nodes change OR when sources first land (via
+    // the length>0 guard).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nodes])
 
   // ─── Filtering ──────────────────────────────────────────────────────────────
 
@@ -732,7 +771,7 @@ export default function LearningHubPage() {
 function FeedToAgentDropdown({ nodeId }: { nodeId: string }) {
   const [open, setOpen] = useState(false)
   const [fed, setFed] = useState<string | null>(null)
-  const agents = ['CMO Agent', 'Strategy Agent', 'Brand Monitor', 'Content Agent', 'Email Agent']
+  const agents = ['CMO Agent', 'Strategy Agent', 'Brand Snapshot', 'Content Agent', 'Email Agent']
 
   return (
     <div className="relative">

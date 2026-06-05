@@ -12,6 +12,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { runAgent } from '@/lib/claude'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 
 const SYSTEM = `You are the CRM Intelligence Agent for Ooumph AI Marketing OS.
 You analyse lead data, activity timelines, and behavioral signals to recommend precise actions.
@@ -29,6 +30,8 @@ export async function POST(req: NextRequest) {
     }
     const { workspaceId, mode, leadId, listId, context } = body
     if (!workspaceId) return NextResponse.json({ error: 'workspaceId required' }, { status: 400 })
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     const brandResult = await sql`SELECT * FROM brand_profiles WHERE workspace_id = ${workspaceId} LIMIT 1`
     const brand = brandResult.rows[0] || {}
@@ -90,6 +93,7 @@ Respond with JSON:
   "confidence": "high|medium|low",
   "summary": "2-3 sentence executive summary"
 }`,
+          workspaceId,
         )
         return NextResponse.json({ ok: true, analysis: result })
       }
@@ -122,6 +126,7 @@ Respond with JSON:
   "reasoning": "why this action now",
   "scoreChange": 5
 }`,
+        workspaceId,
       )
 
       // Auto-log the suggestion as an activity
@@ -164,6 +169,7 @@ Respond with JSON:
   "recommendations": ["action1", "action2"],
   "bestNextAction": "the single highest-leverage action for this whole list"
 }`,
+        workspaceId,
       )
       return NextResponse.json({ ok: true, insights: result, count: leads.length })
     }
@@ -197,6 +203,7 @@ ${context ? `Special instruction: ${context}` : ''}
 Write a concise, personalised email. No generic templates — reference their context.
 
 Respond with JSON: { "subject": "...", "body": "...", "cta": "the call to action", "tone": "professional|casual|urgent" }`,
+        workspaceId,
       )
 
       // Log outreach generation

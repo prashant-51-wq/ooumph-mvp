@@ -16,6 +16,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
 import { runAgent } from '@/lib/claude'
 import { assertWorkspaceOwnership } from '@/lib/guards'
+import { assertAgentRunQuota } from '@/lib/quota'
 import { sendApprovalRequestEmail } from '@/lib/email'
 import {
   generateSalesPipeline,
@@ -74,6 +75,9 @@ export async function POST(req: NextRequest) {
 
     const denied = assertWorkspaceOwnership(req, workspaceId)
     if (denied) return denied
+    // Sprint 13B: plan-tier quota.
+    const overQuota = await assertAgentRunQuota(req, workspaceId)
+    if (overQuota) return overQuota
 
     // Load brand profile — required for all modes
     const brandResult = await sql`SELECT * FROM brand_profiles WHERE workspace_id = ${workspaceId} LIMIT 1`
@@ -123,6 +127,7 @@ Growth Target: ${body.growthTarget || 'Not specified'}
 Since there are no deals yet, create a hypothetical but realistic pipeline with projected metrics and actionable steps to build pipeline from scratch.
 
 Return JSON with these fields: totalValue, weightedValue, dealsByStage (object), avgDealSize, avgCycleDays, winRate, forecastThisMonth, topDeals (empty array), recommendations (6 steps to build pipeline from zero)`,
+          workspaceId,
         )
       } else {
         plan = await generateSalesPipeline(brand, deals)

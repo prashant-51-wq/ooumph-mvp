@@ -13,11 +13,12 @@
  * → published).
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useWorkspaceId } from '@/lib/hooks/use-workspace-id'
 import {
   Calendar as CalendarIcon, RefreshCw, AlertCircle, ChevronLeft, ChevronRight,
   Briefcase, Bird, Globe, Layers, Loader2, ShieldCheck, AlertTriangle,
-  Clock, CheckCircle2, XCircle, Send, ExternalLink,
+  Clock, CheckCircle2, XCircle, Send, ExternalLink, MoreVertical, Pencil, Trash2, Check, Plus,
 } from 'lucide-react'
 
 // ─── Types ─────────────────────────────────────────────────────────────────
@@ -109,6 +110,37 @@ function statusOf(status: string) {
   return STATUS_STYLE[status] || { pill: 'bg-gray-800 text-gray-400 border-gray-700', Icon: AlertTriangle }
 }
 
+// Sprint 14D: drag-to-reschedule helpers. Only items the cron isn't actively
+// handling can be moved. publishing/published rows refuse the PATCH anyway
+// (publishing/route.ts line ~212), but we filter here for visual feedback
+// — a non-draggable cursor on the locked tile is clearer than a 409 toast
+// after the user already tried.
+const DRAGGABLE_STATUSES = new Set(['pending', 'paused', 'failed'])
+function isDraggable(item: ScheduledItem): boolean {
+  return DRAGGABLE_STATUSES.has(item.status)
+}
+// Sprint 16I (P2 #25): same gating drives Edit/Cancel availability. The
+// server PATCH refuses to mutate 'publishing'/'published' rows; we mirror
+// that here so the kebab menu hides actions that would 409.
+function isEditable(item: ScheduledItem): boolean {
+  return DRAGGABLE_STATUSES.has(item.status)
+}
+/** Build a new ISO timestamp on `targetDay` preserving the time-of-day
+ *  from `originalIso`. If the original has no time component we default
+ *  to 09:00 local. */
+function rescheduleTo(originalIso: string | null, targetDay: Date): string {
+  const target = new Date(targetDay)
+  if (originalIso) {
+    const orig = new Date(originalIso)
+    if (!Number.isNaN(orig.getTime())) {
+      target.setHours(orig.getHours(), orig.getMinutes(), 0, 0)
+      return target.toISOString()
+    }
+  }
+  target.setHours(9, 0, 0, 0)
+  return target.toISOString()
+}
+
 function ChannelIcon({ channel, className = 'w-3.5 h-3.5' }: { channel: string; className?: string }) {
   const ch = channel.toLowerCase()
   if (ch === 'linkedin') return <Briefcase className={`${className} text-sky-400`} />
@@ -130,20 +162,17 @@ export default function CalendarPage() {
   const [error, setError] = useState<string | null>(null)
 
   // Resolve workspace
+  // Sprint 10C: useWorkspaceId() replaces the ad-hoc fetch('/api/auth/me')
+  // + localStorage fallback that lived here. The hook does the same work
+  // with a 60s cache shared across the dashboard so multiple pages don't
+  // each fire their own /me probe on the same load.
+  const { workspaceId: sessionWorkspaceId, resolved: sessionResolved, loading: sessionLoading } = useWorkspaceId()
   useEffect(() => {
-    let cancelled = false
-    fetch('/api/auth/me')
-      .then(r => r.ok ? r.json() : null)
-      .then(data => {
-        if (cancelled) return
-        const id: string | null = data?.user?.workspaceId
-          || (typeof window !== 'undefined' ? localStorage.getItem('workspaceId') : null)
-        setWorkspaceId(id)
-        if (!id) setError('No workspace selected — finish onboarding first.')
-      })
-      .catch(() => { if (!cancelled) setError('Failed to load session') })
-    return () => { cancelled = true }
-  }, [])
+    setWorkspaceId(sessionWorkspaceId)
+    if (sessionResolved && !sessionLoading && !sessionWorkspaceId) {
+      setError('No workspace selected — finish onboarding first.')
+    }
+  }, [sessionWorkspaceId, sessionResolved, sessionLoading])
 
   // Fetch + poll the schedule
   const fetchItems = useCallback(async () => {
@@ -186,6 +215,186 @@ export default function CalendarPage() {
     return () => clearInterval(t)
   }, [workspaceId, fetchItems])
 
+  // Sprint 14D: drag-to-reschedule. Optimistically patches the local row
+  // so the tile snaps to the new day immediately, then commits via PATCH.
+  // On error we revert and surface the message.
+  const [rescheduleError, setRescheduleError] = useState<string | null>(null)
+  const reschedule = useCallback(async (itemId: string, newScheduledAt: string) => {
+    if (!workspaceId) return
+    const prevSnapshot = items
+    setItems(prev => prev.map(it =>
+      it.id === itemId
+        ? { ...it, scheduled_at: newScheduledAt, scheduled_for: newScheduledAt }
+        : it
+    ))
+    try {
+      const res = await fetch('/api/publishing', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: itemId, workspaceId, scheduledAt: newScheduledAt }),
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({})) as { error?: string }
+        throw new Error(data.error || `PATCH ${res.status}`)
+      }
+      setRescheduleError(null)
+      // Pick up server-side updated_at + any state reset on the next poll.
+      fetchItems()
+    } catch (err) {
+      setItems(prevSnapshot)
+      setRescheduleError(err instanceof Error ? err.message : String(err))
+    }
+  }, [workspaceId, items, fetchItems])
+
+  // Sprint 16I (P2 #25): tile-action plumbing — edit modal, approval lookup,
+  // and cancel. The modal is also used for "+ New post" (editingItem = null).
+  const [editingItem, setEditingItem] = useState<ScheduledItem | null>(null)
+  const [showNewModal, setShowNewModal] = useState(false)
+  const [actionError, setActionError] = useState<string | null>(null)
+  const [actionInfo, setActionInfo] = useState<string | null>(null)
+  // Pending approvals keyed by artifact_id, so a tile can know if its
+  // backing artifact has something approve-able.
+  const [pendingApprovalByArtifact, setPendingApprovalByArtifact] = useState<Record<string, string>>({})
+
+  useEffect(() => {
+    if (!workspaceId) return
+    let cancelled = false
+    fetch(`/api/approvals?workspaceId=${workspaceId}`)
+      .then(r => r.ok ? r.json() : [])
+      .then((rows: Array<{ id: string; artifact_id: string; status: string }>) => {
+        if (cancelled || !Array.isArray(rows)) return
+        const map: Record<string, string> = {}
+        for (const r of rows) {
+          if (r.status === 'pending' && r.artifact_id) map[r.artifact_id] = r.id
+        }
+        setPendingApprovalByArtifact(map)
+      })
+      .catch(() => { /* non-fatal */ })
+    return () => { cancelled = true }
+  }, [workspaceId, items.length])
+
+  const editTile = useCallback(async (
+    item: ScheduledItem | null,
+    payload: { contentBody: string; scheduledAt: string; channel?: string },
+  ) => {
+    if (!workspaceId) return
+    setActionError(null)
+    try {
+      if (item) {
+        const res = await fetch('/api/publishing', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            id: item.id, workspaceId,
+            contentBody: payload.contentBody,
+            scheduledAt: payload.scheduledAt,
+          }),
+        })
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({})) as { error?: string }
+          throw new Error(data.error || `PATCH ${res.status}`)
+        }
+        setActionInfo('Post updated.')
+      } else {
+        const res = await fetch('/api/publishing', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            workspaceId,
+            channel: payload.channel || 'linkedin',
+            contentBody: payload.contentBody,
+            scheduledAt: payload.scheduledAt,
+            mediaUrls: [],
+          }),
+        })
+        if (!res.ok) {
+          const txt = await res.text().catch(() => '')
+          throw new Error(`POST ${res.status} ${txt}`)
+        }
+        setActionInfo('Post scheduled.')
+      }
+      setEditingItem(null); setShowNewModal(false)
+      await fetchItems()
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err))
+    }
+  }, [workspaceId, fetchItems])
+
+  const approveTile = useCallback(async (item: ScheduledItem) => {
+    if (!workspaceId || !item.artifact_id) return
+    const approvalId = pendingApprovalByArtifact[item.artifact_id]
+    if (!approvalId) {
+      setActionError('No pending approval for this post.')
+      return
+    }
+    setActionError(null)
+    try {
+      const res = await fetch('/api/approvals', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ approvalId, workspaceId, action: 'approve' }),
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({})) as { error?: string }
+        throw new Error(data.error || `PATCH ${res.status}`)
+      }
+      setActionInfo('Approval recorded.')
+      setPendingApprovalByArtifact(prev => {
+        const next = { ...prev }
+        if (item.artifact_id) delete next[item.artifact_id]
+        return next
+      })
+      await fetchItems()
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err))
+    }
+  }, [workspaceId, pendingApprovalByArtifact, fetchItems])
+
+  /** Sprint 17E (audit P2 #25): retry a terminal-failed publish from a
+   *  calendar tile. Mirrors the /publishing page Retry button — flipping
+   *  status back to 'pending' is enough; the cron picks it up next sweep.
+   *  Without this, users seeing a red tile had to context-switch to the
+   *  Publishing surface to do anything about it. */
+  const retryTile = useCallback(async (item: ScheduledItem) => {
+    if (!workspaceId) return
+    setActionError(null)
+    try {
+      const res = await fetch('/api/publishing', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: item.id, workspaceId, status: 'pending' }),
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({})) as { error?: string }
+        throw new Error(data.error || `PATCH ${res.status}`)
+      }
+      setActionInfo('Re-queued. The cron will retry on its next sweep.')
+      await fetchItems()
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err))
+    }
+  }, [workspaceId, fetchItems])
+
+  const cancelTile = useCallback(async (item: ScheduledItem) => {
+    if (!workspaceId) return
+    if (!confirm('Cancel this scheduled post? It will be soft-deleted (audit row preserved).')) return
+    setActionError(null)
+    const prev = items
+    setItems(curr => curr.filter(it => it.id !== item.id))
+    try {
+      const res = await fetch(`/api/publishing?id=${item.id}&workspaceId=${workspaceId}`, { method: 'DELETE' })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({})) as { error?: string }
+        throw new Error(data.error || `DELETE ${res.status}`)
+      }
+      setActionInfo('Post cancelled.')
+      await fetchItems()
+    } catch (err) {
+      setItems(prev)
+      setActionError(err instanceof Error ? err.message : String(err))
+    }
+  }, [workspaceId, items, fetchItems])
+
   // Empty-state check (filtered)
   const isEmpty = !loading && items.length === 0
 
@@ -202,12 +411,20 @@ export default function CalendarPage() {
               Live view of every scheduled post across all connected channels.
             </p>
           </div>
-          <button
-            onClick={fetchItems}
-            className="px-3 py-1.5 bg-gray-900 hover:bg-gray-800 border border-gray-700 text-gray-300 text-sm rounded-lg flex items-center gap-2"
-          >
-            <RefreshCw className="w-3.5 h-3.5" /> Refresh
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => { setActionError(null); setActionInfo(null); setShowNewModal(true) }}
+              className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-sm rounded-lg flex items-center gap-2"
+            >
+              <Plus className="w-3.5 h-3.5" /> New post
+            </button>
+            <button
+              onClick={fetchItems}
+              className="px-3 py-1.5 bg-gray-900 hover:bg-gray-800 border border-gray-700 text-gray-300 text-sm rounded-lg flex items-center gap-2"
+            >
+              <RefreshCw className="w-3.5 h-3.5" /> Refresh
+            </button>
+          </div>
         </div>
 
         {/* Master channel filter + view toggle */}
@@ -251,6 +468,24 @@ export default function CalendarPage() {
             <AlertCircle className="w-4 h-4" /> {error}
           </div>
         )}
+        {rescheduleError && (
+          <div className="mb-4 p-3 bg-amber-950/40 border border-amber-900 rounded-lg text-amber-300 text-sm flex items-center justify-between gap-2">
+            <span className="flex items-center gap-2"><AlertCircle className="w-4 h-4" /> Reschedule failed: {rescheduleError}</span>
+            <button onClick={() => setRescheduleError(null)} className="text-xs text-amber-400 hover:text-amber-200">Dismiss</button>
+          </div>
+        )}
+        {actionError && (
+          <div className="mb-4 p-3 bg-rose-950/40 border border-rose-900 rounded-lg text-rose-300 text-sm flex items-center justify-between gap-2">
+            <span className="flex items-center gap-2"><AlertCircle className="w-4 h-4" /> {actionError}</span>
+            <button onClick={() => setActionError(null)} className="text-xs text-rose-400 hover:text-rose-200">Dismiss</button>
+          </div>
+        )}
+        {actionInfo && (
+          <div className="mb-4 p-3 bg-emerald-950/40 border border-emerald-900 rounded-lg text-emerald-300 text-sm flex items-center justify-between gap-2">
+            <span className="flex items-center gap-2"><CheckCircle2 className="w-4 h-4" /> {actionInfo}</span>
+            <button onClick={() => setActionInfo(null)} className="text-xs text-emerald-400 hover:text-emerald-200">Dismiss</button>
+          </div>
+        )}
 
         {loading ? (
           <div className="text-center py-20 text-gray-500 text-sm">Loading schedule…</div>
@@ -267,22 +502,253 @@ export default function CalendarPage() {
         ) : (
           <>
             {view === 'agenda' && (
-              <AgendaView items={items} publishedMap={publishedMap} />
+              <AgendaView
+                items={items} publishedMap={publishedMap}
+                pendingApprovalByArtifact={pendingApprovalByArtifact}
+                onEdit={setEditingItem}
+                onApprove={approveTile}
+                onCancel={cancelTile}
+                onRetry={retryTile}
+              />
             )}
             {view === 'week' && (
               <WeekView
                 items={items} publishedMap={publishedMap}
                 anchorDate={anchorDate} onAnchorChange={setAnchorDate}
+                onReschedule={reschedule}
+                pendingApprovalByArtifact={pendingApprovalByArtifact}
+                onEdit={setEditingItem}
+                onApprove={approveTile}
+                onCancel={cancelTile}
+                onRetry={retryTile}
               />
             )}
             {view === 'month' && (
               <MonthView
                 items={items} publishedMap={publishedMap}
                 anchorDate={anchorDate} onAnchorChange={setAnchorDate}
+                onReschedule={reschedule}
               />
             )}
           </>
         )}
+
+        {(editingItem || showNewModal) && (
+          <EditTileModal
+            item={editingItem}
+            defaultDay={anchorDate}
+            onClose={() => { setEditingItem(null); setShowNewModal(false) }}
+            onSave={(p) => editTile(editingItem, p)}
+          />
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ─── Tile action menu (kebab) ─────────────────────────────────────────────
+
+function TileMenu({
+  item, hasPendingApproval,
+  onEdit, onApprove, onCancel, onRetry,
+  compact = false,
+}: {
+  item: ScheduledItem
+  hasPendingApproval: boolean
+  onEdit: (item: ScheduledItem) => void
+  onApprove: (item: ScheduledItem) => void
+  onCancel: (item: ScheduledItem) => void
+  // Sprint 17E (audit P2 #25): only set on failed tiles. Undefined elsewhere
+  // so the menu doesn't render the row.
+  onRetry?: (item: ScheduledItem) => void
+  compact?: boolean
+}) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!open) return
+    const onDoc = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onDoc)
+    return () => document.removeEventListener('mousedown', onDoc)
+  }, [open])
+  const editable = isEditable(item)
+  return (
+    <div ref={ref} className="relative">
+      <button
+        onClick={e => { e.stopPropagation(); e.preventDefault(); setOpen(v => !v) }}
+        className={`p-1 rounded hover:bg-gray-800 text-gray-400 hover:text-gray-200 ${compact ? 'text-[10px]' : ''}`}
+        title="Actions"
+        aria-label="Tile actions"
+      >
+        <MoreVertical className={compact ? 'w-3 h-3' : 'w-4 h-4'} />
+      </button>
+      {open && (
+        <div
+          className="absolute right-0 mt-1 z-30 min-w-[140px] bg-gray-900 border border-gray-700 rounded-lg shadow-xl py-1"
+          onClick={e => { e.stopPropagation() }}
+        >
+          {editable && (
+            <button
+              onClick={() => { setOpen(false); onEdit(item) }}
+              className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-gray-200 hover:bg-gray-800"
+            >
+              <Pencil className="w-3 h-3" /> Edit
+            </button>
+          )}
+          {hasPendingApproval ? (
+            <button
+              onClick={() => { setOpen(false); onApprove(item) }}
+              className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-emerald-300 hover:bg-gray-800"
+            >
+              <Check className="w-3 h-3" /> Approve
+            </button>
+          ) : item.artifact_id ? (
+            <div
+              className="px-3 py-1.5 text-[11px] text-gray-600 italic"
+              title="This post's source artifact is already approved (or has no pending approval). Approval happens in /dashboard/approvals before scheduling."
+            >
+              {/* Sprint 17G (audit pass #3 P2 #30): explain why Approve is
+                  missing instead of just hiding the option silently. */}
+              Already approved
+            </div>
+          ) : (
+            <div
+              className="px-3 py-1.5 text-[11px] text-gray-600 italic"
+              title="Approve requires a backing artifact. Manually-composed posts skip the approval queue."
+            >
+              No artifact to approve
+            </div>
+          )}
+          {/* Sprint 17E (audit P2 #25): parity with /publishing — terminal
+              failed rows can be re-queued straight from the calendar tile. */}
+          {item.status === 'failed' && onRetry && (
+            <button
+              onClick={() => { setOpen(false); onRetry(item) }}
+              className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-indigo-300 hover:bg-gray-800"
+            >
+              <RefreshCw className="w-3 h-3" /> Retry
+            </button>
+          )}
+          {editable && (
+            <button
+              onClick={() => { setOpen(false); onCancel(item) }}
+              className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-rose-300 hover:bg-gray-800"
+            >
+              <Trash2 className="w-3 h-3" /> Cancel
+            </button>
+          )}
+          {!editable && !hasPendingApproval && item.status !== 'failed' && (
+            <div className="px-3 py-1.5 text-[11px] text-gray-500 italic">No actions — row locked</div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Edit / New modal ─────────────────────────────────────────────────────
+
+function EditTileModal({
+  item, defaultDay, onClose, onSave,
+}: {
+  item: ScheduledItem | null
+  defaultDay: Date
+  onClose: () => void
+  onSave: (p: { contentBody: string; scheduledAt: string; channel?: string }) => void
+}) {
+  const initialAt = useMemo(() => {
+    const iso = item ? getScheduledAt(item) : null
+    const d = iso ? new Date(iso) : (() => {
+      const x = new Date(defaultDay); x.setHours(9, 0, 0, 0); return x
+    })()
+    // datetime-local needs YYYY-MM-DDTHH:MM in local TZ
+    const pad = (n: number) => String(n).padStart(2, '0')
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+  }, [item, defaultDay])
+
+  const [content, setContent] = useState(item ? getBody(item) : '')
+  const [when, setWhen] = useState(initialAt)
+  const [channel, setChannel] = useState<string>(item ? (getChannel(item) || 'linkedin') : 'linkedin')
+  const [submitting, setSubmitting] = useState(false)
+  // Sprint 20H bug #5: surface validation. Previously the Save button
+  // was silently disabled when content was empty — users clicked it,
+  // nothing happened, no error shown. Now we render a visible message.
+  const [validationError, setValidationError] = useState<string | null>(null)
+
+  const submit = async () => {
+    if (!content.trim()) { setValidationError('Content is required'); return }
+    if (!when) { setValidationError('Schedule time is required'); return }
+    setValidationError(null)
+    setSubmitting(true)
+    try {
+      const scheduledAt = new Date(when).toISOString()
+      await onSave({ contentBody: content, scheduledAt, channel })
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-gray-950/80 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-lg" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-3 border-b border-gray-800">
+          <h2 className="text-white font-semibold text-sm">{item ? 'Edit scheduled post' : 'New scheduled post'}</h2>
+          <button onClick={onClose} className="text-gray-500 hover:text-white text-lg leading-none">×</button>
+        </div>
+        <div className="p-5 space-y-4">
+          {!item && (
+            <div>
+              <label className="text-xs text-gray-400 uppercase tracking-wide block mb-1.5">Channel</label>
+              <select
+                value={channel}
+                onChange={e => setChannel(e.target.value)}
+                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-indigo-500"
+              >
+                <option value="linkedin">LinkedIn</option>
+                <option value="twitter">X / Twitter</option>
+                <option value="wordpress">WordPress</option>
+                <option value="instagram">Instagram</option>
+                <option value="facebook">Facebook</option>
+              </select>
+            </div>
+          )}
+          <div>
+            <label className="text-xs text-gray-400 uppercase tracking-wide block mb-1.5">Content</label>
+            <textarea
+              value={content}
+              onChange={e => setContent(e.target.value)}
+              rows={5}
+              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-indigo-500 resize-none"
+              placeholder="What do you want to publish?"
+            />
+          </div>
+          <div>
+            <label className="text-xs text-gray-400 uppercase tracking-wide block mb-1.5">Scheduled for</label>
+            <input
+              type="datetime-local"
+              value={when}
+              onChange={e => setWhen(e.target.value)}
+              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-indigo-500"
+            />
+          </div>
+        </div>
+        {validationError && (
+          <div className="px-5 pb-2">
+            <p className="text-rose-400 text-xs">⚠ {validationError}</p>
+          </div>
+        )}
+        <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-gray-800">
+          <button onClick={onClose} className="px-3 py-1.5 text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg">Cancel</button>
+          <button
+            onClick={submit}
+            disabled={submitting}
+            className="px-3 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white rounded-lg"
+          >
+            {submitting ? 'Saving…' : 'Save'}
+          </button>
+        </div>
       </div>
     </div>
   )
@@ -290,7 +756,16 @@ export default function CalendarPage() {
 
 // ─── Agenda view ───────────────────────────────────────────────────────────
 
-function AgendaView({ items, publishedMap }: { items: ScheduledItem[]; publishedMap: Record<string, PublishedRow> }) {
+function AgendaView({
+  items, publishedMap, pendingApprovalByArtifact, onEdit, onApprove, onCancel, onRetry,
+}: {
+  items: ScheduledItem[]; publishedMap: Record<string, PublishedRow>
+  pendingApprovalByArtifact: Record<string, string>
+  onEdit: (item: ScheduledItem) => void
+  onApprove: (item: ScheduledItem) => void
+  onCancel: (item: ScheduledItem) => void
+  onRetry: (item: ScheduledItem) => void
+}) {
   const grouped = useMemo(() => {
     const map = new Map<string, ScheduledItem[]>()
     const sorted = [...items].sort((a, b) => {
@@ -319,7 +794,16 @@ function AgendaView({ items, publishedMap }: { items: ScheduledItem[]; published
           </h3>
           <div className="space-y-2">
             {dayItems.map(item => (
-              <AgendaCard key={item.id} item={item} published={publishedMap[item.id] || null} />
+              <AgendaCard
+                key={item.id}
+                item={item}
+                published={publishedMap[item.id] || null}
+                hasPendingApproval={!!(item.artifact_id && pendingApprovalByArtifact[item.artifact_id])}
+                onEdit={onEdit}
+                onApprove={onApprove}
+                onCancel={onCancel}
+                onRetry={onRetry}
+              />
             ))}
           </div>
         </div>
@@ -328,7 +812,16 @@ function AgendaView({ items, publishedMap }: { items: ScheduledItem[]; published
   )
 }
 
-function AgendaCard({ item, published }: { item: ScheduledItem; published: PublishedRow | null }) {
+function AgendaCard({
+  item, published, hasPendingApproval, onEdit, onApprove, onCancel, onRetry,
+}: {
+  item: ScheduledItem; published: PublishedRow | null
+  hasPendingApproval: boolean
+  onEdit: (item: ScheduledItem) => void
+  onApprove: (item: ScheduledItem) => void
+  onCancel: (item: ScheduledItem) => void
+  onRetry: (item: ScheduledItem) => void
+}) {
   const channel = getChannel(item)
   const body = getBody(item)
   const at = getScheduledAt(item)
@@ -358,7 +851,10 @@ function AgendaCard({ item, published }: { item: ScheduledItem; published: Publi
           )}
           {item.retry_count > 0 && (
             <span className="text-[10px] text-amber-400">
-              retry {item.retry_count}/3
+              {/* Sprint 20H bug #9: cap display at max — backend sometimes
+                  increments past the cap on race conditions, so "4/3"
+                  bled through. Cap visually so the counter reads sanely. */}
+              retry {Math.min(item.retry_count, 3)}/3
             </span>
           )}
         </div>
@@ -371,7 +867,7 @@ function AgendaCard({ item, published }: { item: ScheduledItem; published: Publi
       </div>
 
       {/* Actions */}
-      <div className="flex-shrink-0">
+      <div className="flex-shrink-0 flex items-center gap-2">
         {permalink && (
           <a
             href={permalink}
@@ -381,6 +877,14 @@ function AgendaCard({ item, published }: { item: ScheduledItem; published: Publi
             <ExternalLink className="w-3 h-3" /> View
           </a>
         )}
+        <TileMenu
+          item={item}
+          hasPendingApproval={hasPendingApproval}
+          onEdit={onEdit}
+          onApprove={onApprove}
+          onCancel={onCancel}
+          onRetry={onRetry}
+        />
       </div>
     </div>
   )
@@ -389,10 +893,17 @@ function AgendaCard({ item, published }: { item: ScheduledItem; published: Publi
 // ─── Week view ─────────────────────────────────────────────────────────────
 
 function WeekView({
-  items, publishedMap, anchorDate, onAnchorChange,
+  items, publishedMap, anchorDate, onAnchorChange, onReschedule,
+  pendingApprovalByArtifact, onEdit, onApprove, onCancel, onRetry,
 }: {
   items: ScheduledItem[]; publishedMap: Record<string, PublishedRow>
   anchorDate: Date; onAnchorChange: (d: Date) => void
+  onReschedule: (itemId: string, newScheduledAt: string) => void
+  pendingApprovalByArtifact: Record<string, string>
+  onEdit: (item: ScheduledItem) => void
+  onApprove: (item: ScheduledItem) => void
+  onCancel: (item: ScheduledItem) => void
+  onRetry: (item: ScheduledItem) => void
 }) {
   const weekStart = startOfWeek(anchorDate)
   const days = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i))
@@ -410,6 +921,27 @@ function WeekView({
     return map
   }, [items])
 
+  // Sprint 14D: dragOverDay highlights the cell the user is hovering so the
+  // drop zone is unambiguous before they release.
+  const [dragOverDay, setDragOverDay] = useState<string | null>(null)
+  const itemById = useMemo(() => {
+    const m = new Map<string, ScheduledItem>()
+    for (const it of items) m.set(it.id, it)
+    return m
+  }, [items])
+
+  const handleDrop = (e: React.DragEvent<HTMLDivElement>, day: Date) => {
+    e.preventDefault()
+    setDragOverDay(null)
+    const id = e.dataTransfer.getData('text/calendar-item-id')
+    if (!id) return
+    const item = itemById.get(id)
+    if (!item || !isDraggable(item)) return
+    const originalIso = getScheduledAt(item)
+    if (originalIso && sameDay(new Date(originalIso), day)) return  // no-op
+    onReschedule(id, rescheduleTo(originalIso, day))
+  }
+
   return (
     <div>
       <div className="flex items-center justify-between mb-4">
@@ -425,14 +957,28 @@ function WeekView({
           <ChevronRight className="w-4 h-4 text-gray-400" />
         </button>
       </div>
+      <p className="text-[11px] text-gray-500 mb-2">
+        Drag a tile to a different day to reschedule. Time-of-day is preserved.
+        Locked rows (publishing / published / cancelled) can&apos;t be moved.
+      </p>
 
       <div className="grid grid-cols-7 gap-2">
         {days.map(day => {
           const key = day.toISOString().slice(0, 10)
           const dayItems = itemsByDay.get(key) || []
           const isToday = sameDay(day, new Date())
+          const isDragTarget = dragOverDay === key
           return (
-            <div key={key} className={`bg-gray-900 border rounded-xl p-2 min-h-[180px] ${isToday ? 'border-indigo-700' : 'border-gray-800'}`}>
+            <div
+              key={key}
+              onDragOver={e => { e.preventDefault(); setDragOverDay(key) }}
+              onDragLeave={() => setDragOverDay(prev => prev === key ? null : prev)}
+              onDrop={e => handleDrop(e, day)}
+              className={`bg-gray-900 border rounded-xl p-2 min-h-[180px] transition-colors ${
+                isDragTarget ? 'border-indigo-500 bg-indigo-950/30'
+                : isToday ? 'border-indigo-700' : 'border-gray-800'
+              }`}
+            >
               <div className="flex items-center justify-between mb-2">
                 <div className="text-[10px] uppercase text-gray-500">{day.toLocaleDateString(undefined, { weekday: 'short' })}</div>
                 <div className={`text-sm font-bold ${isToday ? 'text-indigo-400' : 'text-gray-200'}`}>{day.getDate()}</div>
@@ -441,7 +987,16 @@ function WeekView({
                 {dayItems.length === 0 ? (
                   <div className="text-[10px] text-gray-700 italic mt-3">No posts</div>
                 ) : dayItems.map(item => (
-                  <WeekTile key={item.id} item={item} published={publishedMap[item.id] || null} />
+                  <WeekTile
+                    key={item.id}
+                    item={item}
+                    published={publishedMap[item.id] || null}
+                    hasPendingApproval={!!(item.artifact_id && pendingApprovalByArtifact[item.artifact_id])}
+                    onEdit={onEdit}
+                    onApprove={onApprove}
+                    onCancel={onCancel}
+                    onRetry={onRetry}
+                  />
                 ))}
               </div>
             </div>
@@ -452,18 +1007,51 @@ function WeekView({
   )
 }
 
-function WeekTile({ item, published }: { item: ScheduledItem; published: PublishedRow | null }) {
+function WeekTile({
+  item, published, hasPendingApproval, onEdit, onApprove, onCancel, onRetry,
+}: {
+  item: ScheduledItem; published: PublishedRow | null
+  hasPendingApproval: boolean
+  onEdit: (item: ScheduledItem) => void
+  onApprove: (item: ScheduledItem) => void
+  onCancel: (item: ScheduledItem) => void
+  onRetry: (item: ScheduledItem) => void
+}) {
   const channel = getChannel(item)
   const stat = statusOf(item.status)
   const StatIcon = stat.Icon
   const permalink = published?.permalink || published?.post_url || null
   const body = getBody(item)
+  const draggable = isDraggable(item)
+  // Sprint 14D: draggable for unlocked rows. We stop propagation on dragStart
+  // so clicking through to the permalink link inside the tile still works.
+  // Sprint 16I: kebab menu lives in the header row so it doesn't interfere
+  // with the drag handle.
   const inner = (
-    <div className="bg-gray-950 border border-gray-800 rounded p-1.5 hover:border-gray-700 transition-colors">
+    <div
+      draggable={draggable}
+      onDragStart={e => {
+        e.dataTransfer.setData('text/calendar-item-id', item.id)
+        e.dataTransfer.effectAllowed = 'move'
+      }}
+      title={draggable ? 'Drag to a different day to reschedule' : `${item.status} — locked from rescheduling`}
+      className={`bg-gray-950 border border-gray-800 rounded p-1.5 hover:border-gray-700 transition-colors ${
+        draggable ? 'cursor-grab active:cursor-grabbing' : 'cursor-not-allowed opacity-80'
+      }`}
+    >
       <div className="flex items-center gap-1 mb-0.5">
         <ChannelIcon channel={channel} className="w-2.5 h-2.5" />
         <span className="text-[9px] text-gray-500 tabular-nums">{formatTime(getScheduledAt(item))}</span>
         <StatIcon className={`w-2.5 h-2.5 ml-auto ${item.status === 'publishing' ? 'animate-spin' : ''} ${stat.pill.split(' ').find(c => c.startsWith('text-'))}`} />
+        <TileMenu
+          item={item}
+          hasPendingApproval={hasPendingApproval}
+          onEdit={onEdit}
+          onApprove={onApprove}
+          onCancel={onCancel}
+          onRetry={onRetry}
+          compact
+        />
       </div>
       <p className="text-[10px] text-gray-300 line-clamp-2 leading-snug">{body || '(empty)'}</p>
     </div>
@@ -476,10 +1064,11 @@ function WeekTile({ item, published }: { item: ScheduledItem; published: Publish
 // ─── Month view ────────────────────────────────────────────────────────────
 
 function MonthView({
-  items, publishedMap, anchorDate, onAnchorChange,
+  items, publishedMap, anchorDate, onAnchorChange, onReschedule,
 }: {
   items: ScheduledItem[]; publishedMap: Record<string, PublishedRow>
   anchorDate: Date; onAnchorChange: (d: Date) => void
+  onReschedule: (itemId: string, newScheduledAt: string) => void
 }) {
   const monthStart = startOfMonth(anchorDate)
   const gridStart = startOfWeek(monthStart)
@@ -498,6 +1087,25 @@ function MonthView({
     return map
   }, [items])
 
+  const itemById = useMemo(() => {
+    const m = new Map<string, ScheduledItem>()
+    for (const it of items) m.set(it.id, it)
+    return m
+  }, [items])
+
+  const [dragOverDay, setDragOverDay] = useState<string | null>(null)
+  const handleDrop = (e: React.DragEvent<HTMLDivElement>, day: Date) => {
+    e.preventDefault()
+    setDragOverDay(null)
+    const id = e.dataTransfer.getData('text/calendar-item-id')
+    if (!id) return
+    const item = itemById.get(id)
+    if (!item || !isDraggable(item)) return
+    const originalIso = getScheduledAt(item)
+    if (originalIso && sameDay(new Date(originalIso), day)) return
+    onReschedule(id, rescheduleTo(originalIso, day))
+  }
+
   return (
     <div>
       <div className="flex items-center justify-between mb-4">
@@ -513,6 +1121,9 @@ function MonthView({
           <ChevronRight className="w-4 h-4 text-gray-400" />
         </button>
       </div>
+      <p className="text-[11px] text-gray-500 mb-2">
+        Drag a chip into another day to reschedule. Time-of-day is preserved.
+      </p>
 
       <div className="grid grid-cols-7 gap-px bg-gray-800 border border-gray-800 rounded-xl overflow-hidden">
         {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(d => (
@@ -523,26 +1134,29 @@ function MonthView({
           const dayItems = itemsByDay.get(key) || []
           const inMonth = day.getMonth() === monthStart.getMonth()
           const isToday = sameDay(day, new Date())
+          const isDragTarget = dragOverDay === key
           return (
-            <div key={key} className={`bg-gray-950 min-h-[80px] p-1.5 ${!inMonth ? 'opacity-30' : ''}`}>
+            <div
+              key={key}
+              onDragOver={e => { e.preventDefault(); setDragOverDay(key) }}
+              onDragLeave={() => setDragOverDay(prev => prev === key ? null : prev)}
+              onDrop={e => handleDrop(e, day)}
+              className={`min-h-[80px] p-1.5 transition-colors ${
+                isDragTarget ? 'bg-indigo-950/40 ring-1 ring-indigo-500'
+                : 'bg-gray-950'
+              } ${!inMonth ? 'opacity-30' : ''}`}
+            >
               <div className={`text-[10px] mb-1 ${isToday ? 'text-indigo-400 font-bold' : 'text-gray-500'}`}>
                 {day.getDate()}
               </div>
               <div className="space-y-0.5">
-                {dayItems.slice(0, 3).map(item => {
-                  const ch = getChannel(item)
-                  const stat = statusOf(item.status)
-                  const permalink = publishedMap[item.id]?.permalink || publishedMap[item.id]?.post_url || null
-                  const dot = (
-                    <div className={`flex items-center gap-1 px-1 py-0.5 rounded text-[9px] truncate ${stat.pill}`}>
-                      <ChannelIcon channel={ch} className="w-2 h-2 flex-shrink-0" />
-                      <span className="truncate">{formatTime(getScheduledAt(item))}</span>
-                    </div>
-                  )
-                  return permalink
-                    ? <a key={item.id} href={permalink} target="_blank" rel="noopener noreferrer">{dot}</a>
-                    : <div key={item.id}>{dot}</div>
-                })}
+                {dayItems.slice(0, 3).map(item => (
+                  <MonthChip
+                    key={item.id}
+                    item={item}
+                    published={publishedMap[item.id] || null}
+                  />
+                ))}
                 {dayItems.length > 3 && (
                   <div className="text-[9px] text-gray-600">+{dayItems.length - 3} more</div>
                 )}
@@ -553,4 +1167,34 @@ function MonthView({
       </div>
     </div>
   )
+}
+
+function MonthChip({ item, published }: { item: ScheduledItem; published: PublishedRow | null }) {
+  const ch = getChannel(item)
+  const stat = statusOf(item.status)
+  const permalink = published?.permalink || published?.post_url || null
+  const draggable = isDraggable(item)
+  // Sprint 14D: the dot is itself the drag handle in month view. We rely on
+  // dataTransfer rather than React state so the drop target (a different
+  // sibling) can read the id without prop-drilling.
+  const chip = (
+    <div
+      draggable={draggable}
+      onDragStart={e => {
+        if (!draggable) return
+        e.dataTransfer.setData('text/calendar-item-id', item.id)
+        e.dataTransfer.effectAllowed = 'move'
+      }}
+      title={draggable ? 'Drag to another day to reschedule' : `${item.status} — locked`}
+      className={`flex items-center gap-1 px-1 py-0.5 rounded text-[9px] truncate ${stat.pill} ${
+        draggable ? 'cursor-grab active:cursor-grabbing' : 'cursor-not-allowed'
+      }`}
+    >
+      <ChannelIcon channel={ch} className="w-2 h-2 flex-shrink-0" />
+      <span className="truncate">{formatTime(getScheduledAt(item))}</span>
+    </div>
+  )
+  return permalink
+    ? <a href={permalink} target="_blank" rel="noopener noreferrer">{chip}</a>
+    : chip
 }

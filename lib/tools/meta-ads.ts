@@ -1,6 +1,7 @@
 // Meta Ads (Facebook Graph API)
 
 import { fetchWithTimeout } from '@/lib/fetch-with-timeout'
+import { getCredential } from '@/lib/credential-context'
 
 const META_BASE = 'https://graph.facebook.com/v21.0'
 
@@ -29,8 +30,8 @@ export async function getMetaCampaigns(
   adAccountId?: string,
   accessToken?: string
 ): Promise<MetaCampaign[]> {
-  const token = accessToken || process.env.META_ACCESS_TOKEN
-  const accountId = adAccountId || process.env.META_AD_ACCOUNT_ID
+  const token = accessToken || getCredential('META_ACCESS_TOKEN')
+  const accountId = adAccountId || getCredential('META_AD_ACCOUNT_ID')
   if (!token || !accountId) return []
   try {
     const fields = 'id,name,status,objective,daily_budget,lifetime_budget,created_time'
@@ -52,8 +53,8 @@ export async function createMetaCampaign(
   adAccountId?: string,
   accessToken?: string
 ): Promise<{ id: string } | null> {
-  const token = accessToken || process.env.META_ACCESS_TOKEN
-  const accountId = adAccountId || process.env.META_AD_ACCOUNT_ID
+  const token = accessToken || getCredential('META_ACCESS_TOKEN')
+  const accountId = adAccountId || getCredential('META_AD_ACCOUNT_ID')
   if (!token || !accountId) return null
   try {
     const res = await fetchWithTimeout(`${META_BASE}/${accountId}/campaigns`, {
@@ -81,7 +82,7 @@ export async function getMetaCampaignInsights(
   preset: string = 'last_30d',
   accessToken?: string
 ): Promise<MetaInsights | null> {
-  const token = accessToken || process.env.META_ACCESS_TOKEN
+  const token = accessToken || getCredential('META_ACCESS_TOKEN')
   if (!token) return null
   try {
     const fields = 'impressions,clicks,spend,ctr,cpc,reach'
@@ -102,7 +103,7 @@ export async function pauseMetaCampaign(
   campaignId: string,
   accessToken?: string
 ): Promise<boolean> {
-  const token = accessToken || process.env.META_ACCESS_TOKEN
+  const token = accessToken || getCredential('META_ACCESS_TOKEN')
   if (!token) return false
   try {
     const res = await fetchWithTimeout(`${META_BASE}/${campaignId}`, {
@@ -122,7 +123,7 @@ export async function activateMetaCampaign(
   campaignId: string,
   accessToken?: string
 ): Promise<boolean> {
-  const token = accessToken || process.env.META_ACCESS_TOKEN
+  const token = accessToken || getCredential('META_ACCESS_TOKEN')
   if (!token) return false
   try {
     const res = await fetchWithTimeout(`${META_BASE}/${campaignId}`, {
@@ -142,8 +143,8 @@ export async function getMetaAccountInfo(
   adAccountId?: string,
   accessToken?: string
 ): Promise<{ name: string; currency: string; balance?: string; account_status: number } | null> {
-  const token = accessToken || process.env.META_ACCESS_TOKEN
-  const accountId = adAccountId || process.env.META_AD_ACCOUNT_ID
+  const token = accessToken || getCredential('META_ACCESS_TOKEN')
+  const accountId = adAccountId || getCredential('META_AD_ACCOUNT_ID')
   if (!token || !accountId) return null
   try {
     const fields = 'name,currency,account_status,balance,spend_cap'
@@ -164,5 +165,5 @@ export async function getMetaAccountInfo(
 }
 
 export function isMetaAdsAvailable(): boolean {
-  return !!process.env.META_ACCESS_TOKEN
+  return !!getCredential('META_ACCESS_TOKEN')
 }

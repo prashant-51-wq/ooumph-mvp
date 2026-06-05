@@ -7,7 +7,8 @@ Be specific and actionable. Always respond with valid JSON.`
 
 export async function generateFunnelPlan(
   brand: BrandProfile,
-  strategy: Strategy
+  strategy: Strategy,
+  workspaceId: string,
 ): Promise<FunnelPlan> {
   const userPrompt = `Design a complete marketing funnel for:
 
@@ -50,7 +51,7 @@ Return JSON:
   ]
 }`
 
-  return runAgent<FunnelPlan>(SYSTEM_PROMPT, userPrompt)
+  return runAgent<FunnelPlan>(SYSTEM_PROMPT, userPrompt, workspaceId)
 }
 
 

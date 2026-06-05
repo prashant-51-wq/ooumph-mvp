@@ -1,5 +1,7 @@
 // Google Ads API (GAQL)
 
+import { getCredential } from '@/lib/credential-context'
+
 const GOOGLE_ADS_BASE = 'https://googleads.googleapis.com/v18'
 
 export interface GoogleAdsCampaign {
@@ -18,7 +20,7 @@ export interface GoogleAdsCampaign {
 }
 
 function buildHeaders(accessToken: string, customerId: string): Record<string, string> {
-  const devToken = process.env.GOOGLE_ADS_DEVELOPER_TOKEN || ''
+  const devToken = getCredential('GOOGLE_ADS_DEVELOPER_TOKEN') || ''
   const headers: Record<string, string> = {
     Authorization: `Bearer ${accessToken}`,
     'developer-token': devToken,
@@ -58,9 +60,9 @@ export async function getGoogleAdsCampaigns(
   accessToken: string,
   customerId?: string
 ): Promise<GoogleAdsCampaign[]> {
-  const devToken = process.env.GOOGLE_ADS_DEVELOPER_TOKEN
+  const devToken = getCredential('GOOGLE_ADS_DEVELOPER_TOKEN')
   if (!devToken || !accessToken) return []
-  const cid = customerId || process.env.GOOGLE_ADS_CUSTOMER_ID || ''
+  const cid = customerId || getCredential('GOOGLE_ADS_CUSTOMER_ID') || ''
   if (!cid) return []
   try {
     const query =
@@ -84,9 +86,9 @@ export async function getGoogleAdsCampaignMetrics(
   customerId?: string,
   dateRange: 'LAST_7_DAYS' | 'LAST_14_DAYS' | 'LAST_30_DAYS' = 'LAST_30_DAYS'
 ): Promise<GoogleAdsCampaign[]> {
-  const devToken = process.env.GOOGLE_ADS_DEVELOPER_TOKEN
+  const devToken = getCredential('GOOGLE_ADS_DEVELOPER_TOKEN')
   if (!devToken || !accessToken) return []
-  const cid = customerId || process.env.GOOGLE_ADS_CUSTOMER_ID || ''
+  const cid = customerId || getCredential('GOOGLE_ADS_CUSTOMER_ID') || ''
   if (!cid) return []
   try {
     const query = `SELECT campaign.id, campaign.name, metrics.impressions, metrics.clicks, metrics.cost_micros, metrics.ctr, metrics.average_cpc FROM campaign WHERE segments.date DURING ${dateRange}`
@@ -109,9 +111,9 @@ export async function getKeywordIdeas(
   accessToken: string,
   customerId?: string
 ): Promise<{ text: string; avgMonthlySearches: string; competition: string }[]> {
-  const devToken = process.env.GOOGLE_ADS_DEVELOPER_TOKEN
+  const devToken = getCredential('GOOGLE_ADS_DEVELOPER_TOKEN')
   if (!devToken || !accessToken) return []
-  const cid = customerId || process.env.GOOGLE_ADS_CUSTOMER_ID || ''
+  const cid = customerId || getCredential('GOOGLE_ADS_CUSTOMER_ID') || ''
   if (!cid) return []
   try {
     const res = await fetch(
@@ -148,9 +150,9 @@ export async function pauseGoogleCampaign(
   accessToken: string,
   customerId?: string
 ): Promise<boolean> {
-  const devToken = process.env.GOOGLE_ADS_DEVELOPER_TOKEN
+  const devToken = getCredential('GOOGLE_ADS_DEVELOPER_TOKEN')
   if (!devToken || !accessToken) return false
-  const cid = customerId || process.env.GOOGLE_ADS_CUSTOMER_ID || ''
+  const cid = customerId || getCredential('GOOGLE_ADS_CUSTOMER_ID') || ''
   if (!cid) return false
   try {
     const res = await fetch(
@@ -176,5 +178,5 @@ export async function pauseGoogleCampaign(
 }
 
 export function isGoogleAdsAvailable(): boolean {
-  return !!process.env.GOOGLE_ADS_DEVELOPER_TOKEN
+  return !!getCredential('GOOGLE_ADS_DEVELOPER_TOKEN')
 }

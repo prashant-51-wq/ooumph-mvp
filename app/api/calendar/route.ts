@@ -5,6 +5,7 @@
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { sql, newId } from '@/lib/db'
+import { assertWorkspaceOwnership } from '@/lib/guards'
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
@@ -13,6 +14,9 @@ export async function GET(req: NextRequest) {
   const upcoming = searchParams.get('upcoming') === '1'
 
   if (!workspaceId) return NextResponse.json({ bookings: [], availability: null })
+  // Sprint 8A: ownership check.
+  const denied = assertWorkspaceOwnership(req, workspaceId)
+  if (denied) return denied
 
   const [bookingsResult, availResult] = await Promise.all([
     upcoming
@@ -43,6 +47,9 @@ export async function POST(req: NextRequest) {
     }
     const { workspaceId, daysOfWeek, startHour, endHour, slotMinutes, timezone, bufferMinutes, advanceDays } = body
     if (!workspaceId) return NextResponse.json({ error: 'workspaceId required' }, { status: 400 })
+    // Sprint 8A: ownership before writing availability config.
+    const denied = assertWorkspaceOwnership(req, workspaceId)
+    if (denied) return denied
 
     const existing = await sql`SELECT id FROM calendar_availability WHERE workspace_id = ${workspaceId} LIMIT 1`
     const now = new Date().toISOString()

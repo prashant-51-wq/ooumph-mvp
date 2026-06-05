@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import { useAgentStream } from '@/lib/use-agent-stream'
 import AgentConsole from '@/components/AgentConsole'
 import ReviewRequiredModal from '@/components/ReviewRequiredModal'
+import { usePersistedState } from '@/lib/hooks/use-persisted-state'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -155,53 +156,13 @@ function aiToCard(
   }
 }
 
-// ─── Mock projects (kept for now — no projects API exists) ────────────────────
-
-const MOCK_PROJECTS: StrategyProject[] = [
-  {
-    id: 'proj-1',
-    name: 'Q2 Acquisition Push',
-    description: 'Drive 500 new trial signups through paid + organic channels.',
-    timeframe: 'monthly',
-    status: 'active',
-    performanceScore: 88,
-    startDate: '2026-04-01',
-    team: ['Sarah K.', 'Marcus T.', 'Lena R.'],
-    kpis: [
-      { metric: 'Trial Signups', target: 500, actual: 412, unit: '' },
-      { metric: 'CAC', target: 45, actual: 51, unit: '$' },
-      { metric: 'Conversion Rate', target: 8, actual: 6.4, unit: '%' },
-    ],
-  },
-  {
-    id: 'proj-2',
-    name: 'Brand Awareness Sprint',
-    description: 'Reach 100K new people organically in 4 weeks.',
-    timeframe: 'weekly',
-    status: 'active',
-    performanceScore: 72,
-    startDate: '2026-05-05',
-    team: ['Ava M.', 'James W.'],
-    kpis: [
-      { metric: 'Organic Reach', target: 100000, actual: 68000, unit: '' },
-      { metric: 'Follower Growth', target: 2000, actual: 1540, unit: '' },
-    ],
-  },
-  {
-    id: 'proj-3',
-    name: 'Email Re-Engagement',
-    description: 'Win back 200 churned subscribers with a 5-email sequence.',
-    timeframe: 'weekly',
-    status: 'planning',
-    performanceScore: 0,
-    startDate: '2026-06-01',
-    team: ['Lena R.'],
-    kpis: [
-      { metric: 'Win-Back Rate', target: 20, actual: 0, unit: '%' },
-      { metric: 'Revenue Recovered', target: 4000, actual: 0, unit: '$' },
-    ],
-  },
-]
+// Sprint 3C: removed MOCK_PROJECTS — a ~46-line array of fake "Q2 Acquisition
+// Push" / "Brand Awareness Sprint" projects with fake KPIs. The Strategy page
+// renders projects from the `projects` state, which is now seeded empty and
+// can be populated when /api/strategy-projects (a richer schema with KPIs
+// + timeframe + team) ships in a later sprint. The minimal workspace_projects
+// table from Sprint 2 Commit 1 covers a different need (lightweight CMO
+// chat record) and is not used here.
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -370,7 +331,7 @@ function ProjectCard({ project, onClick }: { project: StrategyProject; onClick: 
 // ─── Modal ────────────────────────────────────────────────────────────────────
 
 function NewProjectModal({ onClose, onCreate }: { onClose: () => void; onCreate: (p: Partial<StrategyProject>) => void }) {
-  const [form, setForm] = useState({ name: '', description: '', timeframe: 'weekly' as Timeframe, goals: '' })
+  const [form, setForm] = usePersistedState('strategy:draft', { name: '', description: '', timeframe: 'weekly' as Timeframe, goals: '' })
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault()
@@ -457,6 +418,14 @@ export default function StrategyPage() {
   const router = useRouter()
   const [workspaceId, setWorkspaceId] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState<Timeframe>('daily')
+  // Sprint 14B: in-place edit state for the strategy card.
+  // editingId tracks which artifact is open for edit (null = read-only view).
+  // editBuffer holds the unsaved positioning + objective so Cancel can
+  // revert without re-fetching. savingEdit/editError gate the Save UX.
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editBuffer, setEditBuffer] = useState<{ positioning: string; objective: string }>({ positioning: '', objective: '' })
+  const [savingEdit, setSavingEdit] = useState(false)
+  const [editError, setEditError] = useState<string | null>(null)
   const [cards, setCards] = useState<Record<Timeframe, StrategyCard | null>>({
     daily: null,
     weekly: null,
@@ -467,7 +436,13 @@ export default function StrategyPage() {
   const [loading, setLoading] = useState(true)
   const [generating, setGenerating] = useState<Timeframe | null>(null)
   const [genError, setGenError] = useState<string | null>(null)
-  const [projects, setProjects] = useState<StrategyProject[]>(MOCK_PROJECTS)
+  // Sprint 3C: was useState<StrategyProject[]>(MOCK_PROJECTS) seeded with
+  // four fake projects ("Q2 Acquisition Push" / "Brand Awareness Sprint")
+  // with fabricated KPI counts. Now starts empty — when a richer
+  // /api/strategy-projects endpoint ships (with KPIs/timeframe/team) it
+  // can hydrate this. The minimal workspace_projects table from Sprint 2
+  // Commit 1 is a different shape (CMO chat record), not used here.
+  const [projects, setProjects] = useState<StrategyProject[]>([])
   const [historyOpen, setHistoryOpen] = useState(false)
   const [showNewProject, setShowNewProject] = useState(false)
   const [expandedProject, setExpandedProject] = useState<string | null>(null)
@@ -501,7 +476,10 @@ export default function StrategyPage() {
     setLoading(true)
     try {
       const res = await fetch(`/api/artifacts?workspaceId=${wid}&type=strategy&limit=50`)
-      const rows: ArtifactRow[] = await res.json()
+      // Sprint 19T: array-safe; an error/wrapped response used to crash the
+      // entire strategy page on the next .forEach call.
+      const _raw = await res.json()
+      const rows: ArtifactRow[] = Array.isArray(_raw) ? _raw : Array.isArray(_raw?.rows) ? _raw.rows : []
       setAllArtifacts(rows)
 
       // Build version history (most-recent first)
@@ -637,6 +615,74 @@ export default function StrategyPage() {
     }
   }
 
+  // Sprint 14B: in-place editor for the displayed positioning + objective.
+  // Avoids burning another agent run for small text tweaks. We round-trip
+  // through /api/artifacts PATCH which merges the new fields into the
+  // existing content_json (so we don't blow away ICP, KPIs, contentPillars,
+  // etc.). After save we update local state in place — no full reload.
+  function startEditing(card: StrategyCard) {
+    setEditingId(card.id)
+    setEditBuffer({
+      positioning: card.positioning || '',
+      objective: card.objective || '',
+    })
+    setEditError(null)
+  }
+  function cancelEditing() {
+    setEditingId(null)
+    setEditError(null)
+  }
+  async function saveEdit() {
+    if (!editingId || !workspaceId) return
+    setSavingEdit(true); setEditError(null)
+    try {
+      // Pull the current artifact JSON so we can merge instead of replace.
+      const artRes = await fetch(`/api/artifacts?workspaceId=${workspaceId}&id=${editingId}`)
+      if (!artRes.ok) throw new Error(`Could not load artifact (${artRes.status})`)
+      const art = await artRes.json() as { content_json?: AIStrategy | string | null } | null
+      const currentJson: AIStrategy =
+        art && typeof art.content_json === 'string' ? JSON.parse(art.content_json) as AIStrategy
+        : (art?.content_json as AIStrategy) || {}
+
+      const updated: AIStrategy = {
+        ...currentJson,
+        positioning: editBuffer.positioning.trim(),
+        thirtyDayObjective: editBuffer.objective.trim(),
+      }
+
+      const patchRes = await fetch('/api/artifacts', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ artifactId: editingId, content_json: updated }),
+      })
+      if (!patchRes.ok) {
+        const j = await patchRes.json().catch(() => ({})) as { error?: string }
+        throw new Error(j.error || `Save failed (${patchRes.status})`)
+      }
+
+      // Update local card state in place.
+      setCards(prev => {
+        const next = { ...prev }
+        for (const tf of Object.keys(next) as Timeframe[]) {
+          const c = next[tf]
+          if (c && c.id === editingId) {
+            next[tf] = {
+              ...c,
+              positioning: editBuffer.positioning.trim(),
+              objective: editBuffer.objective.trim(),
+            }
+          }
+        }
+        return next
+      })
+      setEditingId(null)
+    } catch (e) {
+      setEditError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSavingEdit(false)
+    }
+  }
+
   const kanbanCols: Array<{ key: StrategyProject['status']; label: string; color: string }> = [
     { key: 'planning', label: 'Planning', color: 'border-blue-800' },
     { key: 'active', label: 'Active', color: 'border-indigo-800' },
@@ -687,7 +733,7 @@ export default function StrategyPage() {
       )}
 
       {/* Stats bar */}
-      <div className="grid grid-cols-4 gap-4 mb-6">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4 mb-6">
         {[
           { label: 'Active Projects', value: activeCount, sub: 'in progress' },
           { label: 'Avg Performance', value: `${avgScore || 0}%`, sub: 'across projects' },
@@ -756,31 +802,126 @@ export default function StrategyPage() {
                   </div>
                   <p className="text-gray-500 text-xs">Last generated {formatDate(activeCard.generatedAt)}</p>
                 </div>
-                <button
-                  onClick={() => generateStrategy(activeTab)}
-                  disabled={generating === activeTab}
-                  className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-medium transition-colors flex items-center gap-2"
-                >
-                  {generating === activeTab ? (
-                    <><div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" /> Generating with Claude...</>
-                  ) : (
-                    `⚡ Generate ${TF_LABELS[activeTab]} Strategy`
+                <div className="flex items-center gap-2">
+                  {/* Sprint 14B: in-place edit button (small text tweaks
+                      shouldn't burn a fresh agent run). Hidden while
+                      editing so it doesn't steal focus. */}
+                  {editingId !== activeCard.id && (
+                    <button
+                      onClick={() => startEditing(activeCard)}
+                      className="px-3 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 border border-gray-700 text-sm font-medium transition-colors flex items-center gap-2"
+                    >
+                      ✎ Edit
+                    </button>
                   )}
-                </button>
+                  <button
+                    onClick={() => generateStrategy(activeTab)}
+                    disabled={generating === activeTab || editingId === activeCard.id}
+                    className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-medium transition-colors flex items-center gap-2"
+                  >
+                    {generating === activeTab ? (
+                      <><div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" /> Generating with Claude...</>
+                    ) : (
+                      `⚡ Regenerate ${TF_LABELS[activeTab]} Strategy`
+                    )}
+                  </button>
+                  {/* Sprint 17A (audit pass #3 P0 #5): make the orphaned
+                      growth optimizer reachable. Reads recent post_metrics
+                      and produces concrete recommendations. */}
+                  <button
+                    onClick={async () => {
+                      const wid = localStorage.getItem('workspaceId') || ''
+                      if (!wid) return
+                      try {
+                        const res = await fetch('/api/agents/growth/optimizer', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ workspaceId: wid, rangeDays: 30 }),
+                        })
+                        const data = await res.json()
+                        if (data?.ok) {
+                          alert(`Growth optimizer: ${data.recommendations?.length || 0} recommendation${data.recommendations?.length === 1 ? '' : 's'} saved as artifact. Check /dashboard/approvals.`)
+                        } else {
+                          alert(`Growth optimizer: ${data?.message || data?.error || 'failed'}`)
+                        }
+                      } catch (e) {
+                        alert(`Growth optimizer failed: ${e instanceof Error ? e.message : String(e)}`)
+                      }
+                    }}
+                    disabled={editingId === activeCard.id}
+                    className="px-4 py-2 rounded-lg bg-purple-900/30 hover:bg-purple-900/50 border border-purple-800 disabled:opacity-50 text-purple-200 text-sm font-medium transition-colors flex items-center gap-2"
+                    title="Analyses your recent post performance and proposes 5-10 ranked recommendations."
+                  >
+                    🧪 Growth Optimizer
+                  </button>
+                </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-4 mb-4">
-                <div>
-                  <p className="text-gray-500 text-xs uppercase tracking-wide mb-1.5">Positioning</p>
-                  <p className="text-gray-200 text-sm leading-relaxed">{activeCard.positioning || '—'}</p>
-                </div>
-                <div>
-                  <p className="text-gray-500 text-xs uppercase tracking-wide mb-1.5">Objective</p>
-                  <p className="text-gray-200 text-sm leading-relaxed">{activeCard.objective || '—'}</p>
-                </div>
+              {/* Sprint 14B: positioning + objective split.
+                  In edit mode: textareas + Save / Cancel.
+                  Read-only mode: rendered text.
+                  Tactics + Channels stay read-only here — they're derived
+                  from contentPillars / channelStrategy and a future
+                  sprint can add a dedicated structured editor. */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
+                {editingId === activeCard.id ? (
+                  <>
+                    <div>
+                      <p className="text-gray-500 text-xs uppercase tracking-wide mb-1.5">Positioning</p>
+                      <textarea
+                        value={editBuffer.positioning}
+                        onChange={e => setEditBuffer(b => ({ ...b, positioning: e.target.value }))}
+                        rows={4}
+                        className="w-full bg-gray-800 border border-gray-700 text-gray-100 text-sm rounded-lg px-3 py-2 resize-y focus:outline-none focus:border-indigo-500"
+                        placeholder="How the brand stands apart in the market."
+                      />
+                    </div>
+                    <div>
+                      <p className="text-gray-500 text-xs uppercase tracking-wide mb-1.5">Objective</p>
+                      <textarea
+                        value={editBuffer.objective}
+                        onChange={e => setEditBuffer(b => ({ ...b, objective: e.target.value }))}
+                        rows={4}
+                        className="w-full bg-gray-800 border border-gray-700 text-gray-100 text-sm rounded-lg px-3 py-2 resize-y focus:outline-none focus:border-indigo-500"
+                        placeholder="What success looks like in the next 30 days."
+                      />
+                    </div>
+                    <div className="col-span-2 flex items-center gap-2 pt-1">
+                      <button
+                        onClick={saveEdit}
+                        disabled={savingEdit}
+                        className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-sm font-medium transition-colors"
+                      >
+                        {savingEdit ? 'Saving…' : 'Save changes'}
+                      </button>
+                      <button
+                        onClick={cancelEditing}
+                        disabled={savingEdit}
+                        className="px-4 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 border border-gray-700 text-sm font-medium transition-colors"
+                      >
+                        Cancel
+                      </button>
+                      <p className="text-[11px] text-gray-500 ml-2">
+                        Free edit — no agent run consumed.
+                      </p>
+                      {editError && <p className="text-xs text-red-400 ml-auto">{editError}</p>}
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div>
+                      <p className="text-gray-500 text-xs uppercase tracking-wide mb-1.5">Positioning</p>
+                      <p className="text-gray-200 text-sm leading-relaxed">{activeCard.positioning || '—'}</p>
+                    </div>
+                    <div>
+                      <p className="text-gray-500 text-xs uppercase tracking-wide mb-1.5">Objective</p>
+                      <p className="text-gray-200 text-sm leading-relaxed">{activeCard.objective || '—'}</p>
+                    </div>
+                  </>
+                )}
               </div>
 
-              <div className="grid grid-cols-2 gap-4 mb-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
                 <div>
                   <p className="text-gray-500 text-xs uppercase tracking-wide mb-2">Key Tactics</p>
                   {activeCard.tactics.length === 0 ? (
@@ -836,7 +977,7 @@ export default function StrategyPage() {
               </button>
             </div>
 
-            <div className="grid grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
               {kanbanCols.map(col => (
                 <div key={col.key}>
                   <div className={`flex items-center gap-2 mb-3 pb-2 border-b ${col.color}`}>

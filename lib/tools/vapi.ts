@@ -1,5 +1,7 @@
 // Vapi AI Voice API
 
+import { getCredential } from '@/lib/credential-context'
+
 const VAPI_BASE = 'https://api.vapi.ai'
 
 export interface VapiAssistant {
@@ -52,7 +54,7 @@ export interface VapiCreateAssistantOptions {
 }
 
 function vapiHeaders(): Record<string, string> {
-  const key = process.env.VAPI_API_KEY || ''
+  const key = getCredential('VAPI_API_KEY') || ''
   return {
     Authorization: `Bearer ${key}`,
     'Content-Type': 'application/json',
@@ -60,7 +62,7 @@ function vapiHeaders(): Record<string, string> {
 }
 
 export async function getVapiAssistants(): Promise<VapiAssistant[]> {
-  const key = process.env.VAPI_API_KEY
+  const key = getCredential('VAPI_API_KEY')
   if (!key) return []
   try {
     const res = await fetch(`${VAPI_BASE}/assistant`, { headers: vapiHeaders() })
@@ -75,7 +77,7 @@ export async function getVapiAssistants(): Promise<VapiAssistant[]> {
 export async function createVapiAssistant(
   options: VapiCreateAssistantOptions
 ): Promise<VapiAssistant | null> {
-  const key = process.env.VAPI_API_KEY
+  const key = getCredential('VAPI_API_KEY')
   if (!key) return null
   try {
     const body: Record<string, unknown> = {
@@ -112,7 +114,7 @@ export async function createVapiAssistant(
 }
 
 export async function getVapiCalls(limit: number = 20): Promise<VapiCall[]> {
-  const key = process.env.VAPI_API_KEY
+  const key = getCredential('VAPI_API_KEY')
   if (!key) return []
   try {
     const res = await fetch(`${VAPI_BASE}/call?limit=${limit}`, { headers: vapiHeaders() })
@@ -125,7 +127,7 @@ export async function getVapiCalls(limit: number = 20): Promise<VapiCall[]> {
 }
 
 export async function getVapiCall(callId: string): Promise<VapiCall | null> {
-  const key = process.env.VAPI_API_KEY
+  const key = getCredential('VAPI_API_KEY')
   if (!key) return null
   try {
     const res = await fetch(`${VAPI_BASE}/call/${callId}`, { headers: vapiHeaders() })
@@ -137,7 +139,7 @@ export async function getVapiCall(callId: string): Promise<VapiCall | null> {
 }
 
 export async function getVapiPhoneNumbers(): Promise<VapiPhoneNumber[]> {
-  const key = process.env.VAPI_API_KEY
+  const key = getCredential('VAPI_API_KEY')
   if (!key) return []
   try {
     const res = await fetch(`${VAPI_BASE}/phone-number`, { headers: vapiHeaders() })
@@ -154,7 +156,7 @@ export async function makeOutboundCall(
   assistantId: string,
   phoneNumberId?: string
 ): Promise<{ id: string } | null> {
-  const key = process.env.VAPI_API_KEY
+  const key = getCredential('VAPI_API_KEY')
   if (!key) return null
   try {
     const body: Record<string, unknown> = {
@@ -177,7 +179,7 @@ export async function makeOutboundCall(
 }
 
 export async function endVapiCall(callId: string): Promise<boolean> {
-  const key = process.env.VAPI_API_KEY
+  const key = getCredential('VAPI_API_KEY')
   if (!key) return false
   try {
     const res = await fetch(`${VAPI_BASE}/call/${callId}`, {
@@ -191,5 +193,5 @@ export async function endVapiCall(callId: string): Promise<boolean> {
 }
 
 export function isVapiAvailable(): boolean {
-  return !!process.env.VAPI_API_KEY
+  return !!getCredential('VAPI_API_KEY')
 }

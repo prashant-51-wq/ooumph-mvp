@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
+import { usePersistedState } from '@/lib/hooks/use-persisted-state'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -87,10 +88,14 @@ export default function RepurposePage() {
   const [workspaceId, setWorkspaceId] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState<RepurposeTab>('repurpose')
   const [sourceType, setSourceType] = useState<SourceType>('text')
-  const [sourceInput, setSourceInput] = useState('')
-  const [selectedFormats, setSelectedFormats] = useState<string[]>(['twitter_thread', 'linkedin_post', 'instagram_caption', 'email_newsletter'])
+  const [sourceInput, setSourceInput] = usePersistedState<string>('repurpose:source', '')
+  const [selectedFormats, setSelectedFormats] = usePersistedState<string[]>('repurpose:targets', ['twitter_thread', 'linkedin_post', 'instagram_caption', 'email_newsletter'])
   const [generating, setGenerating] = useState(false)
   const [generationError, setGenerationError] = useState<string | null>(null)
+  // Sprint 18K: real document upload (PDF / docx / txt → text extraction)
+  const [uploading, setUploading] = useState(false)
+  const [uploadError, setUploadError] = useState<string | null>(null)
+  const [uploadedFile, setUploadedFile] = useState<{ name: string; chars: number; pages?: number; truncated?: boolean } | null>(null)
   const [outputs, setOutputs] = useState<GeneratedOutput[]>([])
   const [generatedArtifactId, setGeneratedArtifactId] = useState<string | null>(null)
   const [editingFormat, setEditingFormat] = useState<string | null>(null)
@@ -188,6 +193,53 @@ export default function RepurposePage() {
 
   function toggleFormat(id: string) {
     setSelectedFormats(prev => prev.includes(id) ? prev.filter(f => f !== id) : [...prev, id])
+  }
+
+  // Sprint 18K — Real document upload. POSTs the file as multipart to
+  // /api/repurpose/extract which uses pdf-parse / mammoth server-side
+  // to pull plain text. We dump the extracted text into the same
+  // sourceInput buffer used by the Manual Text source, and switch the
+  // source-type so the user can immediately Generate.
+  async function handleDocumentUpload(file: File) {
+    if (!workspaceId) {
+      setUploadError('Sign in first — no workspace selected.')
+      return
+    }
+    setUploading(true)
+    setUploadError(null)
+    setUploadedFile(null)
+    try {
+      const form = new FormData()
+      form.append('file', file)
+      const res = await fetch(`/api/repurpose/extract?workspaceId=${workspaceId}`, {
+        method: 'POST',
+        credentials: 'include',
+        body: form,
+      })
+      const data = await res.json() as {
+        ok?: boolean
+        error?: string
+        text?: string
+        filename?: string
+        charCount?: number
+        pageCount?: number
+        truncated?: boolean
+      }
+      if (!res.ok || !data.ok || !data.text) {
+        throw new Error(data.error || `Extract failed (${res.status})`)
+      }
+      setSourceInput(data.text)
+      setUploadedFile({
+        name: data.filename || file.name,
+        chars: data.charCount || data.text.length,
+        pages: data.pageCount,
+        truncated: data.truncated,
+      })
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setUploading(false)
+    }
   }
 
   async function generateAll() {
@@ -406,10 +458,53 @@ export default function RepurposePage() {
             )}
 
             {sourceType === 'upload' && (
-              <div className="border-2 border-dashed border-gray-700 rounded-2xl p-8 text-center">
-                <div className="text-3xl mb-2">📄</div>
-                <p className="text-white font-medium">Document upload coming soon</p>
-                <p className="text-gray-500 text-sm mt-1">For now, paste your content as Manual Text</p>
+              <div className="space-y-3">
+                <label className={`block border-2 border-dashed rounded-2xl p-6 text-center cursor-pointer transition-colors ${uploading ? 'border-indigo-700 bg-indigo-950/20' : 'border-gray-700 hover:border-indigo-600 hover:bg-gray-800/30'}`}>
+                  <input
+                    type="file"
+                    accept=".pdf,.docx,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain"
+                    disabled={uploading}
+                    onChange={e => {
+                      const f = e.target.files?.[0]
+                      if (f) void handleDocumentUpload(f)
+                      // Reset so re-picking the same file fires onChange again
+                      e.target.value = ''
+                    }}
+                    className="hidden"
+                  />
+                  <div className="text-3xl mb-2">{uploading ? '⏳' : '📄'}</div>
+                  <p className="text-white font-medium">
+                    {uploading ? 'Extracting text…' : 'Drop a PDF, .docx, or .txt — or click to choose'}
+                  </p>
+                  <p className="text-gray-500 text-xs mt-1">
+                    Max 10 MB. Scanned PDFs need OCR (not yet wired). Extracted text appears in the editor below.
+                  </p>
+                </label>
+
+                {uploadError && (
+                  <div className="p-3 rounded-xl border border-red-800/60 bg-red-950/30 text-red-300 text-xs">
+                    {uploadError}
+                  </div>
+                )}
+
+                {uploadedFile && (
+                  <div className="p-3 rounded-xl border border-emerald-800/50 bg-emerald-950/20 text-emerald-300 text-xs">
+                    ✓ Extracted <strong>{uploadedFile.chars.toLocaleString()}</strong> chars
+                    {uploadedFile.pages ? ` from ${uploadedFile.pages} page${uploadedFile.pages === 1 ? '' : 's'}` : ''} of <strong>{uploadedFile.name}</strong>.
+                    {uploadedFile.truncated && ' (Truncated to 250k chars.)'}
+                  </div>
+                )}
+
+                {/* Show / let user edit the extracted text */}
+                {sourceInput && (
+                  <textarea
+                    value={sourceInput}
+                    onChange={e => setSourceInput(e.target.value)}
+                    rows={8}
+                    className="w-full bg-gray-800 border border-gray-700 text-white text-sm px-4 py-3 rounded-xl focus:outline-none focus:border-indigo-500 placeholder-gray-600 resize-none"
+                    placeholder="Extracted text will appear here. Edit before generating."
+                  />
+                )}
               </div>
             )}
           </div>

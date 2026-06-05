@@ -1,5 +1,7 @@
 // Hunter.io Email Finder & Verification
 
+import { getCredential } from '@/lib/credential-context'
+
 const HUNTER_BASE = 'https://api.hunter.io/v2'
 
 export interface HunterEmailResult {
@@ -33,7 +35,7 @@ export async function findEmail(
   firstName: string,
   lastName: string
 ): Promise<HunterEmailResult | null> {
-  const key = process.env.HUNTER_API_KEY
+  const key = getCredential('HUNTER_API_KEY')
   if (!key) return null
   try {
     const params = new URLSearchParams({
@@ -54,7 +56,7 @@ export async function findEmail(
 export async function verifyEmail(
   email: string
 ): Promise<HunterVerifyResult | null> {
-  const key = process.env.HUNTER_API_KEY
+  const key = getCredential('HUNTER_API_KEY')
   if (!key) return null
   try {
     const params = new URLSearchParams({ email, api_key: key })
@@ -71,7 +73,7 @@ export async function domainSearch(
   domain: string,
   limit = 10
 ): Promise<HunterDomainResult | null> {
-  const key = process.env.HUNTER_API_KEY
+  const key = getCredential('HUNTER_API_KEY')
   if (!key) return null
   try {
     const params = new URLSearchParams({
@@ -89,5 +91,5 @@ export async function domainSearch(
 }
 
 export function isHunterAvailable(): boolean {
-  return !!process.env.HUNTER_API_KEY
+  return !!getCredential('HUNTER_API_KEY')
 }

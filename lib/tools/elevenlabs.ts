@@ -1,5 +1,7 @@
 // ElevenLabs Text-to-Speech API
 
+import { getCredential } from '@/lib/credential-context'
+
 const ELEVENLABS_BASE = 'https://api.elevenlabs.io/v1'
 const DEFAULT_VOICE_ID = '21m00Tcm4TlvDq8ikWAM' // Rachel
 
@@ -27,11 +29,11 @@ export async function textToSpeech(
   text: string,
   options?: TtsOptions
 ): Promise<TtsResult | null> {
-  const key = process.env.ELEVENLABS_API_KEY
+  const key = getCredential('ELEVENLABS_API_KEY')
   if (!key) return null
   try {
     const voiceId =
-      options?.voiceId ?? process.env.ELEVENLABS_VOICE_ID ?? DEFAULT_VOICE_ID
+      options?.voiceId ?? getCredential('ELEVENLABS_VOICE_ID') ?? DEFAULT_VOICE_ID
     const res = await fetch(`${ELEVENLABS_BASE}/text-to-speech/${voiceId}`, {
       method: 'POST',
       headers: {
@@ -60,7 +62,7 @@ export async function textToSpeech(
 }
 
 export async function getVoices(): Promise<ElevenLabsVoice[]> {
-  const key = process.env.ELEVENLABS_API_KEY
+  const key = getCredential('ELEVENLABS_API_KEY')
   if (!key) return []
   try {
     const res = await fetch(`${ELEVENLABS_BASE}/voices`, {
@@ -75,5 +77,5 @@ export async function getVoices(): Promise<ElevenLabsVoice[]> {
 }
 
 export function isElevenLabsAvailable(): boolean {
-  return !!process.env.ELEVENLABS_API_KEY
+  return !!getCredential('ELEVENLABS_API_KEY')
 }

@@ -5,6 +5,7 @@
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
+import { readAccessToken } from '@/lib/integrations'
 
 interface TimeSlot {
   start: string   // ISO
@@ -68,12 +69,17 @@ export async function GET(req: NextRequest) {
   // Try Google Calendar busy times if connected
   let gcalBusy: Array<{ start: number; end: number }> = []
   try {
+    // Sprint 10B: select both token columns; readAccessToken() resolves.
     const integResult = await sql`
-      SELECT access_token FROM integrations
+      SELECT access_token, encrypted_access_token FROM integrations
       WHERE workspace_id = ${workspaceId} AND platform = 'google_calendar' AND status = 'active'
       LIMIT 1
     `
-    const token = integResult.rows[0]?.access_token ? String(integResult.rows[0].access_token) : null
+    const _intRow = integResult.rows[0]
+    const token = _intRow ? readAccessToken({
+      access_token: _intRow.access_token as string | null,
+      encrypted_access_token: _intRow.encrypted_access_token as string | null,
+    }) : null
     if (token) {
       const freeBusyRes = await fetch('https://www.googleapis.com/calendar/v3/freeBusy', {
         method: 'POST',

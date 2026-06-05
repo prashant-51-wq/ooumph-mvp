@@ -34,7 +34,50 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server'
+import crypto from 'crypto'
 import { sql, newId } from '@/lib/db'
+import { notifyNurtureReplyReceived } from '@/lib/notifications'
+
+/**
+ * Sprint 18Z (audit pass #8 P0 #3): Resend Svix signature verification.
+ *
+ * Header: `svix-signature` is a space-delimited list of `v1,<base64sig>` tuples.
+ * Header: `svix-id` is the message id.
+ * Header: `svix-timestamp` is unix seconds.
+ *
+ * The signed payload is `svix-id.svix-timestamp.rawBody` and the HMAC-SHA256
+ * is computed with the webhook secret (stripped of the `whsec_` prefix Resend
+ * uses) as a base64-decoded byte key.
+ */
+function verifySvixSignature(req: NextRequest, rawBody: string): boolean {
+  const secret = process.env.RESEND_WEBHOOK_SECRET || ''
+  if (!secret) {
+    // Fail-closed in production. Dev convenience only.
+    if (process.env.NODE_ENV === 'production') return false
+    return true
+  }
+  const id = req.headers.get('svix-id') || ''
+  const timestamp = req.headers.get('svix-timestamp') || ''
+  const sigHeader = req.headers.get('svix-signature') || ''
+  if (!id || !timestamp || !sigHeader) return false
+  // Defend against replay — reject anything older than 5 minutes.
+  const tsSec = parseInt(timestamp, 10)
+  if (!Number.isFinite(tsSec) || Math.abs(Date.now() / 1000 - tsSec) > 300) return false
+  const key = secret.startsWith('whsec_')
+    ? Buffer.from(secret.slice(6), 'base64')
+    : Buffer.from(secret, 'utf8')
+  const signed = `${id}.${timestamp}.${rawBody}`
+  const expected = crypto.createHmac('sha256', key).update(signed).digest('base64')
+  // The header is "v1,<sig1> v1,<sig2> ..." — accept if any v1 matches.
+  for (const part of sigHeader.split(' ')) {
+    const [ver, candidate] = part.split(',')
+    if (ver !== 'v1' || !candidate) continue
+    try {
+      if (crypto.timingSafeEqual(Buffer.from(candidate), Buffer.from(expected))) return true
+    } catch { /* length mismatch — keep trying */ }
+  }
+  return false
+}
 
 export const runtime = 'nodejs'
 
@@ -147,9 +190,15 @@ function detectAutoReply(payload: ResendInboundPayload): string | null {
 }
 
 export async function POST(req: NextRequest) {
+  // Sprint 18Z: read body as text first so we can HMAC-verify before parse.
+  let rawBody = ''
+  try { rawBody = await req.text() } catch { rawBody = '' }
+  if (!verifySvixSignature(req, rawBody)) {
+    return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 })
+  }
   let payload: ResendInboundPayload
   try {
-    payload = await req.json() as ResendInboundPayload
+    payload = JSON.parse(rawBody) as ResendInboundPayload
   } catch {
     return NextResponse.json({ ok: false, error: 'Invalid JSON' }, { status: 400 })
   }
@@ -187,25 +236,28 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true, skipped: 'no_email_or_body' })
     }
 
-    // Resolve workspace — prefer a workspace that has a Gmail / Resend
-    // integration whose configured inbound address matches `toRaw`.
-    // For MVP simplicity we look at the active gmail integration; fall back
-    // to first workspace.
-    const integResult = await sql`
-      SELECT workspace_id FROM integrations
-      WHERE platform IN ('gmail', 'resend') AND status = 'active'
-      LIMIT 1
-    `
-    let workspaceId: string | null = integResult.rows[0]
-      ? String(integResult.rows[0].workspace_id)
-      : null
-
-    if (!workspaceId) {
-      const wsResult = await sql`SELECT id FROM workspaces LIMIT 1`
-      workspaceId = (wsResult.rows[0] as { id?: string } | undefined)?.id || null
+    // Sprint 18Z (audit pass #8 P0 #3): resolve workspace by the
+    // recipient address (toRaw) only. The previous "fall back to first
+    // workspace" path was a cross-tenant write — any forged inbound
+    // could land in workspace #1's CRM.
+    const toEmailMatch = toRaw.match(/<([^>]+)>/)
+    const toEmail = (toEmailMatch ? toEmailMatch[1] : toRaw).trim().toLowerCase()
+    let workspaceId: string | null = null
+    if (toEmail) {
+      // Match against the workspace's configured inbound address stored on
+      // brand_profiles.approval_email (canonical for now). A later sprint
+      // can introduce a dedicated inbound_addresses table.
+      const bpResult = await sql`
+        SELECT workspace_id FROM brand_profiles
+        WHERE LOWER(approval_email) = ${toEmail} LIMIT 1
+      `
+      workspaceId = bpResult.rows[0]
+        ? String((bpResult.rows[0] as { workspace_id?: string }).workspace_id)
+        : null
     }
     if (!workspaceId) {
-      return NextResponse.json({ ok: true, skipped: 'no_workspace' })
+      // Cannot identify a workspace — refuse rather than guess.
+      return NextResponse.json({ ok: true, skipped: 'no_matching_workspace' })
     }
 
     // Find or auto-create contact in CRM
@@ -258,6 +310,41 @@ export async function POST(req: NextRequest) {
         WHERE workspace_id = ${workspaceId} AND email = ${contactEmail}
       `
     } catch { /* column may be missing on legacy installs */ }
+
+    // Sprint 15C (P1 #11): cancel pending nurture steps when a human replies.
+    //
+    // The audit found: an inbound reply did not break any in-flight nurture
+    // sequence — the lead kept receiving scheduled emails after replying,
+    // which is a real footgun. We cancel every pending workflow_pending_step
+    // for this contact_email and emit a notification so the user can see
+    // what got cancelled.
+    try {
+      const cancelRes = await sql`
+        UPDATE workflow_pending_steps
+        SET status = 'cancelled', error_message = ${'Cancelled — contact replied via inbox'}
+        WHERE workspace_id = ${workspaceId}
+          AND contact_email = ${contactEmail}
+          AND status = 'pending'
+      `
+      // SQLite-style rowCount: prefer rowCount, fall back to a count query.
+      const cancelled =
+        (cancelRes as unknown as { rowCount?: number }).rowCount ??
+        await (async () => {
+          const r = await sql`
+            SELECT COUNT(*) as c FROM workflow_pending_steps
+            WHERE workspace_id = ${workspaceId}
+              AND contact_email = ${contactEmail}
+              AND status = 'cancelled'
+              AND error_message = ${'Cancelled — contact replied via inbox'}
+          `
+          return Number((r.rows[0] as { c?: number } | undefined)?.c || 0)
+        })()
+      if (cancelled > 0) {
+        await notifyNurtureReplyReceived(workspaceId, contactEmail, cancelled)
+      }
+    } catch (err) {
+      console.error('[email-inbound] nurture cancel failed (non-fatal):', err)
+    }
 
     // Fire `email_received` workflow trigger — but only for genuine humans.
     // The auto-reply shield above is what guarantees this can never loop.
